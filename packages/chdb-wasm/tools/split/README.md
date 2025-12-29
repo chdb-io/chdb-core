@@ -1,0 +1,87 @@
+# wasm-split pipeline
+
+Splits `chdb.wasm` into a **primary** module holding the profile-hot functions
+(downloaded up front) and a **deferred** module holding everything else
+(`chdb.deferred.wasm`). The first call into a function that lives in the
+deferred module synchronously fetches + instantiates it (once per wasm
+instance; the browser HTTP cache makes repeats cheap), patches the shared
+function table, and the original call proceeds. **No functionality is lost** —
+a query touching cold code just stalls once for the download.
+
+Mechanics: Emscripten `-sSPLIT_MODULE` + Binaryen `wasm-split`. The split is at
+function granularity, driven by an execution profile recorded while running
+`profile-corpus.sql` (SQL operators, scalar/aggregate function families, table
+functions, formats, DDL/DML, error paths, Iceberg/Delta/DataLakeCatalog) against
+the instrumented build.
+
+## Runbook
+
+```sh
+# 1. build both trees with the split link option (only relinks, cheap)
+source ~/code/emsdk/emsdk_env.sh
+cd buildwasm     && cmake -DWASM_SPLIT_MODULE=ON . && ninja chdb_wasm
+cd ../buildwasm-st && cmake -DWASM_SPLIT_MODULE=ON . && ninja chdb_wasm
+# each emits: chdb.mjs (glue with lazy-load proxy), chdb.wasm (instrumented),
+#             chdb.wasm.orig (the real artifact that gets split)
+
+# 2. single-threaded bundle FIRST — its lone instance executes the whole query
+#    pipeline inline, so its hot set is the complete corpus coverage; export it
+node tools/split/split-wasm.mjs --build ../../buildwasm-st/programs/wasm \
+    --out /tmp/chdb-split-st --emit-hot-names /tmp/chdb-split-st/hot-names.txt
+
+# 3. threaded bundle, mixing in the st hot set: mt pool workers park in
+#    Atomics.wait and cannot answer the profile-collection message, so work
+#    that ran only on worker threads is invisible to the mt profile
+node tools/split/split-wasm.mjs --build ../../buildwasm/programs/wasm \
+    --out /tmp/chdb-split-mt --extra-hot /tmp/chdb-split-st/hot-names.txt
+
+# 4. verify each split bundle (hot query / cold lazy-load / negative control)
+node tools/split/verify-split.mjs /tmp/chdb-split-mt
+node tools/split/verify-split.mjs /tmp/chdb-split-st
+
+# 5. install into dist/ (+ dist/st) and run the test suites against it
+node scripts/copy-artifacts.mjs /tmp/chdb-split-mt /tmp/chdb-split-st
+CHDB_WASM_MJS=$PWD/dist/chdb.mjs node test/smoke.test.mjs
+```
+
+Prereqs: `/tmp/node24/bin/node` (>=23), and for the data-lake corpus sections a
+venv at `ICEBERG_PY` (default `/tmp/iceberg-venv/bin/python`) with
+`pyiceberg[sql-sqlite] pyarrow moto[server] s3fs deltalake`; without it those
+statements are skipped (and their code ends up in the deferred module).
+
+## Files
+
+| file | role |
+| --- | --- |
+| `profile-corpus.sql` | defines the hot set; statements ending in failure are fine (error handling should be hot too); `/*mt-only*/` statements are skipped on st |
+| `run-profile.mjs` | executes the corpus + streaming C API against the instrumented bundle, dumps one profile per wasm instance |
+| `fixture-host.mjs` | out-of-process mocks (static HTTP for `url()`, Iceberg REST + Unity catalogs); moto runs as its own python process |
+| `patch-glue.mjs` | two glue patches with hard anchor checks: `--lazy-load` (wasmBinaryFile fallback so pthread workers can resolve `chdb.deferred.wasm`) and `--profile-collect` (worker-side `chdbWriteProfile` message) |
+| `split-wasm.mjs` | merge profiles → keep-list (thread-runtime safety regex + `--extra-hot`) → `wasm-split` → install |
+| `verify-split.mjs` | asserts hot query works, cold query lazy-loads, and the cold query FAILS when `chdb.deferred.wasm` is hidden (negative control) |
+
+## Gotchas learned the hard way
+
+- **Per-instance profiles**: wasm-split's instrumentation counters are wasm
+  globals — every pthread worker instance has its own. The main instance's
+  `__write_profile` sees only main-thread execution. Binaryen's shared-memory
+  instrumentation modes (`--in-memory`, `--in-secondary-memory`) emit invalid
+  code for Memory64 (i32 addressing), so they're not usable here — hence the
+  st-hot-names transfer plus the thread-runtime safety keep-list.
+- **Parked workers**: idle ClickHouse pool threads sit in `Atomics.wait`; their
+  workers never service `postMessage`, so per-worker collection mostly times
+  out on mt. Harmless (5s timeout each), but it's why `--extra-hot` exists.
+- **pthread instantiation**: the split primary's placeholder imports are read
+  during `new WebAssembly.Instance` in each worker, where the stock glue never
+  set `wasmBinaryFile` — without the `--lazy-load` patch the pool hangs at
+  startup.
+- **Names**: `-sSPLIT_MODULE` keeps the name section in `chdb.wasm.orig`
+  (needed for keep-funcs matching); wasm-split strips it from both outputs by
+  default. Export names are minified, so reach `malloc` via `Module._malloc`,
+  not `wasmExports.malloc`; binaryen-added `__write_profile` is unminified and
+  raw (BigInt i64 pointer arg, Number i32 length).
+- **print-profile output exceeds V8's string limit** (~140k functions with huge
+  mangled names) — always stream it.
+- The corpus runner must never host HTTP fixtures in-process: queries block the
+  main thread synchronously while the wasm HTTP bridge waits on a child
+  process fetch, deadlocking any same-process server.

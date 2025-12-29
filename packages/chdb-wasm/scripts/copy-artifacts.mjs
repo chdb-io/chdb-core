@@ -27,7 +27,18 @@ function copyBundle(buildDir, destDir, { required }) {
     return;
   }
   mkdirSync(destDir, { recursive: true });
-  for (const f of ['chdb.mjs', 'chdb.wasm']) {
+  // A dir containing chdb.wasm.orig is a -DWASM_SPLIT_MODULE=ON CMake build
+  // tree, where chdb.wasm is the profiling-INSTRUMENTED module — never ship
+  // that. Run tools/split/split-wasm.mjs and pass its --out dir here instead
+  // (it holds the split primary + chdb.deferred.wasm + patched glue).
+  if (existsSync(join(buildDir, 'chdb.wasm.orig'))) {
+    console.error(`${buildDir} is a WASM_SPLIT_MODULE build tree (chdb.wasm there is instrumented);`);
+    console.error('run tools/split/split-wasm.mjs and point copy-artifacts at its --out dir.');
+    process.exit(1);
+  }
+  const files = ['chdb.mjs', 'chdb.wasm'];
+  if (existsSync(join(buildDir, 'chdb.deferred.wasm'))) files.push('chdb.deferred.wasm');
+  for (const f of files) {
     copyFileSync(join(buildDir, f), join(destDir, f));
     console.log(`copied ${f} -> ${destDir.replace(pkgDir + '/', '')}/`);
   }
