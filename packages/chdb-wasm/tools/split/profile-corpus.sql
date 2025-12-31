@@ -396,7 +396,9 @@ SELECT number FROM numbers(3) FORMAT SQLInsert;
 SELECT number FROM numbers(3) FORMAT XML;
 SELECT number FROM numbers(3) FORMAT RowBinary;
 SELECT number FROM numbers(3) FORMAT Parquet;
-SELECT number FROM numbers(3) FORMAT Arrow;
+-- mt-only: on st the parallel Arrow output format fails thread creation (clean
+-- error on the plain build, but a busy-spin hang on the instrumented one).
+SELECT number FROM numbers(3) FORMAT Arrow /*mt-only*/;
 SELECT number FROM numbers(3) FORMAT Native;
 SELECT number FROM numbers(1000) FORMAT Null;
 

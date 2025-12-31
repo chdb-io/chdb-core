@@ -110,6 +110,9 @@ const cleanup = () => {
   if (moto) moto.kill('SIGKILL');
 };
 process.on('exit', cleanup);
+// 'exit' doesn't fire on signals; without these a killed runner orphans moto
+// and fixture-host, and the next run fails on EADDRINUSE.
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { cleanup(); process.exit(143); });
 
 // --- load the instrumented module --------------------------------------------
 const factory = (await import(pathToFileURL(join(bundleDir, 'chdb.mjs')).href)).default;

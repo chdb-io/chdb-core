@@ -110,7 +110,7 @@ const keepFile = join(outDir, 'keep-funcs.txt');
 const keepStream = createWriteStream(keepFile);
 {
   console.log(`$ ${wasmSplit} --print-profile=${merged} ${orig}  (streamed)`);
-  const p = spawn(wasmSplit, [`--print-profile=${merged}`, orig], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const p = spawn(wasmSplit, [`--print-profile=${merged}`, orig, '--all-features'], { stdio: ['ignore', 'pipe', 'inherit'] });
   const rl = createInterface({ input: p.stdout, crlfDelay: Infinity });
   for await (const line of rl) {
     if (line.startsWith('+ ')) {
