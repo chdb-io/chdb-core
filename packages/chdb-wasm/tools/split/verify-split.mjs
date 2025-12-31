@@ -13,8 +13,9 @@
 // Usage: verify-split.mjs <dir with chdb.mjs + chdb.wasm + chdb.deferred.wasm>
 
 import { spawnSync } from 'node:child_process';
-import { renameSync, existsSync } from 'node:fs';
+import { renameSync, existsSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const dir = process.argv[2];
@@ -37,7 +38,9 @@ const probe = (label, sql, expectOk) => {
     await db.close();
     process.exit(0);
   `;
-  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 300000 });
+  const scriptFile = join(mkdtempSync(join(tmpdir(), 'chdb-verify-')), 'probe.mjs');
+  writeFileSync(scriptFile, script);
+  const r = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 300000 });
   const ok = r.status === 0;
   if (ok !== expectOk) {
     console.error(`FAIL ${label}: expected ${expectOk ? 'success' : 'failure'}, got ${ok ? 'success' : `failure (${(r.stderr || '').split('\n').filter((l) => /Error|error/.test(l))[0] || r.status})`}`);

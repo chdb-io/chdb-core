@@ -58,6 +58,16 @@ if (!existsSync(orig)) {
   process.exit(2);
 }
 
+// The .orig carries no usable target_features section, so binaryen needs the
+// build's feature set spelled out. NOT --all-features: that lets the writer
+// use experimental encodings (e.g. shared-everything) that V8 rejects with
+// "unknown import kind".
+const FEATURES = [
+  '--enable-mutable-globals', '--enable-sign-ext', '--enable-nontrapping-float-to-int',
+  '--enable-bulk-memory', '--enable-memory64', '--enable-exception-handling',
+  '--enable-reference-types', '--enable-multivalue', '--enable-threads',
+];
+
 const run = (cmd, args) => {
   console.log(`$ ${cmd} ${args.join(' ')}`);
   const r = spawnSync(cmd, args, { stdio: 'inherit' });
@@ -110,7 +120,7 @@ const keepFile = join(outDir, 'keep-funcs.txt');
 const keepStream = createWriteStream(keepFile);
 {
   console.log(`$ ${wasmSplit} --print-profile=${merged} ${orig}  (streamed)`);
-  const p = spawn(wasmSplit, [`--print-profile=${merged}`, orig, '--all-features'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const p = spawn(wasmSplit, [`--print-profile=${merged}`, orig, ...FEATURES], { stdio: ['ignore', 'pipe', 'inherit'] });
   const rl = createInterface({ input: p.stdout, crlfDelay: Infinity });
   for await (const line of rl) {
     if (line.startsWith('+ ')) {
@@ -135,7 +145,7 @@ run(wasmSplit, [
   '--export-prefix=%', orig,
   '-o1', primary, '-o2', deferred,
   `--profile=${merged}`, `--keep-funcs=@${keepFile}`,
-  '--all-features',
+  ...FEATURES,
 ]);
 
 // --- 6. install glue ----------------------------------------------------------------
