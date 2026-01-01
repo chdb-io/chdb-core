@@ -89,6 +89,11 @@ if (WASM_SPLIT_MODULE)
         # SPLIT_MODULE is marked experimental; the warning would otherwise fail
         # the link under -Werror-style CI settings.
         -Wno-experimental
+        # Keep the wasm name section: the split pipeline matches functions BY
+        # NAME (keep-lists, transferring the st bundle's hot set onto the mt
+        # split). Only chdb.wasm.orig / the instrumented module carry it —
+        # wasm-split strips names from the shipped primary/deferred outputs.
+        --profiling-funcs
         )
 endif ()
 

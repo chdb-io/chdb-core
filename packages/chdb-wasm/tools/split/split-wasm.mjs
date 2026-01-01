@@ -115,7 +115,7 @@ const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split
 const emitHotFile = opt('emit-hot-names');
 const emitHot = emitHotFile ? createWriteStream(emitHotFile) : null;
 
-let hot = 0, cold = 0, keptSafety = 0, keptExtra = 0;
+let hot = 0, cold = 0, keptSafety = 0, keptExtra = 0, numericNames = 0;
 const keepFile = join(outDir, 'keep-funcs.txt');
 const keepStream = createWriteStream(keepFile);
 {
@@ -125,10 +125,12 @@ const keepStream = createWriteStream(keepFile);
   for await (const line of rl) {
     if (line.startsWith('+ ')) {
       hot++;
+      if (/^\d+$/.test(line.slice(2))) numericNames++;
       emitHot?.write(line.slice(2) + '\n');
     } else if (line.startsWith('- ')) {
       const name = line.slice(2);
       cold++;
+      if (/^\d+$/.test(name)) numericNames++;
       if (SAFETY.test(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
@@ -136,6 +138,11 @@ const keepStream = createWriteStream(keepFile);
   await new Promise((res, rej) => p.on('exit', (c) => (c === 0 ? res() : rej(new Error(`print-profile exited with ${c}`)))));
   await Promise.all([keepStream, emitHot].filter(Boolean).map((s) => new Promise((r) => s.end(r))));
 }
+// Without a name section print-profile emits bare function INDICES; the
+// keep-lists and the st->mt hot-set transfer silently degrade to noise
+// (indices from different links never correspond). Guard against it.
+if (numericNames > (hot + cold) * 0.9)
+  throw new Error('profile names are bare indices — the build lost its name section; link with WASM_SPLIT_MODULE=ON (adds --profiling-funcs)');
 console.log(`profile: ${hot} hot / ${cold} cold; force-keeping ${keptSafety} thread-runtime + ${keptExtra} extra-hot functions`);
 
 // --- 5. split ---------------------------------------------------------------------

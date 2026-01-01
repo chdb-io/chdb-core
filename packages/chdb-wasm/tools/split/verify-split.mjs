@@ -43,12 +43,16 @@ const probe = (label, sql, expectOk) => {
   const r = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 300000 });
   const ok = r.status === 0;
   if (ok !== expectOk) {
+    // No process.exit here: it would skip the caller's finally and leave
+    // chdb.deferred.wasm renamed away.
     console.error(`FAIL ${label}: expected ${expectOk ? 'success' : 'failure'}, got ${ok ? 'success' : `failure (${(r.stderr || '').split('\n').filter((l) => /Error|error/.test(l))[0] || r.status})`}`);
     if (ok) console.error(`  output: ${r.stdout.trim().slice(0, 200)}`);
-    process.exit(1);
+    failed = true;
+    return;
   }
   console.log(`ok: ${label}${ok ? ` -> ${r.stdout.trim().split('\n').pop().slice(0, 80)}` : ' (failed as expected)'}`);
 };
+let failed = false;
 
 probe('hot query on split bundle', HOT_SQL, true);
 probe('cold query lazy-loads deferred module', COLD_SQL, true);
@@ -61,4 +65,5 @@ try {
 } finally {
   renameSync(deferred + '.hidden', deferred);
 }
+if (failed) process.exit(1);
 console.log('verify-split: PASS');
