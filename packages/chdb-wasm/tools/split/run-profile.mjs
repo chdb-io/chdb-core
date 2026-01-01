@@ -133,11 +133,29 @@ mod.FS.writeFile('/corpus/people.jsonl', PEOPLE_JSONL);
 const conn = mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
 if (!num(conn)) throw new Error('chdb_wasm_connect failed');
 
+// The SDK calls these during init (worker.ts shares the cancel/progress
+// offsets with the page) — they must be hot or a split bundle can't even
+// initialize without the deferred module.
+mod.ccall('chdb_wasm_cancel_flag_addr', 'number', [], []);
+mod.ccall('chdb_wasm_progress_addr', 'number', [], []);
+
+// Consume results the way src/bindings.ts does — buffer/length/stats getters
+// are on every user's path and must land in the primary module.
 function runStatement(sql, format = 'CSV') {
   const r = mod.ccall('chdb_wasm_query_conn', 'number', ['number', 'string', 'string'], [conn, sql, format]);
   if (!num(r)) return 'null result';
   const errPtr = num(mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]));
   const err = errPtr ? mod.UTF8ToString(errPtr) : null;
+  if (!err) {
+    const buf = num(mod.ccall('chdb_wasm_result_buffer', 'number', ['number'], [r]));
+    const len = num(mod.ccall('chdb_wasm_result_length', 'number', ['number'], [r]));
+    if (buf && len) mod.HEAPU8[buf]; // touch the data
+    mod.ccall('chdb_wasm_result_elapsed', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_rows_read', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_bytes_read', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_scanned_rows', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_scanned_bytes', 'number', ['number'], [r]);
+  }
   mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
   return err;
 }
@@ -173,6 +191,21 @@ for (let sql of statements) {
   }
 }
 console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+
+// --- connectionless query API (AsyncChdb.query goes through chdb_wasm_query) -----
+for (const [sql, fmt] of [
+  ['SELECT number, toString(number) FROM numbers(100)', 'CSV'],
+  ['SELECT 1 AS one FORMAT JSON', 'CSV'],
+  ['SELECT broken syntax here', 'CSV'],
+]) {
+  const r = mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, fmt]);
+  if (num(r)) {
+    mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_buffer', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_result_length', 'number', ['number'], [r]);
+    mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
+  }
+}
 
 // --- streaming C-API surface ----------------------------------------------------
 {

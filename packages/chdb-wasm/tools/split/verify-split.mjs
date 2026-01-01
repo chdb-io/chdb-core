@@ -34,8 +34,8 @@ const probe = (label, sql, expectOk) => {
     import { AsyncChdb } from ${JSON.stringify(join(pkgDir, 'dist/index.js'))};
     const db = await AsyncChdb.create({ moduleUrl: ${JSON.stringify(join(dir, 'chdb.mjs'))} });
     const r = await db.query(${JSON.stringify(sql)}, 'CSV');
-    console.log(r.data.trim());
-    await db.close();
+    console.log(r.text().trim());
+    await db.terminate();
     process.exit(0);
   `;
   const scriptFile = join(mkdtempSync(join(tmpdir(), 'chdb-verify-')), 'probe.mjs');

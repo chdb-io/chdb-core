@@ -55,7 +55,21 @@ if (doLazy) {
     // Both branches of the proxy (old `placeholder` and new `placeholder.N`
     // module-name formats) compute the secondary file name this way.
     replaceCounted('lazy-load', 'wasmBinaryFile.slice(0,-5)', '(wasmBinaryFile??=findWasmBinary()).slice(0,-5)', 2);
-    console.log('lazy-load: patched (2 sites)');
+
+    // binaryen's wasm-split puts placeholders in a SECOND table (the import
+    // name is a sequential ordinal into it), and the secondary module's elem
+    // repairs THAT table — but the glue trampoline re-dispatches through the
+    // MAIN function table (wasmTable), reaching an unrelated function. Pick
+    // the placeholder table out of the raw exports (the split step exports it
+    // via --export-prefix); it is 32-bit even when the main table is table64,
+    // so index with whichever type its length reports.
+    replaceCounted(
+      'lazy-load(redispatch)',
+      'return wasmTable.get(BigInt(base))(...args)}',
+      'var pt__=Object.values(wasmRawExports).find((v)=>v instanceof WebAssembly.Table&&v!==wasmTable)||wasmTable;'
+        + 'return pt__.get(typeof pt__.length==="bigint"?BigInt(base):Number(base))(...args)}',
+      1);
+    console.log('lazy-load: patched (2 sites + placeholder-table redispatch)');
   }
 }
 
