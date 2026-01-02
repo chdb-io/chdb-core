@@ -114,7 +114,11 @@ run(wasmSplit, ['--merge-profiles', ...profiles, '-o', merged]);
 //     as the existence check (wasm-split ignores names, it can't match).
 // print-profile output exceeds V8's string limit (~140k functions with huge
 // mangled names), so it is streamed line by line.
-const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_emscripten_thread_|_emscripten_tls_|__wasm_init_tls|_emscripten_check_mailbox|emscripten_proxy_|em_proxying_|do_proxy|_emscripten_yield|emscripten_exit_with_live_runtime|__cxa_thread_|thrd_|call_once|__wait|__timedwait|__private_cond_signal|init_mparams)/;
+// emscripten_stack_* runs at every pthread's entry (stack-bounds setup) — it
+// executes ONLY on worker instances (invisible to the main profile) and does
+// not exist in the st build, so no profile can ever see it. Same class of
+// blind spot for the rest of the thread-entry runtime here.
+const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack_|emscripten_wasm_worker_|_emscripten_thread_|_emscripten_tls_|__wasm_init_tls|_emscripten_check_mailbox|emscripten_proxy_|em_proxying_|do_proxy|_emscripten_yield|emscripten_exit_with_live_runtime|__cxa_thread_|thrd_|call_once|__wait|__timedwait|__private_cond_signal|init_mparams)/;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
 const emitHotFile = opt('emit-hot-names');
