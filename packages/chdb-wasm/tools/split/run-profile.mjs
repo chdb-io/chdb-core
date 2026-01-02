@@ -34,6 +34,15 @@ mkdirSync(outDir, { recursive: true });
 const PY = process.env.ICEBERG_PY || '/tmp/iceberg-venv/bin/python';
 const S3_PORT = 8151, CATALOG_PORT = 8152, UNITY_PORT = 8153, HTTP_PORT = 8154;
 
+// CHDB_INIT_PROBE=global: a light second pass whose FIRST engine call is the
+// connectionless chdb_wasm_query — its cold-start of the process-global
+// connection takes a different init path than chdb_wasm_connect, and whichever
+// runs first in a process claims the one cold start. The main corpus pass
+// starts with connect(), so this pass covers the other order (the SDK's
+// AsyncChdb.query without an explicit Connection). No fixtures, no corpus.
+const INIT_PROBE = process.env.CHDB_INIT_PROBE === 'global';
+const PROFILE_PREFIX = process.env.CHDB_PROFILE_PREFIX || 'profile';
+
 const num = (x) => (typeof x === 'bigint' ? Number(x) : x);
 // Memory64: binaryen-added exports (__write_profile) keep raw i64 -> BigInt
 // pointer params while emscripten-known exports are signature-converted to
@@ -89,21 +98,23 @@ async function startLake() {
   return true;
 }
 
-const lake = await startLake();
-const hostArgs = ['--http-port', String(HTTP_PORT), '--static-dir', staticDir];
-if (lake) {
-  hostArgs.push(
-    '--catalog-port', String(CATALOG_PORT), '--iceberg-descriptor', join(staticDir, 'iceberg-descriptor.json'),
-    '--unity-port', String(UNITY_PORT), '--unity-descriptor', join(staticDir, 'unity-descriptor.json'));
+const lake = INIT_PROBE ? false : await startLake();
+if (!INIT_PROBE) {
+  const hostArgs = ['--http-port', String(HTTP_PORT), '--static-dir', staticDir];
+  if (lake) {
+    hostArgs.push(
+      '--catalog-port', String(CATALOG_PORT), '--iceberg-descriptor', join(staticDir, 'iceberg-descriptor.json'),
+      '--unity-port', String(UNITY_PORT), '--unity-descriptor', join(staticDir, 'unity-descriptor.json'));
+  }
+  const host = spawn(process.execPath, [join(here, 'fixture-host.mjs'), ...hostArgs], { stdio: ['ignore', 'pipe', 'inherit'] });
+  children.push(host);
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('fixture-host did not become ready')), 15000);
+    host.stdout.on('data', (d) => { if (String(d).includes('READY')) { clearTimeout(t); resolve(); } });
+    host.on('exit', (c) => reject(new Error(`fixture-host exited early (${c})`)));
+  });
+  console.log(`fixtures ready (lake: ${lake ? 'on' : 'OFF — data-lake statements will be skipped'})`);
 }
-const host = spawn(process.execPath, [join(here, 'fixture-host.mjs'), ...hostArgs], { stdio: ['ignore', 'pipe', 'inherit'] });
-children.push(host);
-await new Promise((resolve, reject) => {
-  const t = setTimeout(() => reject(new Error('fixture-host did not become ready')), 15000);
-  host.stdout.on('data', (d) => { if (String(d).includes('READY')) { clearTimeout(t); resolve(); } });
-  host.on('exit', (c) => reject(new Error(`fixture-host exited early (${c})`)));
-});
-console.log(`fixtures ready (lake: ${lake ? 'on' : 'OFF — data-lake statements will be skipped'})`);
 
 const cleanup = () => {
   for (const c of children) c.kill('SIGKILL');
@@ -127,17 +138,42 @@ mod.FS.writeFile('/corpus/people_names.csv', PEOPLE_NAMES_CSV);
 mod.FS.writeFile('/corpus/people.tsv', PEOPLE_TSV);
 mod.FS.writeFile('/corpus/people.jsonl', PEOPLE_JSONL);
 
-// Handles (conn, result, stream pointers) are BigInt on Memory64 and must be
-// passed back into ccall UNconverted (the raw exports take i64); num() is only
-// for heap offsets consumed from JS. Mirrors src/bindings.ts.
-const conn = mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
-if (!num(conn)) throw new Error('chdb_wasm_connect failed');
-
 // The SDK calls these during init (worker.ts shares the cancel/progress
 // offsets with the page) — they must be hot or a split bundle can't even
 // initialize without the deferred module.
 mod.ccall('chdb_wasm_cancel_flag_addr', 'number', [], []);
 mod.ccall('chdb_wasm_progress_addr', 'number', [], []);
+
+// Connectionless queries: AsyncChdb.query goes through chdb_wasm_query, whose
+// FIRST call cold-starts the process-global connection.
+function globalQueries() {
+  for (const [sql, fmt] of [
+    ['SELECT number, toString(number) FROM numbers(100)', 'CSV'],
+    ['SELECT 1 AS one FORMAT JSON', 'CSV'],
+    ['SELECT broken syntax here', 'CSV'],
+  ]) {
+    const r = mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, fmt]);
+    if (num(r)) {
+      mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]);
+      mod.ccall('chdb_wasm_result_buffer', 'number', ['number'], [r]);
+      mod.ccall('chdb_wasm_result_length', 'number', ['number'], [r]);
+      mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
+    }
+  }
+}
+
+// The init-probe pass makes the GLOBAL connection the process's cold start;
+// the main pass gives that honor to chdb_wasm_connect below.
+if (INIT_PROBE) {
+  globalQueries();
+  console.log('init-probe: global-connection cold start exercised');
+}
+
+// Handles (conn, result, stream pointers) are BigInt on Memory64 and must be
+// passed back into ccall UNconverted (the raw exports take i64); num() is only
+// for heap offsets consumed from JS. Mirrors src/bindings.ts.
+const conn = INIT_PROBE ? null : mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
+if (!INIT_PROBE && !num(conn)) throw new Error('chdb_wasm_connect failed');
 
 // Consume results the way src/bindings.ts does — buffer/length/stats getters
 // are on every user's path and must land in the primary module.
@@ -174,7 +210,7 @@ let ok = 0, skipped = 0;
 const failures = [];
 const t0 = Date.now();
 const isMt = !!mod.PThread;
-for (let sql of statements) {
+if (!INIT_PROBE) for (let sql of statements) {
   for (const [k, v] of Object.entries(substitutions)) sql = sql.replaceAll(k, v);
   if (/\{[A-Z0-9]+\}/.test(sql)) { skipped++; continue; }
   if (!isMt && sql.includes('/*mt-only*/')) { skipped++; continue; }
@@ -190,25 +226,12 @@ for (let sql of statements) {
     throw e;
   }
 }
-console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+if (!INIT_PROBE) console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-// --- connectionless query API (AsyncChdb.query goes through chdb_wasm_query) -----
-for (const [sql, fmt] of [
-  ['SELECT number, toString(number) FROM numbers(100)', 'CSV'],
-  ['SELECT 1 AS one FORMAT JSON', 'CSV'],
-  ['SELECT broken syntax here', 'CSV'],
-]) {
-  const r = mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, fmt]);
-  if (num(r)) {
-    mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]);
-    mod.ccall('chdb_wasm_result_buffer', 'number', ['number'], [r]);
-    mod.ccall('chdb_wasm_result_length', 'number', ['number'], [r]);
-    mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
-  }
-}
+if (!INIT_PROBE) globalQueries();
 
 // --- streaming C-API surface ----------------------------------------------------
-{
+if (!INIT_PROBE) {
   const s = mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number, toString(number) FROM numbers(100000)', 'CSV']);
   let chunks = 0;
   for (;;) {
@@ -229,7 +252,7 @@ for (const [sql, fmt] of [
 // Close the session before collecting: exercises shutdown paths and lets
 // query/background threads exit, so their pool workers return to the idle
 // (message-processing) state where they can answer chdbWriteProfile.
-mod.ccall('chdb_wasm_close_conn', null, ['number'], [conn]);
+if (!INIT_PROBE) mod.ccall('chdb_wasm_close_conn', null, ['number'], [conn]);
 
 // --- profile collection ---------------------------------------------------------
 const wp = mod.wasmExports?.__write_profile;
@@ -268,11 +291,13 @@ if (PThread) {
   console.log(`profile workers: ${collected} collected, ${timedOut} unresponsive of ${workers.length}`);
 }
 
-profiles.forEach((p, i) => writeFileSync(join(outDir, `profile-${i}.data`), p));
-writeFileSync(join(outDir, 'summary.json'), JSON.stringify({
-  statements: statements.length, ok, failed: failures.length, skipped, lake, profiles: profiles.length, failures,
-}, null, 2));
-console.log(`wrote ${profiles.length} profiles + summary.json to ${outDir}`);
+profiles.forEach((p, i) => writeFileSync(join(outDir, `${PROFILE_PREFIX}-${i}.data`), p));
+if (!INIT_PROBE) {
+  writeFileSync(join(outDir, 'summary.json'), JSON.stringify({
+    statements: statements.length, ok, failed: failures.length, skipped, lake, profiles: profiles.length, failures,
+  }, null, 2));
+}
+console.log(`wrote ${profiles.length} ${PROFILE_PREFIX}-*.data profiles to ${outDir}`);
 
 cleanup();
 process.exit(0);

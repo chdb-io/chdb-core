@@ -83,13 +83,18 @@ copyFileSync(join(buildDir, 'chdb.wasm'), join(staging, 'chdb.wasm'));
 copyFileSync(join(buildDir, 'chdb.mjs'), join(staging, 'chdb.mjs'));
 run(process.execPath, [join(here, 'patch-glue.mjs'), join(staging, 'chdb.mjs'), '--lazy-load', '--profile-collect']);
 
-// --- 2. profiling run -----------------------------------------------------------
+// --- 2. profiling runs ------------------------------------------------------------
+// Two passes, because a process has exactly ONE engine cold start and the SDK
+// reaches it two ways: the main corpus pass boots via chdb_wasm_connect, the
+// light init-probe pass boots via connectionless chdb_wasm_query.
 if (!argv.includes('--skip-profile-run')) {
-  const r = spawnSync(process.execPath, [join(here, 'run-profile.mjs')], {
-    stdio: 'inherit',
-    env: { ...process.env, CHDB_BUNDLE_DIR: staging, CHDB_PROFILE_OUT: profilesDir },
-  });
-  if (r.status !== 0) throw new Error(`run-profile.mjs exited with ${r.status}`);
+  for (const extraEnv of [{}, { CHDB_INIT_PROBE: 'global', CHDB_PROFILE_PREFIX: 'initprobe' }]) {
+    const r = spawnSync(process.execPath, [join(here, 'run-profile.mjs')], {
+      stdio: 'inherit',
+      env: { ...process.env, CHDB_BUNDLE_DIR: staging, CHDB_PROFILE_OUT: profilesDir, ...extraEnv },
+    });
+    if (r.status !== 0) throw new Error(`run-profile.mjs exited with ${r.status}`);
+  }
 }
 const profiles = readdirSync(profilesDir).filter((f) => f.endsWith('.data')).map((f) => join(profilesDir, f));
 if (!profiles.length) throw new Error(`no profiles in ${profilesDir}`);
