@@ -50,6 +50,9 @@ if (USE_PYTHON)
         PybindWrapper.cpp
         PythonConversion.cpp
         PythonDict.cpp
+        ChdbPyType.cpp
+        PythonScalarUDF.cpp
+        PythonUDFRegistry.cpp
         PythonReader.cpp
         PythonTableCache.cpp
         PythonImportCache.cpp

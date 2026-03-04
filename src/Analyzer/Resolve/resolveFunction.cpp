@@ -35,6 +35,7 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
+#include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Functions/grouping.h>
 #include <Storages/StorageJoin.h>
 
@@ -1185,6 +1186,12 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     FunctionOverloadResolverPtr function = UserDefinedExecutableFunctionFactory::instance().tryGet(function_name, scope.context, parameters); /// NOLINT(readability-static-accessed-through-instance)
     bool is_executable_udf = true;
 
+    if (!function)
+    {
+        function = CHDB::PythonUDFFactory::instance().tryGetFunction(function_name);
+        is_executable_udf = false;
+    }
+
     ResolvedFunctionsCache * function_cache = nullptr;
 
     if (!function)
@@ -1221,6 +1228,9 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
 
             auto function_names = UserDefinedExecutableFunctionFactory::instance().getRegisteredNames(scope.context); /// NOLINT(readability-static-accessed-through-instance)
             possible_function_names.insert(possible_function_names.end(), function_names.begin(), function_names.end());
+
+            auto python_udf_names = CHDB::PythonUDFFactory::instance().getRegisteredNames();
+            possible_function_names.insert(possible_function_names.end(), python_udf_names.begin(), python_udf_names.end());
 
             function_names = UserDefinedSQLFunctionFactory::instance().getAllRegisteredNames();
             possible_function_names.insert(possible_function_names.end(), function_names.begin(), function_names.end());

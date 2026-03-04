@@ -56,5 +56,18 @@ class TestUDFinSession(unittest.TestCase):
             ret = session.sql("select sum_udf2(11, 22)", "CSV")
             self.assertEqual(str(ret), '"33"\n')
 
+class TestCreateFunction(unittest.TestCase):
+    def test_create_function_int_add(self):
+        from chdb.sqltypes import INT64
+
+        def int_add(a, b):
+            return a + b
+
+        with Session() as session:
+            session.create_function("int_add", int_add, INT64)
+            ret = session.query("SELECT int_add(6, 7) + 1")
+            self.assertEqual(str(ret), "14\n")
+
+
 if __name__ == "__main__":
     unittest.main()

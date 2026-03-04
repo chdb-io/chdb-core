@@ -3,8 +3,10 @@
 #include "PandasDataFrameBuilder.h"
 #include "ChunkCollectorOutputFormat.h"
 #include "PythonImporter.h"
+#include "ChdbPyType.h"
+#include "PythonUDFRegistry.h"
 #include "StoragePython.h"
-#include <ChdbClient.h>
+#include "ChdbClient.h"
 
 #include <pybind11/detail/non_limited_api.h>
 #include <pybind11/pybind11.h>
@@ -507,6 +509,21 @@ std::string connection_wrapper::generate_sql(const std::string & prompt)
 #endif
 }
 
+void connection_wrapper::create_function(
+    const std::string & name,
+    const py::function & func,
+    const std::shared_ptr<CHDB::ChdbPyType> & return_type)
+{
+    try
+    {
+        CHDB::registerPythonUDF(name, func, return_type->dataType());
+    }
+    catch (const DB::Exception & e)
+    {
+        throw std::runtime_error("Failed to create function '" + name + "': " + e.message());
+    }
+}
+
 streaming_query_result * connection_wrapper::send_query(const std::string & query_str, const std::string & format, const py::dict & params)
 {
     const auto parsed_params = parseParametersDict(params);
@@ -867,7 +884,25 @@ PYBIND11_MODULE(_chdb, m)
             "streaming_cancel_query",
             &connection_wrapper::streaming_cancel_query,
             py::arg("streaming_result"),
-            "Cancel a streaming query");
+            "Cancel a streaming query")
+        .def(
+            "create_function",
+            &connection_wrapper::create_function,
+            py::arg("name"),
+            py::arg("func"),
+            py::arg("return_type"),
+            "Create a Python scalar UDF bound to this connection.\n\n"
+            "Args:\n"
+            "    name (str): Function name to use in SQL queries.\n"
+            "    func (callable): Python function to call for each row.\n"
+            "    return_type: Return type (ChdbType).\n"
+            "Example:\n"
+            "    from chdb.sqltypes import INT64\n"
+            "    conn.create_function('add_int', lambda a, b: a + b, INT64)\n"
+            "    result = conn.query('SELECT add_int(1, 2)')");
+
+    CHDB::ChdbPyType::initialize(m);
+    CHDB::PythonUDFRegistry::instance();
 
     m.def(
         "query",
@@ -882,6 +917,7 @@ PYBIND11_MODULE(_chdb, m)
 
     auto destroy_import_cache = []()
     {
+        CHDB::PythonUDFRegistry::instance().clear();
         CHDB::PythonImporter::destroy();
     };
     m.add_object("_destroy_import_cache", py::capsule(destroy_import_cache));
