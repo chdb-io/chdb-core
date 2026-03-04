@@ -5,7 +5,7 @@ Type constants are defined in C++ and exposed via pybind11
 in the ``_chdb._sqltypes`` submodule.
 """
 
-from _chdb._sqltypes import (  # noqa: F401
+from ._chdb._sqltypes import (  # noqa: F401
     ChdbType,
     BOOL,
     INT8,

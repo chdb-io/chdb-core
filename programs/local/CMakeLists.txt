@@ -40,6 +40,7 @@ if (USE_PYTHON)
         NumpyNestedTypes.cpp
         NumpyType.cpp
         ObjectToPython.cpp
+        PyDateTimeHelper.cpp
         PandasAnalyzer.cpp
         PandasDataFrame.cpp
         PandasDataFrameBuilder.cpp

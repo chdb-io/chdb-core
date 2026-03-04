@@ -7,6 +7,7 @@
 #include "PythonUDFRegistry.h"
 #include "StoragePython.h"
 #include "ChdbClient.h"
+#include "PyDateTimeHelper.h"
 
 #include <pybind11/detail/non_limited_api.h>
 #include <pybind11/pybind11.h>
@@ -903,6 +904,7 @@ PYBIND11_MODULE(_chdb, m)
 
     CHDB::ChdbPyType::initialize(m);
     CHDB::PythonUDFRegistry::instance();
+    CHDB::PyDateTimeHelper::initialize();
 
     m.def(
         "query",

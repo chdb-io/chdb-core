@@ -38,16 +38,6 @@ class ChdbError(Exception):
     """
 
 
-from .sqltypes import (  # noqa: F401  — re-exported for convenience
-    ChdbType,
-    BOOL,
-    INT8, INT16, INT32, INT64, INT128, INT256,
-    UINT8, UINT16, UINT32, UINT64, UINT128, UINT256,
-    FLOAT32, FLOAT64,
-    STRING,
-    DATE, DATE32, DATETIME, DATETIME64,
-)
-
 _arrow_format = set({"arrowtable"})
 _process_result_format_funs = {
     "arrowtable": lambda x: to_arrowTable(x),

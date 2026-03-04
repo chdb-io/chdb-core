@@ -23,7 +23,7 @@ ChdbPyType::ChdbPyType(const String & type_name)
 
 static void defineBaseTypes(py::module_ & m)
 {
-    m.attr("BOOL") = std::make_shared<ChdbPyType>(DataTypeFactory::instance().get("Bool"));
+    m.attr("BOOL") = std::make_shared<ChdbPyType>(DB::DataTypeFactory::instance().get("Bool"));
 
     m.attr("INT8") = std::make_shared<ChdbPyType>(std::make_shared<DB::DataTypeInt8>());
     m.attr("INT16") = std::make_shared<ChdbPyType>(std::make_shared<DB::DataTypeInt16>());
