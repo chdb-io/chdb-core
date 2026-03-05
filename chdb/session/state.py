@@ -222,29 +222,6 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
             raise RuntimeError("Session is closed.")
         return self._conn.ask(prompt, **kwargs)
 
-    def create_function(self, name, func, return_type):
-        """Create a Python scalar UDF that can be called from SQL queries.
-
-        Registers a Python function so it can be invoked by name inside SQL
-        statements executed on this session.
-
-        Args:
-            name (str): Function name to use in SQL queries.
-            func (callable): Python function to call for each row.
-            return_type: Return type as a :class:`~chdb.sqltypes.ChdbType`.
-        Raises:
-            RuntimeError: If the session is closed.
-
-        Examples:
-            >>> from chdb.sqltypes import INT64
-            >>> session = Session()
-            >>> session.create_function("add", lambda a, b: a + b, INT64)
-            >>> result = session.query("SELECT add(1, 2)")
-        """
-        if self._conn is None:
-            raise RuntimeError("Session is closed.")
-        self._conn.create_function(name, func, return_type)
-
     def send_query(self, sql, fmt="CSV", params=None) -> StreamingResult:
         """Execute a SQL query and return a streaming result iterator.
 

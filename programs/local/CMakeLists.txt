@@ -51,6 +51,7 @@ if (USE_PYTHON)
         PybindWrapper.cpp
         PythonConversion.cpp
         PythonDict.cpp
+        ChdbGlobalFunctions.cpp
         ChdbPyType.cpp
         PythonScalarUDF.cpp
         PythonUDFRegistry.cpp

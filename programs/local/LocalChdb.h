@@ -60,11 +60,6 @@ public:
     void streaming_cancel_query(streaming_query_result * streaming_result);
     std::string generate_sql(const std::string & prompt);
 
-    void create_function(
-        const std::string & name,
-        const py::function & func,
-        const std::shared_ptr<CHDB::ChdbPyType> & return_type);
-
     // Move the private methods declarations here
     std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
     std::vector<std::string> build_clickhouse_args(const std::string & path, const std::map<std::string, std::string> & params);

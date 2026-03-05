@@ -591,25 +591,6 @@ class Connection:
         generated_sql = self.generate_sql(prompt)
         return self.query(generated_sql, **kwargs)
 
-    def create_function(self, name, func, return_type):
-        """Create a Python scalar UDF that can be called from SQL queries.
-
-        Registers a Python function so it can be invoked by name inside SQL
-        statements executed on this connection.
-
-        Args:
-            name (str): Function name to use in SQL queries.
-            func (callable): Python function to call for each row.
-            return_type: Return type as a :class:`~chdb.sqltypes.ChdbType`.
-
-        Examples:
-            >>> from chdb.sqltypes import INT64
-            >>> conn = connect(":memory:")
-            >>> conn.create_function("add", lambda a, b: a + b, INT64)
-            >>> result = conn.query("SELECT add(1, 2)")
-        """
-        self._conn.create_function(name, func, return_type)
-
     def send_query(
         self, query: str, format: str = "CSV", params=None
     ) -> StreamingResult:

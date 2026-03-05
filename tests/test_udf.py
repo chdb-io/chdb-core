@@ -58,13 +58,15 @@ class TestUDFinSession(unittest.TestCase):
 
 class TestCreateFunction(unittest.TestCase):
     def test_create_function_int_add(self):
+        import chdb
         from chdb.sqltypes import INT64
 
         def int_add(a, b):
             return a + b
 
+        chdb.create_function("int_add", int_add, INT64)
+
         with Session() as session:
-            session.create_function("int_add", int_add, INT64)
             ret = session.query("SELECT int_add(6, 7) + 1")
             self.assertEqual(str(ret), "14\n")
 
