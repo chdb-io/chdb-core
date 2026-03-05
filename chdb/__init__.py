@@ -246,6 +246,7 @@ sql = query
 
 PyReader = _chdb.PyReader
 create_function = _chdb.create_function
+drop_function = _chdb.drop_function
 
 from . import dbapi, session, udf, utils  # noqa: E402
 from .state import connect  # noqa: E402
@@ -257,6 +258,7 @@ __all__ = [
     "query",
     "sql",
     "create_function",
+    "drop_function",
     "chdb_version",
     "engine_version",
     "to_df",

@@ -27,6 +27,8 @@ public:
 
     std::vector<String> getRegisteredNames() const override;
 
+    bool removeUDF(const String & name);
+
     void clear();
 
 private:
@@ -39,5 +41,7 @@ void registerPythonUDF(
     const String & name,
     py::function func,
     DB::DataTypePtr return_type);
+
+bool removePythonUDF(const String & name);
 
 } // namespace CHDB

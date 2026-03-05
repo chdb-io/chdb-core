@@ -62,6 +62,14 @@ std::vector<String> PythonUDFRegistry::getRegisteredNames() const
     return names;
 }
 
+bool PythonUDFRegistry::removeUDF(const String & name)
+{
+    py::gil_assert();
+
+    std::unique_lock lock(mutex_);
+    return udfs.erase(name) > 0;
+}
+
 void PythonUDFRegistry::clear()
 {
     py::gil_assert();
@@ -77,6 +85,11 @@ void registerPythonUDF(
 {
     PythonUDFRegistry::instance().registerUDF(
         name, std::move(func), std::move(return_type));
+}
+
+bool removePythonUDF(const String & name)
+{
+    return PythonUDFRegistry::instance().removeUDF(name);
 }
 
 } // namespace CHDB

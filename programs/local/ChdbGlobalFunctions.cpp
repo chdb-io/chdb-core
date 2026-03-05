@@ -26,6 +26,18 @@ void createFunction(
     }
 }
 
+void dropFunction(const std::string & name)
+{
+    try
+    {
+        removePythonUDF(name);
+    }
+    catch (const DB::Exception & e)
+    {
+        throw std::runtime_error("Failed to drop function '" + name + "': " + e.message());
+    }
+}
+
 } // anonymous namespace
 
 
@@ -46,6 +58,18 @@ void registerGlobalFunctions(py::module_ & m)
         "    import chdb\n"
         "    from chdb.sqltypes import INT64\n"
         "    chdb.create_function('add_int', lambda a, b: a + b, INT64)");
+
+    m.def(
+        "drop_function",
+        &dropFunction,
+        py::arg("name"),
+        "Remove a previously registered Python scalar UDF.\n\n"
+        "Args:\n"
+        "    name (str): Name of the function to remove.\n"
+        "Raises:\n"
+        "    RuntimeError: If the function is not registered.\n"
+        "Example:\n"
+        "    chdb.drop_function('add_int')");
 }
 
 } // namespace CHDB
