@@ -72,7 +72,6 @@ void ChdbPyType::initialize(py::module_ & parent)
         .def_property_readonly("name", &ChdbPyType::name);
 
     /// py::implicitly_convertible<std::string, ChdbPyType>();
-    /// py::implicitly_convertible<py::type, ChdbPyType>();
 
     defineBaseTypes(m);
 }

@@ -11,14 +11,24 @@ namespace CHDB
 namespace
 {
 
+std::shared_ptr<ChdbPyType> toChdbPyType(const py::object & obj)
+{
+    if (py::isinstance<ChdbPyType>(obj))
+        return obj.cast<std::shared_ptr<ChdbPyType>>();
+    if (py::isinstance<py::str>(obj))
+        return std::make_shared<ChdbPyType>(obj.cast<std::string>());
+    throw std::runtime_error("return_type must be a ChdbType or a string, got " + std::string(py::str(obj.get_type())));
+}
+
 void createFunction(
     const std::string & name,
     const py::function & func,
-    const std::shared_ptr<ChdbPyType> & return_type)
+    const py::object & return_type)
 {
     try
     {
-        registerPythonUDF(name, func, return_type->dataType());
+        auto type = toChdbPyType(return_type);
+        registerPythonUDF(name, func, type->dataType());
     }
     catch (const DB::Exception & e)
     {
