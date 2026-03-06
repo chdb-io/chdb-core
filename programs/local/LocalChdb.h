@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chdb.h"
+#include "ChdbPyType.h"
 #include "PybindWrapper.h"
 #include "config.h"
 
