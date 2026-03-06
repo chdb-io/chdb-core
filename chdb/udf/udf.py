@@ -10,6 +10,50 @@ from xml.etree import ElementTree as ET
 import chdb
 
 
+def func(return_type):
+    """Decorator to register a Python function as a chDB SQL function.
+
+    Uses the native Python UDF mechanism (create_function) for direct
+    in-process invocation without subprocess overhead.
+
+    Args:
+        return_type: ClickHouse return type. Accepts either:
+            - A ChdbType instance: e.g. ``INT64``, ``STRING``, ``FLOAT64``
+            - A type string: e.g. ``"Int64"``, ``"String"``, ``"DateTime64(3)"``
+
+    Returns:
+        The original function, unchanged. It remains callable as normal Python
+        and is simultaneously available in SQL queries by its ``__name__``.
+
+    Examples:
+        .. code-block:: python
+
+            from chdb import func
+            from chdb.sqltypes import INT64, STRING
+
+            @func(INT64)
+            def add(a, b):
+                return a + b
+
+            @func("String")
+            def greet(name):
+                return f"Hello, {name}!"
+
+    To remove a registered function, use ``chdb.drop_function(name)``.
+    """
+
+    def decorator(fn):
+        chdb.create_function(fn.__name__, fn, return_type)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def generate_udf(func_name, args, return_type, udf_body):
     """Generate UDF configuration and executable script files.
 
