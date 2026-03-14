@@ -45,10 +45,12 @@ namespace CHDB
 extern "C"
 {
     extern chdb_state chdb_arrow_scan(chdb_connection, const char *, chdb_arrow_stream);
+    extern chdb_state chdb_query_arrow_stream(chdb_connection, const char *, chdb_arrow_stream);
 }
 
 [[maybe_unused]] void * force_link_arrow_functions[] = {
-    reinterpret_cast<void*>(chdb_arrow_scan)
+    reinterpret_cast<void*>(chdb_arrow_scan),
+    reinterpret_cast<void*>(chdb_query_arrow_stream)
 };
 #endif
 

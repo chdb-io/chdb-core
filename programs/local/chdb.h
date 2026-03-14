@@ -420,6 +420,32 @@ CHDB_EXPORT chdb_state chdb_arrow_array_scan(
  */
 CHDB_EXPORT chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name);
 
+/**
+ * Executes a query and exports the result as an ArrowArrayStream via the Arrow C Data Interface.
+ * The caller allocates an ArrowArrayStream on the stack, casts it to chdb_arrow_stream, and
+ * passes it in.  On success the stream callbacks are filled; the caller must call release()
+ * when done.
+ * @param conn Active connection handle
+ * @param query SQL query string to execute
+ * @param out_stream Pointer to caller-allocated ArrowArrayStream (cast to chdb_arrow_stream)
+ * @return CHDBSuccess on success, CHDBError on failure
+ */
+CHDB_EXPORT chdb_state chdb_query_arrow_stream(
+    chdb_connection conn, const char * query,
+    chdb_arrow_stream out_stream);
+
+/**
+ * Executes a query and exports the result as an ArrowArrayStream (length-counted variant).
+ * @param conn Active connection handle
+ * @param query SQL query buffer (may contain null bytes)
+ * @param query_len Length of query buffer in bytes
+ * @param out_stream Pointer to caller-allocated ArrowArrayStream (cast to chdb_arrow_stream)
+ * @return CHDBSuccess on success, CHDBError on failure
+ */
+CHDB_EXPORT chdb_state chdb_query_arrow_stream_n(
+    chdb_connection conn, const char * query, size_t query_len,
+    chdb_arrow_stream out_stream);
+
 #ifdef __cplusplus
 }
 #endif

@@ -41,6 +41,10 @@
         chdb_arrow_array_scan;
         chdb_arrow_unregister_table;
 
+        /* Arrow Output */
+        chdb_query_arrow_stream;
+        chdb_query_arrow_stream_n;
+
     local:
         *;
 };

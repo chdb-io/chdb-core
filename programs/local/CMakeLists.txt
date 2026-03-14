@@ -11,6 +11,7 @@ set (CLICKHOUSE_LOCAL_SOURCES
 if (NOT USE_PYTHON)
     set (CHDB_ARROW_SOURCES
         chdb-arrow.cpp
+        chdb-arrow-output.cpp
         ArrowStreamSource.cpp
         StorageArrowStream.cpp
         TableFunctionArrowStream.cpp

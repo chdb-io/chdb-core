@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chdb.h"
+#include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -8,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <span>
+#include <arrow/c/abi.h>
 
 namespace CHDB
 {
@@ -251,6 +253,49 @@ private:
 };
 
 /**
+ * RAII wrapper for an ArrowArrayStream produced by chdb_query_arrow_stream.
+ * Move-only; calls stream_.release on destruction.
+ */
+class ArrowResult {
+public:
+    ArrowResult() { std::memset(&stream_, 0, sizeof(stream_)); }
+
+    ~ArrowResult() {
+        if (stream_.release) {
+            stream_.release(&stream_);
+        }
+    }
+
+    ArrowResult(const ArrowResult&) = delete;
+    ArrowResult& operator=(const ArrowResult&) = delete;
+
+    ArrowResult(ArrowResult&& other) noexcept : stream_(other.stream_) {
+        std::memset(&other.stream_, 0, sizeof(other.stream_));
+    }
+
+    ArrowResult& operator=(ArrowResult&& other) noexcept {
+        if (this != &other) {
+            if (stream_.release) {
+                stream_.release(&stream_);
+            }
+            stream_ = other.stream_;
+            std::memset(&other.stream_, 0, sizeof(other.stream_));
+        }
+        return *this;
+    }
+
+    /// Get pointer to the underlying ArrowArrayStream (for passing to C APIs).
+    ArrowArrayStream * get() { return &stream_; }
+    const ArrowArrayStream * get() const { return &stream_; }
+
+    /// True if the stream has been initialised (release callback is set).
+    bool valid() const { return stream_.release != nullptr; }
+
+private:
+    ArrowArrayStream stream_;
+};
+
+/**
  * The Connection class provides a high-level interface to ChDB database
  * operations. It manages the connection lifecycle automatically and provides
  * both regular and streaming query capabilities.
@@ -352,6 +397,22 @@ public:
         }
         
         return Result(result);
+    }
+
+    /** Execute SQL query and return result as an ArrowArrayStream */
+    ArrowResult query_arrow(const std::string & sql) const
+    {
+        if (!conn_) {
+            throw ChdbError(ChdbErrorCode::ConnectionClosed, "Connection is closed");
+        }
+        ArrowResult arrow_result;
+        chdb_state state = chdb_query_arrow_stream(
+            conn_, sql.c_str(),
+            reinterpret_cast<chdb_arrow_stream>(arrow_result.get()));
+        if (state != CHDBSuccess) {
+            throw ChdbError(ChdbErrorCode::QueryExecutionFailed, "Arrow query execution failed");
+        }
+        return arrow_result;
     }
 
     /** Cancel ongoing streaming query */
