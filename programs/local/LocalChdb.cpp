@@ -5,17 +5,22 @@
 #include "PythonImporter.h"
 #include "StoragePython.h"
 #include <ChdbClient.h>
+#include "EmbeddedServer.h"
 #include "chdb.h"
 
 #include <pybind11/detail/non_limited_api.h>
 #include <pybind11/pybind11.h>
 #include <IO/Progress.h>
 #include <Poco/String.h>
+#include <Common/Exception.h>
+#include <Common/ThreadPool.h>
 #include <Common/logger_useful.h>
 #include <vector>
 #if USE_JEMALLOC
 #    include <Common/memory.h>
 #endif
+
+extern std::atomic<bool> g_memory_tracking_disabled;
 
 #if USE_EMBEDDED_COMPILER
 #    include <Interpreters/JIT/CompiledExpressionCache.h>
@@ -712,21 +717,42 @@ void cursor_wrapper::execute(const std::string & query_str)
 }
 
 
-/// Cleanup function to be called before Python interpreter exits.
-/// This ensures JIT cache is cleared before static CHJIT instances are destroyed.
+/// Cleanup function registered via Python atexit.
+/// Runs BEFORE Py_Finalize tears down the interpreter and DSOs begin
+/// their static-destruction / __cxa_finalize phase.  By doing heavy
+/// C++ teardown here we avoid the crash that occurs when two libstdc++
+/// runtimes (chdb's static copy vs a dynamically-linked one from another
+/// extension) interleave their atexit handlers and pass wild pointers
+/// to the wrong operator delete / free.
 static void chdb_cleanup_at_exit()
 {
+    g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+    DB::setShuttingDown();
+
 #if USE_EMBEDDED_COMPILER
     try
     {
         if (auto * cache = DB::CompiledExpressionCacheFactory::instance().tryGetCache())
             cache->clear();
     }
-    catch (...)
-    {
-        // Ignore errors during cleanup at exit
-    }
+    catch (...) {}
 #endif
+
+    try
+    {
+        DB::EmbeddedServer::releaseInstance();
+    }
+    catch (...) // NOLINT(bugprone-empty-catch)
+    {
+    }
+
+    try
+    {
+        GlobalThreadPool::shutdown();
+    }
+    catch (...) // NOLINT(bugprone-empty-catch)
+    {
+    }
 }
 
 PYBIND11_MODULE(_chdb, m)
