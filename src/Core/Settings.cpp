@@ -7557,6 +7557,11 @@ Sample rows in pandas to automatically determine the data types. When set to 0, 
 The application name appended to 'chDB' when connecting to remote servers via remote() or remoteSecure() table functions.
 If empty, query_log shows 'chDB'. If set to 'my-app', query_log shows 'chDB my-app'.
 )", EXPERIMENTAL) \
+    DECLARE(UInt64, chdb_pipeline_output_queue_size, 0, R"(
+The number of chunks that can be buffered between pipeline producer threads and the result consumer.
+A larger value reduces backpressure on multi-threaded pipelines (e.g., multi-file reads) at the cost of higher memory usage.
+0 means auto: num_pipeline_threads clamped to [2, 64].
+)", EXPERIMENTAL) \
     \
     /* ####################################################### */ \
     /* ############ END OF EXPERIMENTAL FEATURES ############# */ \

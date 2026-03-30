@@ -107,6 +107,9 @@ public:
     size_t getNumThreads() const { return num_threads; }
     void setNumThreads(size_t num_threads_) { num_threads = num_threads_; }
 
+    size_t getLazyFormatQueueSize() const { return lazy_format_queue_size; }
+    void setLazyFormatQueueSize(size_t size) { lazy_format_queue_size = size; }
+
     bool getConcurrencyControl() const { return concurrency_control; }
     void setConcurrencyControl(bool concurrency_control_) { concurrency_control = concurrency_control_; }
 
@@ -169,6 +172,7 @@ private:
     IOutputFormat * output_format = nullptr;
 
     size_t num_threads = 0;
+    size_t lazy_format_queue_size = 0;
     bool concurrency_control = false;
 
     friend class PushingPipelineExecutor;

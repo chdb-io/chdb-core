@@ -45,7 +45,10 @@ PullingAsyncPipelineExecutor::PullingAsyncPipelineExecutor(QueryPipeline & pipel
     if (!pipeline.pulling())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Pipeline for PullingAsyncPipelineExecutor must be pulling");
 
-    lazy_format = std::make_shared<LazyOutputFormat>(pipeline.output->getSharedHeader());
+    size_t queue_size = pipeline.getLazyFormatQueueSize();
+    if (queue_size == 0)
+        queue_size = std::clamp<size_t>(pipeline.getNumThreads(), 2, 64);
+    lazy_format = std::make_shared<LazyOutputFormat>(pipeline.output->getSharedHeader(), queue_size);
     pipeline.complete(lazy_format);
 }
 

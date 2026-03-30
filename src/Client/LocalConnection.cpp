@@ -34,6 +34,7 @@ namespace Setting
     extern const SettingsDialect dialect;
     extern const SettingsBool input_format_defaults_for_omitted_fields;
     extern const SettingsUInt64 interactive_delay;
+    extern const SettingsUInt64 chdb_pipeline_output_queue_size;
     extern const SettingsNonZeroUInt64 max_insert_block_size;
     extern const SettingsUInt64 max_insert_block_size_bytes;
     extern const SettingsUInt64 min_insert_block_size_rows;
@@ -333,6 +334,7 @@ void LocalConnection::sendQuery(
         else if (state->io.pipeline.pulling())
         {
             state->block = state->io.pipeline.getHeader();
+            state->io.pipeline.setLazyFormatQueueSize(query_context->getSettingsRef()[Setting::chdb_pipeline_output_queue_size]);
             state->executor = std::make_unique<PullingAsyncPipelineExecutor>(state->io.pipeline);
             state->io.pipeline.setConcurrencyControl(false);
         }
