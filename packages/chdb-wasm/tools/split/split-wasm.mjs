@@ -118,7 +118,15 @@ run(wasmSplit, ['--merge-profiles', ...profiles, '-o', merged]);
 // executes ONLY on worker instances (invisible to the main profile) and does
 // not exist in the st build, so no profile can ever see it. Same class of
 // blind spot for the rest of the thread-entry runtime here.
-const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack_|emscripten_wasm_worker_|_emscripten_thread_|_emscripten_tls_|__wasm_init_tls|_emscripten_check_mailbox|emscripten_proxy_|em_proxying_|do_proxy|_emscripten_yield|emscripten_exit_with_live_runtime|__cxa_thread_|thrd_|call_once|__wait|__timedwait|__private_cond_signal|init_mparams)/;
+const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack_|emscripten_wasm_worker_|_emscripten_thread_|_emscripten_tls_|__wasm_init_tls|_emscripten_check_mailbox|emscripten_proxy_|em_proxying_|do_proxy|_emscripten_yield|emscripten_exit_with_live_runtime|__cxa_thread_|thrd_|call_once|__wait|__timedwait|__private_cond_signal|init_mparams|abort$)/;
+// Same blind spot one layer up, in C++: thread ENTRY code — std::thread /
+// Poco / ThreadFromGlobalPool trampolines, the per-task lambda wrapper
+// template instances they dispatch to, thread-local init routines, the
+// terminate/abort chain, and the logging-channel threads. All of it runs only
+// on worker instances of the mt build, so no profile pass can record it
+// (found empirically by probing a deferred-less bundle; matching by substring
+// catches the endless per-task template variants).
+const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo/;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
 const emitHotFile = opt('emit-hot-names');
@@ -140,7 +148,7 @@ const keepStream = createWriteStream(keepFile);
       const name = line.slice(2);
       cold++;
       if (/^\d+$/.test(name)) numericNames++;
-      if (SAFETY.test(name)) { keepStream.write(name + '\n'); keptSafety++; }
+      if (SAFETY.test(name) || SAFETY_SUBSTR.test(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }
