@@ -126,9 +126,16 @@ const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack
 // on worker instances of the mt build, so no profile pass can record it
 // (found empirically by probing a deferred-less bundle; matching by substring
 // catches the endless per-task template variants).
-const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo/;
+// The last five entries are mt-only IMPLEMENTATIONS of the query result path
+// (the st build takes the synchronous variants, so its hot set can't supply
+// them): LazyOutputFormat + PullingAsyncPipelineExecutor feed results across
+// threads, ParallelFormattingOutputFormat renders them.
+const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo|LazyOutputFormat|ParallelFormattingOutputFormat|PullingAsyncPipelineExecutor|ThreadFramePointers|BufferWithOutsideMemory/;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
+// Checked-in list of single worker-path functions (see keep-worker-path.txt).
+const workerPath = new Set(
+  readFileSync(join(here, 'keep-worker-path.txt'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')));
 const emitHotFile = opt('emit-hot-names');
 const emitHot = emitHotFile ? createWriteStream(emitHotFile) : null;
 
@@ -148,7 +155,7 @@ const keepStream = createWriteStream(keepFile);
       const name = line.slice(2);
       cold++;
       if (/^\d+$/.test(name)) numericNames++;
-      if (SAFETY.test(name) || SAFETY_SUBSTR.test(name)) { keepStream.write(name + '\n'); keptSafety++; }
+      if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }
