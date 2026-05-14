@@ -30,11 +30,6 @@ namespace ProfileEvents
 namespace DB
 {
 
-namespace ErrorCodes
-{
-    extern const int FILE_DOESNT_EXIST;
-}
-
 #if defined(OS_LINUX)
 namespace
 {
@@ -217,17 +212,15 @@ std::optional<std::string> getCgroupsV1Path()
 
 }
 
-std::pair<std::string, ICgroupsReader::CgroupsVersion> ICgroupsReader::getCgroupsPath()
+std::optional<std::pair<std::string, ICgroupsReader::CgroupsVersion>> ICgroupsReader::tryGetCgroupsPath()
 {
-    auto v2_path = getCgroupsV2PathContainingFile("memory.current");
-    if (v2_path.has_value())
-        return {*v2_path, ICgroupsReader::CgroupsVersion::V2};
+    if (auto v2_path = getCgroupsV2PathContainingFile("memory.current"))
+        return std::make_pair(*v2_path, ICgroupsReader::CgroupsVersion::V2);
 
-    auto v1_path = getCgroupsV1Path();
-    if (v1_path.has_value())
-        return {*v1_path, ICgroupsReader::CgroupsVersion::V1};
+    if (auto v1_path = getCgroupsV1Path())
+        return std::make_pair(*v1_path, ICgroupsReader::CgroupsVersion::V1);
 
-    throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "Cannot find cgroups v1 or v2 current memory file");
+    return std::nullopt;
 }
 
 std::shared_ptr<ICgroupsReader> ICgroupsReader::createCgroupsReader(ICgroupsReader::CgroupsVersion version, const std::filesystem::path & cgroup_path)
@@ -278,27 +271,39 @@ MemoryWorker::MemoryWorker(
     if (config.use_cgroup)
     {
 #if defined(OS_LINUX)
-        try
+        if (auto cgroups = ICgroupsReader::tryGetCgroupsPath())
         {
             static constexpr uint64_t cgroups_memory_usage_tick_ms{50};
 
-            const auto [cgroup_path, version] = ICgroupsReader::getCgroupsPath();
-            LOG_DEBUG(
-                getLogger("CgroupsReader"),
-                "Will create cgroup reader from '{}' (cgroups version: {})",
-                cgroup_path,
-                (version == ICgroupsReader::CgroupsVersion::V1) ? "v1" : "v2");
+            const auto & [cgroup_path, version] = *cgroups;
+            try
+            {
+                LOG_DEBUG(
+                    getLogger("CgroupsReader"),
+                    "Will create cgroup reader from '{}' (cgroups version: {})",
+                    cgroup_path,
+                    (version == ICgroupsReader::CgroupsVersion::V1) ? "v1" : "v2");
 
-            cgroups_reader = ICgroupsReader::createCgroupsReader(version, cgroup_path);
-            source = MemoryUsageSource::Cgroups;
-            if (rss_update_period_ms == 0)
-                rss_update_period_ms = cgroups_memory_usage_tick_ms;
+                cgroups_reader = ICgroupsReader::createCgroupsReader(version, cgroup_path);
+                source = MemoryUsageSource::Cgroups;
+                if (rss_update_period_ms == 0)
+                    rss_update_period_ms = cgroups_memory_usage_tick_ms;
 
-            return;
+                return;
+            }
+            catch (...)
+            {
+                /// Path was visible but the reader failed to initialize (e.g. file disappeared,
+                /// permission denied). This is unexpected, so keep the full diagnostic.
+                tryLogCurrentException(log, "Cannot use cgroups reader");
+            }
         }
-        catch (...)
+        else
         {
-            tryLogCurrentException(log, "Cannot use cgroups reader");
+            /// No cgroups v1/v2 hierarchy is visible. This is the normal case in sandboxed or
+            /// strictly-restricted containers (e.g. some k8s pods, distroless images, FaaS
+            /// runtimes); fall through to the next memory source quietly without a stack trace.
+            LOG_DEBUG(log, "Cgroups memory file not available, falling back to other memory source");
         }
 #endif
     }

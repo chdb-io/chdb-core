@@ -157,18 +157,25 @@ AsynchronousMetrics::AsynchronousMetrics(
     if (!cgroupcpu_stat)
         openFileIfExists("/sys/fs/cgroup/cpuacct/cpuacct.stat", cgroupcpuacct_stat);
 
-    try
+    if (auto cgroups = ICgroupsReader::tryGetCgroupsPath())
     {
-        const auto [cgroup_path, version] = ICgroupsReader::getCgroupsPath();
-        LOG_INFO(getLogger("AsynchronousMetrics"),
-            "Will use cgroup reader from '{}' (cgroups version: {})",
-            cgroup_path,
-            (version == ICgroupsReader::CgroupsVersion::V1) ? "v1" : "v2");
-        cgroupmem_reader = ICgroupsReader::createCgroupsReader(version, cgroup_path);
+        const auto & [cgroup_path, version] = *cgroups;
+        try
+        {
+            LOG_INFO(getLogger("AsynchronousMetrics"),
+                "Will use cgroup reader from '{}' (cgroups version: {})",
+                cgroup_path,
+                (version == ICgroupsReader::CgroupsVersion::V1) ? "v1" : "v2");
+            cgroupmem_reader = ICgroupsReader::createCgroupsReader(version, cgroup_path);
+        }
+        catch (...)
+        {
+            tryLogCurrentException(getLogger("AsynchronousMetrics"), "cgroups are not available");
+        }
     }
-    catch (...)
+    else
     {
-        tryLogCurrentException(getLogger("AsynchronousMetrics"), "cgroups are not available");
+        LOG_DEBUG(getLogger("AsynchronousMetrics"), "Cgroups memory file not available; cgroup-based metrics will be unavailable");
     }
 
 
