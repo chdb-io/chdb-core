@@ -38,8 +38,38 @@ echo "chdb-core engine version: ${CORE_VERSION}"
 
 if [ -z "${CHDB_TAG:-}" ]; then
     echo "Resolving latest chdb release tag from GitHub..."
-    CHDB_TAG=$(curl -fsSL https://api.github.com/repos/chdb-io/chdb/releases/latest \
-        | ${PYTHON} -c "import json, sys; print(json.load(sys.stdin)['tag_name'])")
+    api_url="https://api.github.com/repos/chdb-io/chdb/releases/latest"
+
+    # Authenticate when possible to avoid the 60 req/hr unauthenticated
+    # rate limit, which previously caused intermittent 403s in CI.
+    auth_args=()
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        auth_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    fi
+
+    api_response=""
+    for attempt in 1 2 3; do
+        if api_response=$(curl -fsSL --retry 3 --retry-delay 5 \
+                -H "Accept: application/vnd.github+json" \
+                "${auth_args[@]}" \
+                "${api_url}"); then
+            break
+        fi
+        echo "Attempt ${attempt}/3 to fetch ${api_url} failed; retrying..." >&2
+        api_response=""
+        sleep $((attempt * 5))
+    done
+
+    if [ -z "${api_response}" ]; then
+        echo "ERROR: failed to fetch latest chdb release tag from ${api_url}." >&2
+        echo "       Workarounds:" >&2
+        echo "         - export CHDB_TAG=<tag>   # skip this lookup entirely" >&2
+        echo "         - export GITHUB_TOKEN=... # authenticate to bypass the" >&2
+        echo "                                     60 req/hr anonymous limit" >&2
+        exit 1
+    fi
+
+    CHDB_TAG=$(${PYTHON} -c "import json,sys; print(json.loads(sys.stdin.read())['tag_name'])" <<<"${api_response}")
 fi
 echo "Using chdb tag: ${CHDB_TAG}"
 
