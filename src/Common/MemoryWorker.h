@@ -6,6 +6,7 @@
 #include <Common/PageCache.h>
 
 #include <filesystem>
+#include <optional>
 
 namespace DB
 {
@@ -22,8 +23,12 @@ struct ICgroupsReader
     static std::shared_ptr<ICgroupsReader>
     createCgroupsReader(ICgroupsReader::CgroupsVersion version, const std::filesystem::path & cgroup_path);
 
-    /// Return <path, version>
-    static std::pair<std::string, CgroupsVersion> getCgroupsPath();
+    /// Probe for cgroups v2 / v1 memory pseudo-files.
+    /// Returns <path, version> if a usable hierarchy is found, or std::nullopt if neither is
+    /// available (e.g. inside a sandboxed/restricted container without cgroupfs mounted).
+    /// This is intentionally non-throwing: cgroups absence is an expected fallback condition,
+    /// not an error worth a stack trace.
+    static std::optional<std::pair<std::string, CgroupsVersion>> tryGetCgroupsPath();
 #endif
 
     virtual ~ICgroupsReader() = default;
