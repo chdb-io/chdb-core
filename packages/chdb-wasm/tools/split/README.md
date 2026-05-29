@@ -14,6 +14,13 @@ function granularity, driven by an execution profile recorded while running
 functions, formats, DDL/DML, error paths, Iceberg/Delta/DataLakeCatalog) against
 the instrumented build.
 
+Measured on the 26.5 build (verify-split all green, full test matrix passing):
+
+| bundle | before | primary (up-front) | deferred (lazy) |
+| --- | --- | --- | --- |
+| mt | 99.3MB | **40.8MB** | 64.2MB |
+| st | 99.2MB | **38.3MB** | 66.4MB |
+
 ## Runbook
 
 ```sh
@@ -85,3 +92,15 @@ statements are skipped (and their code ends up in the deferred module).
 - The corpus runner must never host HTTP fixtures in-process: queries block the
   main thread synchronously while the wasm HTTP bridge waits on a child
   process fetch, deadlocking any same-process server.
+- **Worker-path blind spot**: code that runs ONLY on mt worker instances is
+  invisible to every profile pass (per-instance globals + parked workers) and
+  often absent from the st hot set too (st takes synchronous implementations —
+  LazyOutputFormat, ParallelFormattingOutputFormat, the thread-entry
+  trampolines). Covered by SAFETY/SAFETY_SUBSTR patterns and
+  keep-worker-path.txt. If a new one appears, the symptom is a hang or
+  "worker sent an error" on a bundle whose chdb.deferred.wasm is unreachable;
+  find it by logging `base` in the glue's placeholder trampoline (workers
+  can't console.log — append to a file), then map the ordinal to a name via a
+  `-g` re-split and the secondary's elem section.
+- keep-funcs entries must be in wasm-split's ESCAPED name form (`\28\29` for
+  parens, `\20` for spaces) — raw demangled names silently match nothing.
