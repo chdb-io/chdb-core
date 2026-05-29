@@ -139,7 +139,7 @@ const workerPath = new Set(
 const emitHotFile = opt('emit-hot-names');
 const emitHot = emitHotFile ? createWriteStream(emitHotFile) : null;
 
-let hot = 0, cold = 0, keptSafety = 0, keptExtra = 0, numericNames = 0;
+let hot = 0, cold = 0, keptSafety = 0, keptExtra = 0, keptNameless = 0, numericNames = 0;
 const keepFile = join(outDir, 'keep-funcs.txt');
 const keepStream = createWriteStream(keepFile);
 {
@@ -154,8 +154,18 @@ const keepStream = createWriteStream(keepFile);
     } else if (line.startsWith('- ')) {
       const name = line.slice(2);
       cold++;
-      if (/^\d+$/.test(name)) numericNames++;
-      if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
+      if (/^\d+$/.test(name) || /^trampoline_/.test(name) || /_\d{4,}$/.test(name)) {
+        // Linker/compiler-SYNTHESIZED names never correspond across links, so
+        // the st->mt hot-set transfer is blind to them even though hot code
+        // calls into them: bare-index names on nameless std::function/lambda
+        // thunks, and wasm-ld's signature-mismatch bridges named
+        // trampoline_X / X_<link-specific-number> (found the hard way under
+        // CountingTransform and ~DeduplicationInfo in the INSERT pipeline).
+        // All tiny; keep every cold one (~10k functions, low-MB cost).
+        if (/^\d+$/.test(name)) numericNames++;
+        keepStream.write(name + '\n');
+        keptNameless++;
+      } else if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }
@@ -167,7 +177,7 @@ const keepStream = createWriteStream(keepFile);
 // (indices from different links never correspond). Guard against it.
 if (numericNames > (hot + cold) * 0.9)
   throw new Error('profile names are bare indices — the build lost its name section; link with WASM_SPLIT_MODULE=ON (adds --profiling-funcs)');
-console.log(`profile: ${hot} hot / ${cold} cold; force-keeping ${keptSafety} thread-runtime + ${keptExtra} extra-hot functions`);
+console.log(`profile: ${hot} hot / ${cold} cold; force-keeping ${keptSafety} thread-runtime + ${keptExtra} extra-hot + ${keptNameless} nameless-thunk functions`);
 
 // --- 5. split ---------------------------------------------------------------------
 const primary = join(outDir, 'chdb.wasm');

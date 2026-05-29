@@ -14,12 +14,12 @@ function granularity, driven by an execution profile recorded while running
 functions, formats, DDL/DML, error paths, Iceberg/Delta/DataLakeCatalog) against
 the instrumented build.
 
-Measured on the 26.5 build (verify-split all green, full test matrix passing):
+Measured on the 26.5 build (split.test 19/19, full test matrix passing):
 
-| bundle | before | primary (up-front) | deferred (lazy) |
-| --- | --- | --- | --- |
-| mt | 99.3MB | **40.8MB** | 64.2MB |
-| st | 99.2MB | **38.3MB** | 66.4MB |
+| bundle | before | primary (up-front) | deferred (lazy) | gzip transfer |
+| --- | --- | --- | --- | --- |
+| mt | 99.3MB | **41.7MB** | 64.1MB | 21.2MB → **9.2MB** |
+| st | 99.2MB | **39.5MB** | 66.3MB | → 8.6MB |
 
 ## Runbook
 
@@ -104,3 +104,13 @@ statements are skipped (and their code ends up in the deferred module).
   `-g` re-split and the secondary's elem section.
 - keep-funcs entries must be in wasm-split's ESCAPED name form (`\28\29` for
   parens, `\20` for spaces) — raw demangled names silently match nothing.
+- **Synthesized names don't transfer across links**: nameless lambda thunks
+  (bare-index names) and wasm-ld's signature bridges (`trampoline_X`,
+  `X_<number>`) get link-specific names, so the st hot set can't cover them on
+  mt even though hot code calls straight into them. Every cold one is
+  force-kept (~10k tiny functions, ~1MB).
+- The engine's ONE cold start per process is claimed by whichever API runs
+  first — profile both orders (main pass boots via connect, the
+  CHDB_INIT_PROBE=global pass boots via connectionless query, then both run
+  the corpus). And keep unqualified default-database DDL in the corpus:
+  clickhouse-local's DatabaseOverlay is its own code path.

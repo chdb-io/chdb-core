@@ -272,6 +272,16 @@ SELECT sleepEachRow(0.001) FROM numbers(2);
 -- ============================================================================
 -- 16. DDL + DML: Memory / MergeTree family / views / mutations
 -- ============================================================================
+-- Tables in the DEFAULT database go through clickhouse-local's DatabaseOverlay
+-- — a different lookup/DDL path than the qualified corpus.* names below, and
+-- the most common shape users type. Keep both hot.
+CREATE TABLE overlay_tbl (x Int32, s String) ENGINE = Memory;
+INSERT INTO overlay_tbl VALUES (1, 'a'), (2, 'b'), (3, 'c');
+SELECT sum(x), max(s) FROM overlay_tbl;
+SHOW TABLES;
+DESCRIBE overlay_tbl;
+EXISTS TABLE overlay_tbl;
+DROP TABLE overlay_tbl;
 -- Atomic (the default engine) is mt-only: on the single-threaded build CREATE
 -- DATABASE aborts the wasm instance (pre-existing st limitation, not split
 -- related); the Memory-engine fallback keeps this section running there.

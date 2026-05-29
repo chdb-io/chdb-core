@@ -34,12 +34,13 @@ mkdirSync(outDir, { recursive: true });
 const PY = process.env.ICEBERG_PY || '/tmp/iceberg-venv/bin/python';
 const S3_PORT = 8151, CATALOG_PORT = 8152, UNITY_PORT = 8153, HTTP_PORT = 8154;
 
-// CHDB_INIT_PROBE=global: a light second pass whose FIRST engine call is the
-// connectionless chdb_wasm_query — its cold-start of the process-global
-// connection takes a different init path than chdb_wasm_connect, and whichever
-// runs first in a process claims the one cold start. The main corpus pass
-// starts with connect(), so this pass covers the other order (the SDK's
-// AsyncChdb.query without an explicit Connection). No fixtures, no corpus.
+// CHDB_INIT_PROBE=global: an ORDER-REVERSED second pass. A process gets one
+// engine cold start, and which API claims it changes which init paths run:
+// the main pass boots via chdb_wasm_connect then runs the corpus; this pass
+// boots via connectionless chdb_wasm_query FIRST (the SDK's AsyncChdb.query
+// shape) and THEN connects and runs the corpus, so session-after-global init
+// paths get profiled too. Data-lake fixtures are skipped (those statements
+// auto-skip); everything else runs in both orders.
 const INIT_PROBE = process.env.CHDB_INIT_PROBE === 'global';
 const PROFILE_PREFIX = process.env.CHDB_PROFILE_PREFIX || 'profile';
 
@@ -172,8 +173,8 @@ if (INIT_PROBE) {
 // Handles (conn, result, stream pointers) are BigInt on Memory64 and must be
 // passed back into ccall UNconverted (the raw exports take i64); num() is only
 // for heap offsets consumed from JS. Mirrors src/bindings.ts.
-const conn = INIT_PROBE ? null : mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
-if (!INIT_PROBE && !num(conn)) throw new Error('chdb_wasm_connect failed');
+const conn = mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
+if (!num(conn)) throw new Error('chdb_wasm_connect failed');
 
 // Consume results the way src/bindings.ts does — buffer/length/stats getters
 // are on every user's path and must land in the primary module.
@@ -210,7 +211,7 @@ let ok = 0, skipped = 0;
 const failures = [];
 const t0 = Date.now();
 const isMt = !!mod.PThread;
-if (!INIT_PROBE) for (let sql of statements) {
+for (let sql of statements) {
   for (const [k, v] of Object.entries(substitutions)) sql = sql.replaceAll(k, v);
   if (/\{[A-Z0-9]+\}/.test(sql)) { skipped++; continue; }
   if (!isMt && sql.includes('/*mt-only*/')) { skipped++; continue; }
@@ -226,12 +227,12 @@ if (!INIT_PROBE) for (let sql of statements) {
     throw e;
   }
 }
-if (!INIT_PROBE) console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
 if (!INIT_PROBE) globalQueries();
 
 // --- streaming C-API surface ----------------------------------------------------
-if (!INIT_PROBE) {
+{
   const s = mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number, toString(number) FROM numbers(100000)', 'CSV']);
   let chunks = 0;
   for (;;) {
@@ -252,7 +253,7 @@ if (!INIT_PROBE) {
 // Close the session before collecting: exercises shutdown paths and lets
 // query/background threads exit, so their pool workers return to the idle
 // (message-processing) state where they can answer chdbWriteProfile.
-if (!INIT_PROBE) mod.ccall('chdb_wasm_close_conn', null, ['number'], [conn]);
+mod.ccall('chdb_wasm_close_conn', null, ['number'], [conn]);
 
 // --- profile collection ---------------------------------------------------------
 const wp = mod.wasmExports?.__write_profile;
