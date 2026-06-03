@@ -29,7 +29,7 @@ extern "C" {
 // server, but a session-level `SET max_threads` right after connect is, and it
 // persists for the connection's lifetime.
 #ifndef CHDB_WASM_MAX_THREADS
-#    define CHDB_WASM_MAX_THREADS "4"
+#    define CHDB_WASM_MAX_THREADS "1"
 #endif
 static char arg0[] = "chdb";
 

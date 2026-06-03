@@ -16,15 +16,15 @@ target_link_libraries (chdb_wasm PRIVATE clickhouse-local-lib)
 #   planner), so it must be generous; worker threads use WASM_PTHREAD_STACK_SIZE.
 # WASM_PTHREAD_POOL_SIZE: number of Web Workers pre-spawned at module init. The
 #   pool cannot grow under a blocking query in the browser, so it must cover
-#   ClickHouse's peak concurrent threads = a query's max_threads (capped to 4 by
-#   chdb_wasm.cpp via `SET max_threads`) + its background threads. 16 gives ample
-#   headroom; PTHREAD_POOL_SIZE_STRICT=2 turns any overflow into a clean error
-#   rather than a deadlock. Lower it for faster browser startup if your queries are
-#   light (but keep it well above CHDB_WASM_MAX_THREADS).
+#   ClickHouse's peak concurrent threads = a query's max_threads (capped to 1 by
+#   chdb_wasm.cpp via `SET max_threads`) + its background threads. With single-
+#   threaded queries 4 covers the query thread plus background threads;
+#   PTHREAD_POOL_SIZE_STRICT=2 turns any overflow into a clean error rather than a
+#   deadlock. Raise it if you raise CHDB_WASM_MAX_THREADS.
 # WASM_PTHREAD_STACK_SIZE: per-worker stack (there are WASM_PTHREAD_POOL_SIZE of
 #   these, so this dominates baseline memory — keep it as small as queries allow).
 set (WASM_STACK_SIZE "8MB" CACHE STRING "chdb-wasm main-thread stack size")
-set (WASM_PTHREAD_POOL_SIZE "16" CACHE STRING "chdb-wasm pre-spawned worker pool size")
+set (WASM_PTHREAD_POOL_SIZE "4" CACHE STRING "chdb-wasm pre-spawned worker pool size")
 set (WASM_PTHREAD_STACK_SIZE "2MB" CACHE STRING "chdb-wasm per-worker stack size")
 set (WASM_INITIAL_MEMORY "128MB" CACHE STRING "chdb-wasm initial heap size")
 
