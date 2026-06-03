@@ -77,6 +77,14 @@ elseif(OS_WASM)
 #define DATE "built on: WebAssembly"
 static const char compiler_flags[] = "compiler: emcc";
 ]=])
+    # crypto/o_str.c selects the GNU strerror_r (returns char*) under _GNU_SOURCE,
+    # but Emscripten/musl provides the XSI form (returns int) -> int-to-pointer
+    # compile error. Build just this file without _GNU_SOURCE (and at a POSIX
+    # source level) so OpenSSL's POSIX strerror_r branch is used instead. This
+    # avoids patching the (pinned) openssl submodule.
+    set_source_files_properties(
+        "${OPENSSL_SOURCE_DIR}/crypto/o_str.c"
+        PROPERTIES COMPILE_OPTIONS "-U_GNU_SOURCE;-D_POSIX_C_SOURCE=200809L")
 endif()
 
 file(STRINGS "common/include/openssl/opensslv.h" OPENSSL_VERSION_STR
