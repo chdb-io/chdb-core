@@ -108,6 +108,26 @@ jobs:
           CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm-st/programs/wasm/chdb.mjs
         run: node packages/chdb-wasm/test/smoke.test.mjs
 
+      - name: Query matrix (threaded bundle)
+        env:
+          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm/programs/wasm/chdb.mjs
+        run: node packages/chdb-wasm/test/matrix.test.mjs
+
+      - name: Query matrix (single-threaded bundle)
+        env:
+          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm-st/programs/wasm/chdb.mjs
+        run: node packages/chdb-wasm/test/matrix.test.mjs
+
+      # Build the npm dist (both bundles -> dist/ + dist/st/) and run the headless
+      # Chrome test: an isolated page must pick mt, a non-isolated page must pick st.
+      - name: Build npm package + headless-Chrome test (mt + st)
+        working-directory: packages/chdb-wasm
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          ls -la dist/chdb.wasm dist/st/chdb.wasm
+          node test/browser-run.mjs
+
       # Keep the artifact for download/inspection (kept short to save storage).
       - name: Upload wasm artifact
         uses: actions/upload-artifact@v4

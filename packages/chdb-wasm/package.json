@@ -27,7 +27,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-artifacts.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:node": "node test/smoke.test.mjs"
+    "test:node": "node test/smoke.test.mjs",
+    "test:matrix": "node test/matrix.test.mjs",
+    "test:browser": "node test/browser-run.mjs"
   },
   "keywords": [
     "clickhouse",
@@ -40,6 +42,7 @@
   ],
   "devDependencies": {
     "@types/node": "^22.19.19",
+    "puppeteer": "^25.1.0",
     "typescript": "^5.7.2"
   }
 }

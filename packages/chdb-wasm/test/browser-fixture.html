@@ -1,0 +1,31 @@
+<!doctype html><meta charset=utf-8><title>chdb-wasm browser fixture</title><pre id=o>running…</pre>
+<!-- Test fixture driven by test/browser-run.mjs. selectBundle auto-picks the bundle
+     (mt when cross-origin isolated, else st); we run core queries and publish the
+     results (and the chosen variant) on window.__RESULT__ for the driver to assert. -->
+<script type="module">
+import { AsyncChdb, selectBundle } from '../dist/index.js';
+const el = document.getElementById('o');
+const log = (m) => { el.textContent += '\n' + m; console.log(m); };
+(async () => {
+  try {
+    const b = selectBundle({ baseUrl: new URL('../dist', import.meta.url).href });
+    log('coi=' + self.crossOriginIsolated + ' SAB=' + (typeof SharedArrayBuffer !== 'undefined') + ' -> variant=' + b.variant);
+    const db = await AsyncChdb.create({ moduleUrl: b.moduleUrl, wasmUrl: b.wasmUrl });
+    const Q = async (sql) => (await db.query(sql)).text().trim();
+    const out = { ok: true, variant: b.variant, coi: self.crossOriginIsolated };
+    out.select1 = await Q('SELECT 1');
+    out.join = await Q('SELECT count() FROM numbers(1000) a JOIN numbers(1000) b ON a.number = b.number');
+    await db.query('CREATE TABLE t (x Int32) ENGINE = Memory');
+    await db.query('INSERT INTO t SELECT number FROM numbers(100)');
+    out.insert = await Q('SELECT count(), sum(x) FROM t');
+    out.heavy = await Q('SELECT count() FROM numbers(50000000)');
+    await db.terminate();
+    log('done: ' + JSON.stringify(out));
+    window.__RESULT__ = out;
+  } catch (e) {
+    log('FATAL ' + (e && e.message || e));
+    window.__RESULT__ = { fatal: String(e && e.message || e).slice(0, 200) };
+  }
+})();
+setTimeout(() => { if (window.__RESULT__ === undefined) window.__RESULT__ = { timeout: true }; }, 110000);
+</script>
