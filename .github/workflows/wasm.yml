@@ -72,7 +72,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Configure + build chdb_wasm
+      - name: Configure + build chdb_wasm (threaded + single-threaded)
         env:
           COMPILER_CACHE: ccache
           CCACHE_DIR: /home/runner/.ccache
@@ -80,9 +80,12 @@ jobs:
         run: |
           source "${EMSDK}/emsdk_env.sh"
           ccache -z || true
+          # Threaded bundle (WASM_THREADS=ON, needs cross-origin isolation) -> buildwasm/
           chdb/build-wasm.sh build
+          # Single-threaded bundle (WASM_THREADS=OFF, runs on non-isolated pages) -> buildwasm-st/
+          BUILD_DIR="${GITHUB_WORKSPACE}/buildwasm-st" WASM_THREADS=OFF chdb/build-wasm.sh build
           ccache -s || true
-          ls -la buildwasm/programs/wasm/chdb.mjs buildwasm/programs/wasm/chdb.wasm
+          ls -la buildwasm/programs/wasm/chdb.wasm buildwasm-st/programs/wasm/chdb.wasm
 
       - name: Verify Node version (must be >= 23 for Memory64)
         run: |
@@ -95,9 +98,14 @@ jobs:
           cp "${GITHUB_WORKSPACE}/programs/wasm/chdb.test.mjs" .
           node chdb.test.mjs
 
-      - name: Smoke test (async package)
+      - name: Smoke test (async package, threaded bundle)
         env:
           CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm/programs/wasm/chdb.mjs
+        run: node packages/chdb-wasm/test/smoke.test.mjs
+
+      - name: Smoke test (async package, single-threaded bundle)
+        env:
+          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm-st/programs/wasm/chdb.mjs
         run: node packages/chdb-wasm/test/smoke.test.mjs
 
       # Keep the artifact for download/inspection (kept short to save storage).

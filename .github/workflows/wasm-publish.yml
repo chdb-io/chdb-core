@@ -68,8 +68,11 @@ jobs:
           CCACHE_MAXSIZE: 5G
         run: |
           source "${EMSDK}/emsdk_env.sh"
+          # Both bundles ship in the npm package: threaded (-> buildwasm, dist/) and
+          # single-threaded (-> buildwasm-st, dist/st/). copy-artifacts picks up both.
           chdb/build-wasm.sh build
-          ls -la buildwasm/programs/wasm/chdb.mjs buildwasm/programs/wasm/chdb.wasm
+          BUILD_DIR="${GITHUB_WORKSPACE}/buildwasm-st" WASM_THREADS=OFF chdb/build-wasm.sh build
+          ls -la buildwasm/programs/wasm/chdb.wasm buildwasm-st/programs/wasm/chdb.wasm
 
       - name: Resolve version
         id: ver
@@ -88,7 +91,7 @@ jobs:
           [ -n "${{ steps.ver.outputs.version }}" ] && npm pkg set version="${{ steps.ver.outputs.version }}"
           npm install --no-audit --no-fund
           npm run build
-          echo "=== dist ==="; ls -la dist/chdb.mjs dist/chdb.wasm dist/index.js
+          echo "=== dist ==="; ls -la dist/chdb.mjs dist/chdb.wasm dist/index.js dist/st/chdb.wasm
           echo "publishing $(npm pkg get name)@$(npm pkg get version)"
 
       - name: Publish to npm
