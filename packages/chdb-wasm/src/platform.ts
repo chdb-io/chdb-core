@@ -1,11 +1,12 @@
 // Runtime capability detection + bundle selection.
 //
-// NOTE on variants: duckdb-wasm ships mvp/eh/coi bundles because its engine can
-// run single-threaded. ClickHouse cannot (it hard-requires threads), so chdb has
-// ONE feature level: Memory64 + native wasm exceptions + threads. The only useful
-// variant axis is size(-Oz) vs speed(-O3) of the same bundle (see WASM_MIN_SIZE).
-// selectBundle therefore returns one bundle and reports whether the runtime can
-// run it at all.
+// chdb ships TWO bundles of the same engine, differing only in threading:
+//   * mt  (chdb.mjs / chdb.wasm): pthreads (Web Workers + SharedArrayBuffer).
+//         Faster, but the page MUST be cross-origin isolated (COOP/COEP).
+//   * st  (st/chdb.mjs / st/chdb.wasm): single-threaded, no SharedArrayBuffer.
+//         Runs on any page (no cross-origin isolation required), serial execution.
+// Both require Memory64 + native wasm exceptions (hard requirements). selectBundle
+// picks mt when the runtime is cross-origin isolated, otherwise falls back to st.
 
 const isNode = typeof process !== 'undefined' && !!(process as any).versions?.node;
 
@@ -14,7 +15,7 @@ export interface PlatformFeatures {
   wasmMemory64: boolean;
   sharedArrayBuffer: boolean;
   crossOriginIsolated: boolean;
-  /** chdb's wasm needs threads: shared memory + (in the browser) cross-origin isolation. */
+  /** Threads need shared memory + (in the browser) cross-origin isolation. */
   wasmThreads: boolean;
 }
 
@@ -40,10 +41,14 @@ export function getPlatformFeatures(): PlatformFeatures {
 }
 
 export interface BundleConfig {
-  /** Whether the current runtime can run the chdb wasm bundle. */
+  /** Whether the current runtime can run a chdb wasm bundle at all. */
   supported: boolean;
-  /** Human-readable reasons the bundle is unsupported (empty when supported). */
+  /** Human-readable reasons no bundle can run (empty when supported). */
   reasons: string[];
+  /** Which bundle was chosen: 'mt' (threaded) or 'st' (single-threaded). */
+  variant: 'mt' | 'st';
+  /** Convenience flag: true for the multi-threaded bundle. */
+  threaded: boolean;
   /** URL/path of the Emscripten module to load. */
   moduleUrl: string;
   /** URL/path of the .wasm (browser progress fetch). */
@@ -52,29 +57,43 @@ export interface BundleConfig {
 }
 
 export interface SelectOptions {
-  /** Base URL/dir holding chdb.mjs / chdb.wasm (e.g. a CDN or ./dist). */
+  /** Base URL/dir holding chdb.mjs / chdb.wasm and the st/ subdir (e.g. a CDN or ./dist). */
   baseUrl: string;
+  /**
+   * Threading preference. 'auto' (default) picks mt when cross-origin isolated,
+   * else st. 'mt'/'st' force a specific bundle (e.g. for testing).
+   */
+  threads?: 'auto' | 'mt' | 'st';
 }
 
 /**
- * Validate the runtime and resolve the chdb bundle URLs. chdb ships a single
- * wasm bundle (Memory64 + native exceptions + threads); there is no feature or
- * size/speed variant to choose. This only reports whether the runtime can run it.
+ * Validate the runtime and resolve the chdb bundle URLs. Memory64 + WASM_BIGINT are
+ * hard requirements for either bundle; the single-threaded (st) bundle additionally
+ * lets chdb run on pages that are NOT cross-origin isolated.
  */
 export function selectBundle(opts: SelectOptions): BundleConfig {
   const features = getPlatformFeatures();
+  const base = opts.baseUrl.replace(/\/$/, '');
+
+  // Hard requirements shared by both bundles.
   const reasons: string[] = [];
   if (!features.wasmBigInt) reasons.push('BigInt64Array unavailable (need WASM_BIGINT)');
-  if (!features.wasmMemory64) reasons.push('Memory64 unsupported (need Node >= 23 / Chrome >= 133 / recent Firefox)');
-  if (!features.sharedArrayBuffer) reasons.push('SharedArrayBuffer unavailable (threads require it)');
-  if (!features.crossOriginIsolated) reasons.push('not cross-origin isolated (set COOP/COEP headers for threads)');
+  if (!features.wasmMemory64)
+    reasons.push('Memory64 unsupported (need Node >= 23 / Chrome >= 133 / recent Firefox)');
 
-  const base = opts.baseUrl.replace(/\/$/, '');
+  // Pick the bundle: prefer threads when available, else fall back to single-threaded.
+  const pref = opts.threads ?? 'auto';
+  const useThreads = pref === 'mt' || (pref === 'auto' && features.wasmThreads);
+  const variant: 'mt' | 'st' = useThreads ? 'mt' : 'st';
+  const prefix = variant === 'mt' ? base : `${base}/st`;
+
   return {
     supported: reasons.length === 0,
     reasons,
-    moduleUrl: `${base}/chdb.mjs`,
-    wasmUrl: `${base}/chdb.wasm`,
+    variant,
+    threaded: variant === 'mt',
+    moduleUrl: `${prefix}/chdb.mjs`,
+    wasmUrl: `${prefix}/chdb.wasm`,
     features,
   };
 }

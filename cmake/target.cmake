@@ -47,13 +47,23 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     add_link_options(-fwasm-exceptions)
 
     # ClickHouse is pervasively multi-threaded (global thread pool, background
-    # schedule pools, the query pipeline). Emscripten without pthreads makes every
-    # thread creation fail ("cannot start thread"), so enable real pthreads (Web
-    # Workers + SharedArrayBuffer). -pthread is an ABI flag and must be applied to
-    # every translation unit at compile and link. The worker pool size is set on
-    # the final link target (programs/wasm).
-    add_compile_options(-pthread)
-    add_link_options(-pthread)
+    # schedule pools, the query pipeline).
+    # WASM_THREADS=ON (default): real pthreads (Web Workers + SharedArrayBuffer).
+    #   -pthread is an ABI flag and must be applied to every translation unit at
+    #   compile and link. Needs the page to be cross-origin isolated (COOP/COEP).
+    #   The worker pool size is set on the final link target (programs/wasm).
+    # WASM_THREADS=OFF: single-threaded build with no -pthread and no
+    #   SharedArrayBuffer dependency, so it runs on pages that are NOT cross-origin
+    #   isolated. Emscripten without pthreads makes every thread creation fail, so
+    #   the global thread pool degrades to running jobs inline and the optional
+    #   background pools are not started (gated on CHDB_WASM_SINGLE_THREADED).
+    option (WASM_THREADS "Build the WASM target with pthreads (requires cross-origin isolation)" ON)
+    if (WASM_THREADS)
+        add_compile_options(-pthread)
+        add_link_options(-pthread)
+    else ()
+        add_definitions(-D CHDB_WASM_SINGLE_THREADED)
+    endif ()
 else ()
     message (FATAL_ERROR "Platform ${CMAKE_SYSTEM_NAME} is not supported")
 endif ()

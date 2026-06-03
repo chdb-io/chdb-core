@@ -1142,6 +1142,11 @@ void TableJoin::resetToCross()
 
 bool TableJoin::allowParallelHashJoin() const
 {
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// ConcurrentHashJoin spawns build threads (via the global pool) regardless of
+    /// max_threads. In the single-threaded WASM build, fall back to plain HashJoin.
+    return false;
+#endif
     return ::DB::allowParallelHashJoin(join_algorithms, kind(), strictness(), isSpecialStorage(), oneDisjunct());
 }
 

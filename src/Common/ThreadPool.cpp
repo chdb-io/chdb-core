@@ -279,6 +279,20 @@ ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std:
             return false;
     };
 
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// Single-threaded WASM build (compiled without -pthread): no worker thread can
+    /// ever be created. Fail loudly *here* instead of attempting it: running the job
+    /// inline would deadlock for the long-lived worker loops (BackgroundSchedulePool,
+    /// SystemLog saving thread, the async pipeline executor, ...) that never return.
+    /// So an un-disabled threaded code path surfaces as a recoverable query error
+    /// (CANNOT_SCHEDULE_TASK for scheduleOrThrow; false for trySchedule, letting the
+    /// caller degrade) rather than a busy-spin hang. Subsystems that legitimately
+    /// spawn threads are disabled at their source (SystemLog, DatabaseCatalog
+    /// background tasks, async logging, the async pulling executor, parallel
+    /// formatting/parsing); reaching here means one was missed.
+    return on_error("thread creation unavailable in the single-threaded WASM build");
+#endif
+
     // Decrement available_threads, scoped to the job lifecycle.
     // This ensures that available_threads decreases when a new job starts
     // and automatically increments when the job completes or goes out of scope.

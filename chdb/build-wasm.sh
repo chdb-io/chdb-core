@@ -10,9 +10,14 @@
 set -e
 
 PROJ_DIR=$(cd "$(dirname "$0")/.." && pwd)
-BUILD_DIR="${PROJ_DIR}/buildwasm"
+# BUILD_DIR can be overridden (e.g. a separate dir for the single-threaded build).
+BUILD_DIR="${BUILD_DIR:-${PROJ_DIR}/buildwasm}"
 STAGE="${1:-configure}"
 build_type="${BUILD_TYPE:-Release}"
+# WASM_THREADS=ON (default): pthreads (Web Workers + SharedArrayBuffer); the page
+# must be cross-origin isolated. WASM_THREADS=OFF: single-threaded build with no
+# SharedArrayBuffer dependency, runs on non-isolated pages.
+wasm_threads="${WASM_THREADS:-ON}"
 
 if ! command -v emcmake >/dev/null 2>&1; then
     echo "emcmake not found. Run: source ~/code/emsdk/emsdk_env.sh" >&2
@@ -45,6 +50,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_AVX=0 -DENABLE_AVX2=0 -DENABLE_AVX512=0 -DENABLE_AVX512_VBMI=0 \
     -DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0 \
     -DENABLE_RUST=0 \
+    -DWASM_THREADS=${wasm_threads} \
     -DCHDB_VERSION=${CHDB_VERSION:-0.1-wasm} \
     -DCOMPILER_CACHE=${COMPILER_CACHE:-disabled}"
 

@@ -34,19 +34,15 @@ set_target_properties (chdb_wasm PROPERTIES
     SUFFIX ".mjs"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
-# Note: -sMEMORY64=1, -fwasm-exceptions and -pthread are added globally in
-# cmake/target.cmake's OS_WASM block.
+# Note: -sMEMORY64=1, -fwasm-exceptions and (when WASM_THREADS=ON) -pthread are
+# added globally in cmake/target.cmake's OS_WASM block.
 target_link_options (chdb_wasm PRIVATE
     -sMODULARIZE=1
     "SHELL:-s EXPORT_NAME=createChdbModule"
     -sALLOW_MEMORY_GROWTH=1
     "SHELL:-s INITIAL_MEMORY=${WASM_INITIAL_MEMORY}"
     "SHELL:-s STACK_SIZE=${WASM_STACK_SIZE}"
-    "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=${WASM_PTHREAD_STACK_SIZE}"
     -sWASM_BIGINT
-    "SHELL:-s PTHREAD_POOL_SIZE=${WASM_PTHREAD_POOL_SIZE}"
-    # Hard cap: error (not deadlock) if more pthreads are needed than the pool.
-    -sPTHREAD_POOL_SIZE_STRICT=2
     -sFORCE_FILESYSTEM=1
     -sALLOW_TABLE_GROWTH=1
     "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8"
@@ -54,3 +50,14 @@ target_link_options (chdb_wasm PRIVATE
     -sENVIRONMENT=node,web,worker
     -sASSERTIONS=1
     )
+
+# Pthread pool options only apply to the threaded build (-pthread). In the
+# single-threaded build (WASM_THREADS=OFF) there is no pool, so omit them.
+if (WASM_THREADS)
+    target_link_options (chdb_wasm PRIVATE
+        "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=${WASM_PTHREAD_STACK_SIZE}"
+        "SHELL:-s PTHREAD_POOL_SIZE=${WASM_PTHREAD_POOL_SIZE}"
+        # Hard cap: error (not deadlock) if more pthreads are needed than the pool.
+        -sPTHREAD_POOL_SIZE_STRICT=2
+        )
+endif ()
