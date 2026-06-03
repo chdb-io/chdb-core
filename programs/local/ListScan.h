@@ -3,6 +3,8 @@
 #include "PybindWrapper.h"
 #include "PythonUtils.h"
 
+#include <DataTypes/Serializations/ISerialization.h>
+
 namespace CHDB {
 
 class ListScan {

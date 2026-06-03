@@ -1,6 +1,7 @@
 #include <Columns/ColumnCompressed.h>
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnReplicated.h>
+#include <Common/UnorderedSetWithMemoryTracking.h>
 #include <Common/WeakHash.h>
 
 namespace DB
@@ -552,7 +553,7 @@ void ColumnReplicated::getIndicesOfNonDefaultRows(Offsets & result_indexes, size
 
 UInt64 ColumnReplicated::getNumberOfDefaultRows() const
 {
-    std::unordered_set<size_t> indexes_of_default_values;
+    UnorderedSetWithMemoryTracking<size_t> indexes_of_default_values;
     for (size_t i = 0; i != nested_column->size(); ++i)
     {
         if (nested_column->isDefaultAt(i))
@@ -637,9 +638,9 @@ bool ColumnReplicated::structureEquals(const IColumn & rhs) const
     return false;
 }
 
-void ColumnReplicated::chooseDynamicStructureForMerge(const Columns & source_columns, std::optional<size_t> max_dynamic_subcolumns)
+void ColumnReplicated::chooseDynamicStructureForMerge(const VectorWithMemoryTracking<ColumnPtr> & source_columns, std::optional<size_t> max_dynamic_subcolumns)
 {
-    Columns source_nested_columns;
+    VectorWithMemoryTracking<ColumnPtr> source_nested_columns;
     source_nested_columns.reserve(source_columns.size());
     for (const auto & source_column : source_columns)
     {
@@ -661,9 +662,9 @@ void ColumnReplicated::takeExactDynamicStructureFrom(const IColumn & source)
 }
 
 
-void ColumnReplicated::takeOrCalculateStatisticsFrom(const Columns & source_columns)
+void ColumnReplicated::takeOrCalculateStatisticsFrom(const VectorWithMemoryTracking<ColumnPtr> & source_columns)
 {
-    Columns nested_source_columns;
+    VectorWithMemoryTracking<ColumnPtr> nested_source_columns;
     nested_source_columns.reserve(source_columns.size());
     for (const auto & source_column : source_columns)
     {

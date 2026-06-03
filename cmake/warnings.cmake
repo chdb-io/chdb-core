@@ -51,9 +51,12 @@ no_warning(unsafe-buffer-usage) # too aggressive
 no_warning(switch-default) # conflicts with "defaults in a switch covering all enum values"
 no_warning(nrvo) # not eliding copy on return - too aggressive
 no_warning(missing-noreturn) # too aggressive with no clear benefit, see https://github.com/ClickHouse/ClickHouse/pull/86416
-no_warning(lifetime-safety-intra-tu-suggestions) # New in clang-23
-no_warning(lifetime-safety-cross-tu-suggestions) # New in clang-23
-no_warning(unique-object-duplication) # Static locals in inline/static fns with hidden visibility; linker deduplicates via comdat
+# Hard-code knowledge of clang version-specific warnings rather than probing the compiler.
+# `lifetime-safety-*` were introduced in clang 23.
+if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 23)
+    no_warning(lifetime-safety-intra-tu-suggestions)
+    no_warning(lifetime-safety-cross-tu-suggestions)
+endif ()
 if (ARCH_E2K)
     # disable "use of GNU statement expression extension from macro expansion" warning
     no_warning(gnu-statement-expression-from-macro-expansion)
@@ -62,6 +65,8 @@ endif ()
 # Note: right now cmake 4.2.1 does not recognize "set (CMAKE_C_STANDARD 2y)"
 no_warning(c2y-extensions)
 no_warning(c23-extensions) # For #embed
+no_warning(unique-object-duplication) # Static locals in inline/static fns with hidden visibility; linker deduplicates via comdat
+
 # Apple Clang can treat /usr/local/include as poisoned when mixed with -isystem (e.g. bundled PCRE in Poco).
 if (OS_DARWIN)
     no_warning (poison-system-directories)

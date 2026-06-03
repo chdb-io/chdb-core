@@ -404,6 +404,17 @@ namespace DB
     extern void registerFunctionLowCardinalityIndices(FunctionFactory & factory);
     extern void registerFunctionLowCardinalityKeys(FunctionFactory & factory);
     extern void registerFunctionLower(FunctionFactory & factory);
+    /// Manually added (not by chdb/build/generate_force_references.py). v26.5 split MD5 into its
+    /// own TU (src/Functions/FunctionMD5.cpp), registered only via REGISTER_FUNCTION(MD5)'s
+    /// file-scope static initializer, with no static reference from chdb_example.cpp's closure.
+    /// Forcing this reference keeps FunctionMD5.cpp.o in the link map so create_minimal_libchdb.py
+    /// retains it in libchdb.a for Go cgo consumers (else MD5() raises UNKNOWN_FUNCTION at runtime).
+    /// The generator WOULD emit this (MD5 is not in its excluded set), but it can't simply be
+    /// re-run: v26.5 also adds AiClassify/AiExtract/AiGenerate/AiTranslate, which CHDB_LITE strips
+    /// from src/Functions/AI/ — regenerating would force-reference them and break the LITE link
+    /// until they're added to the generator's excluded_functions. Until that reconciliation, MD5
+    /// is maintained here by hand (a future regen will re-emit it automatically).
+    extern void registerFunctionMD5(FunctionFactory & factory);
     extern void registerFunctionMakeDate(FunctionFactory & factory);
     extern void registerFunctionMap(FunctionFactory & factory);
     extern void registerFunctionMapMiscellaneous(FunctionFactory & factory);
@@ -1125,6 +1136,7 @@ namespace DB
             &registerFunctionLowCardinalityIndices,
             &registerFunctionLowCardinalityKeys,
             &registerFunctionLower,
+            &registerFunctionMD5, /// manually added — see extern decl above (v26.5 MD5 TU split)
             &registerFunctionMakeDate,
             &registerFunctionMap,
             &registerFunctionMapMiscellaneous,

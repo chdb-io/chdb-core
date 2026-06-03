@@ -86,6 +86,15 @@ def extract_objects_from_archive(archive_path, required_objects, temp_dir):
     # Force exclude any object files containing ASTSQLSecurity
     objects_to_extract = {obj for obj in objects_to_extract if 'ASTSQLSecurity' not in obj}
 
+    # NOTE: single-function REGISTER_FUNCTION TUs (e.g. FunctionMD5.cpp, split out upstream in
+    # v26.5) register only via a file-scope static initializer and have no static reference from
+    # chdb_example.cpp's transitive closure, so the link map would normally miss them and they'd
+    # be dropped from libchdb.a. Rather than special-casing them here, chdb forces a reference to
+    # registerFunction<Name> in programs/local/ForceFunctionReferences.cpp, which pulls the TU
+    # into the link map → into chdb_objects.txt → retained by the intersection above. Add new such
+    # functions there, not here. (Layers 2 & 3 — consumer-side -force_load and the Go cgo
+    # CGO_LDFLAGS_ALLOW regex — still live in cgo_{darwin,linux}.go and test_go_example.sh.)
+
     # Add all object files starting with "chdb_func" from the archive, but exclude those containing specific keywords
     # exclude_keywords = ['h3', 'H3', 'convertCharset', 'lowerUTF8', 'normalizeString', 'upperUTF8']
 

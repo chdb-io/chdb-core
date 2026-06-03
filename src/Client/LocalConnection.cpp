@@ -6,6 +6,7 @@
 #include <Core/Settings.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/InternalTextLogsQueue.h>
+#include <Interpreters/ProcessList.h>
 #include <Interpreters/executeQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/Kusto/ParserKQLStatement.h>
@@ -158,8 +159,14 @@ void LocalConnection::sendQuery(
     query_context->setPythonTableCache(session->getPythonTableCache());
 #endif
 
-    if (send_progress)
+    /// Always track progress so that output formats (e.g. JSON) can report accurate statistics.
+    /// The send_progress flag only controls the client-side progress bar, not progress tracking.
+    query_context->setProgressCallback([this](const Progress & value) { this->updateProgress(value); });
+    query_context->setFileProgressCallback([this](const FileProgress & value) { this->updateProgress(Progress(value)); });
+
+    if (is_cancelled_callback)
     {
+        // chdb_spec
         query_context->setProgressCallback([this] (const Progress & value)
         {
             this->updateProgress(value);
@@ -171,11 +178,34 @@ void LocalConnection::sendQuery(
             this->updateProgress(progress);
             this->updateCHDBProgress(progress);
         });
+        // chdb_spec
+
+        query_context->setInteractiveCancelCallback(
+            [this, check_cancelled = is_cancelled_callback, progress_callback = process_progress_callback]() -> bool
+        {
+            /// Send accumulated progress to the client so the progress bar updates during analysis.
+            if (progress_callback)
+            {
+                auto progress = state->progress.fetchAndResetPiecewiseAtomically();
+                if (progress.read_rows || progress.read_bytes)
+                    progress_callback(progress);
+            }
+
+            if (!check_cancelled())
+                return false;
+
+            state->is_cancelled = true;
+            if (auto elem = query_context->getProcessListElement())
+                elem->cancelQuery(CancelReason::CANCELLED_BY_USER);
+            return true;
+        });
     }
     else
     {
+        // chdb_spec
         query_context->setProgressCallback([this] (const Progress & value) { this->updateCHDBProgress(value); });
         query_context->setFileProgressCallback([this](const FileProgress & value) { this->updateCHDBProgress(Progress(value)); });
+        // chdb_spec
     }
 
     /// Switch the database to the desired one (set by the USE query)
@@ -217,7 +247,7 @@ void LocalConnection::sendQuery(
         if (context != query_context)
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected context in Input initializer");
 
-        auto metadata_snapshot = input_storage->getInMemoryMetadataPtr();
+        auto metadata_snapshot = input_storage->getInMemoryMetadataPtr(context, false);
         Block sample = metadata_snapshot->getSampleBlock();
 
         next_packet_type = Protocol::Server::Data;
@@ -462,6 +492,11 @@ bool LocalConnection::poll(size_t)
 
     if (state->exception)
     {
+        /// Flush any buffered logs before delivering the exception, otherwise
+        /// the user would not see log messages produced before the failure.
+        if (needSendLogs())
+            return true;
+
         next_packet_type = Protocol::Server::Exception;
         return true;
     }
@@ -585,6 +620,13 @@ bool LocalConnection::poll(size_t)
         }
     }
 
+    if (state->is_finished && !state->sent_progress)
+    {
+        state->sent_progress = true;
+        next_packet_type = Protocol::Server::Progress;
+        return true;
+    }
+
     if (state->is_finished)
     {
         if (needSendLogs())
@@ -605,7 +647,7 @@ bool LocalConnection::poll(size_t)
 
 bool LocalConnection::needSendProgressOrMetrics()
 {
-    if (send_progress && (state->after_send_progress.elapsedMicroseconds() >= query_context->getSettingsRef()[Setting::interactive_delay]))
+    if (state->after_send_progress.elapsedMicroseconds() >= query_context->getSettingsRef()[Setting::interactive_delay])
     {
         state->after_send_progress.restart();
         next_packet_type = Protocol::Server::Progress;

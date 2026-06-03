@@ -8,9 +8,6 @@
 #include <Common/getHashOfLoadedBinary.h>
 #include <Common/Crypto/OpenSSLInitializer.h>
 
-#if defined(SANITIZE_COVERAGE)
-#    include <Common/Coverage.h>
-#endif
 
 #include "config.h"
 #include "config_tools.h"
@@ -38,6 +35,21 @@ const char * __lsan_default_options()
 {
     return "max_allocation_size_mb=32768";
 }
+const char * __lsan_default_suppressions()
+{
+    /// OpenSSL intentionally does not free all global state at exit.
+    /// These are known false positives from OpenSSL provider and EVP initialization.
+    return "leak:ossl_provider_new\n"
+           "leak:OSSL_PROVIDER_try_load_ex\n"
+           "leak:ossl_rand_ctx_new\n"
+           "leak:OSSL_LIB_CTX_new\n"
+           "leak:ossl_legacy_provider_init\n"
+           /// OpenSSL EVP method objects are cached globally and never freed at exit.
+           /// Triggered when S3 client initializes HMAC (AWS SDK -> OpenSSL HMAC_Init_ex).
+           "leak:evp_md_new\n"
+           "leak:construct_evp_method\n"
+           "leak:CRYPTO_THREAD_lock_new\n";
+}
 #endif
 
 #ifdef MEMORY_SANITIZER
@@ -64,6 +76,7 @@ const char * __ubsan_default_options()
 #pragma clang diagnostic pop
 #endif
 
+// chdb_spec
 #if defined(USE_MUSL) && defined(__aarch64__)
 void main_musl_compile_stub(int arg)
 {
@@ -74,14 +87,42 @@ void main_musl_compile_stub(int arg)
     sigsetjmp(buf2, arg);
 }
 #endif
+// chdb_spec
 
 /// Universal executable for various clickhouse applications
 int mainEntryClickHouseLocal(int argc, char ** argv);
+
+/// Private-only programs
+#if CLICKHOUSE_CLOUD
+int mainEntryClickHouseSharedCatalogUtil(int argc, char ** argv);
+#if ENABLE_DISTRIBUTED_CACHE
+int mainEntryClickHouseDistributedCache(int argc, char ** argv);
+#endif
+int mainEntryClickHouseSharedMergeTreeGarbageCleaner(int argc, char ** argv);
+int mainEntryClickHouseClearZooKeeperLocks(int argc, char ** argv);
+int mainEntryClickHousePackedIO(int argc, char ** argv);
+int mainEntryClickHouseMangler(int argc, char ** argv);
+#endif
 
 namespace
 {
 
 using MainFunc = int (*)(int, char**);
+
+/// Forward declaration, since clickhouse_applications is defined after this function.
+void printHelp(std::ostream & out);
+
+int mainEntryHelp(int, char **)
+{
+    printHelp(std::cout);
+    return 0;
+}
+
+int printHelpOnError(int, char **)
+{
+    printHelp(std::cerr);
+    return -1;
+}
 
 /// Add an item here to register new application.
 /// This list has a "priority" - e.g. we need to disambiguate clickhouse --format being
@@ -89,15 +130,16 @@ using MainFunc = int (*)(int, char**);
 /// Currently we will prefer the latter option.
 std::pair<std::string_view, MainFunc> clickhouse_applications[] =
 {
+    // chdb_spec
     {"local", mainEntryClickHouseLocal}
+    // chdb_spec
 };
 
-int printHelp(int, char **)
+void printHelp(std::ostream & out)
 {
-    // std::cerr << "Use one of the following commands:" << std::endl;
-    // for (auto & application : clickhouse_applications)
-    //     std::cerr << "clickhouse " << application.first << " [args] " << std::endl;
-    return -1;
+    // chdb_spec
+    (void)out;
+    // chdb_spec
 }
 
 /// Add an item here to register a new short name
@@ -138,6 +180,7 @@ bool isClickhouseApp(std::string_view app_suffix, std::vector<char *> & argv)
     return !argv.empty() && (app_name == argv[0] || endsWith(argv[0], "/" + app_name));
 }
 
+// chdb_spec
 // /// Don't allow dlopen in the main ClickHouse binary, because it is harmful and insecure.
 // /// We don't use it. But it can be used by some libraries for implementation of "plugins".
 // /// We absolutely discourage the ancient technique of loading
@@ -168,6 +211,7 @@ bool isClickhouseApp(std::string_view app_suffix, std::vector<char *> & argv)
 //     }
 // }
 // #endif
+// chdb_spec
 
 /// Prevent messages from JeMalloc in the release build.
 /// Some of these messages are non-actionable for the users, such as:
@@ -242,7 +286,7 @@ int main(int argc_, char ** argv_)
     std::vector<char *> argv(argv_, argv_ + argc_);
 
     /// Print a basic help if nothing was matched
-    MainFunc main_func = printHelp;
+    MainFunc main_func = printHelpOnError;
 
     for (auto & application : clickhouse_applications)
     {
@@ -251,6 +295,18 @@ int main(int argc_, char ** argv_)
             main_func = application.second;
             break;
         }
+    }
+
+    /// Top-level --help / -h / -? (as the sole argument) should show the dispatcher
+    /// help listing all subcommands and exit with code 0. Without this carve-out,
+    /// `--help` would match the `startsWith(argv[i], "-h")` rule below and be routed
+    /// into clickhouse-client, which treats anything starting with "-h" as a --host
+    /// specification and fails.
+    if (main_func == printHelpOnError && argv.size() == 2)
+    {
+        std::string_view arg(argv[1]);
+        if (arg == "--help" || arg == "-h" || arg == "-?")
+            main_func = mainEntryHelp;
     }
 
     /// Interpret binary without argument or with arguments starts with dash
@@ -264,7 +320,7 @@ int main(int argc_, char ** argv_)
     ///     clickhouse /tmp/repro --enable-analyzer
     ///
     std::error_code ec;
-    if (main_func == printHelp && !argv.empty()
+    if (main_func == printHelpOnError && !argv.empty()
         && (argv.size() < 2 || argv[1] != std::string_view("--help"))
         && (argv.size() == 1 || argv[1][0] == '-' || std::string_view(argv[1]).contains(' ')
             || std::filesystem::is_regular_file(std::filesystem::path{argv[1]}, ec)))
@@ -272,11 +328,27 @@ int main(int argc_, char ** argv_)
         main_func = mainEntryClickHouseLocal;
     }
 
-    int exit_code = main_func(static_cast<int>(argv.size()), argv.data());
+    /// If the argument looks like a file path but doesn't exist, provide a helpful error
+    /// instead of the generic "Use one of the following commands" message.
+    /// The check above routes existing files to clickhouse-local, but when the file
+    /// doesn't exist, we fall through to `printHelp` which is confusing:
+    ///     $ clickhouse tests/queries/0_stateless/my_test.sql
+    ///     Use one of the following commands: ...
+    /// We detect file-like arguments by the presence of `/` (path separator)
+    /// or `.` (file extension), which distinguishes them from mistyped subcommand
+    /// names like "clickhouse sever" where the generic help is appropriate.
+    if (main_func == printHelpOnError && argv.size() >= 2)
+    {
+        std::string_view arg(argv[1]);
+        if (arg.contains('/') || arg.contains('.'))
+        {
+            std::cerr << "Error: no such file: " << arg << std::endl;
+            std::cerr << "If you intended to run a script, please check the path." << std::endl;
+            return 1;
+        }
+    }
 
-#if defined(SANITIZE_COVERAGE)
-    dumpCoverage();
-#endif
+    int exit_code = main_func(static_cast<int>(argv.size()), argv.data());
 
     return exit_code;
 }

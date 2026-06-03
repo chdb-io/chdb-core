@@ -6,6 +6,8 @@
 #include <base/types.h>
 #include <rapidjson/document.h>
 
+#include <DataTypes/Serializations/ISerialization.h>
+
 namespace CHDB
 {
 

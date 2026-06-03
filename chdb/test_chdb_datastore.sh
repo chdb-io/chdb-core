@@ -56,6 +56,21 @@ CHDB_SRC="${WORKDIR}/chdb"
 echo "Cloning chdb-io/chdb@${CHDB_TAG} into ${CHDB_SRC}..."
 git clone --depth 1 --branch "${CHDB_TAG}" https://github.com/chdb-io/chdb.git "${CHDB_SRC}"
 
+# chdb-io v4.1.8 was written against chdb-core v26.3 baseline.  Two upstream-driven
+# behaviour changes shipped with v26.5 — BLOB columns are returned as latin-1
+# decoded unicode strings rather than Python bytes objects, and Array(T) inside
+# Nullable is now permitted natively — break 5 datastore tests that assert
+# the v26.3 behaviour or use xfail(strict=True) for the limitation that no
+# longer exists.  Apply a compatibility shim to xfail_markers.py and the
+# test_utils equality helper so the suite reflects v26.5 semantics until
+# chdb-io ships a v26.5-compatible release.
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHIM="${SHIM_DIR}/test_chdb_datastore_v26_5_compat.py"
+if [ -f "${SHIM}" ]; then
+    echo "Applying chdb-core v26.5 compatibility shim to chdb-io tests..."
+    ${PYTHON} "${SHIM}" "${CHDB_SRC}"
+fi
+
 echo "Installing chdb wrapper on top of chdb-core (no deps to preserve local chdb-core)..."
 ${PYTHON} -m pip install --no-deps --force-reinstall "${CHDB_SRC}"
 

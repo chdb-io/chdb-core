@@ -136,6 +136,14 @@ if (CHDB_LITE)
         # Dictionary lookup functions: useful only with dictionaries (already trimmed); fail clearly when called.
         FunctionsExternalDictionaries.cpp
         FunctionDictGetKeys.cpp
+        # AI SQL functions (aiClassify / aiExtract / aiGenerate / aiTranslate):
+        # make outbound HTTP calls to OpenAI / Anthropic; orthogonal to the embedded SQL engine.
+        # AI/ subdirectory (providers + quota tracker) is gated separately below.
+        aiClassify.cpp
+        aiExtract.cpp
+        aiGenerate.cpp
+        aiTranslate.cpp
+        FunctionBaseAI.cpp
     )
     foreach (f IN LISTS _chdb_drop_funcs)
         list(REMOVE_ITEM clickhouse_functions_sources ${f})
@@ -185,6 +193,11 @@ if (CHDB_MINIMAL_FUNCTIONS)
         "${CMAKE_CURRENT_SOURCE_DIR}/minus.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/multiply.cpp"
     )
+endif()
+if (NOT CHDB_LITE)
+    # CHDB_LITE drops the AI SQL functions (aiClassify/aiExtract/aiGenerate/aiTranslate);
+    # their provider/quota helpers in AI/ are only referenced from those .cpp files, so skip the subdir too.
+    add_headers_and_sources(clickhouse_functions AI)
 endif()
 
 # These files are moved from clickhouse_functions into dbms to make dbms self-contained (not depend on clickhouse_functions)

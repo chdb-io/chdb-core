@@ -50,7 +50,7 @@ if (NOT LINKER_NAME)
     if (OS_LINUX AND NOT ARCH_S390X)
         ch_find_program (LLD_PATH NAMES "ld.lld-${COMPILER_VERSION_MAJOR}" "ld.lld")
     elseif (OS_DARWIN)
-        ch_find_program (LLD_PATH NAMES "ld")
+        ch_find_program (LLD_PATH NAMES "ld64.lld-${COMPILER_VERSION_MAJOR}" "ld64.lld" "ld")
         # Duplicate libraries passed to the linker is not a problem.
         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-no_warn_duplicate_libraries")
     endif ()
@@ -112,6 +112,14 @@ else ()
     # objcopy is only needed for split_debug_symbols (keeper), which is disabled in chdb builds.
     # On macOS without Homebrew LLVM, llvm-objcopy is not shipped by Xcode CLT — downgrade to warning.
     message (WARNING "Cannot find objcopy. Debug symbol splitting will be unavailable.")
+endif ()
+
+# nm (used by helper scripts that inspect symbol tables, e.g. cmake/localize_rust_c_symbols.sh)
+ch_find_program (NM_PATH NAMES "llvm-nm-${COMPILER_VERSION_MAJOR}" "llvm-nm" "nm")
+if (NM_PATH)
+    message (STATUS "Using nm: ${NM_PATH}")
+else ()
+    message (FATAL_ERROR "Cannot find nm.")
 endif ()
 
 # Strip

@@ -57,14 +57,19 @@ StoragePython::StoragePython(
     StorageInMemoryMetadata storage_metadata;
     storage_metadata.setColumns(columns_);
     storage_metadata.setConstraints(constraints_);
-    setInMemoryMetadata(storage_metadata);
 
     if (is_pandas_df)
     {
         VirtualColumnsDescription virtuals;
-        virtuals.addEphemeral("_row_id", std::make_shared<DataTypeUInt64>(), "Row index in the Pandas DataFrame");
-        setVirtuals(std::move(virtuals));
+        virtuals.addEphemeral(
+            "_row_id",
+            std::make_shared<DataTypeUInt64>(),
+            "Row index in the Pandas DataFrame",
+            VirtualsMaterializationPlace::Reader);
+        storage_metadata.setVirtuals(std::move(virtuals));
     }
+
+    setInMemoryMetadata(storage_metadata);
 }
 
 Pipe StoragePython::read(
@@ -81,7 +86,7 @@ Pipe StoragePython::read(
     std::vector<bool> is_virtual_column(column_names.size(), false);
     for (size_t i = 0; i < column_names.size(); ++i)
     {
-        if (isVirtualColumn(column_names[i], storage_snapshot->metadata))
+        if (storage_snapshot->metadata->isVirtualColumn(column_names[i]))
             is_virtual_column[i] = true;
     }
 
@@ -127,7 +132,8 @@ Block StoragePython::prepareSampleBlock(
     {
         if (is_virtual_column[i])
         {
-            auto virtual_column = storage_snapshot->virtual_columns->get(column_names[i]);
+            auto virtual_column = storage_snapshot->metadata->virtuals.get(
+                column_names[i], VirtualsKind::All, VirtualsMaterializationPlace::Reader);
             sample_block.insert({virtual_column.type, virtual_column.name});
         }
         else

@@ -26,6 +26,14 @@ fi
 cp ${PROJ_DIR}/programs/local/chdb.h .
 echo "Copied library as libchdb.a and chdb.h to go-example directory"
 
+# Allow the macOS -Wl,-force_load,<path> (single dash) and Linux
+# -Wl,--whole-archive / -Wl,--no-whole-archive (double dash) cgo LDFLAGS
+# patterns through Go's default cgo security filter.  These are needed by
+# cgo_{darwin,linux}.go so SQL functions registered via file-scope static
+# initializers (e.g. FunctionMD5.cpp's REGISTER_FUNCTION(MD5)) survive the final
+# cgo->ld dead-strip on static libchdb.a consumers.
+export CGO_LDFLAGS_ALLOW='-Wl,(-force_load,.*|--whole-archive|--no-whole-archive)'
+
 # Run Go test
 echo "Running Go test..."
 go run .

@@ -514,8 +514,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                   '\t"statistics":\n'
                   '\t{\n'
                   '\t\t"elapsed": 0.0,\n'
-                  '\t\t"rows_read": 0,\n'
-                  '\t\t"bytes_read": 0\n'
+                  '\t\t"rows_read": 2,\n'
+                  '\t\t"bytes_read": 162\n'
                   '\t}\n'
                   '}\n',
           'len': 1418},
@@ -610,8 +610,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                                      '\t"statistics":\n'
                                      '\t{\n'
                                      '\t\t"elapsed": 0.0,\n'
-                                     '\t\t"rows_read": 0,\n'
-                                     '\t\t"bytes_read": 0\n'
+                                     '\t\t"rows_read": 2,\n'
+                                     '\t\t"bytes_read": 162\n'
                                      '\t}\n'
                                      '}\n',
                              'len': 1229},
@@ -680,8 +680,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                          '\t"statistics":\n'
                          '\t{\n'
                          '\t\t"elapsed": 0.0,\n'
-                         '\t\t"rows_read": 0,\n'
-                         '\t\t"bytes_read": 0\n'
+                         '\t\t"rows_read": 2,\n'
+                         '\t\t"bytes_read": 162\n'
                          '\t}\n'
                          '}\n',
                  'len': 1042},
@@ -814,8 +814,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                                 '\t"statistics":\n'
                                 '\t{\n'
                                 '\t\t"elapsed": 0.0,\n'
-                                '\t\t"rows_read": 0,\n'
-                                '\t\t"bytes_read": 0\n'
+                                '\t\t"rows_read": 2,\n'
+                                '\t\t"bytes_read": 162\n'
                                 '\t}\n'
                                 '}\n',
                         'len': 1074},
@@ -986,8 +986,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                          '\t"statistics":\n'
                          '\t{\n'
                          '\t\t"elapsed": 0.0,\n'
-                         '\t\t"rows_read": 0,\n'
-                         '\t\t"bytes_read": 0\n'
+                         '\t\t"rows_read": 2,\n'
+                         '\t\t"bytes_read": 162\n'
                          '\t}\n'
                          '}\n',
                  'len': 1450},
@@ -1905,8 +1905,8 @@ format_output = {'Arrow': {'data': b'ARROW1\x00\x00\xff\xff\xff\xff\xa8\x02\x00\
                  '<rows_before_limit_at_least>2</rows_before_limit_at_least>\n'
                  '\t<statistics>\n'
                  '\t\t<elapsed>0.0</elapsed>\n'
-                 '\t\t<rows_read>0</rows_read>\n'
-                 '\t\t<bytes_read>0</bytes_read>\n'
+                 '\t\t<rows_read>2</rows_read>\n'
+                 '\t\t<bytes_read>162</bytes_read>\n'
                  '\t</statistics>\n'
                  '</result>\n',
          'len': 2032}}

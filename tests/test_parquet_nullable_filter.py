@@ -201,13 +201,17 @@ class TestParquetNullableFilter(unittest.TestCase):
         # This triggered "Too many bytes in mask" before the fix because the
         # use_filter_in_decoder optimization was incorrectly applied to nullable
         # columns.
+        #
+        # Note: explicit toDateTime() cast on event_time is required because
+        # ClickHouse v26.5+ infers Parquet TIMESTAMP_MILLIS as DateTime64(3),
+        # which windowFunnel rejects (it accepts only Date / DateTime / unsigned).
         result = chdb.query(
             f"""
             SELECT funnel_level, count(*) AS cnt
             FROM (
                 SELECT user_id,
                        windowFunnel(3600)(
-                           event_time,
+                           toDateTime(event_time),
                            fare_amount < 15,
                            fare_amount > 50
                        ) AS funnel_level

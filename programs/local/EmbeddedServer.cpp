@@ -27,7 +27,7 @@
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/SharedThreadPools.h>
-#include <Interpreters/Cache/FileCacheFactory.h>
+#include <Interpreters/FileCache/FileCacheFactory.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
@@ -113,6 +113,18 @@ extern const ServerSettingsString vector_similarity_index_cache_policy;
 extern const ServerSettingsUInt64 vector_similarity_index_cache_size;
 extern const ServerSettingsUInt64 vector_similarity_index_cache_max_entries;
 extern const ServerSettingsDouble vector_similarity_index_cache_size_ratio;
+extern const ServerSettingsString text_index_tokens_cache_policy;
+extern const ServerSettingsUInt64 text_index_tokens_cache_size;
+extern const ServerSettingsUInt64 text_index_tokens_cache_max_entries;
+extern const ServerSettingsDouble text_index_tokens_cache_size_ratio;
+extern const ServerSettingsString text_index_header_cache_policy;
+extern const ServerSettingsUInt64 text_index_header_cache_size;
+extern const ServerSettingsUInt64 text_index_header_cache_max_entries;
+extern const ServerSettingsDouble text_index_header_cache_size_ratio;
+extern const ServerSettingsString text_index_postings_cache_policy;
+extern const ServerSettingsUInt64 text_index_postings_cache_size;
+extern const ServerSettingsUInt64 text_index_postings_cache_max_entries;
+extern const ServerSettingsDouble text_index_postings_cache_size_ratio;
 extern const ServerSettingsUInt64 io_thread_pool_queue_size;
 extern const ServerSettingsString mark_cache_policy;
 extern const ServerSettingsUInt64 mark_cache_size;
@@ -157,6 +169,7 @@ extern const ServerSettingsUInt64 memory_worker_period_ms;
 extern const ServerSettingsDouble memory_worker_purge_dirty_pages_threshold_ratio;
 extern const ServerSettingsDouble memory_worker_purge_total_memory_threshold_ratio;
 extern const ServerSettingsBool memory_worker_correct_memory_tracker;
+extern const ServerSettingsUInt64 memory_worker_decay_adjustment_period_ms;
 extern const ServerSettingsBool memory_worker_use_cgroup;
 }
 
@@ -239,6 +252,7 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         .purge_dirty_pages_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_dirty_pages_threshold_ratio],
         .purge_total_memory_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_total_memory_threshold_ratio],
         .correct_tracker = server_settings[ServerSetting::memory_worker_correct_memory_tracker],
+        .decay_adjustment_period_ms = server_settings[ServerSetting::memory_worker_decay_adjustment_period_ms],
         .use_cgroup = server_settings[ServerSetting::memory_worker_use_cgroup],
     };
     memory_worker = std::make_unique<MemoryWorker>(memory_worker_config, nullptr);
@@ -368,7 +382,7 @@ void EmbeddedServer::tryInitPath()
             LOG_DEBUG(log, "Can not get temporary folder: {}", e.what());
             parent_folder = std::filesystem::current_path();
 
-            std::filesystem::is_directory(parent_folder); // that will throw an exception if it's not a directory
+            (void)std::filesystem::is_directory(parent_folder); // checks the path is accessible (may throw on I/O error)
             LOG_DEBUG(log, "Will create working directory inside current directory: {}", parent_folder.string());
         }
 
@@ -802,6 +816,39 @@ void EmbeddedServer::processConfig()
         vector_similarity_index_cache_size,
         vector_similarity_index_cache_max_count,
         vector_similarity_index_cache_size_ratio);
+
+    String text_index_tokens_cache_policy = server_settings[ServerSetting::text_index_tokens_cache_policy];
+    size_t text_index_tokens_cache_size = server_settings[ServerSetting::text_index_tokens_cache_size];
+    size_t text_index_tokens_cache_max_count = server_settings[ServerSetting::text_index_tokens_cache_max_entries];
+    double text_index_tokens_cache_size_ratio = server_settings[ServerSetting::text_index_tokens_cache_size_ratio];
+    if (text_index_tokens_cache_size > max_cache_size)
+    {
+        text_index_tokens_cache_size = max_cache_size;
+        LOG_INFO(log, "Lowered text index tokens cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(text_index_tokens_cache_size));
+    }
+    global_context->setTextIndexTokensCache(text_index_tokens_cache_policy, text_index_tokens_cache_size, text_index_tokens_cache_max_count, text_index_tokens_cache_size_ratio);
+
+    String text_index_header_cache_policy = server_settings[ServerSetting::text_index_header_cache_policy];
+    size_t text_index_header_cache_size = server_settings[ServerSetting::text_index_header_cache_size];
+    size_t text_index_header_cache_max_count = server_settings[ServerSetting::text_index_header_cache_max_entries];
+    double text_index_header_cache_size_ratio = server_settings[ServerSetting::text_index_header_cache_size_ratio];
+    if (text_index_header_cache_size > max_cache_size)
+    {
+        text_index_header_cache_size = max_cache_size;
+        LOG_INFO(log, "Lowered text index header cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(text_index_header_cache_size));
+    }
+    global_context->setTextIndexHeaderCache(text_index_header_cache_policy, text_index_header_cache_size, text_index_header_cache_max_count, text_index_header_cache_size_ratio);
+
+    String text_index_postings_cache_policy = server_settings[ServerSetting::text_index_postings_cache_policy];
+    size_t text_index_postings_cache_size = server_settings[ServerSetting::text_index_postings_cache_size];
+    size_t text_index_postings_cache_max_count = server_settings[ServerSetting::text_index_postings_cache_max_entries];
+    double text_index_postings_cache_size_ratio = server_settings[ServerSetting::text_index_postings_cache_size_ratio];
+    if (text_index_postings_cache_size > max_cache_size)
+    {
+        text_index_postings_cache_size = max_cache_size;
+        LOG_INFO(log, "Lowered text index posting list cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(text_index_postings_cache_size));
+    }
+    global_context->setTextIndexPostingsCache(text_index_postings_cache_policy, text_index_postings_cache_size, text_index_postings_cache_max_count, text_index_postings_cache_size_ratio);
 
     size_t mmap_cache_size = server_settings[ServerSetting::mmap_cache_size];
     if (mmap_cache_size > max_cache_size)
