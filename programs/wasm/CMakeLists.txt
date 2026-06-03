@@ -51,7 +51,7 @@ target_link_options (chdb_wasm PRIVATE
     -sWASM_BIGINT
     -sFORCE_FILESYSTEM=1
     -sALLOW_TABLE_GROWTH=1
-    "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8"
+    "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS"
     "SHELL:-s EXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exported_functions.txt"
     -sENVIRONMENT=node,web,worker
     )

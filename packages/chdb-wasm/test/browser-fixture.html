@@ -19,6 +19,9 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     await db.query('INSERT INTO t SELECT number FROM numbers(100)');
     out.insert = await Q('SELECT count(), sum(x) FROM t');
     out.heavy = await Q('SELECT count() FROM numbers(50000000)');
+    // local file IO: put a file into the wasm FS, read it back with file()
+    await db.putFile('/b/data.csv', new TextEncoder().encode('id,v\n1,10\n2,20\n3,30\n'));
+    out.file = await Q("SELECT count(), sum(v) FROM file('/b/data.csv','CSVWithNames')");
     await db.terminate();
     log('done: ' + JSON.stringify(out));
     window.__RESULT__ = out;

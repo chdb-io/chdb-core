@@ -53,6 +53,7 @@ async function runContext(label, isolate, port, expectVariant) {
     assert.strictEqual(r.join, '1000', `${label}: JOIN`);
     assert.strictEqual(r.insert, '100,4950', `${label}: INSERT+read`);
     assert.strictEqual(r.heavy, '50000000', `${label}: heavy count`);
+    assert.strictEqual(r.file, '3,60', `${label}: file() local read`);
     console.log(`[${label}] OK`);
   } finally {
     await browser.close();
@@ -60,6 +61,9 @@ async function runContext(label, isolate, port, expectVariant) {
   }
 }
 
-await runContext('isolated->mt', true, 8131, 'mt');
-await runContext('non-isolated->st', false, 8132, 'st');
-console.log('\nbrowser tests passed (mt on isolated page, st on non-isolated page)');
+// CHDB_BROWSER_CONTEXTS=mt,st (default both). Lets local runs check one bundle
+// while CI exercises both (mt on an isolated page, st on a non-isolated page).
+const contexts = (process.env.CHDB_BROWSER_CONTEXTS ?? 'mt,st').split(',').map((s) => s.trim()).filter(Boolean);
+if (contexts.includes('mt')) await runContext('isolated->mt', true, 8131, 'mt');
+if (contexts.includes('st')) await runContext('non-isolated->st', false, 8132, 'st');
+console.log(`\nbrowser tests passed (${contexts.join(', ')})`);

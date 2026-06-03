@@ -24,6 +24,26 @@ export class ChdbBindings {
     return this.consume(r, sql);
   }
 
+  /**
+   * Write a file into the wasm in-memory filesystem (MEMFS), creating parent
+   * directories as needed, so `file('/path', ...)` / `INFILE` can read it.
+   * Requires the module built with FORCE_FILESYSTEM and FS in EXPORTED_RUNTIME_METHODS.
+   */
+  writeFile(path: string, data: Uint8Array): void {
+    const FS = this.mod.FS;
+    if (!FS) throw new ChdbError('FS is not available in this build (need EXPORTED_RUNTIME_METHODS=FS)');
+    const slash = path.lastIndexOf('/');
+    if (slash > 0) {
+      let cur = '';
+      for (const part of path.slice(0, slash).split('/')) {
+        if (!part) continue;
+        cur += '/' + part;
+        try { FS.mkdir(cur); } catch { /* already exists */ }
+      }
+    }
+    FS.writeFile(path, data);
+  }
+
   /** Open an explicit connection; returns an opaque handle. */
   connect(path?: string): ConnHandle {
     return this.mod.ccall('chdb_wasm_connect', 'number', ['string'], [path ?? '']);

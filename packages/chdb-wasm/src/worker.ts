@@ -105,6 +105,9 @@ listen((req: WorkerRequest) => {
         case 'streamCancel':
           requireBindings().streamCancel(req.payload.conn, req.payload.stream);
           break;
+        case 'putFile':
+          requireBindings().writeFile(req.payload.path, req.payload.data);
+          break;
         case 'close':
           bindings = null;
           break;

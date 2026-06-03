@@ -90,17 +90,26 @@ export class AsyncChdb {
     else p.reject(new ChdbError('error' in msg ? msg.error : 'unknown worker error'));
   }
 
-  private request(type: RequestType, payload?: any): Promise<any> {
+  private request(type: RequestType, payload?: any, transfer?: Transferable[]): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ id, type, payload });
+      (this.worker as any).postMessage({ id, type, payload }, transfer ?? []);
     });
   }
 
   /** Run a query on the implicit :memory: connection. */
   async query(sql: string, format = 'CSV'): Promise<ChdbResult> {
     return wrap(await this.request('query', { sql, format }));
+  }
+
+  /**
+   * Write a file into the wasm in-memory filesystem so it can be queried with
+   * `file('<path>', ...)` (or read via `INFILE`). `data` is transferred zero-copy.
+   * Example: await db.putFile('/data.csv', bytes); await db.query("SELECT * FROM file('/data.csv','CSV')")
+   */
+  async putFile(path: string, data: Uint8Array): Promise<void> {
+    await this.request('putFile', { path, data }, [data.buffer]);
   }
 
   /** Open an explicit connection (path defaults to in-memory). */

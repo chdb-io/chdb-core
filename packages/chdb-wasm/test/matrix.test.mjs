@@ -75,6 +75,17 @@ check('ddl_dml', async () => {
   await db.query('DROP TABLE m2');
 });
 
+// --- local file IO: put a file into the wasm FS, read it back with file() ---
+check('file_csv', async () => {
+  await db.putFile('/m/data.csv', new TextEncoder().encode('id,name\n1,alice\n2,bob\n3,carol\n'));
+  assert.strictEqual(await q("SELECT count() FROM file('/m/data.csv','CSVWithNames')"), '3');
+  assert.strictEqual(await q("SELECT name FROM file('/m/data.csv','CSVWithNames') WHERE id=2", 'CSV'), '"bob"');
+});
+check('file_jsonl', async () => {
+  await db.putFile('/m/data.jsonl', new TextEncoder().encode('{"x":10}\n{"x":20}\n{"x":30}\n'));
+  assert.strictEqual(await q("SELECT sum(x) FROM file('/m/data.jsonl','JSONEachRow')"), '60');
+});
+
 let failed = 0;
 for (const [name, fn] of cases) {
   try { await fn(); pass++; console.log(`ok   ${name}`); }
