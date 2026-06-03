@@ -14,18 +14,17 @@ target_link_libraries (chdb_wasm PRIVATE clickhouse-local-lib)
 #
 # WASM_STACK_SIZE: main-thread C++ stack. ClickHouse recurses deeply (parser,
 #   planner), so it must be generous; worker threads use WASM_PTHREAD_STACK_SIZE.
-# WASM_PTHREAD_POOL_SIZE: number of Web Workers pre-spawned at module init
-#   (matches duckdb-wasm's 4). With PTHREAD_POOL_SIZE_STRICT=2 below, the pool is a
-#   HARD cap: if ClickHouse needs more concurrent threads than this, pthread_create
-#   FAILS ("cannot start thread") instead of trying to spawn on demand (which would
-#   deadlock in the browser, since a blocked thread can't service worker creation).
-#   NOTE: ClickHouse is far more thread-hungry than duckdb (background pools + a
-#   query's max_threads, which defaults to the host core count). At 4 it will likely
-#   error unless you also cap demand (e.g. --max_threads + smaller background pools).
+# WASM_PTHREAD_POOL_SIZE: number of Web Workers pre-spawned at module init. The
+#   pool cannot grow under a blocking query in the browser, so it must cover
+#   ClickHouse's peak concurrent threads = a query's max_threads (capped to 4 by
+#   chdb_wasm.cpp via `SET max_threads`) + its background threads. 16 gives ample
+#   headroom; PTHREAD_POOL_SIZE_STRICT=2 turns any overflow into a clean error
+#   rather than a deadlock. Lower it for faster browser startup if your queries are
+#   light (but keep it well above CHDB_WASM_MAX_THREADS).
 # WASM_PTHREAD_STACK_SIZE: per-worker stack (there are WASM_PTHREAD_POOL_SIZE of
 #   these, so this dominates baseline memory — keep it as small as queries allow).
 set (WASM_STACK_SIZE "8MB" CACHE STRING "chdb-wasm main-thread stack size")
-set (WASM_PTHREAD_POOL_SIZE "4" CACHE STRING "chdb-wasm pre-spawned worker pool size (duckdb uses 4)")
+set (WASM_PTHREAD_POOL_SIZE "16" CACHE STRING "chdb-wasm pre-spawned worker pool size")
 set (WASM_PTHREAD_STACK_SIZE "2MB" CACHE STRING "chdb-wasm per-worker stack size")
 set (WASM_INITIAL_MEMORY "128MB" CACHE STRING "chdb-wasm initial heap size")
 

@@ -19,11 +19,33 @@
 
 extern "C" {
 
+// On wasm the pthread pool is fixed-size (PTHREAD_POOL_SIZE) and cannot grow on
+// demand: the chdb query runs synchronously in a worker, so the calling thread is
+// blocked and can't service new-worker creation. If ClickHouse asks for more
+// concurrent threads than the pool (max_threads defaults to the host core count!),
+// it deadlocks / "Cannot schedule a task". So we cap query parallelism to a value
+// comfortably below the pool (which leaves room for ClickHouse's background
+// threads). The command-line --max_threads arg is NOT honored by the embedded
+// server, but a session-level `SET max_threads` right after connect is, and it
+// persists for the connection's lifetime.
+#ifndef CHDB_WASM_MAX_THREADS
+#    define CHDB_WASM_MAX_THREADS "4"
+#endif
+static char arg0[] = "chdb";
+
 // ------------------------------------------------------------------
 // Implicit, process-wide :memory: connection (created lazily on first query).
 // ------------------------------------------------------------------
 
 static chdb_connection * g_conn = nullptr;
+
+// Apply the wasm thread cap on a freshly opened connection (idempotent, cheap).
+static void chdb_wasm_apply_settings(chdb_connection conn)
+{
+    chdb_result * r = chdb_query(conn, "SET max_threads = " CHDB_WASM_MAX_THREADS, "Null");
+    if (r)
+        chdb_destroy_query_result(r);
+}
 
 // Open (or reopen) the implicit :memory: connection. Returns 1 on success.
 int chdb_wasm_open()
@@ -31,9 +53,10 @@ int chdb_wasm_open()
     if (g_conn)
         return 1;
     // argv[0] is the program name; default path is :memory: when --path is absent.
-    static char arg0[] = "chdb";
     char * argv[] = {arg0};
     g_conn = chdb_connect(1, argv);
+    if (g_conn)
+        chdb_wasm_apply_settings(*g_conn);
     return g_conn != nullptr ? 1 : 0;
 }
 
@@ -65,15 +88,21 @@ chdb_result * chdb_wasm_query(const char * sql, const char * format)
 // Open a connection. `path` may be null/empty for an in-memory database.
 chdb_connection * chdb_wasm_connect(const char * path)
 {
-    static char arg0[] = "chdb";
+    chdb_connection * conn;
     if (path && *path)
     {
         std::string path_arg = std::string("--path=") + path;
         char * argv[] = {arg0, const_cast<char *>(path_arg.c_str())};
-        return chdb_connect(2, argv);
+        conn = chdb_connect(2, argv);
     }
-    char * argv[] = {arg0};
-    return chdb_connect(1, argv);
+    else
+    {
+        char * argv[] = {arg0};
+        conn = chdb_connect(1, argv);
+    }
+    if (conn)
+        chdb_wasm_apply_settings(*conn);
+    return conn;
 }
 
 void chdb_wasm_close_conn(chdb_connection * conn)
