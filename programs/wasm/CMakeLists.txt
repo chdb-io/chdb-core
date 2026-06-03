@@ -37,6 +37,12 @@ set_target_properties (chdb_wasm PROPERTIES
 # Note: -sMEMORY64=1, -fwasm-exceptions and (when WASM_THREADS=ON) -pthread are
 # added globally in cmake/target.cmake's OS_WASM block.
 target_link_options (chdb_wasm PRIVATE
+    # Size optimization: -Oz runs Binaryen wasm-opt -Oz over the whole module
+    # (whole-program DCE + size opts). ASSERTIONS=0 drops Emscripten's runtime
+    # sanity checks (production setting; no functional change). Together these
+    # shrink the .wasm substantially without affecting behavior.
+    -Oz
+    -sASSERTIONS=0
     -sMODULARIZE=1
     "SHELL:-s EXPORT_NAME=createChdbModule"
     -sALLOW_MEMORY_GROWTH=1
@@ -48,7 +54,6 @@ target_link_options (chdb_wasm PRIVATE
     "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8"
     "SHELL:-s EXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exported_functions.txt"
     -sENVIRONMENT=node,web,worker
-    -sASSERTIONS=1
     )
 
 # Pthread pool options only apply to the threaded build (-pthread). In the
