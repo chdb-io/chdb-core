@@ -49,6 +49,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends lld ninja-build ccache
 
+      # emcmake needs a recent cmake on PATH; the self-hosted runner does not provide
+      # one for this job, so install a pinned cmake (+ninja) ourselves.
+      - name: Setup CMake + Ninja
+        uses: lukka/get-cmake@latest
+
       # Caches the installed emsdk between runs (keyed by EMSDK_VERSION).
       - name: Setup Emscripten ${{ env.EMSDK_VERSION }} (cached)
         uses: mymindstorm/setup-emsdk@v14
