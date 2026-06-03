@@ -25,8 +25,19 @@ static constexpr clockid_t STOPWATCH_DEFAULT_CLOCK = CLOCK_MONOTONIC;
 inline UInt64 clock_gettime_ns(clockid_t clock_type = STOPWATCH_DEFAULT_CLOCK)
 {
     struct timespec ts;
+#if defined(OS_WASM)
+    /// Emscripten's clock_gettime supports only a subset of clock ids (essentially
+    /// CLOCK_REALTIME / CLOCK_MONOTONIC) and returns EINVAL for the others, e.g.
+    /// CLOCK_MONOTONIC_RAW and CLOCK_MONOTONIC_COARSE. Fall back to a supported
+    /// clock instead of throwing so the timing-heavy code paths work on WASM.
+    if (0 != clock_gettime(clock_type, &ts)
+        && 0 != clock_gettime(CLOCK_MONOTONIC, &ts)
+        && 0 != clock_gettime(CLOCK_REALTIME, &ts))
+        throw std::system_error(std::error_code(errno, std::system_category()));
+#else
     if (0 != clock_gettime(clock_type, &ts))
         throw std::system_error(std::error_code(errno, std::system_category()));
+#endif
     return UInt64(ts.tv_sec * 1000000000LL + ts.tv_nsec);
 }
 

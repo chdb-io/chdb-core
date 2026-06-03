@@ -3,6 +3,10 @@ include (CheckCCompilerFlag)
 
 # Try to add -Wflag if compiler supports it
 macro (add_warning flag)
+    # On WASM (Emscripten) each check_*_compiler_flag spawns a slow emcc probe and
+    # there are ~100 of them; skip the strict -Weverything/-Wpedantic profile entirely
+    # for the experimental WASM port (we also build it without -Werror).
+    if (NOT OS_WASM)
     string (REPLACE "-" "_" underscored_flag ${flag})
     string (REPLACE "+" "x" underscored_flag ${underscored_flag})
 
@@ -19,6 +23,7 @@ macro (add_warning flag)
         set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -W${flag}")
     else ()
         message (STATUS "Flag -W${flag} is unsupported")
+    endif ()
     endif ()
 
 endmacro ()

@@ -17,8 +17,104 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "Darwin")
 elseif (CMAKE_SYSTEM_NAME MATCHES "SunOS")
     set (OS_SUNOS 1)
     add_definitions(-D OS_SUNOS)
+elseif (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+    # WebAssembly target (browser / node) via the Emscripten toolchain.
+    # Invoke with `emcmake cmake ...`, which sets CMAKE_SYSTEM_NAME=Emscripten
+    # and points CMAKE_TOOLCHAIN_FILE at Emscripten.cmake.
+    set (OS_WASM 1)
+    add_definitions(-D OS_WASM)
+    # MAP_ANONYMOUS for the mmap fallback shim.
+    add_definitions(-D _GNU_SOURCE)
+
+    # ClickHouse assumes a 64-bit size_t / pointer width pervasively (e.g. `1e12uz`
+    # literals in src/Core/Defines.h, sizeof-equality static_asserts in ProfileEvents).
+    # The 32-bit wasm32 ABI breaks thousands of these. Build for wasm64 (Memory64)
+    # so size_t and pointers are 64-bit, matching the codebase's assumptions.
+    # Requires a recent runtime (Node >= 23, Chrome >= 133). Set WASM_MEMORY64=OFF to
+    # attempt the (much harder) 32-bit port instead.
+    option (WASM_MEMORY64 "Build the WASM target for the 64-bit Memory64 ABI" ON)
+    if (WASM_MEMORY64)
+        add_compile_options(-sMEMORY64=1)
+        add_link_options(-sMEMORY64=1)
+    endif ()
+
+    # ClickHouse relies pervasively on C++ exception *catching*. Emscripten
+    # disables catching by default (only throwing works), turning every try/catch
+    # into a no-op so exceptions escape to JS. Enable native WebAssembly exception
+    # handling (supported by Node >= 23 and modern browsers). It must be applied at
+    # both compile and link so landing pads are emitted in every translation unit.
+    add_compile_options(-fwasm-exceptions)
+    add_link_options(-fwasm-exceptions)
+
+    # ClickHouse is pervasively multi-threaded (global thread pool, background
+    # schedule pools, the query pipeline). Emscripten without pthreads makes every
+    # thread creation fail ("cannot start thread"), so enable real pthreads (Web
+    # Workers + SharedArrayBuffer). -pthread is an ABI flag and must be applied to
+    # every translation unit at compile and link. The worker pool size is set on
+    # the final link target (programs/wasm).
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
 else ()
     message (FATAL_ERROR "Platform ${CMAKE_SYSTEM_NAME} is not supported")
+endif ()
+
+# WebAssembly cannot use threads-by-default, jemalloc, any networked storage,
+# the embedded LLVM JIT, Rust, or hardware-specific code paths. Force these off
+# unconditionally so the rest of the tree configures consistently for WASM.
+if (OS_WASM)
+    set (ENABLE_JEMALLOC OFF CACHE INTERNAL "")
+    set (ENABLE_TCMALLOC OFF CACHE INTERNAL "")
+    set (ENABLE_GRPC OFF CACHE INTERNAL "")
+    set (ENABLE_ARROW_FLIGHT OFF CACHE INTERNAL "")
+    set (ENABLE_HDFS OFF CACHE INTERNAL "")
+    set (ENABLE_MYSQL OFF CACHE INTERNAL "")
+    set (ENABLE_LIBPQXX OFF CACHE INTERNAL "")
+    set (ENABLE_NURAFT OFF CACHE INTERNAL "")
+    set (ENABLE_KAFKA OFF CACHE INTERNAL "")
+    set (ENABLE_AMQPCPP OFF CACHE INTERNAL "")
+    set (ENABLE_NATS OFF CACHE INTERNAL "")
+    set (ENABLE_CASSANDRA OFF CACHE INTERNAL "")
+    set (ENABLE_AZURE_BLOB_STORAGE OFF CACHE INTERNAL "")
+    set (ENABLE_AWS_S3 OFF CACHE INTERNAL "")
+    set (ENABLE_S3 OFF CACHE INTERNAL "")
+    set (ENABLE_HIVE OFF CACHE INTERNAL "")
+    set (ENABLE_ODBC OFF CACHE INTERNAL "")
+    set (ENABLE_LDAP OFF CACHE INTERNAL "")
+    set (ENABLE_KRB5 OFF CACHE INTERNAL "")
+    set (ENABLE_GSASL_LIBRARY OFF CACHE INTERNAL "")
+    set (ENABLE_CURL OFF CACHE INTERNAL "")
+    set (ENABLE_RUST OFF CACHE INTERNAL "")
+    set (ENABLE_DELTA_KERNEL_RS OFF CACHE INTERNAL "")
+    set (ENABLE_EMBEDDED_COMPILER OFF CACHE INTERNAL "")
+    set (ENABLE_DWARF_PARSER OFF CACHE INTERNAL "")
+    set (ENABLE_ROCKSDB OFF CACHE INTERNAL "")
+    set (ENABLE_VECTORSCAN OFF CACHE INTERNAL "")
+    # BLAKE3 pulls in (a subset of) llvm-project; not worth it on WASM. Disabling
+    # it keeps the whole llvm-project tree out of the configure, like the LoongArch port.
+    set (ENABLE_BLAKE3 OFF CACHE INTERNAL "")
+    # Emscripten's sysroot provides math; don't build llvm-libc math.
+    set (ENABLE_LLVM_LIBC_MATH OFF CACHE INTERNAL "")
+    set (OPENSSL_NO_ASM ON CACHE INTERNAL "")
+    set (GLIBC_COMPATIBILITY OFF CACHE INTERNAL "")
+    set (ENABLE_LIBFIU OFF CACHE INTERNAL "")
+    # No libunwind on WASM; rely on the host engine for stack traces.
+    set (USE_UNWIND OFF CACHE INTERNAL "")
+
+    # Build the slim chdb-core-lite feature set on WASM (disables ~30 optional
+    # libs centrally). Set before the CHDB_LITE option()/block below so it sticks.
+    set (CHDB_LITE ON CACHE BOOL "WASM uses the chdb-core-lite trim set" FORCE)
+
+    # Go further than lite: the libs lite still opts-in but that WASM can't use
+    # (native protoc bootstrap, networked object stores, heavy columnar formats).
+    set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
+    set (ENABLE_PARQUET OFF CACHE INTERNAL "")
+    set (ENABLE_THRIFT OFF CACHE INTERNAL "")
+    set (ENABLE_CAPNP OFF CACHE INTERNAL "")
+    set (ENABLE_AVRO OFF CACHE INTERNAL "")
+
+    # Emscripten's libc++ is not the chdb-patched libcxx, so the exception ABI
+    # has no embedded stack trace. base/src expect this macro to be defined.
+    add_definitions (-DSTD_EXCEPTION_HAS_STACK_TRACE=0)
 endif ()
 
 # Since we always use toolchain files to generate hermetic builds, cmake will
@@ -79,6 +175,8 @@ if (CMAKE_CROSSCOMPILING)
         # FIXME: broken dependencies
         set (ENABLE_EMBEDDED_COMPILER OFF CACHE INTERNAL "")
         set (ENABLE_DWARF_PARSER OFF CACHE INTERNAL "")
+    elseif (OS_WASM)
+        # All WASM-specific disables are handled in the OS_WASM block above.
     else ()
         message (FATAL_ERROR "Trying to cross-compile to unsupported system: ${CMAKE_SYSTEM_NAME}!")
     endif ()

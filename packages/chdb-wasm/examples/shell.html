@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>chdb-wasm shell</title>
+    <style>
+      :root { --bg:#fafafa; --panel:#fff; --border:#e5e7eb; --text:#1f2328; --muted:#6b7280;
+              --accent:#ffcc00; --accent-d:#caa400; --err:#b42318; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+      * { box-sizing: border-box; }
+      body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:var(--text);
+             background:var(--bg); height:100vh; display:flex; flex-direction:column; }
+      header { display:flex; align-items:baseline; gap:12px; padding:14px 18px; border-bottom:1px solid var(--border); background:var(--panel); }
+      header h1 { font-size:16px; margin:0; font-weight:650; letter-spacing:-.2px; }
+      header .sub { color:var(--muted); font-size:12.5px; }
+      header .pill { margin-left:auto; font-size:12px; padding:3px 10px; border-radius:999px; background:#f1f5f9; color:var(--muted); }
+      header .pill.ready { background:#ecfdf3; color:#067647; }
+      header .pill.err { background:#fef3f2; color:var(--err); }
+      main { flex:1; display:flex; flex-direction:column; padding:14px 18px; gap:10px; overflow:hidden; }
+      .editor { display:flex; flex-direction:column; gap:8px; }
+      textarea { width:100%; height:120px; resize:vertical; padding:10px 12px; border:1px solid var(--border);
+                 border-radius:8px; font-family:var(--mono); font-size:13.5px; line-height:1.5; background:var(--panel); }
+      .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+      button { font:inherit; font-size:13px; font-weight:600; padding:7px 16px; border:1px solid var(--accent-d);
+               border-radius:8px; background:var(--accent); cursor:pointer; }
+      button:disabled { opacity:.5; cursor:default; }
+      .hint { color:var(--muted); font-size:12px; }
+      .chips { display:flex; gap:6px; flex-wrap:wrap; }
+      .chip { font-size:12px; font-family:var(--mono); padding:4px 9px; border:1px solid var(--border);
+              border-radius:999px; background:var(--panel); cursor:pointer; color:#374151; }
+      .chip:hover { border-color:var(--accent-d); }
+      .out { flex:1; overflow:auto; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
+      table { border-collapse:collapse; width:100%; font-family:var(--mono); font-size:13px; }
+      th, td { text-align:left; padding:6px 12px; border-bottom:1px solid var(--border); white-space:pre; }
+      th { position:sticky; top:0; background:#f8fafc; color:#374151; font-weight:600; border-bottom:2px solid var(--border); }
+      tbody tr:hover { background:#fcfcfd; }
+      td.num { text-align:right; }
+      .msg { padding:14px; color:var(--muted); font-family:var(--mono); font-size:13px; white-space:pre-wrap; }
+      .msg.error { color:var(--err); }
+      .stats { color:var(--muted); font-size:12px; font-family:var(--mono); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>chdb-wasm</h1>
+      <span class="sub">ClickHouse, in your browser · WebAssembly</span>
+      <span class="pill" id="status">loading…</span>
+    </header>
+    <main>
+      <div class="editor">
+        <textarea id="sql" spellcheck="false">SELECT number, number * number AS square FROM numbers(10)</textarea>
+        <div class="row">
+          <button id="run" disabled>Run</button>
+          <span class="hint">⌘/Ctrl + Enter</span>
+          <span class="stats" id="stats"></span>
+        </div>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="out" id="out"><div class="msg">Loading the chdb WebAssembly module… (first load downloads the engine)</div></div>
+    </main>
+
+    <script type="module">
+      import { AsyncChdb, selectBundle } from '../dist/index.js';
+
+      const $ = (id) => document.getElementById(id);
+      const statusEl = $('status'), runBtn = $('run'), sqlEl = $('sql'), outEl = $('out'), statsEl = $('stats');
+
+      const setStatus = (text, cls = '') => { statusEl.textContent = text; statusEl.className = 'pill ' + cls; };
+      const showMessage = (text, error = false) => { outEl.innerHTML = ''; const d = document.createElement('div');
+        d.className = 'msg' + (error ? ' error' : ''); d.textContent = text; outEl.appendChild(d); };
+
+      const examples = [
+        'SELECT version()',
+        "SELECT 'hello' || ' ' || 'chdb' AS greeting",
+        'SELECT number, number * number AS sq FROM numbers(10)',
+        'SELECT count(), round(avg(number), 2) AS avg FROM numbers(1000000)',
+        "SELECT toDate('2024-01-01') + number AS day, number AS n FROM numbers(5)",
+      ];
+      const chips = $('chips');
+      for (const q of examples) {
+        const c = document.createElement('span');
+        c.className = 'chip'; c.textContent = q;
+        c.onclick = () => { sqlEl.value = q; run(); };
+        chips.appendChild(c);
+      }
+
+      function renderTable(meta, data) {
+        if (!meta || meta.length === 0) { showMessage('OK'); return; }
+        const numeric = meta.map((m) => /Int|Float|Decimal/.test(m.type));
+        const table = document.createElement('table');
+        const thead = table.createTHead().insertRow();
+        for (const col of meta) { const th = document.createElement('th'); th.textContent = col.name; thead.appendChild(th); }
+        const tbody = table.createTBody();
+        for (const row of data) {
+          const tr = tbody.insertRow();
+          row.forEach((v, i) => { const td = tr.insertCell(); td.textContent = v === null ? 'ᴺᵁᴸᴸ' : String(v);
+            if (numeric[i]) td.className = 'num'; });
+        }
+        outEl.innerHTML = ''; outEl.appendChild(table);
+      }
+
+      let db = null;
+      async function run() {
+        if (!db) return;
+        const sql = sqlEl.value.trim();
+        if (!sql) return;
+        runBtn.disabled = true; statsEl.textContent = 'running…';
+        try {
+          const res = await db.query(sql, 'JSONCompact');
+          const j = JSON.parse(res.text() || '{}');
+          renderTable(j.meta, j.data || []);
+          const n = j.rows ?? (j.data ? j.data.length : 0);
+          statsEl.textContent = `${n} row${n === 1 ? '' : 's'} · ${res.elapsedSeconds.toFixed(4)} s`;
+        } catch (e) {
+          showMessage(e && e.message ? e.message : String(e), true);
+          statsEl.textContent = '';
+        } finally {
+          runBtn.disabled = false;
+        }
+      }
+      runBtn.onclick = run;
+      sqlEl.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+      });
+
+      (async () => {
+        try {
+          const bundle = selectBundle({ baseUrl: new URL('../dist', import.meta.url).href });
+          if (!bundle.supported) {
+            setStatus('unsupported', 'err');
+            showMessage('chdb-wasm cannot run here:\n\n  - ' + bundle.reasons.join('\n  - ') +
+              '\n\nThreads need cross-origin isolation; serve this page with COOP/COEP headers (see scripts/serve.mjs).', true);
+            return;
+          }
+          db = await AsyncChdb.create({
+            moduleUrl: bundle.moduleUrl,
+            wasmUrl: bundle.wasmUrl,
+            onProgress: (loaded, total) =>
+              setStatus(total ? `loading ${(100 * loaded / total) | 0}%` : `loading ${(loaded / 1e6) | 0} MB`),
+          });
+          setStatus('ready', 'ready');
+          runBtn.disabled = false;
+          showMessage('Ready. Write SQL above and press Run (⌘/Ctrl+Enter), or click an example.');
+          run();
+        } catch (e) {
+          setStatus('error', 'err');
+          showMessage('Failed to initialize chdb-wasm:\n' + (e && e.message ? e.message : String(e)), true);
+        }
+      })();
+    </script>
+  </body>
+</html>

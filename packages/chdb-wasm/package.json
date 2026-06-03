@@ -1,0 +1,45 @@
+{
+  "name": "@chdb/chdb-wasm",
+  "version": "0.1.0-wasm",
+  "description": "chdb (ClickHouse) compiled to WebAssembly, with an async, non-blocking, worker-based API",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./worker": "./dist/worker.js",
+    "./chdb.wasm": "./dist/chdb.wasm"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-artifacts.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:node": "node test/smoke.test.mjs"
+  },
+  "keywords": [
+    "clickhouse",
+    "chdb",
+    "wasm",
+    "webassembly",
+    "sql",
+    "olap",
+    "database"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "typescript": "^5.7.2"
+  }
+}

@@ -21,7 +21,9 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#if !defined(OS_WASM)
 #include <libunwind.h>
+#endif
 #include <fmt/format.h>
 
 #include <boost/algorithm/string/split.hpp>
@@ -506,7 +508,10 @@ StackTrace::StackTrace(FramePointers frame_pointers_, size_t size_, size_t offse
 
 void StackTrace::tryCapture()
 {
-#if defined(OS_DARWIN)
+#if defined(OS_WASM)
+    /// No libunwind / backtrace available under Emscripten. Produce an empty trace.
+    size = 0;
+#elif defined(OS_DARWIN)
     size = backtrace(frame_pointers.data(), FRAMEPOINTER_CAPACITY);
 #else
     size = unw_backtrace(frame_pointers.data(), FRAMEPOINTER_CAPACITY);

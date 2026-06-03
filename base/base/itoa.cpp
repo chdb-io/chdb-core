@@ -489,7 +489,7 @@ char * itoa(Int256 i, char * p)
 
 FOR_MISSING_INTEGER_TYPES(DEFAULT_ITOA)
 
-#if defined(OS_DARWIN)
+#if defined(OS_DARWIN) || defined(OS_WASM)
 DEFAULT_ITOA(unsigned long)
 DEFAULT_ITOA(long)
 #endif

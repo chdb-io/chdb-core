@@ -66,3 +66,18 @@ no_warning(c23-extensions) # For #embed
 if (OS_DARWIN)
     no_warning (poison-system-directories)
 endif ()
+
+# WASM is a 32-bit ILP32 target. ClickHouse's codebase assumes a 64-bit size_t in
+# thousands of places, so -Weverything -Werror flags every 64->32 narrowing and
+# every compile-time constant that overflows 32-bit pointers/size_t. These are
+# inherent to the 32-bit ABI, not real defects in the WASM context, so relax them
+# for the experimental WASM port. (Genuine 32-bit truncation bugs would need an
+# audit, but that is out of scope for first-light bring-up.)
+if (OS_WASM)
+    no_warning (shorten-64-to-32)
+    no_warning (integer-overflow)
+    no_warning (tautological-constant-out-of-range-compare)
+    no_warning (c++11-narrowing)
+    no_warning (c++11-narrowing-const-reference)
+    no_warning (constant-conversion)
+endif ()

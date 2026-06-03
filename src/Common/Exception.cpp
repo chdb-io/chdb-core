@@ -29,7 +29,9 @@
 
 #include <Poco/String.h>
 
+#if STD_EXCEPTION_HAS_STACK_TRACE
 static_assert(STD_EXCEPTION_HAS_STACK_TRACE == 1);
+#endif
 
 namespace fs = std::filesystem;
 
@@ -168,10 +170,12 @@ Exception::Exception(CreateFromPocoTag, const Poco::Exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
+#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = exc.get_stack_trace_frames();
     auto stack_trace_size = exc.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     set_stack_trace(stack_trace_frames, stack_trace_size);
+#endif
 }
 
 static int getCodeForSTDException(const std::exception & exc)
@@ -189,10 +193,12 @@ Exception::Exception(CreateFromSTDTag, const std::exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
+#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = exc.get_stack_trace_frames();
     auto stack_trace_size = exc.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     set_stack_trace(stack_trace_frames, stack_trace_size);
+#endif
 }
 
 void Exception::addMessage(const MessageMasked & msg_masked)
@@ -208,10 +214,14 @@ std::string getExceptionStackTraceString(const std::exception & e)
     /// Explicitly block MEMORY_LIMIT_EXCEEDED
     LockMemoryExceptionInThread lock(VariableContext::Global);
 
+#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = e.get_stack_trace_frames();
     auto stack_trace_size = e.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     return StackTrace::toString(stack_trace_frames, 0, stack_trace_size);
+#else
+    return {};
+#endif
 }
 
 std::string getExceptionStackTraceString(std::exception_ptr e)
@@ -233,9 +243,6 @@ std::string getExceptionStackTraceString(std::exception_ptr e)
 
 std::string Exception::getStackTraceString() const
 {
-    auto * stack_trace_frames = get_stack_trace_frames();
-    auto stack_trace_size = get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     String thread_stack_trace;
     std::for_each(capture_thread_frame_pointers.rbegin(), capture_thread_frame_pointers.rend(),
         [&thread_stack_trace](FramePointers & frame_pointers)
@@ -246,18 +253,27 @@ std::string Exception::getStackTraceString() const
         }
     );
 
+#if STD_EXCEPTION_HAS_STACK_TRACE
+    auto * stack_trace_frames = get_stack_trace_frames();
+    auto stack_trace_size = get_stack_trace_size();
+    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     return StackTrace::toString(stack_trace_frames, 0, stack_trace_size) + thread_stack_trace;
+#else
+    return thread_stack_trace;
+#endif
 }
 
 Exception::Trace Exception::getStackFramePointers() const
 {
     Trace frame_pointers;
+#if STD_EXCEPTION_HAS_STACK_TRACE
     frame_pointers.resize(get_stack_trace_size());
     for (size_t i = 0; i < frame_pointers.size(); ++i)
     {
         frame_pointers[i] = get_stack_trace_frames()[i];
     }
     __msan_unpoison(frame_pointers.data(), frame_pointers.size() * sizeof(frame_pointers[0]));
+#endif
     return frame_pointers;
 }
 

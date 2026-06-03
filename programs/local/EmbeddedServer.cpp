@@ -3,7 +3,7 @@
 #if USE_PYTHON
 #include "TableFunctionPython.h"
 #include "ChunkCollectorOutputFormat.h"
-#else
+#elif !defined(OS_WASM)
 #include "StorageArrowStream.h"
 #include "TableFunctionArrowStream.h"
 #endif
@@ -600,7 +600,7 @@ try
             auto & table_function_factory = TableFunctionFactory::instance();
 #if USE_PYTHON
             registerTableFunctionPython(table_function_factory);
-#else
+#elif !defined(OS_WASM)
             registerTableFunctionArrowStream(table_function_factory);
 #endif
 
@@ -608,7 +608,7 @@ try
             registerStorages();
 #if USE_PYTHON
             CHDB::registerDataFrameOutputFormat();
-#else
+#elif !defined(OS_WASM)
             auto & storage_factory = StorageFactory::instance();
             registerStorageArrowStream(storage_factory);
 #endif

@@ -5,11 +5,20 @@ if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif ()
 
 # Print details to output
-execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version --target=${CMAKE_CXX_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}
-    OUTPUT_VARIABLE COMPILER_SELF_IDENTIFICATION
-    COMMAND_ERROR_IS_FATAL ANY
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+if (OS_WASM)
+    # emcc rejects an empty --target=/--sysroot; it already knows its target.
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version
+        OUTPUT_VARIABLE COMPILER_SELF_IDENTIFICATION
+        COMMAND_ERROR_IS_FATAL ANY
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+else ()
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version --target=${CMAKE_CXX_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT}
+        OUTPUT_VARIABLE COMPILER_SELF_IDENTIFICATION
+        COMMAND_ERROR_IS_FATAL ANY
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+endif ()
 message (STATUS "Using compiler:\n${COMPILER_SELF_IDENTIFICATION}")
 
 # Require minimum compiler versions
@@ -65,6 +74,9 @@ endif ()
 
 if (LINKER_NAME)
     message(STATUS "Using linker: ${LINKER_NAME}")
+elseif (OS_WASM)
+    # Emscripten drives wasm-ld internally via emcc; do not force a linker.
+    message(STATUS "Using linker: <emscripten wasm-ld>")
 elseif (NOT ARCH_S390X AND NOT OS_FREEBSD AND NOT OS_SUNOS)
     message (FATAL_ERROR "The only supported linker is LLVM's LLD, but we cannot find it.")
 else ()

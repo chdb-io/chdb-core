@@ -4,7 +4,7 @@
 #if USE_PYTHON
 #include "ChunkCollectorOutputFormat.h"
 #include "TableFunctionPython.h"
-#else
+#elif !defined(OS_WASM)
 #include "StorageArrowStream.h"
 #include "TableFunctionArrowStream.h"
 #endif

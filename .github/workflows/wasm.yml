@@ -1,0 +1,112 @@
+# Build chdb for WebAssembly (Emscripten) and run the Node smoke tests.
+#
+# Runs on every push (main / support-wasm) and pull request, like the native wheel
+# workflows, plus manual dispatch. A full ClickHouse -> WASM build is heavy
+# (~20-30 min cold), but ccache + the emsdk cache make re-runs incremental.
+#
+# One Linux x86_64 (self-hosted) runner is enough: the .wasm artifact is
+# host-independent (Emscripten cross-compiles), unlike the native per-OS/arch wheels.
+name: wasm
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+
+concurrency:
+  group: wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EMSDK_VERSION: '5.0.7'      # match the known-good local toolchain (Emscripten 5.0.7)
+  NODE_VERSION: '24'         # Memory64 (-sMEMORY64) needs V8 from Node >= 23
+
+jobs:
+  build-and-test:
+    # Self-hosted Linux x86_64 runner (same pool as the native wheel builds). The
+    # .wasm artifact is host-independent, so one platform is enough. No
+    # free-disk-space step: that is for ephemeral GitHub-hosted images and would
+    # delete tooling from a persistent self-hosted machine.
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lld ninja-build ccache
+
+      # Caches the installed emsdk between runs (keyed by EMSDK_VERSION).
+      - name: Setup Emscripten ${{ env.EMSDK_VERSION }} (cached)
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache-${{ env.EMSDK_VERSION }}
+
+      # ccache makes re-runs incremental (the cold build still compiles everything).
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: wasm-ccache-${{ github.sha }}
+          restore-keys: |
+            wasm-ccache-
+
+      # Node >= 23 to RUN the wasm. Set up AFTER emsdk so this node wins on PATH
+      # over the (older) node bundled with emsdk.
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Configure + build chdb_wasm
+        env:
+          COMPILER_CACHE: ccache
+          CCACHE_DIR: /home/runner/.ccache
+          CCACHE_MAXSIZE: 5G
+        run: |
+          source "${EMSDK}/emsdk_env.sh"
+          ccache -z || true
+          chdb/build-wasm.sh build
+          ccache -s || true
+          ls -la buildwasm/programs/wasm/chdb.mjs buildwasm/programs/wasm/chdb.wasm
+
+      - name: Verify Node version (must be >= 23 for Memory64)
+        run: |
+          node --version
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 23) { throw new Error("need Node >= 23"); }'
+
+      - name: Smoke test (bare C-API)
+        working-directory: buildwasm/programs/wasm
+        run: |
+          cp "${GITHUB_WORKSPACE}/programs/wasm/chdb.test.mjs" .
+          node chdb.test.mjs
+
+      - name: Smoke test (async package)
+        env:
+          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm/programs/wasm/chdb.mjs
+        run: node packages/chdb-wasm/test/smoke.test.mjs
+
+      # Keep the artifact for download/inspection (kept short to save storage).
+      - name: Upload wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chdb-wasm
+          path: |
+            buildwasm/programs/wasm/chdb.mjs
+            buildwasm/programs/wasm/chdb.wasm
+          retention-days: 7
+          if-no-files-found: error

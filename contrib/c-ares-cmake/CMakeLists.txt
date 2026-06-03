@@ -114,6 +114,12 @@ elseif (OS_FREEBSD)
     target_include_directories(_c-ares SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/c-ares-cmake/freebsd")
 elseif (OS_SUNOS)
     target_include_directories(_c-ares SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/c-ares-cmake/solaris")
+elseif (OS_WASM)
+    # Emscripten's libc is musl-based; the Linux ares_config.h is the closest fit.
+    # c-ares' socket/DNS code is never exercised on WASM (no networking), so this
+    # only needs to compile, not resolve.
+    target_include_directories(_c-ares SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/c-ares-cmake/linux")
+    target_compile_definitions(_c-ares PRIVATE -D_GNU_SOURCE -D_POSIX_C_SOURCE=199309L -D_XOPEN_SOURCE=600)
 endif()
 
 add_library(ch_contrib::c-ares ALIAS _c-ares)

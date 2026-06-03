@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>chdb-wasm browser test</title>
+  </head>
+  <body>
+    <h1>chdb-wasm browser test</h1>
+    <pre id="out">running…</pre>
+    <!-- Requires COOP/COEP headers (use scripts/serve.mjs) and a built dist/. -->
+    <script type="module">
+      import { AsyncChdb, getPlatformFeatures } from '../dist/index.js';
+
+      const out = document.getElementById('out');
+      const log = (m) => { out.textContent += '\n' + m; console.log(m); };
+
+      try {
+        log('platform: ' + JSON.stringify(getPlatformFeatures()));
+        if (!globalThis.crossOriginIsolated) throw new Error('not cross-origin isolated — serve with COOP/COEP');
+
+        const db = await AsyncChdb.create({
+          moduleUrl: new URL('../dist/chdb.mjs', import.meta.url).href,
+          wasmUrl: new URL('../dist/chdb.wasm', import.meta.url).href,
+          onProgress: (l, t) => log(`download ${l}/${t}`),
+        });
+
+        const r = await db.query('SELECT 1');
+        if (r.text().trim() !== '1') throw new Error('SELECT 1 != 1');
+        const c = await db.query('SELECT count() FROM numbers(1000)');
+        if (c.text().trim() !== '1000') throw new Error('count != 1000');
+
+        await db.terminate();
+        log('PASS');
+        document.title = 'chdb-wasm: PASS';
+      } catch (e) {
+        log('FAIL: ' + (e && e.message ? e.message : e));
+        document.title = 'chdb-wasm: FAIL';
+      }
+    </script>
+  </body>
+</html>
