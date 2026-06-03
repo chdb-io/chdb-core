@@ -51,14 +51,6 @@ jobs:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache-${{ env.EMSDK_VERSION }}
 
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: wasm-ccache-${{ github.sha }}
-          restore-keys: |
-            wasm-ccache-
-
       - name: Setup Node ${{ env.NODE_VERSION }} (npm registry auth)
         uses: actions/setup-node@v4
         with:
@@ -66,10 +58,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Build chdb_wasm
-        env:
-          COMPILER_CACHE: ccache
-          CCACHE_DIR: /home/runner/.ccache
-          CCACHE_MAXSIZE: 5G
         run: |
           source "${EMSDK}/emsdk_env.sh"
           # Both bundles ship in the npm package: threaded (-> buildwasm, dist/) and

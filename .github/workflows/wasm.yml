@@ -61,15 +61,6 @@ jobs:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache-${{ env.EMSDK_VERSION }}
 
-      # ccache makes re-runs incremental (the cold build still compiles everything).
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: wasm-ccache-${{ github.sha }}
-          restore-keys: |
-            wasm-ccache-
-
       # Node >= 23 to RUN the wasm. Set up AFTER emsdk so this node wins on PATH
       # over the (older) node bundled with emsdk.
       - name: Setup Node ${{ env.NODE_VERSION }}
@@ -78,18 +69,12 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Configure + build chdb_wasm (threaded + single-threaded)
-        env:
-          COMPILER_CACHE: ccache
-          CCACHE_DIR: /home/runner/.ccache
-          CCACHE_MAXSIZE: 5G
         run: |
           source "${EMSDK}/emsdk_env.sh"
-          ccache -z || true
           # Threaded bundle (WASM_THREADS=ON, needs cross-origin isolation) -> buildwasm/
           chdb/build-wasm.sh build
           # Single-threaded bundle (WASM_THREADS=OFF, runs on non-isolated pages) -> buildwasm-st/
           BUILD_DIR="${GITHUB_WORKSPACE}/buildwasm-st" WASM_THREADS=OFF chdb/build-wasm.sh build
-          ccache -s || true
           ls -la buildwasm/programs/wasm/chdb.wasm buildwasm-st/programs/wasm/chdb.wasm
 
       - name: Verify Node version (must be >= 23 for Memory64)
