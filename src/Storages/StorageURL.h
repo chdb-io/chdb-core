@@ -6,6 +6,7 @@
 #include <IO/CompressionMethod.h>
 #include <IO/HTTPHeaderEntries.h>
 #include <IO/ReadWriteBufferFromHTTP.h>
+#include <IO/SeekableReadBuffer.h>
 #include <Interpreters/ActionsDAG.h>
 #include <Processors/Sinks/SinkToStorage.h>
 #include <Processors/ISource.h>
@@ -209,7 +210,9 @@ public:
 
     static void setCredentials(Poco::Net::HTTPBasicCredentials & credentials, const Poco::URI & request_uri);
 
-    static std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> getFirstAvailableURIAndReadBuffer(
+    /// Returns a SeekableReadBuffer (the common base of ReadWriteBufferFromHTTP and, in the
+    /// WASM build, ReadBufferFromWebFetch) so the OS_WASM path can substitute a JS-fetch buffer.
+    static std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> getFirstAvailableURIAndReadBuffer(
         std::vector<String>::const_iterator & option,
         const std::vector<String>::const_iterator & end,
         ContextPtr context,

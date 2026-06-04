@@ -22,6 +22,17 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     // local file IO: put a file into the wasm FS, read it back with file()
     await db.putFile('/b/data.csv', new TextEncoder().encode('id,v\n1,10\n2,20\n3,30\n'));
     out.file = await Q("SELECT count(), sum(v) FROM file('/b/data.csv','CSVWithNames')");
+    // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
+    // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
+    // transient network/CORS failure surfaces as a clear value rather than aborting the run.
+    const tryQ = async (sql) => { try { return await Q(sql); } catch (e) { return 'ERR: ' + (e && e.message || e); } };
+    // same-origin http read (hermetic: served by browser-run.mjs's local server, which
+    // ignores Range and returns 200 -> exercises the full-body slice path)
+    out.url_local = await tryQ("SELECT count(), sum(v) FROM url('" + location.origin + "/test/url_data.csv','CSVWithNames')");
+    // public cross-origin reads (CORS + Range enabled bucket): url() and s3() (anonymous)
+    const PUB = 'https://datasets-documentation.s3.eu-west-3.amazonaws.com/nyc-taxi/taxi_zone_lookup.csv';
+    out.url_public = await tryQ("SELECT count() FROM url('" + PUB + "','CSVWithNames')");
+    out.s3_public = await tryQ("SELECT count() FROM s3('" + PUB + "','CSVWithNames')");
     await db.terminate();
     log('done: ' + JSON.stringify(out));
     window.__RESULT__ = out;
