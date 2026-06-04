@@ -50,7 +50,9 @@ private:
         const String & source, const String & format_, const ColumnsDescription & columns, ContextPtr global_context,
         const std::string & table_name, const String & compression_method_, bool is_insert_query) const override;
 
-    const char * getStorageEngineName() const override { return "S3"; }
+    /// The underlying storage is StorageURL (we read S3 over https via ReadBufferFromWebFetch),
+    /// so report "URL": it is what StorageFactory knows and what the access check expects.
+    const char * getStorageEngineName() const override { return "URL"; }
 
     /// Returns the SigV4 auth headers for a GET on `filename`, or an empty list
     /// for public / NOSIGN access (no credentials).

@@ -24,6 +24,16 @@ namespace DB
 class IOutputFormat;
 using OutputFormatPtr = std::shared_ptr<IOutputFormat>;
 
+/// The read buffer StorageURLSource produces for one URL. On wasm there are no
+/// sockets, so reads go through a JS-fetch SeekableReadBuffer (ReadBufferFromWebFetch)
+/// instead of ReadWriteBufferFromHTTP; both derive from SeekableReadBuffer. Native
+/// keeps the concrete ReadWriteBufferFromHTTP so its extra methods stay available.
+#if defined(OS_WASM)
+using StorageURLReadBufferPtr = std::unique_ptr<SeekableReadBuffer>;
+#else
+using StorageURLReadBufferPtr = std::unique_ptr<ReadWriteBufferFromHTTP>;
+#endif
+
 class IInputFormat;
 struct ConnectionTimeouts;
 class NamedCollection;
@@ -210,9 +220,7 @@ public:
 
     static void setCredentials(Poco::Net::HTTPBasicCredentials & credentials, const Poco::URI & request_uri);
 
-    /// Returns a SeekableReadBuffer (the common base of ReadWriteBufferFromHTTP and, in the
-    /// WASM build, ReadBufferFromWebFetch) so the OS_WASM path can substitute a JS-fetch buffer.
-    static std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> getFirstAvailableURIAndReadBuffer(
+    static std::pair<Poco::URI, StorageURLReadBufferPtr> getFirstAvailableURIAndReadBuffer(
         std::vector<String>::const_iterator & option,
         const std::vector<String>::const_iterator & end,
         ContextPtr context,

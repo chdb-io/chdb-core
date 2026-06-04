@@ -365,7 +365,7 @@ StorageURLSource::StorageURLSource(
     initialize = [=, this]()
     {
         std::vector<String> current_uri_options;
-        std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> uri_and_buf;
+        std::pair<Poco::URI, StorageURLReadBufferPtr> uri_and_buf;
         do
         {
             current_uri_options = (*uri_iterator)();
@@ -556,7 +556,7 @@ Chunk StorageURLSource::generate()
     return {};
 }
 
-std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> StorageURLSource::getFirstAvailableURIAndReadBuffer(
+std::pair<Poco::URI, StorageURLReadBufferPtr> StorageURLSource::getFirstAvailableURIAndReadBuffer(
     std::vector<String>::const_iterator & option,
     const std::vector<String>::const_iterator & end,
     ContextPtr context_,
@@ -573,7 +573,7 @@ std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> StorageURLSource::getF
     ReadSettings read_settings = context_->getReadSettings();
 
     size_t options = std::distance(option, end);
-    std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> last_skipped_empty_res;
+    std::pair<Poco::URI, StorageURLReadBufferPtr> last_skipped_empty_res;
     for (; option != end; ++option)
     {
         bool skip_url_not_found_error = glob_url && read_settings.http_skip_not_found_url_for_globs && option == std::prev(end);
@@ -596,10 +596,10 @@ std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> StorageURLSource::getF
             (void)timeouts;
             (void)delay_initialization;
             (void)skip_url_not_found_error;
-            std::unique_ptr<SeekableReadBuffer> res = std::make_unique<ReadBufferFromWebFetch>(
+            StorageURLReadBufferPtr res = std::make_unique<ReadBufferFromWebFetch>(
                 request_uri.toString(), headers, static_cast<size_t>(settings[Setting::max_read_buffer_size]));
 #else
-            std::unique_ptr<SeekableReadBuffer> res = BuilderRWBufferFromHTTP(request_uri)
+            StorageURLReadBufferPtr res = BuilderRWBufferFromHTTP(request_uri)
                            .withConnectionGroup(HTTPConnectionGroupType::STORAGE)
                            .withMethod(http_method)
                            .withSettings(read_settings)
@@ -901,7 +901,7 @@ namespace
                 }
             }
 
-            std::pair<Poco::URI, std::unique_ptr<SeekableReadBuffer>> uri_and_buf;
+            std::pair<Poco::URI, StorageURLReadBufferPtr> uri_and_buf;
             do
             {
                 if (current_index == url_options_to_check.size())
