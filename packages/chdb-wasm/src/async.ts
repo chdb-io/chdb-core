@@ -118,9 +118,6 @@ export class AsyncChdb {
    * for large local files picked via `<input type=file>`. `file('<path>', ...)`
    * then scans it like a normal file. A `Blob`/`File` is passed by reference (no
    * byte copy across the worker boundary); a `Uint8Array` is transferred zero-copy.
-   *
-   * Single-threaded (st) bundle only; rejects on the threaded (mt) bundle — use
-   * putFile() there. See ChdbBindings.mountFile for why.
    * Example: await db.mountFile('/data.csv', fileInput.files[0]);
    *          await db.query("SELECT count() FROM file('/data.csv','CSVWithNames')")
    */

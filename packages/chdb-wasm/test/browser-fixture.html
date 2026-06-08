@@ -22,19 +22,14 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     // local file IO: put a file into the wasm FS, read it back with file()
     await db.putFile('/b/data.csv', new TextEncoder().encode('id,v\n1,10\n2,20\n3,30\n'));
     out.file = await Q("SELECT count(), sum(v) FROM file('/b/data.csv','CSVWithNames')");
+    // WORKERFS lazy mount: register a Blob (no heap copy, on-demand range reads)
+    // and scan it with file() — the local-File-handle path (duckdb-style).
+    await db.mountFile('/wfs/m.csv', new Blob([new TextEncoder().encode('a,b\n1,5\n2,15\n3,25\n')]));
+    out.mount = await Q("SELECT count(), sum(b) FROM file('/wfs/m.csv','CSVWithNames')");
     // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
     // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
     // transient network/CORS failure surfaces as a clear value rather than aborting the run.
     const tryQ = async (sql) => { try { return await Q(sql); } catch (e) { return 'ERR: ' + (e && e.message || e); } };
-    // WORKERFS lazy mount: register a Blob (no heap copy, on-demand range reads) and
-    // scan it with file() — the local-File-handle path (duckdb-style). st bundle only;
-    // on mt it must refuse cleanly (wrapped so the rejection doesn't abort the run).
-    out.mount = await (async () => {
-      try {
-        await db.mountFile('/wfs/m.csv', new Blob([new TextEncoder().encode('a,b\n1,5\n2,15\n3,25\n')]));
-        return await Q("SELECT count(), sum(b) FROM file('/wfs/m.csv','CSVWithNames')");
-      } catch (e) { return 'ERR: ' + (e && e.message || e); }
-    })();
     // same-origin http read (hermetic: served by browser-run.mjs's local server, which
     // ignores Range and returns 200 -> exercises the full-body slice path)
     out.url_local = await tryQ("SELECT count(), sum(v) FROM url('" + location.origin + "/test/url_data.csv','CSVWithNames')");
