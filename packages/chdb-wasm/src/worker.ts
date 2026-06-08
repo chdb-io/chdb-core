@@ -108,6 +108,9 @@ listen((req: WorkerRequest) => {
         case 'putFile':
           requireBindings().writeFile(req.payload.path, req.payload.data);
           break;
+        case 'mountFile':
+          requireBindings().mountFile(req.payload.path, req.payload.data);
+          break;
         case 'close':
           bindings = null;
           break;

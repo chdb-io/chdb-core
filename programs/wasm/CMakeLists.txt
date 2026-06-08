@@ -55,7 +55,13 @@ target_link_options (chdb_wasm PRIVATE
     -sWASM_BIGINT
     -sFORCE_FILESYSTEM=1
     -sALLOW_TABLE_GROWTH=1
-    "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS"
+    # WORKERFS: mount a File/Blob into the FS and read it lazily (on-demand byte
+    # ranges via FileReaderSync) without copying it into the heap. Used by the
+    # package's mountFile() so file('<path>') can scan a large local file picked
+    # via <input type=file>. WORKERFS is worker-only; the module always runs in a
+    # Worker, so this is always available. -lworkerfs.js links the backend.
+    -lworkerfs.js
+    "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS,WORKERFS"
     "SHELL:-s EXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exported_functions.txt"
     -sENVIRONMENT=node,web,worker
     )

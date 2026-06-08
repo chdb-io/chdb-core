@@ -44,6 +44,34 @@ export class ChdbBindings {
     FS.writeFile(path, data);
   }
 
+  /**
+   * Mount a File/Blob at `path` via WORKERFS, WITHOUT copying its bytes into the
+   * wasm heap: reads are lazy, on-demand byte ranges of the Blob (FileReaderSync),
+   * so `file('<path>', ...)` can scan a large local file (e.g. from <input type=file>)
+   * while only the bytes actually read are pulled in. One file per mount directory;
+   * re-mounting the same directory replaces it. Worker-only (always true here).
+   * Requires the module built with `-lworkerfs.js` and WORKERFS in EXPORTED_RUNTIME_METHODS.
+   */
+  mountFile(path: string, data: Blob | Uint8Array): void {
+    const FS = this.mod.FS;
+    const WORKERFS = this.mod.WORKERFS;
+    if (!FS || !WORKERFS) throw new ChdbError('WORKERFS is not available in this build (need EXPORTED_RUNTIME_METHODS=WORKERFS, -lworkerfs.js)');
+    const slash = path.lastIndexOf('/');
+    const dir = slash > 0 ? path.slice(0, slash) : '/';
+    const name = path.slice(slash + 1);
+    if (!name) throw new ChdbError('mountFile: path must end in a file name: ' + path);
+    let cur = '';
+    for (const part of dir.split('/')) {
+      if (!part) continue;
+      cur += '/' + part;
+      try { FS.mkdir(cur); } catch { /* already exists */ }
+    }
+    // Re-mountable: drop any previous WORKERFS mount at this directory.
+    try { FS.unmount(dir); } catch { /* not a mount point */ }
+    const blob = data instanceof Uint8Array ? new Blob([data]) : data;
+    FS.mount(WORKERFS, { blobs: [{ name, data: blob }] }, dir);
+  }
+
   /** Open an explicit connection; returns an opaque handle. */
   connect(path?: string): ConnHandle {
     return this.mod.ccall('chdb_wasm_connect', 'number', ['string'], [path ?? '']);
