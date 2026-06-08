@@ -173,10 +173,13 @@ namespace ErrorCodes
     extern const int TIMEOUT_EXCEEDED;
 }
 
-#if USE_PYTHON
-/// Custom DataFrame format creator function pointer
+/// Chunk-collecting output-format creator: registered by the wrapper
+/// (programs/local/) so that ClientBase can dispatch the magic
+/// "dataframe" output format to a raw Chunk-collection sink instead of
+/// any serializing IOutputFormat. Both USE_PYTHON=1 (DataFrame) and
+/// USE_PYTHON=0 (Arrow C Data Interface) consumers register the same
+/// ChunkCollectorOutputFormat creator here.
 static CustomOutputFormatCreator g_dataframe_format_creator = nullptr;
-#endif
 
 }
 
@@ -678,8 +681,7 @@ try
 {
     if (!output_format)
     {
-#if USE_PYTHON
-        if (Poco::toLower(default_output_format) == "dataframe")
+        if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
         {
             auto creator = getDataFrameFormatCreator();
             if (creator)
@@ -693,7 +695,6 @@ try
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "DataFrame output format creator not set");
             }
         }
-#endif
 
         /// Ignore all results when fuzzing as they can be huge.
         if (query_fuzzer_runs)
@@ -4322,7 +4323,6 @@ void ClientBase::showClientVersion()
     output_stream << VERSION_NAME << " " + getName() + " version " << VERSION_STRING << VERSION_OFFICIAL << "." << std::endl;
 }
 
-#if USE_PYTHON
 void ClientBase::setDataFrameFormatCreator(CustomOutputFormatCreator creator)
 {
     g_dataframe_format_creator = std::move(creator);
@@ -4332,6 +4332,5 @@ CustomOutputFormatCreator ClientBase::getDataFrameFormatCreator()
 {
     return g_dataframe_format_creator;
 }
-#endif
 
 }

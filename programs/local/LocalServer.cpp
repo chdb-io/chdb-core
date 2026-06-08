@@ -1,8 +1,8 @@
 #include "LocalServer.h"
 #include "chdb-internal.h"
 #include <Common/SignalHandlers.h>
-#if USE_PYTHON
 #include "ChunkCollectorOutputFormat.h"
+#if USE_PYTHON
 #include "TableFunctionPython.h"
 #elif !defined(OS_WASM)
 #include "StorageArrowStream.h"
@@ -728,9 +728,7 @@ try
             registerDatabases();
 
             registerStorages();
-#if USE_PYTHON
             CHDB::registerDataFrameOutputFormat();
-#endif
 
             registerDictionaries();
             registerDisks(/* global_skip_access_check= */ true);

@@ -105,10 +105,28 @@ struct StreamingQueryContext
     StreamingQueryContext() = default;
 };
 
-#if USE_PYTHON
-/// Function pointer type for creating custom output formats (e.g. DataFrame)
+/// Function pointer type for creating custom output formats that intercept
+/// query output and hand the raw Chunks back to the caller (e.g. DataFrame
+/// builder for USE_PYTHON, Arrow C Data Interface for the non-Python
+/// libchdb). Always declared so that both builds share a single seam.
 using CustomOutputFormatCreator = std::function<std::shared_ptr<IOutputFormat>(SharedHeader, std::vector<Chunk> &)>;
-#endif
+
+/// Magic output-format name that diverts a query's output away from
+/// FormatFactory serialization and into ClientBase::collected_chunks for
+/// in-memory consumption by the wrapper layer.
+///
+/// The string value is "dataframe" purely for historical reasons: when
+/// chdb first added this seam it had only one consumer — the Python
+/// pandas DataFrame builder, and the user-facing `chdb.query(sql,
+/// "dataframe")` contract has shipped under that name. The mechanism
+/// itself has nothing to do with DataFrames: it merely hands the
+/// already-typed std::vector<Chunk> back to the caller, who then
+/// decides what to render — pandas DataFrame for the Python wheel,
+/// Arrow C Data Interface stream for libchdb's chdb_query_arrow.
+///
+/// All ClientBase / ChdbClient / libchdb call sites must reference this
+/// constant rather than embedding the literal "dataframe" string.
+inline constexpr const char * CHUNK_COLLECT_FORMAT_NAME = "dataframe";
 
 /**
  * The base class which encapsulates the core functionality of a client.
@@ -378,13 +396,13 @@ public:
 
     String appendSmileyIfNeeded(const String & prompt);
 
-#if USE_PYTHON
-    /// Set custom DataFrame format creator
+    /// Register the Chunk-collecting output-format creator that backs both
+    /// the Python DataFrame path and the C-ABI Arrow output path. When a
+    /// creator is registered, queries whose default output format is the
+    /// magic CustomOutputFormatName() string skip serialization and route
+    /// raw Chunks into collected_chunks via the creator-returned format.
     static void setDataFrameFormatCreator(CustomOutputFormatCreator creator);
-
-    /// Get custom DataFrame format creator
     static CustomOutputFormatCreator getDataFrameFormatCreator();
-#endif
 
     /// Should be one of the first, to be destroyed the last,
     /// since other members can use them.

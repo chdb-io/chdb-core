@@ -27,6 +27,7 @@ private:
     pybind11::object genDataFrame(const pybind11::handle & dict);
     void changeToTZType(pybind11::object & df);
     void finalize();
+    pybind11::object buildArrowStringArray(size_t col_idx, bool nullable);
 
     std::vector<String> column_names;
     std::vector<DB::DataTypePtr> column_types;

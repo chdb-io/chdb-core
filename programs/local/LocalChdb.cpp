@@ -1,5 +1,6 @@
 #include "LocalChdb.h"
 #include "chdb-internal.h"
+#include "DataFrameQueryResult.h"
 #include "PandasDataFrameBuilder.h"
 #include "PythonImporter.h"
 #include "ChdbPyType.h"

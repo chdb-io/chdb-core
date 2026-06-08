@@ -21,9 +21,13 @@
         chdb_close_conn;
         chdb_query;
         chdb_query_n;
+        chdb_query_with_params;
+        chdb_query_with_params_n;
         chdb_query_cmdline;
         chdb_stream_query;
         chdb_stream_query_n;
+        chdb_stream_query_with_params;
+        chdb_stream_query_with_params_n;
         chdb_stream_fetch_result;
         chdb_stream_cancel_query;
         chdb_destroy_query_result;
@@ -40,6 +44,11 @@
         chdb_arrow_scan;
         chdb_arrow_array_scan;
         chdb_arrow_unregister_table;
+        chdb_query_arrow;
+        chdb_query_arrow_n;
+        chdb_stream_query_arrow;
+        chdb_stream_query_arrow_n;
+        chdb_stream_fetch_arrow;
 
         /* Signal Handler Control */
         chdb_set_signal_handlers_enabled;

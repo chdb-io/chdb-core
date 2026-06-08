@@ -78,9 +78,10 @@ def get_latest_git_tag(minor_ver_auto=False):
         raise
 
 
-# When CHDB_LITE=1 in environment, rewrite pyproject.toml name to chdb-core-lite
-# so `pip install chdb-core-lite` resolves to this wheel. Idempotent and safe to
-# call multiple times.
+# When CHDB_LITE=1 in environment, rewrite pyproject.toml so the wheel is
+# published as chdb-core-lite with its own PyPI-facing metadata (name,
+# description, keywords). The long-description README is shared with chdb-core.
+# Idempotent and safe to call multiple times.
 def maybe_rewrite_pyproject_name_for_lite():
     if os.environ.get("CHDB_LITE", "0") != "1":
         return
@@ -93,10 +94,22 @@ def maybe_rewrite_pyproject_name_for_lite():
         content,
         flags=re.MULTILINE,
     )
+    new_content = re.sub(
+        r'^description\s*=\s*"[^"]*"\s*$',
+        'description = "Lightweight build of chdb-core (in-process OLAP SQL engine powered by ClickHouse), trimmed for size-sensitive deployments such as serverless, containers and edge"',
+        new_content,
+        flags=re.MULTILINE,
+    )
+    new_content = re.sub(
+        r'^keywords\s*=\s*\[[^\]]*\]\s*$',
+        'keywords = ["chdb", "chdb-core", "chdb-core-lite", "lite", "clickhouse", "olap", "analytics", "database", "sql", "serverless", "edge"]',
+        new_content,
+        flags=re.MULTILINE,
+    )
     if new_content != content:
         with open(pyproject_file, "w") as f:
             f.write(new_content)
-        print("CHDB_LITE=1: rewrote pyproject.toml name to chdb-core-lite")
+        print("CHDB_LITE=1: rewrote pyproject.toml for chdb-core-lite (name, description, keywords)")
 
 
 # Update version in pyproject.toml

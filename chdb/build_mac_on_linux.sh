@@ -221,8 +221,21 @@ if [ "${CHDB_LITE}" != "1" ]; then
         ${SED_INPLACE} 's/ '${CHDB_PY_MODULE}'/ '${LIBCHDB_SO}'/g' CMakeFiles/libchdb.rsp
     fi
 
-    # For macOS, replace PyInit entry point with exported symbols for libchdb
-    LIBCHDB_CMD=$(echo ${LIBCHDB_CMD} | sed 's/ '${PYINIT_ENTRY}'/ -Wl,-exported_symbol,_query_stable -Wl,-exported_symbol,_free_result -Wl,-exported_symbol,_query_stable_v2 -Wl,-exported_symbol,_free_result_v2/g')
+    # Control exported symbols for libchdb.so — must mirror the native macOS
+    # build (chdb/build.sh) exactly. The old code here only injected four
+    # -Wl,-exported_symbol flags by replacing ${PYINIT_ENTRY}, but the libchdb
+    # link command is derived from the `clickhouse` link line and never carries
+    # ${PYINIT_ENTRY}, so that sed was a no-op: NO symbols were restricted and
+    # the cross-compiled libchdb.so exported its entire transitive closure
+    # (~100k symbols incl. all of bundled abseil/protobuf). When such a
+    # libchdb.so is dlopen'd into a process that already imported a library
+    # carrying its own abseil/protobuf (e.g. pyarrow), libchdb's protobuf
+    # AddDescriptors -> absl OnShutdownRun static initializer binds to the
+    # foreign, already-initialized absl mutex and spins forever
+    # ("[mutex.cc:452] RAW: Lock blocking"). Restricting exports to the
+    # libchdb_export_macos.txt allow-list hides abseil/protobuf and removes the
+    # collision (the native build, which already uses this list, never hangs).
+    LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/libchdb_export_macos.txt"
 
     LIBCHDB_CMD=$(echo ${LIBCHDB_CMD} | sed 's/@CMakeFiles\/clickhouse.rsp/@CMakeFiles\/libchdb.rsp/g')
 

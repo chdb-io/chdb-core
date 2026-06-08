@@ -14,6 +14,7 @@
 #include <Common/Exception.h>
 
 #if USE_PYTHON
+#include <DataFrameQueryResult.h>
 #include <PythonTableCache.h>
 #include <PandasDataFrameBuilder.h>
 #include <pybind11/pybind11.h>
@@ -159,7 +160,6 @@ size_t ChdbClient::getStorageBytesRead() const
     return 0;
 }
 
-#if USE_PYTHON
 void ChdbClient::setQueryParameters(const NameToNameMap & params)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
@@ -176,6 +176,7 @@ void ChdbClient::clearQueryParameters()
         client_context->setQueryParameters(query_parameters);
 }
 
+#if USE_PYTHON
 void ChdbClient::findQueryableObjFromPyCache(const String & query_str) const
 {
     python_table_cache->findQueryableObjFromQuery(query_str);
@@ -235,8 +236,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         size_t storage_rows_read = local_connection->getCHDBProgress().read_rows;
         size_t storage_bytes_read = local_connection->getCHDBProgress().read_bytes;
 
-#if USE_PYTHON
-        if (format_str == "dataframe")
+        if (format_str == CHUNK_COLLECT_FORMAT_NAME)
         {
             auto res = std::make_unique<CHDB::ChunkQueryResult>(
                 std::move(collected_chunks),
@@ -246,10 +246,11 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 getProcessedBytes(),
                 storage_rows_read,
                 storage_bytes_read);
+#if USE_PYTHON
             python_table_cache->clear();
+#endif
             return res;
         }
-#endif
 
         auto res = std::make_unique<CHDB::MaterializedQueryResult>(
             CHDB::ResultBuffer(stealQueryOutputVector()),
@@ -350,8 +351,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
             size_t storage_bytes_read = local_connection->getCHDBProgress().read_bytes;
             const auto elapsed_time = getElapsedTime();
 
-#if USE_PYTHON
-            if (Poco::toLower(default_output_format) == "dataframe")
+            if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
             {
                 auto rows_read = processed_rows - old_processed_rows;
                 auto chunk_result = std::make_unique<CHDB::ChunkQueryResult>(
@@ -363,14 +363,20 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     storage_rows_read - old_storage_rows_read,
                     storage_bytes_read - old_storage_bytes_read);
 
+#if USE_PYTHON
                 py::gil_scoped_acquire acquire;
                 CHDB::PandasDataFrameBuilder builder(*chunk_result);
                 py::handle df = builder.getDataFrame().release();
 
                 res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
+#else
+                /// Non-Python build: hand raw chunks back so the Arrow C
+                /// Data Interface output path can export them without
+                /// IPC serialization.
+                res = std::move(chunk_result);
+#endif
             }
             else
-#endif
             {
                 auto * output_vec = stealQueryOutputVector();
                 bool has_output_data = output_vec && !output_vec->empty();

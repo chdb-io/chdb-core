@@ -47,10 +47,25 @@ namespace CHDB
 extern "C"
 {
     extern chdb_state chdb_arrow_scan(chdb_connection, const char *, chdb_arrow_stream);
+    extern chdb_result * chdb_query_arrow(chdb_connection, const char *, chdb_arrow_stream, const chdb_arrow_options *);
+    extern chdb_result * chdb_query_arrow_n(chdb_connection, const char *, size_t, chdb_arrow_stream, const chdb_arrow_options *);
+    extern chdb_result * chdb_stream_query_arrow(chdb_connection, const char *, const chdb_arrow_options *);
+    extern chdb_result * chdb_stream_query_arrow_n(chdb_connection, const char *, size_t, const chdb_arrow_options *);
+    extern chdb_state chdb_stream_fetch_arrow(chdb_connection, chdb_result *, chdb_arrow_stream);
 }
 
+/// Force-link references: chdb-arrow.cpp.o and chdb-arrow-output.cpp.o each
+/// live in their own translation unit and have no internal callers, so the
+/// linker would discard them under --gc-sections / .a archive semantics
+/// when libchdb.so is linked from main.cpp's perspective. Taking the
+/// address of one entry point from each .o keeps the whole .o alive.
 [[maybe_unused]] void * force_link_arrow_functions[] = {
-    reinterpret_cast<void*>(chdb_arrow_scan)
+    reinterpret_cast<void*>(chdb_arrow_scan),
+    reinterpret_cast<void*>(chdb_query_arrow),
+    reinterpret_cast<void*>(chdb_query_arrow_n),
+    reinterpret_cast<void*>(chdb_stream_query_arrow),
+    reinterpret_cast<void*>(chdb_stream_query_arrow_n),
+    reinterpret_cast<void*>(chdb_stream_fetch_arrow)
 };
 #endif
 
@@ -596,6 +611,213 @@ chdb_result * chdb_stream_query_n(chdb_connection conn, const char * query, size
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
         auto query_result = client->executeStreamingInit(query, query_len, format, format_len);
 
+        if (!query_result)
+        {
+            auto * result = new StreamQueryResult("Query processing failed");
+            return reinterpret_cast<chdb_result *>(result);
+        }
+
+        return reinterpret_cast<chdb_result *>(query_result.release());
+    }
+    catch (const std::exception & e)
+    {
+        auto * result = new StreamQueryResult(std::string("Error: ") + e.what());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+    catch (...)
+    {
+        auto * result = new StreamQueryResult(DB::getCurrentExceptionMessage(true));
+        return reinterpret_cast<chdb_result *>(result);
+    }
+}
+
+namespace
+{
+
+/// Build a NameToNameMap from parallel C-ABI arrays of parameter names and values.
+/// On duplicate names the last value wins (NameToNameMap == std::unordered_map).
+DB::NameToNameMap buildParameterMap(
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count)
+{
+    DB::NameToNameMap params;
+    if (param_count == 0)
+        return params;
+
+    if (!param_names || !param_values)
+        throw std::invalid_argument("chdb_query_with_params: param_names/param_values must be non-null when param_count > 0");
+
+    params.reserve(param_count);
+    for (size_t i = 0; i < param_count; ++i)
+    {
+        const char * name = param_names[i];
+        const char * value = param_values[i];
+        if (!name || !value)
+            throw std::invalid_argument("chdb_query_with_params: parameter name/value pointers must be non-null");
+
+        const size_t name_len = param_name_lens ? param_name_lens[i] : std::strlen(name);
+        const size_t value_len = param_value_lens ? param_value_lens[i] : std::strlen(value);
+
+        params.insert_or_assign(std::string(name, name_len), std::string(value, value_len));
+    }
+    return params;
+}
+
+/// RAII guard mirroring the Python binding's QueryParameterGuard (see LocalChdb.cpp): sets named
+/// parameters on the client for the duration of one query, then unconditionally clears them.
+/// This matches Python `chdb.query(..., params=...)` semantics — including for streaming, where
+/// parameters only need to be present during executeStreamingInit (the engine captures values then).
+class CApiQueryParameterGuard
+{
+public:
+    CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params) : client(client_)
+    {
+        if (client && !params.empty())
+        {
+            client->setQueryParameters(params);
+            applied = true;
+        }
+    }
+
+    ~CApiQueryParameterGuard()
+    {
+        if (client && applied)
+            client->clearQueryParameters();
+    }
+
+    CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
+    CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
+
+private:
+    DB::ChdbClient * client = nullptr;
+    bool applied = false;
+};
+
+} // anonymous namespace
+
+chdb_result * chdb_query_with_params(
+    chdb_connection conn,
+    const char * query,
+    const char * format,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count)
+{
+    return chdb_query_with_params_n(
+        conn,
+        query,
+        query ? std::strlen(query) : 0,
+        format,
+        format ? std::strlen(format) : 0,
+        param_names,
+        /*param_name_lens=*/nullptr,
+        param_values,
+        /*param_value_lens=*/nullptr,
+        param_count);
+}
+
+chdb_result * chdb_query_with_params_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    const char * format,
+    size_t format_len,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count)
+{
+    if (!conn)
+    {
+        auto * result = new MaterializedQueryResult("Unexpected null connection");
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+    {
+        auto * result = new MaterializedQueryResult("Invalid or closed connection");
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        const auto params = buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
+        CApiQueryParameterGuard guard(client, params);
+
+        auto query_result = client->executeMaterializedQuery(query, query_len, format, format_len);
+        return reinterpret_cast<chdb_result *>(query_result.release());
+    }
+    catch (const std::exception & e)
+    {
+        auto * result = new MaterializedQueryResult(std::string("Error: ") + e.what());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+    catch (...)
+    {
+        auto * result = new MaterializedQueryResult(DB::getCurrentExceptionMessage(true));
+        return reinterpret_cast<chdb_result *>(result);
+    }
+}
+
+chdb_result * chdb_stream_query_with_params(
+    chdb_connection conn,
+    const char * query,
+    const char * format,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count)
+{
+    return chdb_stream_query_with_params_n(
+        conn,
+        query,
+        query ? std::strlen(query) : 0,
+        format,
+        format ? std::strlen(format) : 0,
+        param_names,
+        /*param_name_lens=*/nullptr,
+        param_values,
+        /*param_value_lens=*/nullptr,
+        param_count);
+}
+
+chdb_result * chdb_stream_query_with_params_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    const char * format,
+    size_t format_len,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count)
+{
+    if (!conn)
+    {
+        auto * result = new StreamQueryResult("Unexpected null connection");
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+    {
+        auto * result = new StreamQueryResult("Invalid or closed connection");
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        const auto params = buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
+        CApiQueryParameterGuard guard(client, params);
+
+        auto query_result = client->executeStreamingInit(query, query_len, format, format_len);
         if (!query_result)
         {
             auto * result = new StreamQueryResult("Query processing failed");

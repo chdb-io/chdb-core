@@ -306,6 +306,107 @@ CHDB_EXPORT chdb_result *
 chdb_stream_query_n(chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len);
 
 /**
+ * Executes a query with server-side named parameter binding.
+ * @brief Binds {name:Type} placeholders before query execution; values are NOT interpolated into SQL.
+ * @param conn Connection to execute query on
+ * @param query SQL query string (NUL-terminated, e.g. "SELECT {x:Int64} AS v")
+ * @param format Output format string (e.g. "CSV", "JSON")
+ * @param param_names Array of param_count NUL-terminated parameter names (must match {name:Type} placeholders)
+ * @param param_values Array of param_count NUL-terminated parameter values
+ * @param param_count Number of name/value pairs in the arrays
+ * @return Query result structure containing output or error message
+ * @note Parameter values are passed to the engine as strings; the engine resolves the type from the
+ *       {name:Type} placeholder. This avoids SQL injection (no string interpolation) and enables
+ *       server-side query-plan caching.
+ * @note On duplicate parameter names, the last value wins (NameToNameMap semantics).
+ * @note Parameters are scoped to this single call and cleared on return (RAII).
+ * @note Use chdb_query_with_params_n for binary-safe values containing NUL bytes.
+ */
+CHDB_EXPORT chdb_result * chdb_query_with_params(
+    chdb_connection conn,
+    const char * query,
+    const char * format,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count);
+
+/**
+ * Executes a query with server-side named parameter binding and explicit string lengths.
+ * @brief Binary-safe variant of chdb_query_with_params() — values may contain NUL bytes.
+ * @param conn Connection to execute query on
+ * @param query SQL query buffer (may contain NUL bytes)
+ * @param query_len Length of query buffer in bytes
+ * @param format Output format buffer (may contain NUL bytes)
+ * @param format_len Length of format buffer in bytes
+ * @param param_names Array of param_count parameter names (each name_lens[i] bytes long)
+ * @param param_name_lens Array of param_count byte lengths for param_names
+ * @param param_values Array of param_count parameter value buffers (each value_lens[i] bytes long)
+ * @param param_value_lens Array of param_count byte lengths for param_values
+ * @param param_count Number of name/value pairs
+ * @return Query result structure containing output or error message
+ * @note Strings do not need to be NUL-terminated.
+ */
+CHDB_EXPORT chdb_result * chdb_query_with_params_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    const char * format,
+    size_t format_len,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count);
+
+/**
+ * Executes a streaming query with server-side named parameter binding.
+ * @brief Initializes streaming query execution with parameter binding.
+ * @param conn Connection to execute query on
+ * @param query SQL query string (NUL-terminated)
+ * @param format Output format string (e.g. "CSV", "JSON")
+ * @param param_names Array of param_count NUL-terminated parameter names
+ * @param param_values Array of param_count NUL-terminated parameter values
+ * @param param_count Number of name/value pairs
+ * @return Streaming result handle containing query state or error message
+ * @note Parameters are bound on the connection before streaming starts and cleared once the
+ *       streaming initialization returns (the engine has already captured the parameter values).
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_with_params(
+    chdb_connection conn,
+    const char * query,
+    const char * format,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count);
+
+/**
+ * Executes a streaming query with server-side named parameter binding and explicit string lengths.
+ * @brief Binary-safe variant of chdb_stream_query_with_params().
+ * @param conn Connection to execute query on
+ * @param query SQL query buffer (may contain NUL bytes)
+ * @param query_len Length of query buffer in bytes
+ * @param format Output format buffer (may contain NUL bytes)
+ * @param format_len Length of format buffer in bytes
+ * @param param_names Array of param_count parameter names
+ * @param param_name_lens Array of param_count byte lengths for param_names
+ * @param param_values Array of param_count parameter value buffers
+ * @param param_value_lens Array of param_count byte lengths for param_values
+ * @param param_count Number of name/value pairs
+ * @return Streaming result handle containing query state or error message
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_with_params_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    const char * format,
+    size_t format_len,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count);
+
+/**
  * Fetches next chunk of streaming results.
  * @brief Iterates through streaming query results
  * @param conn Active connection handle
@@ -388,6 +489,97 @@ CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
 //===--------------------------------------------------------------------===//
 // Arrow Integration
 //===--------------------------------------------------------------------===//
+
+/**
+ * Options controlling Arrow C Data Interface output (chdb_query_arrow family).
+ * Pass NULL to any chdb_query_arrow / chdb_stream_query_arrow variant for
+ * the default contract (unsupported_as_binary=0,
+ * low_cardinality_as_dictionary=0, string_as_string=1).
+ *
+ * Type mapping note: DateTime columns export as Arrow uint32 (Unix
+ * seconds), matching ClickHouse's format="ArrowStream" behavior — the
+ * timezone is not carried on the Arrow type. Callers that want a
+ * timezone-tagged Arrow timestamp should request DateTime64 in SQL,
+ * e.g. `SELECT toDateTime64(col, 0, 'UTC')`, which the kernel maps to
+ * arrow::timestamp(SECOND, 'UTC').
+ *
+ * - unsupported_as_binary: 0 (default) throws UNKNOWN_TYPE for types with
+ *   no faithful Arrow mapping (JSON/Object, Dynamic, AggregateFunction).
+ *   1 silently degrades them to arrow::binary() like the engine default.
+ * - low_cardinality_as_dictionary: 0 (default) materializes LowCardinality
+ *   columns to their base type T. 1 emits an Arrow dictionary array
+ *   (requires consumer to handle cross-batch dictionary stability).
+ * - string_as_string: 1 (default) emits Arrow utf8 for String columns.
+ *   0 emits Arrow binary.
+ */
+typedef struct chdb_arrow_options
+{
+    int unsupported_as_binary;
+    int low_cardinality_as_dictionary;
+    int string_as_string;
+} chdb_arrow_options;
+
+/**
+ * Executes a query and exports the entire result as an Arrow C Data
+ * Interface stream into the caller-allocated out_stream. Zero-copy where
+ * possible (no IPC serialization, no lz4 round-trip).
+ *
+ * Ownership: out_stream is filled and ownership of its release() callback
+ * transfers to the caller. The underlying ClickHouse buffers are kept
+ * alive by the stream's private_data and are released atomically when the
+ * caller invokes out_stream->release(out_stream).
+ *
+ * @param conn Active connection
+ * @param query Null-terminated SQL query
+ * @param out_stream Caller-allocated ArrowArrayStream (struct from arrow/c/abi.h)
+ * @param options Knobs controlling type mapping; pass NULL for defaults
+ * @return chdb_result with elapsed/rows_read/bytes_read/storage_* metrics or
+ *         an error (buffer/length are NULL/0 — the data is in out_stream)
+ */
+CHDB_EXPORT chdb_result * chdb_query_arrow(
+    chdb_connection conn, const char * query,
+    chdb_arrow_stream out_stream, const chdb_arrow_options * options);
+
+/**
+ * Binary-safe variant of chdb_query_arrow with explicit query length.
+ */
+CHDB_EXPORT chdb_result * chdb_query_arrow_n(
+    chdb_connection conn, const char * query, size_t query_len,
+    chdb_arrow_stream out_stream, const chdb_arrow_options * options);
+
+/**
+ * Initializes a streaming Arrow query and returns a stream handle. Each
+ * subsequent chdb_stream_fetch_arrow() call pulls one record batch with a
+ * stable schema across the lifetime of the stream. Cancel/destroy via the
+ * shared chdb_stream_cancel_query / chdb_destroy_query_result functions.
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_arrow(
+    chdb_connection conn, const char * query,
+    const chdb_arrow_options * options);
+
+/**
+ * Binary-safe variant of chdb_stream_query_arrow with explicit query length.
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_arrow_n(
+    chdb_connection conn, const char * query, size_t query_len,
+    const chdb_arrow_options * options);
+
+/**
+ * Pulls the next record batch from a streaming Arrow query into the
+ * caller-allocated out_batch (a single-batch ArrowArrayStream). When the
+ * stream is exhausted out_batch->get_next() will return a released array
+ * on first call. Schema and (if enabled) LowCardinality dictionaries stay
+ * stable across all fetches because the converter and cached dictionary
+ * values are persisted on the stream handle.
+ *
+ * @param conn Active connection
+ * @param stream_result Stream handle from chdb_stream_query_arrow{,_n}
+ * @param out_batch Caller-allocated ArrowArrayStream filled with one batch
+ * @return CHDBSuccess on success, CHDBError on protocol error
+ */
+CHDB_EXPORT chdb_state chdb_stream_fetch_arrow(
+    chdb_connection conn, chdb_result * stream_result,
+    chdb_arrow_stream out_batch);
 
 /**
  * Registers an Arrow stream as an arrow stream table function with the given name

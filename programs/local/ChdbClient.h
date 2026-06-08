@@ -43,10 +43,12 @@ public:
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
-#if USE_PYTHON
+    /// Set named query parameters ({name:Type} placeholders) on the underlying client context.
+    /// Used by both the Python binding (params=...) and the C ABI (chdb_query_with_params).
     void setQueryParameters(const NameToNameMap & params);
     void clearQueryParameters();
 
+#if USE_PYTHON
     void findQueryableObjFromPyCache(const String & query_str) const;
 #endif
 

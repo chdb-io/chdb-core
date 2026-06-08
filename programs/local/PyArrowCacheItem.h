@@ -34,7 +34,8 @@ struct PyarrowCacheItem : public PythonImportCacheItem
 
 	PyarrowCacheItem()
 	    : PythonImportCacheItem("pyarrow"), dataset(), table("Table", this),
-		record_batch_reader("RecordBatchReader", this), ipc(this)
+		record_batch_reader("RecordBatchReader", this), ipc(this),
+		Array("Array", this), string_type("string", this), py_buffer("py_buffer", this)
 	{}
 	~PyarrowCacheItem() override = default;
 
@@ -42,6 +43,9 @@ struct PyarrowCacheItem : public PythonImportCacheItem
 	PythonImportCacheItem table;
 	PythonImportCacheItem record_batch_reader;
 	PyarrowIpcCacheItem ipc;
+	PythonImportCacheItem Array;
+	PythonImportCacheItem string_type;
+	PythonImportCacheItem py_buffer;
 };
 
 } // namespace CHDB
