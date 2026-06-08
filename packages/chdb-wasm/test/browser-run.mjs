@@ -57,6 +57,9 @@ async function runContext(label, isolate, port, expectVariant) {
     // registerFile + file('<name>') lazy read works on BOTH bundles: the read is
     // proxied (MAIN_THREAD_EM_ASM) to the runtime thread that holds the Blob.
     assert.strictEqual(r.regfile, '3,45', `${label}: registerFile lazy read (got ${r.regfile})`);
+    // Parquet read through the lazy JS reader (footer + row-group seeks), with auto
+    // format inference from the registered name's .parquet extension.
+    assert.strictEqual(r.parquet, '10,45', `${label}: registerFile Parquet read (got ${r.parquet})`);
     assert.strictEqual(r.url_local, '4,100', `${label}: url() same-origin http read`);
     assert.strictEqual(r.url_public, '265', `${label}: url() public S3 read (got ${r.url_public})`);
     assert.strictEqual(r.s3_public, '265', `${label}: s3() public anonymous read (got ${r.s3_public})`);

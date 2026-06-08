@@ -117,10 +117,14 @@ if (OS_WASM)
     # Go further than lite: the libs lite still opts-in but that WASM can't use
     # (native protoc bootstrap, networked object stores, heavy columnar formats).
     set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
-    set (ENABLE_PARQUET OFF CACHE INTERNAL "")
-    set (ENABLE_THRIFT OFF CACHE INTERNAL "")
     set (ENABLE_CAPNP OFF CACHE INTERNAL "")
     set (ENABLE_AVRO OFF CACHE INTERNAL "")
+    # Parquet READ via a slim Arrow build: Parquet + Thrift on, ORC off (ORC is the
+    # only consumer of protobuf/protoc, which stay off) and Arrow's curl/HDFS object
+    # store paths guarded out in contrib/arrow-cmake.
+    set (ENABLE_PARQUET ON CACHE INTERNAL "")
+    set (ENABLE_THRIFT ON CACHE INTERNAL "")
+    set (ENABLE_ORC OFF CACHE INTERNAL "")
 
     # Emscripten's libc++ is not the chdb-patched libcxx, so the exception ABI
     # has no embedded stack trace. base/src expect this macro to be defined.

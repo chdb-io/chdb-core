@@ -31,6 +31,16 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
         return (await db.query("SELECT count(), sum(b) FROM file('reg.csv','CSVWithNames')")).text().trim();
       } catch (e) { return 'ERR: ' + (e && e.message || e); }
     })();
+    // Parquet read via the lazy JS reader: produce a Parquet blob (query FORMAT Parquet),
+    // register it, then scan it back by NAME with auto format inference (.parquet -> Parquet).
+    // Exercises ParquetV3 over ReadBufferFromJSFile (footer + row-group seeks) on both bundles.
+    out.parquet = await (async () => {
+      try {
+        const pq = await db.query('SELECT number AS n FROM numbers(10)', 'Parquet');
+        await db.registerFile('gen.parquet', new Blob([pq.data]));
+        return (await db.query("SELECT count(), sum(n) FROM file('gen.parquet')")).text().trim();
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
     // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
     // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
     // transient network/CORS failure surfaces as a clear value rather than aborting the run.

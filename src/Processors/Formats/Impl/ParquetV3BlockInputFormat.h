@@ -7,6 +7,10 @@
 #include <Processors/Formats/Impl/Parquet/ReadManager.h>
 #include <Processors/Formats/ISchemaReader.h>
 #include <Processors/Formats/Impl/ParquetMetadataCache.h>
+// RelativePathWithMetadata is used by value (std::optional member / ctor default arg) and so
+// needs its full definition. Non-wasm builds pull it in transitively via the object-storage /
+// S3 reader path, which the wasm config trims — so include it explicitly (no-op elsewhere).
+#include <Disks/DiskObjectStorage/ObjectStorages/IObjectStorage.h>
 
 namespace DB
 {

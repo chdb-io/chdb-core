@@ -45,6 +45,19 @@ static void chdb_wasm_apply_settings(chdb_connection conn)
     chdb_result * r = chdb_query(conn, "SET max_threads = " CHDB_WASM_MAX_THREADS, "Null");
     if (r)
         chdb_destroy_query_result(r);
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    // The single-threaded build has no thread pool (no -pthread), so the Parquet (V3)
+    // reader's decoder/prefetch pools can't be created ("Cannot schedule a task"). Force
+    // its thread-free path: max_parsing_threads=1 makes the decoder run inline (ParquetV3
+    // treats 1 as "no pool"), and disabling row-group prefetch avoids the IO thread pool
+    // (reads then run synchronously inside IInputFormat::read()). The threaded build keeps
+    // both — its pool pthreads can run these tasks.
+    r = chdb_query(conn,
+        "SET max_parsing_threads = 1, input_format_parquet_enable_row_group_prefetch = 0",
+        "Null");
+    if (r)
+        chdb_destroy_query_result(r);
+#endif
 }
 
 // Open (or reopen) the implicit :memory: connection. Returns 1 on success.
