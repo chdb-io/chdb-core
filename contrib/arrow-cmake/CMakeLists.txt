@@ -570,6 +570,17 @@ if (TARGET ch_contrib::jemalloc)
 endif()
 
 
+# file_to_stream.cc / stream_to_file.cc are standalone Arrow CLI tools — each has its own
+# main(). chdb_wasm is an executable with its own (stub) main; in the wasm link one of these
+# tool main()s shadows it and runs on module init (prints a usage line and returns 1). Drop
+# them for wasm — chdb never uses them. Native keeps them (they sit unreferenced in
+# libarrow.a), so non-wasm builds are byte-unaffected.
+if (OS_WASM)
+    list (REMOVE_ITEM ARROW_SRCS
+        "${LIBRARY_DIR}/ipc/file_to_stream.cc"
+        "${LIBRARY_DIR}/ipc/stream_to_file.cc")
+endif ()
+
 add_library(_arrow ${ARROW_SRCS})
 add_library(ch_contrib::arrow ALIAS _arrow)
 
