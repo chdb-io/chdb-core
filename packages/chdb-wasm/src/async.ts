@@ -112,20 +112,6 @@ export class AsyncChdb {
     await this.request('putFile', { path, data }, [data.buffer]);
   }
 
-  /**
-   * Mount a File/Blob at `path` via WORKERFS, read lazily and WITHOUT copying it
-   * into the wasm heap (only the byte ranges actually read are pulled in) — ideal
-   * for large local files picked via `<input type=file>`. `file('<path>', ...)`
-   * then scans it like a normal file. A `Blob`/`File` is passed by reference (no
-   * byte copy across the worker boundary); a `Uint8Array` is transferred zero-copy.
-   * Example: await db.mountFile('/data.csv', fileInput.files[0]);
-   *          await db.query("SELECT count() FROM file('/data.csv','CSVWithNames')")
-   */
-  async mountFile(path: string, data: Blob | Uint8Array): Promise<void> {
-    const transfer = data instanceof Uint8Array ? [data.buffer] : undefined;
-    await this.request('mountFile', { path, data }, transfer);
-  }
-
   /** Open an explicit connection (path defaults to in-memory). */
   async connect(path?: string): Promise<AsyncChdbConnection> {
     const { conn } = await this.request('connect', { path });

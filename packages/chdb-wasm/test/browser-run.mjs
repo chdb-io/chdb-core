@@ -54,7 +54,6 @@ async function runContext(label, isolate, port, expectVariant) {
     assert.strictEqual(r.insert, '100,4950', `${label}: INSERT+read`);
     assert.strictEqual(r.heavy, '50000000', `${label}: heavy count`);
     assert.strictEqual(r.file, '3,60', `${label}: file() local read`);
-    assert.strictEqual(r.mount, '3,45', `${label}: mountFile (WORKERFS lazy) read (got ${r.mount})`);
     assert.strictEqual(r.url_local, '4,100', `${label}: url() same-origin http read`);
     assert.strictEqual(r.url_public, '265', `${label}: url() public S3 read (got ${r.url_public})`);
     assert.strictEqual(r.s3_public, '265', `${label}: s3() public anonymous read (got ${r.s3_public})`);
