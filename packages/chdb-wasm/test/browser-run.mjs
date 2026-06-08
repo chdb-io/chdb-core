@@ -54,6 +54,9 @@ async function runContext(label, isolate, port, expectVariant) {
     assert.strictEqual(r.insert, '100,4950', `${label}: INSERT+read`);
     assert.strictEqual(r.heavy, '50000000', `${label}: heavy count`);
     assert.strictEqual(r.file, '3,60', `${label}: file() local read`);
+    // registerFile + file('<name>') lazy read works on BOTH bundles: the read is
+    // proxied (MAIN_THREAD_EM_ASM) to the runtime thread that holds the Blob.
+    assert.strictEqual(r.regfile, '3,45', `${label}: registerFile lazy read (got ${r.regfile})`);
     assert.strictEqual(r.url_local, '4,100', `${label}: url() same-origin http read`);
     assert.strictEqual(r.url_public, '265', `${label}: url() public S3 read (got ${r.url_public})`);
     assert.strictEqual(r.s3_public, '265', `${label}: s3() public anonymous read (got ${r.s3_public})`);

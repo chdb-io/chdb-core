@@ -44,6 +44,24 @@ export class ChdbBindings {
     FS.writeFile(path, data);
   }
 
+  /**
+   * Register a File/Blob (by name) for lazy reading via `file('<name>', ...)`,
+   * WITHOUT copying its bytes into the wasm heap: ReadBufferFromJSFile reads byte
+   * ranges on demand (Blob.slice + FileReaderSync). Ideal for large local files from
+   * `<input type=file>`.
+   *
+   * This runs on the module's main runtime thread (a Web Worker), so the handle is
+   * stored in that thread's globalThis.__CHDB_FILES. On the threaded bundle a query's
+   * read executes on a pool pthread (a separate Worker that can't see this Worker's JS
+   * objects); ReadBufferFromJSFile handles that by reading via MAIN_THREAD_EM_ASM, which
+   * proxies the read back to this thread — so a single registry here serves both bundles.
+   */
+  registerFile(name: string, data: Blob | Uint8Array): void {
+    const blob = data instanceof Uint8Array ? new Blob([data]) : data;
+    const g = globalThis as unknown as { __CHDB_FILES?: Map<string, Blob> };
+    (g.__CHDB_FILES ??= new Map<string, Blob>()).set(name, blob);
+  }
+
   /** Open an explicit connection; returns an opaque handle. */
   connect(path?: string): ConnHandle {
     return this.mod.ccall('chdb_wasm_connect', 'number', ['string'], [path ?? '']);

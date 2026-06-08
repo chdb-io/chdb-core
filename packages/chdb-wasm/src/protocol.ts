@@ -23,6 +23,7 @@ export type RequestType =
   | 'streamFetch'
   | 'streamCancel'
   | 'putFile'
+  | 'registerFile'
   | 'close';
 
 /** Result of one streaming fetch: a chunk, or done=true at end-of-stream. */

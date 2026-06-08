@@ -22,6 +22,15 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     // local file IO: put a file into the wasm FS, read it back with file()
     await db.putFile('/b/data.csv', new TextEncoder().encode('id,v\n1,10\n2,20\n3,30\n'));
     out.file = await Q("SELECT count(), sum(v) FROM file('/b/data.csv','CSVWithNames')");
+    // lazy local-file read: registerFile a Blob (no heap copy; Blob.slice + FileReaderSync)
+    // and scan it via file('<name>') — bare name, exactly like a native path (duckdb-style).
+    // Wrapped to observe per-bundle (read proxied to the runtime thread holding the Blob).
+    out.regfile = await (async () => {
+      try {
+        await db.registerFile('reg.csv', new Blob([new TextEncoder().encode('a,b\n1,5\n2,15\n3,25\n')]));
+        return (await db.query("SELECT count(), sum(b) FROM file('reg.csv','CSVWithNames')")).text().trim();
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
     // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
     // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
     // transient network/CORS failure surfaces as a clear value rather than aborting the run.

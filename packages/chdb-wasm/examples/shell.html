@@ -55,9 +55,13 @@
           <span class="stats" id="stats"></span>
         </div>
         <div class="chips" id="chips"></div>
+        <div class="chips" id="filechips"></div>
       </div>
       <div class="out" id="out"><div class="msg">Loading the chdb WebAssembly module… (first load downloads the engine)</div></div>
     </main>
+    <!-- Hidden picker for the `.files add` command: lets the user choose local file(s),
+         which we registerFile() (lazy, no upload/copy) so they're queryable by name. -->
+    <input type="file" id="filepick" multiple style="display:none" />
 
     <script type="module">
       import { AsyncChdb, selectBundle } from '../dist/index.js';
@@ -70,6 +74,7 @@
         d.className = 'msg' + (error ? ' error' : ''); d.textContent = text; outEl.appendChild(d); };
 
       const examples = [
+        '.files add',
         'SELECT version()',
         "SELECT 'hello' || ' ' || 'chdb' AS greeting",
         'SELECT number, number * number AS sq FROM numbers(10)',
@@ -83,6 +88,51 @@
         c.onclick = () => { sqlEl.value = q; run(); };
         chips.appendChild(c);
       }
+
+      // Local-file registration (duckdb-style `.files add`). registerFile keeps a
+      // reference to the chosen File/Blob and reads byte ranges on demand — no upload,
+      // no full copy into wasm memory — so it can be queried by name via file('<name>').
+      const filePick = $('filepick'), fileChipsEl = $('filechips');
+      const registered = [];
+      const sampleQuery = (name) => `SELECT * FROM file('${name}') LIMIT 10`;
+
+      function renderFileChips() {
+        fileChipsEl.innerHTML = '';
+        for (const name of registered) {
+          const c = document.createElement('span');
+          c.className = 'chip'; c.textContent = '📄 ' + name;
+          c.title = `Query ${name}`;
+          c.onclick = () => { sqlEl.value = sampleQuery(name); run(); };
+          fileChipsEl.appendChild(c);
+        }
+      }
+      function showFiles() {
+        if (!registered.length) {
+          showMessage("No files registered yet.\n\nType '.files add' and press Run to pick local file(s), " +
+            "then query them with file('<name>') — format is inferred from the name's extension.");
+          return;
+        }
+        showMessage("Registered files (query with file('<name>')):\n\n  " + registered.map((n) => '• ' + n).join('\n  '));
+      }
+      filePick.onchange = async () => {
+        const files = [...filePick.files];
+        filePick.value = '';            // let the same file be re-picked later
+        if (!files.length || !db) return;
+        try {
+          for (const f of files) {
+            await db.registerFile(f.name, f);
+            if (!registered.includes(f.name)) registered.push(f.name);
+          }
+          renderFileChips();
+          const last = files[files.length - 1].name;
+          sqlEl.value = sampleQuery(last);
+          showMessage('Registered ' + files.length + ' file' + (files.length === 1 ? '' : 's') + ':\n\n  ' +
+            files.map((f) => `• ${f.name}  (${f.size.toLocaleString()} bytes)`).join('\n  ') +
+            `\n\nThe query box now reads '${last}'. Press Run (⌘/Ctrl+Enter).`);
+        } catch (e) {
+          showMessage('registerFile failed: ' + (e && e.message ? e.message : String(e)), true);
+        }
+      };
 
       function renderTable(meta, data) {
         if (!meta || meta.length === 0) { showMessage('OK'); return; }
@@ -104,6 +154,10 @@
         if (!db) return;
         const sql = sqlEl.value.trim();
         if (!sql) return;
+        // Dot-commands (not SQL): `.files add` opens the OS file picker and registers the
+        // chosen file(s); `.files` lists what's registered. Everything else runs as SQL.
+        if (sql === '.files add') { filePick.click(); return; }
+        if (sql === '.files' || sql === '.files list') { showFiles(); return; }
         runBtn.disabled = true; statsEl.textContent = 'running…';
         try {
           const res = await db.query(sql, 'JSONCompact');
@@ -140,7 +194,8 @@
           });
           setStatus('ready', 'ready');
           runBtn.disabled = false;
-          showMessage('Ready. Write SQL above and press Run (⌘/Ctrl+Enter), or click an example.');
+          showMessage("Ready. Write SQL and press Run (⌘/Ctrl+Enter), or click an example.\n\n" +
+            "Tip: type '.files add' to pick a local file and query it with file('<name>').");
           run();
         } catch (e) {
           setStatus('error', 'err');

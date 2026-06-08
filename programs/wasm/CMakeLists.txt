@@ -55,6 +55,9 @@ target_link_options (chdb_wasm PRIVATE
     -sWASM_BIGINT
     -sFORCE_FILESYSTEM=1
     -sALLOW_TABLE_GROWTH=1
+    # HEAPU8 + FS are used by the npm package (putFile/registerFile, result copy-out);
+    # registerFile's lazy reader (ReadBufferFromJSFile) needs no extra exports — it
+    # reads via MAIN_THREAD_EM_ASM.
     "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS"
     "SHELL:-s EXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exported_functions.txt"
     -sENVIRONMENT=node,web,worker

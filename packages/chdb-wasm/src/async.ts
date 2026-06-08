@@ -112,6 +112,22 @@ export class AsyncChdb {
     await this.request('putFile', { path, data }, [data.buffer]);
   }
 
+  /**
+   * Register a File/Blob for lazy, no-copy reading via `file('<name>', ...)`:
+   * only the byte ranges actually read are pulled in (Blob.slice + FileReaderSync) —
+   * ideal for large local files picked via `<input type=file>`. A `Blob`/`File` is
+   * passed by reference (no byte copy across the worker boundary); a `Uint8Array`
+   * is transferred zero-copy. Then reference it by the same name in SQL — exactly
+   * like a native path, no prefix. Works on both bundles (on the threaded bundle the
+   * read is proxied to the runtime thread that holds the handle). Example:
+   *   await db.registerFile('data.parquet', fileInput.files[0]);
+   *   await db.query("SELECT count() FROM file('data.parquet','Parquet')")
+   */
+  async registerFile(name: string, data: Blob | Uint8Array): Promise<void> {
+    const transfer = data instanceof Uint8Array ? [data.buffer] : undefined;
+    await this.request('registerFile', { name, data }, transfer);
+  }
+
   /** Open an explicit connection (path defaults to in-memory). */
   async connect(path?: string): Promise<AsyncChdbConnection> {
     const { conn } = await this.request('connect', { path });
