@@ -20,9 +20,10 @@ endif()
 option (ENABLE_PARQUET "Enable parquet" ${ENABLE_PARQUET_DEFAULT})
 
 # ORC (a) is the only consumer of protobuf/protoc here and (b) is not needed for
-# Parquet read. The wasm build sets ENABLE_ORC OFF (cmake/target.cmake) to drop the
-# protobuf/protoc bootstrap; elsewhere it follows ENABLE_PARQUET.
-option (ENABLE_ORC "Enable ORC (needs protobuf/protoc)" ${ENABLE_PARQUET})
+# Parquet read. Default ON — matches the previous unconditional ORC build, so non-wasm
+# builds are unchanged; the wasm build forces it OFF in cmake/target.cmake to drop the
+# protobuf/protoc bootstrap.
+option (ENABLE_ORC "Enable ORC (needs protobuf/protoc)" ON)
 
 if (NOT ENABLE_PARQUET)
     message(STATUS "Not using parquet")
