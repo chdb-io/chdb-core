@@ -1,7 +1,7 @@
 // chdb-wasm: ClickHouse (chdb) compiled to WebAssembly, with an async,
 // non-blocking, worker-based JS/TS API.
 //
-//   import { AsyncChdb } from '@chdb/chdb-wasm';
+//   import { AsyncChdb } from 'chdb-wasm';
 //   const db = await AsyncChdb.create({ moduleUrl: '/path/to/chdb.mjs' });
 //   const r = await db.query('SELECT 1');
 //   console.log(r.text());          // "1\n"

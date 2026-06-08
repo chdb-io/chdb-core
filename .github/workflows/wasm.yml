@@ -1,12 +1,12 @@
 # Build chdb for WebAssembly (Emscripten), run the Node + headless-Chrome tests,
-# and — only on a v* tag — publish @chdb/chdb-wasm to npm. The publish steps live
-# in the same job, after the tests, so a tag that fails any test never publishes;
-# the tag name (vX.Y.Z) becomes the npm version.
+# and — only on a v* tag — publish the `chdb-wasm` npm package. The publish steps
+# live in the same job, after the tests, so a tag that fails any test never
+# publishes; the tag name (vX.Y.Z) becomes the npm version.
 #
 # Runs on every push to main, pull request, manual dispatch, and v* tags. One
 # Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
-# Requires repo secrets: NPM_TOKEN (npm automation token, publish rights to @chdb)
-# and GH_TOKEN (to attach the wasm to the GitHub release).
+# Requires repo secrets: NPM_TOKEN (npm automation token that can publish
+# chdb-wasm) and GH_TOKEN (to attach the wasm to the GitHub release).
 name: wasm
 
 on:
@@ -177,8 +177,8 @@ jobs:
           # under the `next` dist-tag so `npm install @chdb/chdb-wasm` (which resolves
           # `latest`) keeps getting the last STABLE release; stable tags get `latest`.
           if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
-          echo "publishing @chdb/chdb-wasm@$VERSION under dist-tag '$TAG'"
-          npm publish --access public --tag "$TAG"
+          echo "publishing chdb-wasm@$VERSION under dist-tag '$TAG'"
+          npm publish --tag "$TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

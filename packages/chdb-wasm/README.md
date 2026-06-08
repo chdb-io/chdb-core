@@ -1,4 +1,4 @@
-# @chdb/chdb-wasm
+# chdb-wasm
 
 [chdb](https://github.com/chdb-io/chdb) (an embedded [ClickHouse](https://clickhouse.com)) compiled to WebAssembly, with an **async, non-blocking, worker-based** JS/TS API — modeled on [duckdb-wasm](https://github.com/duckdb/duckdb-wasm).
 
@@ -21,7 +21,7 @@ single-threaded "mvp" bundle. `selectBundle()` reports if the runtime can't run 
 ## Usage (Node)
 
 ```js
-import { AsyncChdb } from '@chdb/chdb-wasm';
+import { AsyncChdb } from 'chdb-wasm';
 
 const db = await AsyncChdb.create({ moduleUrl: '/path/to/chdb.mjs' });
 
@@ -46,9 +46,9 @@ await db.terminate();
 ## Usage (browser)
 
 ```js
-import { AsyncChdb, selectBundle } from '@chdb/chdb-wasm';
+import { AsyncChdb, selectBundle } from 'chdb-wasm';
 
-const bundle = selectBundle({ baseUrl: '/node_modules/@chdb/chdb-wasm/dist' });
+const bundle = selectBundle({ baseUrl: '/node_modules/chdb-wasm/dist' });
 if (!bundle.supported) throw new Error(bundle.reasons.join('; '));
 
 const db = await AsyncChdb.create({
