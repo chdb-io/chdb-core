@@ -49,13 +49,22 @@ export class ChdbBindings {
    * wasm heap: reads are lazy, on-demand byte ranges of the Blob (FileReaderSync),
    * so `file('<path>', ...)` can scan a large local file (e.g. from <input type=file>)
    * while only the bytes actually read are pulled in. One file per mount directory;
-   * re-mounting the same directory replaces it. Worker-only (always true here).
+   * re-mounting the same directory replaces it.
+   *
+   * SINGLE-THREADED (st) BUNDLE ONLY. WORKERFS reads the Blob from the JS scope of
+   * the thread that mounted it; on the threaded (mt) bundle the query reads run on a
+   * separate pthread/Worker that cannot see that Blob, which would trap the module.
+   * On the mt bundle this refuses cleanly — use putFile() there instead.
    * Requires the module built with `-lworkerfs.js` and WORKERFS in EXPORTED_RUNTIME_METHODS.
    */
   mountFile(path: string, data: Blob | Uint8Array): void {
     const FS = this.mod.FS;
     const WORKERFS = this.mod.WORKERFS;
     if (!FS || !WORKERFS) throw new ChdbError('WORKERFS is not available in this build (need EXPORTED_RUNTIME_METHODS=WORKERFS, -lworkerfs.js)');
+    // Threaded build = SharedArrayBuffer-backed memory. Reads would run on a pthread
+    // that cannot access this Blob -> module trap. Refuse before mounting.
+    if (typeof SharedArrayBuffer !== 'undefined' && this.mod.HEAPU8.buffer instanceof SharedArrayBuffer)
+      throw new ChdbError('mountFile (lazy WORKERFS mount) is supported only on the single-threaded bundle; use putFile() on the threaded (cross-origin-isolated) bundle');
     const slash = path.lastIndexOf('/');
     const dir = slash > 0 ? path.slice(0, slash) : '/';
     const name = path.slice(slash + 1);
