@@ -1,9 +1,18 @@
 {
   "name": "@chdb/chdb-wasm",
-  "version": "0.1.0-wasm",
+  "version": "0.1.0",
   "description": "chdb (ClickHouse) compiled to WebAssembly, with an async, non-blocking, worker-based API",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdb-io/chdb-core.git",
+    "directory": "packages/chdb-wasm"
+  },
+  "homepage": "https://github.com/chdb-io/chdb-core/tree/main/packages/chdb-wasm#readme",
+  "bugs": {
+    "url": "https://github.com/chdb-io/chdb-core/issues"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

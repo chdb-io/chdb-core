@@ -1,11 +1,12 @@
-# Build chdb for WebAssembly (Emscripten) and run the Node smoke tests.
+# Build chdb for WebAssembly (Emscripten), run the Node + headless-Chrome tests,
+# and — only on a v* tag — publish @chdb/chdb-wasm to npm. The publish steps live
+# in the same job, after the tests, so a tag that fails any test never publishes;
+# the tag name (vX.Y.Z) becomes the npm version.
 #
-# Runs on every push (main / support-wasm) and pull request, like the native wheel
-# workflows, plus manual dispatch. A full ClickHouse -> WASM build is heavy
-# (~20-30 min cold), but ccache + the emsdk cache make re-runs incremental.
-#
-# One Linux x86_64 (self-hosted) runner is enough: the .wasm artifact is
-# host-independent (Emscripten cross-compiles), unlike the native per-OS/arch wheels.
+# Runs on every push to main, pull request, manual dispatch, and v* tags. One
+# Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
+# Requires repo secrets: NPM_TOKEN (npm automation token, publish rights to @chdb)
+# and GH_TOKEN (to attach the wasm to the GitHub release).
 name: wasm
 
 on:
@@ -13,6 +14,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
     paths-ignore:
       - '**/*.md'
   pull_request:
@@ -24,7 +27,9 @@ on:
 
 concurrency:
   group: wasm-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded build/test runs on branches & PRs, but never cancel a tag
+  # run mid-publish.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   EMSDK_VERSION: '5.0.7'      # match the known-good local toolchain (Emscripten 5.0.7)
@@ -67,6 +72,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'  # needed for `npm publish` auth on tags
 
       - name: Configure + build chdb_wasm (threaded + single-threaded)
         run: |
@@ -150,3 +156,34 @@ jobs:
             buildwasm/programs/wasm/chdb.wasm
           retention-days: 7
           if-no-files-found: error
+
+      # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
+      # and headless-Chrome tests) ran first, so a tag that fails tests never ships.
+      # dist/ is already built by the npm step above; the version is taken from the tag. ----
+      - name: Set npm version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: packages/chdb-wasm
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Publishing @chdb/chdb-wasm@$VERSION"
+          npm pkg set version="$VERSION"
+
+      - name: Publish to npm
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: packages/chdb-wasm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Best-effort: attach the wasm to the GitHub release (create it if the tag has
+      # none yet). continue-on-error — the npm publish above is the real deliverable.
+      - name: Attach wasm artifacts to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        run: |
+          A=buildwasm/programs/wasm/chdb.wasm
+          B=buildwasm/programs/wasm/chdb.mjs
+          gh release upload "${GITHUB_REF_NAME}" "$A" "$B" --clobber \
+            || gh release create "${GITHUB_REF_NAME}" "$A" "$B" --title "${GITHUB_REF_NAME}" --notes "chdb-wasm ${GITHUB_REF_NAME}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
