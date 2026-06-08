@@ -41,6 +41,62 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
         return (await db.query("SELECT count(), sum(n) FROM file('gen.parquet')")).text().trim();
       } catch (e) { return 'ERR: ' + (e && e.message || e); }
     })();
+    // registerFile with a Uint8Array (zero-copy transfer + Uint8Array->Blob wrap path).
+    out.regfile_u8 = await (async () => {
+      try {
+        await db.registerFile('reg_u8.csv', new TextEncoder().encode('a,b\n1,5\n2,15\n3,25\n'));
+        return (await db.query("SELECT count(), sum(b) FROM file('reg_u8.csv','CSVWithNames')")).text().trim();
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
+    // Auto format inference for a registered text file (no explicit format; .csv -> CSV).
+    out.regfile_infer = await (async () => {
+      try {
+        await db.registerFile('infer.csv', new Blob([new TextEncoder().encode('1,5\n2,15\n3,25\n')]));
+        return (await db.query("SELECT count(), sum(c2) FROM file('infer.csv')")).text().trim();
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
+    // Parquet with an EXPLICIT format argument (skips inference; different code path).
+    out.parquet_explicit = await (async () => {
+      try {
+        const pq = await db.query('SELECT number AS n FROM numbers(10)', 'Parquet');
+        await db.registerFile('gen2.parquet', new Blob([pq.data]));
+        return (await db.query("SELECT count(), sum(n) FROM file('gen2.parquet','Parquet')")).text().trim();
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
+    // Multi-row-group Parquet: forces footer + cross-row-group seeks (SEEK_SET to many
+    // offsets) through ReadBufferFromJSFile. Assert an aggregate over all groups AND a
+    // point lookup so an off-by-one in seek()/getPosition() yields wrong values, not just
+    // a wrong count.
+    out.parquet_seek = await (async () => {
+      try {
+        const pq = await db.query(
+          'SELECT number AS n, toString(number) AS s FROM numbers(20000) SETTINGS output_format_parquet_row_group_size = 4096',
+          'Parquet');
+        await db.registerFile('big.parquet', new Blob([pq.data]));
+        const agg = (await db.query("SELECT count(), sum(n) FROM file('big.parquet')")).text().trim();
+        const point = (await db.query("SELECT n FROM file('big.parquet') WHERE n = 12345")).text().trim();
+        return agg + '|' + point;
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
+    // Multiple registered files live at once (JOIN/UNION across two) + re-registering a
+    // name overwrites it (Map.set semantics; the query must see the NEW bytes).
+    out.regfile_multi = await (async () => {
+      try {
+        await db.registerFile('r1.csv', new Blob([new TextEncoder().encode('a,b\n1,10\n2,20\n')]));
+        await db.registerFile('r2.csv', new Blob([new TextEncoder().encode('a,b\n3,30\n4,40\n')]));
+        const u = (await db.query("SELECT count(), sum(b) FROM (SELECT * FROM file('r1.csv','CSVWithNames') UNION ALL SELECT * FROM file('r2.csv','CSVWithNames'))")).text().trim();
+        await db.registerFile('r1.csv', new Blob([new TextEncoder().encode('a,b\n5,100\n')]));
+        const re = (await db.query("SELECT count(), sum(b) FROM file('r1.csv','CSVWithNames')")).text().trim();
+        return u + '|' + re;
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
+    // Error path: querying an unregistered name must reject cleanly (not crash the worker).
+    out.regfile_missing = await (async () => {
+      try {
+        await db.query("SELECT count() FROM file('never_registered_xyz.csv','CSVWithNames')");
+        return 'NO_ERROR';
+      } catch (e) { return 'ERR'; }
+    })();
     // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
     // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
     // transient network/CORS failure surfaces as a clear value rather than aborting the run.
@@ -52,6 +108,9 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     const PUB = 'https://datasets-documentation.s3.eu-west-3.amazonaws.com/nyc-taxi/taxi_zone_lookup.csv';
     out.url_public = await tryQ("SELECT count() FROM url('" + PUB + "','CSVWithNames')");
     out.s3_public = await tryQ("SELECT count() FROM s3('" + PUB + "','CSVWithNames')");
+    // url() error path: a 404 (the local server returns 404 for unknown paths) must
+    // surface as a NETWORK_ERROR (chdb_web_read returns -1 on non-200/206), not succeed.
+    out.url_404 = await tryQ("SELECT count() FROM url('" + location.origin + "/test/does_not_exist_xyz.csv','CSVWithNames')");
     await db.terminate();
     log('done: ' + JSON.stringify(out));
     window.__RESULT__ = out;

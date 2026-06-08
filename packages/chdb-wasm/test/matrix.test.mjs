@@ -85,6 +85,14 @@ check('file_jsonl', async () => {
   await db.putFile('/m/data.jsonl', new TextEncoder().encode('{"x":10}\n{"x":20}\n{"x":30}\n'));
   assert.strictEqual(await q("SELECT sum(x) FROM file('/m/data.jsonl','JSONEachRow')"), '60');
 });
+check('file_nested_dirs', async () => {
+  // putFile must mkdir every parent segment, not just one level.
+  await db.putFile('/x/y/z/data.csv', new TextEncoder().encode('id\n1\n2\n'));
+  assert.strictEqual(await q("SELECT count() FROM file('/x/y/z/data.csv','CSVWithNames')"), '2');
+});
+// Note: registerFile() is browser-only — it reads the Blob with FileReaderSync, a Web
+// Worker API not available under Node. The browser test (browser-run.mjs) covers it on
+// both bundles; in Node, use putFile()/a real path instead.
 
 let failed = 0;
 for (const [name, fn] of cases) {

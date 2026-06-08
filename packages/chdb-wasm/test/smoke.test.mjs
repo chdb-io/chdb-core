@@ -11,7 +11,16 @@ const MODULE =
   process.env.CHDB_WASM_MJS ||
   '/home/ubuntu/code/chdb-wasm/buildwasm/programs/wasm/chdb.mjs';
 
-console.log('platform features:', getPlatformFeatures());
+// Platform features: chdb-wasm hard-requires Memory64 + WASM_BIGINT; in Node coi is
+// forced true. Assert the invariant selectBundle relies on (rather than just printing).
+const features = getPlatformFeatures();
+console.log('platform features:', features);
+assert.ok(features.wasmBigInt, 'BigInt64Array (WASM_BIGINT) must be available');
+assert.ok(features.wasmMemory64, 'Memory64 must be available (Node >= 23)');
+assert.strictEqual(features.crossOriginIsolated, true, 'coi is forced true in Node');
+const picked = selectBundle({ baseUrl: 'file:///x' });
+assert.ok(picked.supported, `selectBundle must be supported in Node: ${JSON.stringify(picked.reasons || [])}`);
+assert.ok(picked.variant === 'mt' || picked.variant === 'st', `bundle variant: ${picked.variant}`);
 
 const db = await AsyncChdb.create({ moduleUrl: MODULE });
 

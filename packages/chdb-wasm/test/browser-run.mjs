@@ -60,9 +60,18 @@ async function runContext(label, isolate, port, expectVariant) {
     // Parquet read through the lazy JS reader (footer + row-group seeks), with auto
     // format inference from the registered name's .parquet extension.
     assert.strictEqual(r.parquet, '10,45', `${label}: registerFile Parquet read (got ${r.parquet})`);
+    assert.strictEqual(r.regfile_u8, '3,45', `${label}: registerFile Uint8Array input (got ${r.regfile_u8})`);
+    assert.strictEqual(r.regfile_infer, '3,45', `${label}: file() auto format inference (got ${r.regfile_infer})`);
+    assert.strictEqual(r.parquet_explicit, '10,45', `${label}: registerFile Parquet explicit format (got ${r.parquet_explicit})`);
+    // multi-row-group seek: aggregate over all groups + a point lookup with exact values
+    assert.strictEqual(r.parquet_seek, '20000,199990000|12345', `${label}: multi-row-group Parquet seek (got ${r.parquet_seek})`);
+    // two registered files joined, then r1 re-registered (overwrite must take effect)
+    assert.strictEqual(r.regfile_multi, '4,100|1,100', `${label}: multiple/overwrite registered files (got ${r.regfile_multi})`);
+    assert.strictEqual(r.regfile_missing, 'ERR', `${label}: unregistered file() must reject (got ${r.regfile_missing})`);
     assert.strictEqual(r.url_local, '4,100', `${label}: url() same-origin http read`);
     assert.strictEqual(r.url_public, '265', `${label}: url() public S3 read (got ${r.url_public})`);
     assert.strictEqual(r.s3_public, '265', `${label}: s3() public anonymous read (got ${r.s3_public})`);
+    assert.ok(typeof r.url_404 === 'string' && r.url_404.startsWith('ERR'), `${label}: url() 404 must reject (got ${r.url_404})`);
     console.log(`[${label}] OK`);
   } finally {
     await browser.close();

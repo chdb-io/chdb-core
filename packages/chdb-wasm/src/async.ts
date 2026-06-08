@@ -115,7 +115,8 @@ export class AsyncChdb {
   /**
    * Register a File/Blob for lazy, no-copy reading via `file('<name>', ...)`:
    * only the byte ranges actually read are pulled in (Blob.slice + FileReaderSync) —
-   * ideal for large local files picked via `<input type=file>`. A `Blob`/`File` is
+   * ideal for large local files picked via `<input type=file>`. Browser only: it uses
+   * FileReaderSync (a Web Worker API); under Node, use putFile() instead. A `Blob`/`File` is
    * passed by reference (no byte copy across the worker boundary); a `Uint8Array`
    * is transferred zero-copy. Then reference it by the same name in SQL — exactly
    * like a native path, no prefix. Works on both bundles (on the threaded bundle the
