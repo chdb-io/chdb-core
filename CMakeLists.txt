@@ -859,9 +859,20 @@ if (NATIVE_BUILD_TARGETS
         if (NOT CHDB_NATIVE_LINKER)
             message (FATAL_ERROR "WASM native bootstrap needs ld.lld on the host PATH")
         endif ()
+        # WASM-only sub-build flags. They keep the native bootstrap a plain host build
+        # (drop the hermetic linux toolchain so it is not seen as cross-compiling and
+        # does not recurse, with no leaked Emscripten toolchain) and point it at the
+        # host LLD. They must NOT be applied on other (non-wasm) cross builds — e.g.
+        # macOS-on-Linux — which keep their hermetic toolchain unchanged.
+        set (NATIVE_BOOTSTRAP_EXTRA_ARGS
+            "-DDISABLE_HERMETIC_BUILD=1"
+            "-DCMAKE_TOOLCHAIN_FILE="
+            "-DCHDB_SKIP_NATIVE_BOOTSTRAP=1"
+            "-DLINKER_NAME=${CHDB_NATIVE_LINKER}")
     else ()
         set (NATIVE_C_COMPILER   "${CMAKE_C_COMPILER}")
         set (NATIVE_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+        set (NATIVE_BOOTSTRAP_EXTRA_ARGS "")
     endif ()
 
     set (NATIVE_BUILD_DIR "${PROJECT_BINARY_DIR}/native")
@@ -883,17 +894,10 @@ if (NATIVE_BUILD_TARGETS
             "-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}"
             "-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}"
             "-DCMAKE_BUILD_TYPE=Release"
-            # WASM: keep the native sub-build a plain host build. Without this it
-            # picks up the hermetic linux toolchain (-> CMAKE_CROSSCOMPILING=TRUE ->
-            # re-triggers the native-targets bootstrap -> infinite recursion) and the
-            # empty Emscripten toolchain leaks in. An explicit empty toolchain file +
-            # DISABLE_HERMETIC_BUILD makes it a clean host configure.
-            "-DDISABLE_HERMETIC_BUILD=1"
-            "-DCMAKE_TOOLCHAIN_FILE="
-            "-DCHDB_SKIP_NATIVE_BOOTSTRAP=1"
-            # The native host build still requires LLD; emsdk ships `lld` but not a
-            # `ld.lld-<ver>` that tools.cmake searches for, so point it explicitly.
-            "-DLINKER_NAME=${CHDB_NATIVE_LINKER}"
+            # WASM-only: drop the hermetic toolchain (avoids cross-compile recursion +
+            # leaked Emscripten toolchain) and point at the host LLD. Empty on non-wasm
+            # builds, so their native bootstrap (incl. macOS-on-Linux) is unchanged.
+            ${NATIVE_BOOTSTRAP_EXTRA_ARGS}
             # Avoid overriding .cargo/config.toml with native toolchain.
             "-DENABLE_RUST=OFF"
             # ISA-L requires NASM which may not be available in cross-compilation
