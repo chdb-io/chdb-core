@@ -42,7 +42,8 @@ async function handle(req, res) {
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   try {
     const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
-    const rel = normalize(urlPath === '/' ? '/examples/shell.html' : urlPath).replace(/^(\.\.[/\\])+/, '');
+    // Strip leading separators and `..` segments so the path stays under root.
+    const rel = normalize(urlPath === '/' ? '/examples/shell.html' : urlPath).replace(/^([/\\]|\.\.[/\\])+/, '');
     const file = join(root, rel);
     res.setHeader('Content-Type', MIME[extname(file)] || 'application/octet-stream');
     // Serve a precompressed sibling (file.br / file.gz) when the client accepts it.

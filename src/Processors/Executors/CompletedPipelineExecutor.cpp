@@ -68,8 +68,9 @@ void CompletedPipelineExecutor::execute()
 #if defined(CHDB_WASM_SINGLE_THREADED)
     /// The interactive (cancel-callback) path spawns a ThreadFromGlobalPool to run
     /// the pipeline while the caller polls — impossible without -pthread. Run the
-    /// completed pipeline directly on the calling thread instead. Progress/cancel
-    /// callbacks during execution are skipped; the query still runs to completion.
+    /// completed pipeline directly on the calling thread instead. The read-progress
+    /// callback is still installed (below); only the interactive cancellation/polling
+    /// is skipped. The query runs to completion.
     {
         PipelineExecutor executor(pipeline.processors, pipeline.process_list_element);
         executor.setReadProgressCallback(pipeline.getReadProgressCallback());

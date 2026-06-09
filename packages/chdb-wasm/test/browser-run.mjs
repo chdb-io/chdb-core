@@ -27,7 +27,9 @@ function startServer(port, isolate) {
     }
     try {
       const p = decodeURIComponent((req.url || '/').split('?')[0]);
-      const rel = normalize(p === '/' ? '/test/browser-fixture.html' : p).replace(/^(\.\.[/\\])+/, '');
+      // Strip any leading separators and `..` segments so the result stays under pkgDir
+      // (defense-in-depth; join() already contains it, but this is robust to refactors).
+      const rel = normalize(p === '/' ? '/test/browser-fixture.html' : p).replace(/^([/\\]|\.\.[/\\])+/, '');
       res.setHeader('Content-Type', MIME[extname(join(pkgDir, rel))] || 'application/octet-stream');
       res.end(await readFile(join(pkgDir, rel)));
     } catch { res.statusCode = 404; res.end('not found'); }
