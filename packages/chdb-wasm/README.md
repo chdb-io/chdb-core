@@ -7,16 +7,19 @@ caller's thread (your UI / event loop) is never blocked.
 
 ## Requirements
 
-chdb's wasm bundle uses the **Memory64** ABI + native **wasm exceptions** +
-**threads**. That means:
+chdb's wasm is built for the **Memory64** ABI with native **wasm exceptions**, so it
+needs a recent runtime:
 
 - **Node ≥ 23** (Memory64 + `WASM_BIGINT`), or a recent Chrome/Firefox.
-- In the **browser**, threads need **cross-origin isolation** — serve with:
-  - `Cross-Origin-Opener-Policy: same-origin`
-  - `Cross-Origin-Embedder-Policy: require-corp`
 
-ClickHouse hard-requires threads, so (unlike duckdb-wasm) there is no
-single-threaded "mvp" bundle. `selectBundle()` reports if the runtime can't run it.
+Two bundles are shipped and auto-selected by `selectBundle()`:
+
+- **mt** (multi-threaded): in the **browser** it needs **cross-origin isolation** — serve with
+  `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`.
+- **st** (single-threaded): runs on any page, no isolation required.
+
+`selectBundle()` picks `mt` on a cross-origin-isolated page (SharedArrayBuffer available),
+otherwise `st`, and reports if the runtime can't run it at all.
 
 ## Usage (Node)
 
@@ -61,29 +64,29 @@ const db = await AsyncChdb.create({
 ## Build / test
 
 ```bash
-# 1. build the wasm (from the chdb repo root, with emsdk sourced):
-cmake --build buildwasm --target chdb_wasm -- -k 0
-# 2. copy artifacts into the package and build TS -> dist:
-node packages/chdb-wasm/scripts/copy-artifacts.mjs
+# 1. build both wasm bundles (from the chdb repo root, with emsdk sourced):
+chdb/build-wasm.sh build                                          # mt -> buildwasm/
+WASM_THREADS=OFF BUILD_DIR=buildwasm-st chdb/build-wasm.sh build   # st -> buildwasm-st/
+# 2. copy both bundles into the package and build TS -> dist (mt -> dist/, st -> dist/st/):
+node packages/chdb-wasm/scripts/copy-artifacts.mjs buildwasm/programs/wasm buildwasm-st/programs/wasm
 npm --prefix packages/chdb-wasm run build       # tsc -> dist/
 
 # Node test (runs the .ts source directly via Node's type stripping):
 node packages/chdb-wasm/test/smoke.test.mjs
 
-# Browser test (needs a built dist/ + a browser):
-node packages/chdb-wasm/scripts/serve.mjs       # COOP/COEP dev server
-# open http://localhost:8099/test/browser.html
+# Browser test (headless Chrome, both bundles):
+node packages/chdb-wasm/test/browser-run.mjs
 ```
 
 ## Build knobs (CMake)
 
-chdb ships a **single** wasm bundle (Memory64 + native exceptions + threads,
-built `-Os`); there is no feature or size/speed variant. Operational knobs on the
+Two bundles are built — **mt** (threaded) and **st** (single-threaded) — both Memory64 +
+native exceptions, `-Oz` (`WASM_THREADS=ON`/`OFF` selects which). Operational knobs on the
 `chdb_wasm` CMake target:
 
 | option | default | meaning |
 | --- | --- | --- |
 | `WASM_STACK_SIZE` | `8MB` | main-thread C++ stack |
 | `WASM_PTHREAD_STACK_SIZE` | `2MB` | per-worker stack (×pool size — dominates baseline memory) |
-| `WASM_PTHREAD_POOL_SIZE` | `48` | pre-spawned worker pool (must cover ClickHouse's peak live threads) |
+| `WASM_PTHREAD_POOL_SIZE` | `16` | pre-spawned worker pool, mt only (must cover ClickHouse's peak live threads) |
 | `WASM_INITIAL_MEMORY` | `128MB` | initial heap |

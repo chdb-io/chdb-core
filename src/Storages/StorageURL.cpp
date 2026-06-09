@@ -598,6 +598,13 @@ std::pair<Poco::URI, StorageURLReadBufferPtr> StorageURLSource::getFirstAvailabl
             (void)skip_url_not_found_error;
             StorageURLReadBufferPtr res = std::make_unique<ReadBufferFromWebFetch>(
                 request_uri.toString(), headers, static_cast<size_t>(settings[Setting::max_read_buffer_size]));
+            /// ReadBufferFromWebFetch is lazy (no request until first read). For a glob with
+            /// several options, probe now so an unreachable option throws *here* and the loop
+            /// skips to the next one (honoring http_skip_not_found_url_for_globs) instead of
+            /// returning the first option and only failing at first read. Single-URL reads
+            /// stay lazy.
+            if (options > 1)
+                res->eof();
 #else
             StorageURLReadBufferPtr res = BuilderRWBufferFromHTTP(request_uri)
                            .withConnectionGroup(HTTPConnectionGroupType::STORAGE)

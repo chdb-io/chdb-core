@@ -499,13 +499,14 @@ struct stat getFileStat(const String & current_path, bool use_table_fd, int tabl
     struct stat file_stat{};
 #if defined(OS_WASM)
     /// A JS-registered file (db.registerFile): no real file to stat. Report a regular
-    /// file with the registered size (nonzero so engine_file_skip_empty_files keeps it).
+    /// file with its actual registered size (0 for an empty file, so
+    /// engine_file_skip_empty_files behaves as for a real empty file).
     if (!use_table_fd)
     {
         if (auto sz = tryGetJSFileSize(current_path))
         {
             file_stat.st_mode = S_IFREG;
-            file_stat.st_size = static_cast<off_t>(*sz == 0 ? 1 : *sz);
+            file_stat.st_size = static_cast<off_t>(*sz);
             return file_stat;
         }
     }

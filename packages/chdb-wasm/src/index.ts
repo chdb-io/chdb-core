@@ -13,5 +13,3 @@ export { ChdbError, StatusCode } from './status.ts';
 export { getPlatformFeatures, selectBundle } from './platform.ts';
 export type { PlatformFeatures, BundleConfig, SelectOptions } from './platform.ts';
 export type { ConnHandle, WireResult } from './protocol.ts';
-
-export const version = '0.1.0-wasm';
