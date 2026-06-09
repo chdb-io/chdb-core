@@ -97,6 +97,22 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
         return 'NO_ERROR';
       } catch (e) { return 'ERR'; }
     })();
+    // unregisterFile / clearFiles: a dropped name must become unqueryable; unregister is
+    // idempotent (no throw on a missing name); clearFiles drops everything. Runs last among
+    // the registerFile cases so clearing doesn't disturb earlier assertions.
+    out.unregister = await (async () => {
+      try {
+        await db.registerFile('drop.csv', new Blob([new TextEncoder().encode('a,b\n1,7\n2,8\n')]));
+        const before = (await db.query("SELECT count(), sum(b) FROM file('drop.csv','CSVWithNames')")).text().trim();
+        await db.unregisterFile('drop.csv');
+        let after; try { await db.query("SELECT count() FROM file('drop.csv','CSVWithNames')"); after = 'STILL_THERE'; } catch { after = 'gone'; }
+        await db.unregisterFile('drop.csv');   // idempotent: dropping a missing name is a no-op
+        await db.registerFile('c1.csv', new Blob([new TextEncoder().encode('a,b\n3,9\n')]));
+        await db.clearFiles();
+        let cleared; try { await db.query("SELECT count() FROM file('c1.csv','CSVWithNames')"); cleared = 'STILL_THERE'; } catch { cleared = 'gone'; }
+        return before + '|' + after + '|' + cleared;
+      } catch (e) { return 'ERR: ' + (e && e.message || e); }
+    })();
     // HTTP access via the host JS fetch (synchronous XHR + Range). url()/s3() reads
     // never open a socket; they go through ReadBufferFromWebFetch. Each is wrapped so a
     // transient network/CORS failure surfaces as a clear value rather than aborting the run.

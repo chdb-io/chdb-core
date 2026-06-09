@@ -68,6 +68,8 @@ async function runContext(label, isolate, port, expectVariant) {
     // two registered files joined, then r1 re-registered (overwrite must take effect)
     assert.strictEqual(r.regfile_multi, '4,100|1,100', `${label}: multiple/overwrite registered files (got ${r.regfile_multi})`);
     assert.strictEqual(r.regfile_missing, 'ERR', `${label}: unregistered file() must reject (got ${r.regfile_missing})`);
+    // unregisterFile makes a registered file unqueryable; clearFiles drops all (idempotent unregister)
+    assert.strictEqual(r.unregister, '2,15|gone|gone', `${label}: unregisterFile/clearFiles (got ${r.unregister})`);
     assert.strictEqual(r.url_local, '4,100', `${label}: url() same-origin http read`);
     assert.strictEqual(r.url_public, '265', `${label}: url() public S3 read (got ${r.url_public})`);
     assert.strictEqual(r.s3_public, '265', `${label}: s3() public anonymous read (got ${r.s3_public})`);

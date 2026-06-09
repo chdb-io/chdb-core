@@ -111,6 +111,12 @@ listen((req: WorkerRequest) => {
         case 'registerFile':
           requireBindings().registerFile(req.payload.name, req.payload.data);
           break;
+        case 'unregisterFile':
+          requireBindings().unregisterFile(req.payload.name);
+          break;
+        case 'clearFiles':
+          requireBindings().clearFiles();
+          break;
         case 'close':
           bindings = null;
           break;

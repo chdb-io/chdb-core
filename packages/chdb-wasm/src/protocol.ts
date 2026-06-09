@@ -24,6 +24,8 @@ export type RequestType =
   | 'streamCancel'
   | 'putFile'
   | 'registerFile'
+  | 'unregisterFile'
+  | 'clearFiles'
   | 'close';
 
 /** Result of one streaming fetch: a chunk, or done=true at end-of-stream. */

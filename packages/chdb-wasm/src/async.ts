@@ -129,6 +129,20 @@ export class AsyncChdb {
     await this.request('registerFile', { name, data }, transfer);
   }
 
+  /**
+   * Drop a file registered with registerFile(), releasing the held Blob. Idempotent:
+   * dropping a name that isn't registered resolves without error. Afterwards
+   * `file('<name>')` errors as a missing file.
+   */
+  async unregisterFile(name: string): Promise<void> {
+    await this.request('unregisterFile', { name });
+  }
+
+  /** Drop all files registered with registerFile(), releasing their Blobs. */
+  async clearFiles(): Promise<void> {
+    await this.request('clearFiles');
+  }
+
   /** Open an explicit connection (path defaults to in-memory). */
   async connect(path?: string): Promise<AsyncChdbConnection> {
     const { conn } = await this.request('connect', { path });

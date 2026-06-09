@@ -62,6 +62,20 @@ export class ChdbBindings {
     (g.__CHDB_FILES ??= new Map<string, Blob>()).set(name, blob);
   }
 
+  /**
+   * Drop a previously registered file, releasing the held Blob. Idempotent:
+   * removing a name that isn't registered is a no-op. After this, querying
+   * `file('<name>')` errors as a missing file (same path as a never-registered name).
+   */
+  unregisterFile(name: string): void {
+    (globalThis as unknown as { __CHDB_FILES?: Map<string, Blob> }).__CHDB_FILES?.delete(name);
+  }
+
+  /** Drop all registered files, releasing their Blobs. */
+  clearFiles(): void {
+    (globalThis as unknown as { __CHDB_FILES?: Map<string, Blob> }).__CHDB_FILES?.clear();
+  }
+
   /** Open an explicit connection; returns an opaque handle. */
   connect(path?: string): ConnHandle {
     return this.mod.ccall('chdb_wasm_connect', 'number', ['string'], [path ?? '']);
