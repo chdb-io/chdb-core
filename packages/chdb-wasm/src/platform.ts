@@ -81,9 +81,13 @@ export function selectBundle(opts: SelectOptions): BundleConfig {
   if (!features.wasmMemory64)
     reasons.push('Memory64 unsupported (need Node >= 23 / Chrome >= 133 / recent Firefox)');
 
-  // Pick the bundle: prefer threads when available, else fall back to single-threaded.
+  // Pick the bundle: only 'mt' when threads are actually available (SharedArrayBuffer +
+  // cross-origin isolation). Forcing threads:'mt' where they can't run is unsupported —
+  // the mt bundle would otherwise be selected and then fail at instantiation.
   const pref = opts.threads ?? 'auto';
-  const useThreads = pref === 'mt' || (pref === 'auto' && features.wasmThreads);
+  if (pref === 'mt' && !features.wasmThreads)
+    reasons.push('mt bundle requires threads (SharedArrayBuffer + cross-origin isolation), unavailable here');
+  const useThreads = features.wasmThreads && (pref === 'mt' || pref === 'auto');
   const variant: 'mt' | 'st' = useThreads ? 'mt' : 'st';
   const prefix = variant === 'mt' ? base : `${base}/st`;
 

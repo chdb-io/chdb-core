@@ -45,6 +45,7 @@ EM_JS(double, chdb_web_read, (const char * url_ptr, double offset, double length
         xhr.setRequestHeader('Range', 'bytes=' + off + '-' + (off + len - 1));
         xhr.send();
         if (xhr.status === 416) return 0;            // range not satisfiable -> EOF
+        if (xhr.status === 404) return -404;         // not found -> caller may skip (vs generic error)
         if (xhr.status !== 200 && xhr.status !== 206) return -1;
         var all = new Uint8Array(xhr.response);
         // A 206 returns just the requested range; a 200 means the server ignored
@@ -88,8 +89,10 @@ EM_JS(double, chdb_web_size, (const char * url_ptr, const char * headers_ptr), {
     }
 });
 
-ReadBufferFromWebFetch::ReadBufferFromWebFetch(std::string url_, HTTPHeaderEntries headers_, size_t buffer_size)
+ReadBufferFromWebFetch::ReadBufferFromWebFetch(
+    std::string url_, HTTPHeaderEntries headers_, size_t buffer_size, bool skip_not_found_)
     : SeekableReadBuffer(nullptr, 0), url(std::move(url_)), headers(std::move(headers_)), buffer(buffer_size)
+    , skip_not_found(skip_not_found_)
 {
     for (const auto & entry : headers)
     {
@@ -104,6 +107,14 @@ bool ReadBufferFromWebFetch::nextImpl()
 {
     double n = chdb_web_read(
         url.c_str(), static_cast<double>(read_offset), static_cast<double>(buffer.size()), headers_blob.c_str(), buffer.data());
+    if (n == -404)
+    {
+        /// 404: when skipping is requested (http_skip_not_found_url_for_globs), treat it as
+        /// an empty file so the URL is skipped rather than failing the read.
+        if (skip_not_found)
+            return false;
+        throw Exception(ErrorCodes::NETWORK_ERROR, "Not found (HTTP 404): '{}'", url);
+    }
     if (n < 0)
         throw Exception(ErrorCodes::NETWORK_ERROR, "Failed to fetch '{}' (range at offset {})", url, read_offset);
     if (n == 0)

@@ -22,8 +22,11 @@ namespace DB
 class ReadBufferFromWebFetch : public SeekableReadBuffer, public WithFileName, public WithFileSize
 {
 public:
+    /// skip_not_found_: when true, a 404 is treated as end-of-file (empty) instead of an
+    /// error — mirrors the native withSkipNotFound() used for http_skip_not_found_url_for_globs.
     explicit ReadBufferFromWebFetch(
-        std::string url_, HTTPHeaderEntries headers_ = {}, size_t buffer_size = DBMS_DEFAULT_BUFFER_SIZE);
+        std::string url_, HTTPHeaderEntries headers_ = {}, size_t buffer_size = DBMS_DEFAULT_BUFFER_SIZE,
+        bool skip_not_found_ = false);
 
     off_t seek(off_t off, int whence) override;
     off_t getPosition() override;
@@ -42,6 +45,7 @@ private:
     off_t read_offset = 0;
     std::optional<size_t> file_size;
     bool file_size_queried = false;
+    bool skip_not_found = false;
 };
 
 }

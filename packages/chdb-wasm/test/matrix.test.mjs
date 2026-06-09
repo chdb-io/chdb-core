@@ -8,11 +8,14 @@
 //   CHDB_WASM_MJS=/abs/path/to/chdb.mjs node packages/chdb-wasm/test/matrix.test.mjs
 
 import assert from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { AsyncChdb } from '../src/index.ts';
 
+// CHDB_WASM_MJS overrides; otherwise default to the repo's mt build dir (repo-relative,
+// so it works on any checkout, not just one machine).
 const MODULE =
   process.env.CHDB_WASM_MJS ||
-  '/home/ubuntu/code/chdb-wasm/buildwasm/programs/wasm/chdb.mjs';
+  fileURLToPath(new URL('../../../buildwasm/programs/wasm/chdb.mjs', import.meta.url));
 
 const db = await AsyncChdb.create({ moduleUrl: MODULE });
 const q = async (sql, fmt = 'TabSeparated') => (await db.query(sql, fmt)).text().trim();

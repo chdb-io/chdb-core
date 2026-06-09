@@ -32,7 +32,11 @@ let bindings: ChdbBindings | null = null;
 async function fetchWithProgress(url: string, id: number): Promise<Uint8Array | null> {
   if (typeof fetch === 'undefined') return null;
   const resp = await fetch(url);
-  if (!resp.ok || !resp.body) return new Uint8Array(await resp.arrayBuffer());
+  // Fail fast on non-2xx: otherwise a 404/500 error page would be fed to Emscripten as
+  // wasmBinary, producing a confusing instantiation failure instead of a clear error.
+  if (!resp.ok) throw new Error(`failed to fetch wasm module ${url}: HTTP ${resp.status} ${resp.statusText}`);
+  // OK but no streaming body (e.g. some runtimes): fall back to a single arrayBuffer read.
+  if (!resp.body) return new Uint8Array(await resp.arrayBuffer());
   const total = Number(resp.headers.get('content-length') || 0);
   const reader = resp.body.getReader();
   const chunks: Uint8Array[] = [];

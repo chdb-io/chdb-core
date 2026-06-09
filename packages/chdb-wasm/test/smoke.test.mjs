@@ -5,11 +5,14 @@
 //   CHDB_WASM_MJS=/abs/path/to/chdb.mjs node packages/chdb-wasm/test/smoke.test.mjs
 
 import assert from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { AsyncChdb, getPlatformFeatures, selectBundle } from '../src/index.ts';
 
+// CHDB_WASM_MJS overrides; otherwise default to the repo's mt build dir (repo-relative,
+// so it works on any checkout, not just one machine).
 const MODULE =
   process.env.CHDB_WASM_MJS ||
-  '/home/ubuntu/code/chdb-wasm/buildwasm/programs/wasm/chdb.mjs';
+  fileURLToPath(new URL('../../../buildwasm/programs/wasm/chdb.mjs', import.meta.url));
 
 // Platform features: chdb-wasm hard-requires Memory64 + WASM_BIGINT; in Node coi is
 // forced true. Assert the invariant selectBundle relies on (rather than just printing).
