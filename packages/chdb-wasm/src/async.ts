@@ -125,6 +125,12 @@ export class AsyncChdb {
    *   await db.query("SELECT count() FROM file('data.parquet','Parquet')")
    */
   async registerFile(name: string, data: Blob | Uint8Array): Promise<void> {
+    // Browser-only: the lazy reader uses FileReaderSync (a Web Worker API) unavailable in
+    // Node, where it would otherwise fail opaquely at first read. Fail fast with guidance.
+    if (isNode)
+      throw new ChdbError(
+        'registerFile() is browser-only (it reads the Blob with FileReaderSync, unavailable in Node). ' +
+        'In Node, use putFile() with a path instead.');
     const transfer = data instanceof Uint8Array ? [data.buffer] : undefined;
     await this.request('registerFile', { name, data }, transfer);
   }

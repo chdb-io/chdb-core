@@ -80,5 +80,11 @@ assert.ok(threw, 'invalid query should reject');
 // worker still usable after an error
 assert.strictEqual((await db.query('SELECT 42')).text().trim(), '42');
 
+// 6. registerFile() is browser-only (FileReaderSync) — must reject fast in Node, not fail opaquely
+let regThrew = false;
+try { await db.registerFile('x.csv', new Uint8Array([97, 10])); }
+catch (e) { regThrew = true; assert.match(String(e.message), /browser-only|putFile/); }
+assert.ok(regThrew, 'registerFile() should reject in Node');
+
 await db.terminate();
 console.log('chdb-wasm async smoke tests passed');

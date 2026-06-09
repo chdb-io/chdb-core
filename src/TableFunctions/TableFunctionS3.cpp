@@ -90,12 +90,16 @@ void rewriteS3Source(const String & source, String & out_url, String & out_regio
 
     if (scheme == "s3")
     {
+        /// An s3:// URL carries no region: map to the region-agnostic virtual-hosted
+        /// endpoint (matching src/IO/S3/URI.cpp) and default the SigV4 region to us-east-1.
+        /// For a bucket outside us-east-1 *with credentials*, pass the full regional URL
+        /// (https://bucket.s3.<region>.amazonaws.com/...) so signing uses the right region.
         out_region = "us-east-1";
         const String bucket = uri.getHost();
         String path = uri.getPath();
         if (path.empty())
             path = "/";
-        out_url = "https://" + bucket + ".s3." + out_region + ".amazonaws.com" + path;
+        out_url = "https://" + bucket + ".s3.amazonaws.com" + path;
         if (!uri.getRawQuery().empty())
             out_url += "?" + uri.getRawQuery();
     }
