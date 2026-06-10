@@ -60,8 +60,10 @@ export interface SelectOptions {
   /** Base URL/dir holding chdb.mjs / chdb.wasm and the st/ subdir (e.g. a CDN or ./dist). */
   baseUrl: string;
   /**
-   * Threading preference. 'auto' (default) picks mt when cross-origin isolated,
-   * else st. 'mt'/'st' force a specific bundle (e.g. for testing).
+   * Threading preference. 'auto' (default) picks mt when threads are available
+   * (cross-origin isolated + SharedArrayBuffer), else st. 'st' forces single-threaded
+   * (runs anywhere Memory64 is supported). 'mt' requires threads — it reports
+   * `supported: false` if they're unavailable rather than selecting an unrunnable bundle.
    */
   threads?: 'auto' | 'mt' | 'st';
 }
