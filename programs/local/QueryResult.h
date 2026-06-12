@@ -75,14 +75,18 @@ public:
         uint64_t rows_read_,
         uint64_t bytes_read_,
         uint64_t storage_rows_read_,
-        uint64_t storage_bytes_read_)
+        uint64_t storage_bytes_read_,
+        uint64_t rows_written_ = 0,
+        uint64_t bytes_written_ = 0)
         : QueryResult(QueryResultType::RESULT_TYPE_MATERIALIZED),
         result_buffer(std::move(result_buffer_)),
         elapsed(elapsed_),
         rows_read(rows_read_),
         bytes_read(bytes_read_),
         storage_rows_read(storage_rows_read_),
-        storage_bytes_read(storage_bytes_read_)
+        storage_bytes_read(storage_bytes_read_),
+        rows_written(rows_written_),
+        bytes_written(bytes_written_)
     {}
 
     explicit MaterializedQueryResult(String error_message_)
@@ -104,11 +108,16 @@ public:
 
 public:
     ResultBuffer result_buffer;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
+    /// Write progress of the query (e.g. INSERT). Includes rows/bytes
+    /// written by cascaded materialized views — same semantics as
+    /// X-ClickHouse-Summary.written_rows over the HTTP interface.
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 /// Raw Chunk-bag query result. Produced by ChunkCollectorOutputFormat-backed
@@ -124,7 +133,9 @@ public:
         uint64_t rows_read_,
         uint64_t bytes_read_,
         uint64_t storage_rows_read_,
-        uint64_t storage_bytes_read_)
+        uint64_t storage_bytes_read_,
+        uint64_t rows_written_ = 0,
+        uint64_t bytes_written_ = 0)
         : QueryResult(QueryResultType::RESULT_TYPE_CHUNK),
         chunks(std::move(chunks_)),
         header(header_),
@@ -132,7 +143,9 @@ public:
         rows_read(rows_read_),
         bytes_read(bytes_read_),
         storage_rows_read(storage_rows_read_),
-        storage_bytes_read(storage_bytes_read_)
+        storage_bytes_read(storage_bytes_read_),
+        rows_written(rows_written_),
+        bytes_written(bytes_written_)
     {}
 
     explicit ChunkQueryResult(String error_message_)
@@ -147,11 +160,14 @@ public:
 public:
     std::vector<DB::Chunk> chunks;
     std::shared_ptr<const DB::Block> header;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
+    /// See MaterializedQueryResult::rows_written.
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 using QueryResultPtr = std::unique_ptr<QueryResult>;

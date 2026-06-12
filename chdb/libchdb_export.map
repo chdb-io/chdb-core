@@ -38,6 +38,8 @@
         chdb_result_bytes_read;
         chdb_result_storage_rows_read;
         chdb_result_storage_bytes_read;
+        chdb_result_rows_written;
+        chdb_result_bytes_written;
         chdb_result_error;
 
         /* Arrow Integration */

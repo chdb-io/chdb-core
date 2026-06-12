@@ -125,6 +125,14 @@ public:
     {
         return chdb_result_storage_bytes_read(result);
     }
+    size_t rows_written()
+    {
+        return chdb_result_rows_written(result);
+    }
+    size_t bytes_written()
+    {
+        return chdb_result_bytes_written(result);
+    }
     double elapsed()
     {
         return chdb_result_elapsed(result);
@@ -161,6 +169,8 @@ public:
     size_t bytes_read() { return result_wrapper->bytes_read(); }
     size_t storage_rows_read() { return result_wrapper->storage_rows_read(); }
     size_t storage_bytes_read() { return result_wrapper->storage_bytes_read(); }
+    size_t rows_written() { return result_wrapper->rows_written(); }
+    size_t bytes_written() { return result_wrapper->bytes_written(); }
     double elapsed() { return result_wrapper->elapsed(); }
     bool has_error() { return result_wrapper->has_error(); }
     py::str error_message() { return result_wrapper->error_message(); }

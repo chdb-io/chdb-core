@@ -77,5 +77,39 @@ class TestQueryStatistics(unittest.TestCase):
             ret = chdb.query("SELECT * FROM file('notexist.parquet', Parquet)", "Parquet")
 
 
+class TestInsertWriteProgress(unittest.TestCase):
+    def test_insert_write_progress(self):
+        sess = session.Session()
+        try:
+            sess.query("CREATE DATABASE IF NOT EXISTS wp ENGINE = Atomic")
+            sess.query("USE wp")
+            sess.query("CREATE TABLE t (k UInt64) ENGINE = MergeTree ORDER BY k")
+
+            # INSERT with inline data reports engine-side write progress
+            ret = sess.query('INSERT INTO t FORMAT JSONEachRow\n{"k":1}\n{"k":2}\n')
+            self.assertEqual(ret.rows_written(), 2)
+            self.assertGreater(ret.bytes_written(), 0)
+
+            # INSERT ... SELECT
+            ret = sess.query("INSERT INTO t SELECT number FROM numbers(100)")
+            self.assertEqual(ret.rows_written(), 100)
+            self.assertGreater(ret.bytes_written(), 0)
+
+            # read-only queries report zero write progress
+            ret = sess.query("SELECT * FROM t")
+            self.assertEqual(ret.rows_written(), 0)
+            self.assertEqual(ret.bytes_written(), 0)
+
+            # written_rows includes cascaded materialized-view writes —
+            # same semantics as X-ClickHouse-Summary.written_rows over HTTP
+            sess.query("CREATE TABLE t2 (k UInt64) ENGINE = MergeTree ORDER BY k")
+            sess.query("CREATE MATERIALIZED VIEW mv TO t2 AS SELECT k FROM t")
+            ret = sess.query("INSERT INTO t SELECT number FROM numbers(10)")
+            self.assertEqual(ret.rows_written(), 20)
+            self.assertGreater(ret.bytes_written(), 0)
+        finally:
+            sess.close()
+
+
 if __name__ == "__main__":
     unittest.main()

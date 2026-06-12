@@ -210,6 +210,24 @@ public:
     }
 
     /**
+     * Gets number of rows written by the query (e.g. INSERT), including
+     * cascaded materialized-view writes
+     * @return Number of rows written, or 0 if result is invalid
+     */
+    uint64_t rows_written() const {
+        return result_ ? chdb_result_rows_written(result_) : 0;
+    }
+
+    /**
+     * Gets number of uncompressed bytes written by the query (e.g. INSERT),
+     * including cascaded materialized-view writes
+     * @return Number of bytes written, or 0 if result is invalid
+     */
+    uint64_t bytes_written() const {
+        return result_ ? chdb_result_bytes_written(result_) : 0;
+    }
+
+    /**
      * Gets error message if query failed
      * @return Optional containing error message, or nullopt if no error occurred
      */

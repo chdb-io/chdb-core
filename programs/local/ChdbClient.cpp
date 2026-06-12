@@ -235,6 +235,12 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         auto * local_connection = static_cast<LocalConnection *>(connection.get());
         size_t storage_rows_read = local_connection->getCHDBProgress().read_rows;
         size_t storage_bytes_read = local_connection->getCHDBProgress().read_bytes;
+        /// chdb_progress is reset per query in LocalConnection::sendQuery and
+        /// accumulates WriteProgress reported by the insert pipeline's
+        /// CountingTransform, so at this point it holds exactly this query's
+        /// write progress (including cascaded materialized-view writes).
+        size_t rows_written = local_connection->getCHDBProgress().written_rows;
+        size_t bytes_written = local_connection->getCHDBProgress().written_bytes;
 
         if (format_str == CHUNK_COLLECT_FORMAT_NAME)
         {
@@ -245,7 +251,9 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 getProcessedRows(),
                 getProcessedBytes(),
                 storage_rows_read,
-                storage_bytes_read);
+                storage_bytes_read,
+                rows_written,
+                bytes_written);
 #if USE_PYTHON
             python_table_cache->clear();
 #endif
@@ -258,7 +266,9 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
             getProcessedRows(),
             getProcessedBytes(),
             storage_rows_read,
-            storage_bytes_read);
+            storage_bytes_read,
+            rows_written,
+            bytes_written);
 #if USE_PYTHON
         python_table_cache->clear();
 #endif

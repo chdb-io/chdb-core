@@ -480,6 +480,25 @@ CHDB_EXPORT uint64_t chdb_result_storage_rows_read(chdb_result * result);
 CHDB_EXPORT uint64_t chdb_result_storage_bytes_read(chdb_result * result);
 
 /**
+ * Gets rows written by the query (e.g. INSERT)
+ * Includes rows written by cascaded materialized views — same semantics as
+ * X-ClickHouse-Summary.written_rows over the HTTP interface, i.e. not
+ * necessarily equal to the number of input rows accepted.
+ * @param result The query result handle
+ * @return Number of rows written, 0 for read-only queries
+ */
+CHDB_EXPORT uint64_t chdb_result_rows_written(chdb_result * result);
+
+/**
+ * Gets uncompressed bytes written by the query (e.g. INSERT)
+ * Includes bytes written by cascaded materialized views — same semantics as
+ * X-ClickHouse-Summary.written_bytes over the HTTP interface.
+ * @param result The query result handle
+ * @return Number of uncompressed bytes written, 0 for read-only queries
+ */
+CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
+
+/**
  * Retrieves error message from query execution
  * @param result The query result handle
  * @return Null-terminated error description, NULL if no error

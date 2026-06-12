@@ -1024,6 +1024,38 @@ uint64_t chdb_result_storage_bytes_read(chdb_result * result)
     return 0;
 }
 
+uint64_t chdb_result_rows_written(chdb_result * result)
+{
+    if (!result)
+        return 0;
+
+    auto * query_result = reinterpret_cast<QueryResult *>(result);
+
+    if (query_result->getType() == QueryResultType::RESULT_TYPE_MATERIALIZED)
+    {
+        auto * materialized_result = reinterpret_cast<MaterializedQueryResult *>(result);
+        return materialized_result->rows_written;
+    }
+
+    return 0;
+}
+
+uint64_t chdb_result_bytes_written(chdb_result * result)
+{
+    if (!result)
+        return 0;
+
+    auto * query_result = reinterpret_cast<QueryResult *>(result);
+
+    if (query_result->getType() == QueryResultType::RESULT_TYPE_MATERIALIZED)
+    {
+        auto * materialized_result = reinterpret_cast<MaterializedQueryResult *>(result);
+        return materialized_result->bytes_written;
+    }
+
+    return 0;
+}
+
 const char * chdb_result_error(chdb_result * result)
 {
     if (!result)
