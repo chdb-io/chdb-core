@@ -18,9 +18,13 @@ WEB="${2:?missing web dir}"
 OUT="${3:?missing out dir}"
 JS="index.js worker.js async.js bindings.js protocol.js status.js platform.js"
 
-# Content-hashed dir name: changes only when the engine or glue changes, so the
-# browser caches it immutably and re-pulls only on a new build.
-VER="dist-$(cat "$DIST/chdb.wasm" "$DIST/st/chdb.wasm" "$DIST/index.js" | md5sum | cut -c1-10)"
+# Content-hashed dir name. The whole dist-<hash>/ dir is served immutably (both the
+# Pages glue/.mjs and the R2 wasm), so the hash must cover ALL of those files: any
+# change (glue, loader, or wasm) yields a new dir and busts the cache. 16 hex chars
+# (64 bits) keep accidental collisions negligible.
+HASH_INPUT=""
+for f in $JS chdb.mjs st/chdb.mjs chdb.wasm st/chdb.wasm; do HASH_INPUT="$HASH_INPUT $DIST/$f"; done
+VER="dist-$(cat $HASH_INPUT | md5sum | cut -c1-16)"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/pages/$VER/st" "$OUT/pages/functions" "$OUT/r2/$VER/st"
