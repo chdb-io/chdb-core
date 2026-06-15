@@ -72,7 +72,7 @@ jobs:
           BUILD_DIR="${GITHUB_WORKSPACE}/buildwasm-st" WASM_THREADS=OFF chdb/build-wasm.sh build
           ls -la buildwasm/programs/wasm/chdb.wasm buildwasm-st/programs/wasm/chdb.wasm
 
-      - name: Build npm package (dist/: glue JS + both wasm bundles)
+      - name: Build the npm package (glue JS + both wasm bundles)
         working-directory: packages/chdb-wasm
         run: |
           npm install --no-audit --no-fund
