@@ -16,7 +16,11 @@
 #include <pybind11/detail/non_limited_api.h>
 #endif
 
+#include <Columns/ColumnNullable.h>
 #include <Columns/ColumnVector.h>
+#include <Columns/ColumnsCommon.h>
+#include <Columns/FilterDescription.h>
+#include <Interpreters/ExpressionActions.h>
 #include <Poco/Logger.h>
 #include <Common/COW.h>
 #include <Common/Exception.h>
@@ -67,8 +71,9 @@ PythonSource::PythonSource(
     size_t stream_index,
     size_t num_streams,
     const FormatSettings & format_settings_,
-    ArrowTableReaderPtr arrow_table_reader_)
-    : ISource(std::make_shared<Block>(sample_block_.cloneEmpty()))
+    ArrowTableReaderPtr arrow_table_reader_,
+    PrewhereActionsPtr prewhere_)
+    : ISource(std::make_shared<Block>(prewhere_ ? prewhere_->output_header.cloneEmpty() : sample_block_.cloneEmpty()))
     , data_source_wrapper(std::move(data_source_wrapper_))
     , isInheritsFromPyReader(isInheritsFromPyReader_)
     , isPandasDataFrame(isPandasDataFrame_)
@@ -81,6 +86,7 @@ PythonSource::PythonSource(
     , cursor(0)
     , format_settings(format_settings_)
     , arrow_table_reader(arrow_table_reader_)
+    , prewhere(std::move(prewhere_))
 {
 }
 
@@ -183,9 +189,9 @@ void PythonSource::insert_from_ptr(const void * ptr, const MutableColumnPtr & co
 
     if (stride == 0 || stride == sizeof(T))
     {
-    ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(column.get());
-    const char * start = static_cast<const char *>(ptr) + offset * sizeof(T);
-    helper->appendRawData<sizeof(T)>(start, row_count);
+        ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(column.get());
+        const char * start = static_cast<const char *>(ptr) + offset * sizeof(T);
+        helper->appendRawData<sizeof(T)>(start, row_count);
     }
     else
     {
@@ -419,6 +425,106 @@ PythonSource::scanData(const py::object & data, const std::vector<std::string> &
 
 
 
+ColumnPtr PythonSource::convertOneColumn(size_t i, size_t offset, size_t count)
+{
+    const auto & col = (*column_cache)[i];
+    const auto & type = sample_block.getByPosition(i).type;
+
+    if (col.is_virtual)
+    {
+        chassert(sample_block.getByPosition(i).name == "_row_id");
+        auto row_id_column = ColumnVector<UInt64>::create(count);
+        auto & row_id_data = row_id_column->getData();
+        iota(row_id_data.data(), count, static_cast<UInt64>(offset));
+        return row_id_column;
+    }
+
+    bool is_nullable = type->isNullable();
+    auto data_type = removeNullable(type);
+    WhichDataType which(data_type);
+
+    try
+    {
+        if (isPandasDataFrame && (is_nullable || col.is_category || col.is_arrow_string))
+            return PandasScan::scanColumn(col, offset, count, format_settings);
+
+        // Dispatch to the appropriate conversion function based on data type
+        if (which.isUInt8())
+            return convert_and_insert_array<UInt8>(col, offset, count);
+        else if (which.isUInt16())
+            return convert_and_insert_array<UInt16>(col, offset, count);
+        else if (which.isUInt32())
+            return convert_and_insert_array<UInt32>(col, offset, count);
+        else if (which.isUInt64())
+            return convert_and_insert_array<UInt64>(col, offset, count);
+        else if (which.isUInt128())
+            return convert_and_insert_array<UInt128>(col, offset, count);
+        else if (which.isUInt256())
+            return convert_and_insert_array<UInt256>(col, offset, count);
+        else if (which.isInt8())
+            return convert_and_insert_array<Int8>(col, offset, count);
+        else if (which.isInt16())
+            return convert_and_insert_array<Int16>(col, offset, count);
+        else if (which.isInt32())
+            return convert_and_insert_array<Int32>(col, offset, count);
+        else if (which.isInt64())
+            return convert_and_insert_array<Int64>(col, offset, count);
+        else if (which.isInt128())
+            return convert_and_insert_array<Int128>(col, offset, count);
+        else if (which.isInt256())
+            return convert_and_insert_array<Int256>(col, offset, count);
+        else if (which.isFloat32())
+            return convert_and_insert_array<Float32>(col, offset, count);
+        else if (which.isFloat64())
+            return convert_and_insert_array<Float64>(col, offset, count);
+        else if (which.isDecimal128())
+        {
+            const auto & dtype = typeid_cast<const DataTypeDecimal<Decimal128> *>(type.get());
+            return convert_and_insert_array<Decimal128>(col, offset, count, dtype->getScale());
+        }
+        else if (which.isDecimal256())
+        {
+            const auto & dtype = typeid_cast<const DataTypeDecimal<Decimal256> *>(type.get());
+            return convert_and_insert_array<Decimal256>(col, offset, count, dtype->getScale());
+        }
+        else if (which.isDateTime())
+            return convert_and_insert_array<UInt32>(col, offset, count);
+        else if (which.isDateTime64())
+        {
+            const auto & dtype = typeid_cast<const DataTypeDateTime64 *>(type.get());
+            return convert_and_insert_array<DateTime64>(col, offset, count, dtype->getScale());
+        }
+        else if (which.isDate32())
+            return convert_and_insert_array<Int32>(col, offset, count);
+        else if (which.isDate())
+            return convert_and_insert_array<UInt16>(col, offset, count);
+        else if (which.isString())
+            return convert_and_insert_array<String>(col, offset, count);
+        else if (which.isNullable())
+            return convert_and_insert_array<String>(col, offset, count);
+        else if (which.isObject())
+        {
+            if (col.py_type == "list")
+                return CHDB::ListScan::scanObject(col, offset, count, format_settings);
+
+            chassert(!isPandasDataFrame);
+            return CHDB::PandasScan::scanObject(col, offset, count, format_settings);
+        }
+        else
+            throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, "Unsupported type {} for column {}", type->getName(), col.name);
+    }
+    catch (std::exception & e)
+    {
+        LOG_ERROR(logger, "Error processing column \"{}\": {}", col.name, e.what());
+        throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED, "Error processing column \"{}\": {}", col.name, e.what());
+    }
+    catch (...)
+    {
+        LOG_ERROR(logger, "Error processing column \"{}\": unknown exception", col.name);
+        throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED, "Error processing column \"{}\": unknown exception", col.name);
+    }
+}
+
 Chunk PythonSource::scanDataToChunk()
 {
     auto names = sample_block.getNames();
@@ -428,122 +534,277 @@ Chunk PythonSource::scanDataToChunk()
     auto [offset, count] = calculateOffsetAndCount();
     if (count == 0)
         return {};
-    LOG_DEBUG(logger, "Stream index {} Reading {} rows from {}", stream_index, count, cursor);
+    LOG_DEBUG(logger, "Stream index {} Reading {} rows from {}", stream_index, count, offset);
 
     Columns columns(sample_block.columns());
-
     for (size_t i = 0; i < sample_block.columns(); ++i)
+        columns[i] = convertOneColumn(i, offset, count);
+
+    return Chunk(std::move(columns), count);
+}
+
+namespace
+{
+
+template <typename ColumnType, typename ValueT>
+MutableColumnPtr gatherFromTypedBuffer(
+    const void * buf, size_t stride, size_t offset, size_t count, const IColumn::Filter & mask, size_t selected, MutableColumnPtr column)
+{
+    auto & container = assert_cast<ColumnType &>(*column).getData();
+    container.reserve(selected);
+    const auto * base = reinterpret_cast<const char *>(buf);
+    const size_t effective_stride = (stride == 0) ? sizeof(ValueT) : stride;
+    for (size_t i = 0; i < count; ++i)
+        if (mask[i])
+            container.push_back(*reinterpret_cast<const ValueT *>(base + (offset + i) * effective_stride));
+    return column;
+}
+
+/// NaN (floats) / NaT (datetimes) null maps for gathered values.
+template <typename T>
+void fillGatheredNullMap(const IColumn & data_column, NullMap & null_map)
+{
+    const auto & data = assert_cast<const T &>(data_column).getData();
+    const size_t n = data.size();
+    null_map.resize(n);
+    for (size_t i = 0; i < n; ++i)
     {
-        const auto & col = (*column_cache)[i];
-        if (col.is_virtual)
+        if constexpr (std::is_same_v<T, ColumnVector<Float32>> || std::is_same_v<T, ColumnVector<Float64>>)
+            null_map[i] = data[i] != data[i] ? 1 : 0;
+        else if constexpr (std::is_same_v<T, ColumnDecimal<DateTime64>>)
+            null_map[i] = data[i].value == std::numeric_limits<Int64>::min() ? 1 : 0;
+        else
+            null_map[i] = false; /// nullable integers carry an explicit pandas mask instead
+    }
+}
+
+/// Nullable wrapper for gathered pandas values: the null map comes from the
+/// pandas mask when present, otherwise from NaN/NaT sentinels in the data.
+template <typename NullSourceColumn>
+ColumnPtr wrapGatheredNullable(
+    MutableColumnPtr nested,
+    const ColumnWrapper & col,
+    size_t offset,
+    size_t count,
+    const IColumn::Filter & mask,
+    size_t selected)
+{
+    auto null_map_column = ColumnVector<UInt8>::create();
+    auto & null_map = null_map_column->getData();
+    if (col.registered_array)
+    {
+        null_map.reserve(selected);
+        const auto * mask_base = reinterpret_cast<const char *>(col.registered_array->numpy_array.data());
+        const size_t mask_stride = (col.mask_stride == 0) ? sizeof(bool) : col.mask_stride;
+        for (size_t r = 0; r < count; ++r)
+            if (mask[r])
+                null_map.push_back(*reinterpret_cast<const bool *>(mask_base + (offset + r) * mask_stride) ? 1 : 0);
+    }
+    else
+        fillGatheredNullMap<NullSourceColumn>(*nested, null_map);
+    return ColumnNullable::create(std::move(nested), std::move(null_map_column));
+}
+
+}
+
+/// Source column materialized only for the selected rows of one block.
+ColumnPtr PythonSource::gatherOneColumn(size_t i, size_t offset, size_t count, const IColumn::Filter & mask, size_t selected)
+{
+    const auto & col = (*column_cache)[i];
+    const auto & type = sample_block.getByPosition(i).type;
+
+    if (col.is_virtual)
+    {
+        auto row_id_column = ColumnVector<UInt64>::create();
+        auto & row_id_data = row_id_column->getData();
+        row_id_data.reserve(selected);
+        for (size_t r = 0; r < count; ++r)
+            if (mask[r])
+                row_id_data.push_back(offset + r);
+        return row_id_column;
+    }
+
+    if (isPandasDataFrame && col.is_arrow_string)
+        return PandasScan::scanColumnFiltered(col, offset, count, mask, selected);
+
+    const bool is_nullable = type->isNullable();
+    auto inner_type = removeNullable(type);
+    WhichDataType which(inner_type);
+
+
+    auto gather_plain = [&](auto value_tag) -> MutableColumnPtr
+    {
+        using ValueT = decltype(value_tag);
+        return gatherFromTypedBuffer<ColumnVector<ValueT>, ValueT>(
+            col.buf, col.stride, offset, count, mask, selected, ColumnVector<ValueT>::create());
+    };
+
+    /// At mid/high selectivity a full conversion (memcpy or zero-copy borrow)
+    /// plus one vectorized filter beats the per-row gather loop. Strings are
+    /// exempt: gathering them always avoids copying the unselected payload.
+    const bool gather_worthwhile = selected * 8 <= count;
+    if (!gather_worthwhile && !col.is_virtual)
+        return convertOneColumn(i, offset, count)->filter(mask, selected);
+
+    if (!col.is_object_type && !col.is_category && col.buf)
+    {
+        /// Non-nullable contiguous/strided numeric buffers.
+        if (!is_nullable)
         {
-            const auto & col_name = sample_block.getByPosition(i).name;
-            chassert(col_name == "_row_id");
-            auto row_id_column = ColumnVector<UInt64>::create(count);
-            auto & row_id_data = row_id_column->getData();
-            iota(row_id_data.data(), count, static_cast<UInt64>(cursor));
-            columns[i] = std::move(row_id_column);
-            continue;
-        }
-
-        const auto & type = sample_block.getByPosition(i).type;
-
-        bool is_nullable = type->isNullable();
-        auto data_type = removeNullable(type);
-        WhichDataType which(data_type);
-
-        try
-        {
-            if (isPandasDataFrame && (is_nullable || col.is_category))
+            if (which.isUInt8()) return gather_plain(UInt8{});
+            if (which.isUInt16() || which.isDate()) return gather_plain(UInt16{});
+            if (which.isUInt32() || which.isDateTime()) return gather_plain(UInt32{});
+            if (which.isUInt64()) return gather_plain(UInt64{});
+            if (which.isInt8()) return gather_plain(Int8{});
+            if (which.isInt16()) return gather_plain(Int16{});
+            if (which.isInt32() || which.isDate32()) return gather_plain(Int32{});
+            if (which.isInt64()) return gather_plain(Int64{});
+            if (which.isFloat32()) return gather_plain(Float32{});
+            if (which.isFloat64()) return gather_plain(Float64{});
+            if (which.isDateTime64())
             {
-                columns[i] = PandasScan::scanColumn(col, cursor, count, format_settings);
-                continue;
+                const auto & dtype = typeid_cast<const DataTypeDateTime64 *>(inner_type.get());
+                return gatherFromTypedBuffer<ColumnDecimal<DateTime64>, Int64>(
+                    col.buf, col.stride, offset, count, mask, selected, ColumnDecimal<DateTime64>::create(0, dtype->getScale()));
             }
-
-            // Dispatch to the appropriate conversion function based on data type
+        }
+        else if (isPandasDataFrame)
+        {
+            /// Nullable pandas columns: gather values, then derive the null map
+            /// from the pandas mask / NaN / NaT exactly like PandasScan does.
+            if (which.isFloat32())
+                return wrapGatheredNullable<ColumnVector<Float32>>(gather_plain(Float32{}), col, offset, count, mask, selected);
+            if (which.isFloat64())
+                return wrapGatheredNullable<ColumnVector<Float64>>(gather_plain(Float64{}), col, offset, count, mask, selected);
+            if (which.isInt8())
+                return wrapGatheredNullable<ColumnVector<Int8>>(gather_plain(Int8{}), col, offset, count, mask, selected);
+            if (which.isInt16())
+                return wrapGatheredNullable<ColumnVector<Int16>>(gather_plain(Int16{}), col, offset, count, mask, selected);
+            if (which.isInt32())
+                return wrapGatheredNullable<ColumnVector<Int32>>(gather_plain(Int32{}), col, offset, count, mask, selected);
+            if (which.isInt64())
+                return wrapGatheredNullable<ColumnVector<Int64>>(gather_plain(Int64{}), col, offset, count, mask, selected);
             if (which.isUInt8())
-                columns[i] = convert_and_insert_array<UInt8>(col, cursor, count);
-            else if (which.isUInt16())
-                columns[i] = convert_and_insert_array<UInt16>(col, cursor, count);
-            else if (which.isUInt32())
-                columns[i] = convert_and_insert_array<UInt32>(col, cursor, count);
-            else if (which.isUInt64())
-                columns[i] = convert_and_insert_array<UInt64>(col, cursor, count);
-            else if (which.isUInt128())
-                columns[i] = convert_and_insert_array<UInt128>(col, cursor, count);
-            else if (which.isUInt256())
-                columns[i] = convert_and_insert_array<UInt256>(col, cursor, count);
-            else if (which.isInt8())
-                columns[i] = convert_and_insert_array<Int8>(col, cursor, count);
-            else if (which.isInt16())
-                columns[i] = convert_and_insert_array<Int16>(col, cursor, count);
-            else if (which.isInt32())
-                columns[i] = convert_and_insert_array<Int32>(col, cursor, count);
-            else if (which.isInt64())
-                columns[i] = convert_and_insert_array<Int64>(col, cursor, count);
-            else if (which.isInt128())
-                columns[i] = convert_and_insert_array<Int128>(col, cursor, count);
-            else if (which.isInt256())
-                columns[i] = convert_and_insert_array<Int256>(col, cursor, count);
-            else if (which.isFloat32())
-                columns[i] = convert_and_insert_array<Float32>(col, cursor, count);
-            else if (which.isFloat64())
-                columns[i] = convert_and_insert_array<Float64>(col, cursor, count);
-            else if (which.isDecimal128())
+                return wrapGatheredNullable<ColumnVector<UInt8>>(gather_plain(UInt8{}), col, offset, count, mask, selected);
+            if (which.isUInt16())
+                return wrapGatheredNullable<ColumnVector<UInt16>>(gather_plain(UInt16{}), col, offset, count, mask, selected);
+            if (which.isUInt32())
+                return wrapGatheredNullable<ColumnVector<UInt32>>(gather_plain(UInt32{}), col, offset, count, mask, selected);
+            if (which.isUInt64())
+                return wrapGatheredNullable<ColumnVector<UInt64>>(gather_plain(UInt64{}), col, offset, count, mask, selected);
+            if (which.isDateTime64())
             {
-                const auto & dtype = typeid_cast<const DataTypeDecimal<Decimal128> *>(type.get());
-                columns[i] = convert_and_insert_array<Decimal128>(col, cursor, count, dtype->getScale());
+                const auto & dtype = typeid_cast<const DataTypeDateTime64 *>(inner_type.get());
+                auto nested = gatherFromTypedBuffer<ColumnDecimal<DateTime64>, Int64>(
+                    col.buf, col.stride, offset, count, mask, selected, ColumnDecimal<DateTime64>::create(0, dtype->getScale()));
+                return wrapGatheredNullable<ColumnDecimal<DateTime64>>(std::move(nested), col, offset, count, mask, selected);
             }
-            else if (which.isDecimal256())
-            {
-                const auto & dtype = typeid_cast<const DataTypeDecimal<Decimal256> *>(type.get());
-                columns[i] = convert_and_insert_array<Decimal256>(col, cursor, count, dtype->getScale());
-            }
-            else if (which.isDateTime())
-                columns[i] = convert_and_insert_array<UInt32>(col, cursor, count);
-            else if (which.isDateTime64())
-            {
-                const auto & dtype = typeid_cast<const DataTypeDateTime64 *>(type.get());
-                columns[i] = convert_and_insert_array<DateTime64>(col, cursor, count, dtype->getScale());
-            }
-            else if (which.isDate32())
-                columns[i] = convert_and_insert_array<Int32>(col, cursor, count);
-            else if (which.isDate())
-                columns[i] = convert_and_insert_array<UInt16>(col, cursor, count);
-            else if (which.isString())
-                columns[i] = convert_and_insert_array<String>(col, cursor, count);
-            else if (which.isNullable())
-                columns[i] = convert_and_insert_array<String>(col, cursor, count);
-            else if (which.isObject())
-            {
-                if (col.py_type == "list")
-                {
-                    columns[i] = CHDB::ListScan::scanObject(col, cursor, count, format_settings);
-                }
-                else
-                {
-                    chassert(!isPandasDataFrame);
-                    columns[i] = CHDB::PandasScan::scanObject(col, cursor, count, format_settings);
-                }
-            }
-            else
-                throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, "Unsupported type {} for column {}", type->getName(), col.name);
-        }
-        catch (std::exception & e)
-        {
-            LOG_ERROR(logger, "Error processing column \"{}\": {}", col.name, e.what());
-            throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED, "Error processing column \"{}\": {}", col.name, e.what());
-        }
-        catch (...)
-        {
-            LOG_ERROR(logger, "Error processing column \"{}\": unknown exception", col.name);
-            throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED, "Error processing column \"{}\": unknown exception", col.name);
         }
     }
 
-    cursor += count;
+    /// Fallback for exotic columns: convert the block, then filter.
+    return convertOneColumn(i, offset, count)->filter(mask, selected);
+}
 
-    return Chunk(std::move(columns), count);
+/// One block of the PREWHERE-enabled scan, executed in steps (cheapest
+/// conditions first): every step materializes its source columns only for
+/// the rows that survived the previous steps, evaluates its filter and
+/// narrows the selection. Returns an empty chunk for fully-filtered blocks
+/// with `exhausted` = false, so the caller can continue with the next block.
+Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
+{
+    auto [offset, count] = calculateOffsetAndCount();
+    if (count == 0)
+    {
+        exhausted = true;
+        return {};
+    }
+    exhausted = false;
+
+    Block work;
+    size_t current_rows = count;
+    IColumn::Filter cumulative; /// selection over the original block rows; empty = all selected
+
+    for (size_t step_idx = 0; step_idx < prewhere->steps.size(); ++step_idx)
+    {
+        const auto & step = prewhere->steps[step_idx];
+
+        for (const auto & [idx, name] : prewhere->step_source_inputs[step_idx])
+        {
+            ColumnPtr column = cumulative.empty() ? convertOneColumn(idx, offset, count)
+                                                  : gatherOneColumn(idx, offset, count, cumulative, current_rows);
+            work.insert({std::move(column), sample_block.getByPosition(idx).type, name});
+        }
+
+        size_t num_rows = current_rows;
+        step->actions->execute(work, num_rows);
+
+        const auto & filter_entry = work.getByName(step->filter_column_name);
+        FilterDescription filter_description(*filter_entry.column);
+        const size_t selected = filter_description.countBytesInFilter();
+        if (selected == 0)
+            return {};
+
+        if (selected < current_rows)
+        {
+            for (auto & work_col : work)
+                if (work_col.name != step->filter_column_name)
+                    work_col.column = work_col.column->filter(*filter_description.data, selected);
+
+            if (cumulative.empty())
+                cumulative.assign(filter_description.data->begin(), filter_description.data->end());
+            else
+            {
+                /// Narrow the cumulative selection: walk previously-selected
+                /// rows and AND them with this step's filter.
+                size_t j = 0;
+                for (size_t r = 0; r < count; ++r)
+                    if (cumulative[r])
+                        cumulative[r] = (*filter_description.data)[j++];
+            }
+            current_rows = selected;
+        }
+
+        if (step->remove_filter_column)
+            work.erase(step->filter_column_name);
+        else
+        {
+            /// Rows are filtered; the kept filter column becomes all-true.
+            auto & kept = work.getByName(step->filter_column_name);
+            kept.column = kept.type->createColumnConst(current_rows, 1u)->convertToFullColumnIfConst();
+        }
+    }
+
+    /// Assemble the output following the precomputed plan.
+    Columns columns;
+    columns.reserve(prewhere->outputs.size());
+    for (const auto & plan : prewhere->outputs)
+    {
+        switch (plan.kind)
+        {
+            case PrewhereActions::OutputKind::KeepFilterColumn:
+            {
+                const auto & out_type = prewhere->output_header.getByName(plan.name).type;
+                columns.push_back(out_type->createColumnConst(current_rows, 1u)->convertToFullColumnIfConst());
+                break;
+            }
+            case PrewhereActions::OutputKind::FromWorkBlock:
+            {
+                columns.push_back(work.getByName(plan.name).column);
+                break;
+            }
+            case PrewhereActions::OutputKind::GatherFromSource:
+            {
+                if (cumulative.empty())
+                    columns.push_back(convertOneColumn(plan.sample_index, offset, count));
+                else
+                    columns.push_back(gatherOneColumn(plan.sample_index, offset, count, cumulative, current_rows));
+                break;
+            }
+        }
+    }
+
+    return Chunk(std::move(columns), current_rows);
 }
 
 Chunk PythonSource::generate()
@@ -572,6 +833,20 @@ Chunk PythonSource::generate()
             return std::move(genChunk(num_rows, data));
         }
 
+        if (prewhere)
+        {
+            /// An empty chunk would end the source, so fully-filtered blocks
+            /// are skipped here and the scan continues with the next block.
+            bool exhausted = false;
+            while (!exhausted)
+            {
+                auto chunk = scanDataToChunkPrewhere(exhausted);
+                if (chunk.getNumRows() > 0)
+                    return chunk;
+            }
+            return {};
+        }
+
         return std::move(scanDataToChunk());
     }
     catch (const std::exception & e)
@@ -586,16 +861,18 @@ Chunk PythonSource::generate()
 
 std::pair<size_t, size_t> PythonSource::calculateOffsetAndCount()
 {
-    auto rows_per_stream = data_source_row_count / num_streams;
-    auto start = stream_index * rows_per_stream;
-    auto end = (stream_index + 1) * rows_per_stream;
-    if (stream_index == num_streams - 1)
-        end = data_source_row_count;
-    if (cursor == 0)
-        cursor = start;
-    auto count = std::min(max_block_size, end - cursor);
+    /// Streams take blocks round-robin on fixed max_block_size boundaries:
+    /// stream i emits blocks i, i + num_streams, i + 2*num_streams, ...
+    /// Fixed boundaries keep blocks identical across queries regardless of
+    /// stream count, which lets the cross-query block cache match them.
+    const size_t n_blocks = (data_source_row_count + max_block_size - 1) / max_block_size;
+    const size_t block_idx = stream_index + blocks_emitted * num_streams;
+    if (block_idx >= n_blocks)
+        return std::make_pair(0, 0);
 
-    return std::make_pair(cursor, count);
+    ++blocks_emitted;
+    const size_t offset = block_idx * max_block_size;
+    return std::make_pair(offset, std::min(max_block_size, data_source_row_count - offset));
 }
 
 }

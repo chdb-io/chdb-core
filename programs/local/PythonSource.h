@@ -7,7 +7,10 @@
 
 #include <Core/Block.h>
 #include <Formats/FormatSettings.h>
+#include <Interpreters/ExpressionActionsSettings.h>
 #include <Processors/ISource.h>
+#include <Storages/SelectQueryInfo.h>
+#include <Storages/MergeTree/MergeTreeRangeReader.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 #include <Poco/Logger.h>
@@ -18,11 +21,43 @@ namespace DB
 namespace py = pybind11;
 
 class PyReader;
+class ExpressionActions;
+using ExpressionActionsPtr = std::shared_ptr<ExpressionActions>;
 
 
 class PythonSource : public ISource
 {
 public:
+    /// PREWHERE state shared by all sources of one read: the planner-provided
+    /// info, the (possibly multi-step) compiled filter steps, the
+    /// post-prewhere output header and the per-block plan precomputed once.
+    /// Steps run cheapest-conditions-first; each later step only materializes
+    /// its input columns for the rows that survived the previous steps.
+    struct PrewhereActions
+    {
+        enum class OutputKind : uint8_t
+        {
+            KeepFilterColumn, /// the kept prewhere column: all-true after filtering
+            FromWorkBlock,    /// computed by the prewhere actions (or an input passed through)
+            GatherFromSource, /// source column materialized only for selected rows
+        };
+        struct OutputPlan
+        {
+            OutputKind kind;
+            size_t sample_index = 0; /// for GatherFromSource
+            String name;
+        };
+
+        PrewhereInfoPtr info;
+        PrewhereExprSteps steps;
+        /// Per step: source columns it needs (sample index + name); columns
+        /// already produced by earlier steps are consumed from the work block.
+        std::vector<std::vector<std::pair<size_t, String>>> step_source_inputs;
+        Block output_header;
+        std::vector<OutputPlan> outputs;
+    };
+    using PrewhereActionsPtr = std::shared_ptr<const PrewhereActions>;
+
     PythonSource(
         CHDB::DataSourceWrapperPtr data_source_wrapper_,
         bool isInheritsFromPyReader_,
@@ -34,7 +69,8 @@ public:
         size_t stream_index,
         size_t num_streams,
         const FormatSettings & format_settings_,
-        CHDB::ArrowTableReaderPtr arrow_table_reader_ = nullptr);
+        CHDB::ArrowTableReaderPtr arrow_table_reader_ = nullptr,
+        PrewhereActionsPtr prewhere_ = nullptr);
 
     ~PythonSource() override = default;
 
@@ -57,6 +93,7 @@ private:
     const size_t stream_index;
     const size_t num_streams;
     size_t cursor;
+    size_t blocks_emitted = 0; /// pandas scan: blocks claimed by this stream (round-robin)
 
     Poco::Logger * logger = &Poco::Logger::get("TableFunctionPython");
 
@@ -82,7 +119,12 @@ private:
     void insert_string_from_array(py::handle obj, const MutableColumnPtr & column);
 
     Chunk scanDataToChunk();
+    Chunk scanDataToChunkPrewhere(bool & exhausted);
+    ColumnPtr convertOneColumn(size_t i, size_t offset, size_t count);
+    ColumnPtr gatherOneColumn(size_t i, size_t offset, size_t count, const IColumn::Filter & mask, size_t selected);
     void destory(PyObjectVecPtr & data);
     std::pair<size_t, size_t> calculateOffsetAndCount();
+
+    PrewhereActionsPtr prewhere;
 };
 }

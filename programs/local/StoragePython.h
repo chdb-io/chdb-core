@@ -118,6 +118,36 @@ public:
         size_t max_block_size,
         size_t num_streams) override;
 
+    /// Plan-level read: wraps the pipe in a SourceStepWithFilter so the
+    /// WHERE -> PREWHERE optimization can target Python tables. The pipe is
+    /// built lazily in the step, after plan optimizations have run.
+    void read(
+        QueryPlan & query_plan,
+        const Names & column_names,
+        const StorageSnapshotPtr & storage_snapshot,
+        SelectQueryInfo & query_info,
+        ContextPtr context_,
+        QueryProcessingStage::Enum processed_stage,
+        size_t max_block_size,
+        size_t num_streams) override;
+
+    /// PREWHERE on pandas frames: predicate columns are converted first and
+    /// the remaining columns are gathered only for the rows that pass.
+    bool supportsPrewhere() const override { return is_pandas_df; }
+    bool canMoveConditionsToPrewhere() const override { return is_pandas_df; }
+
+    /// In-memory per-column sizes; used by the WHERE -> PREWHERE optimizer
+    /// to order conditions by cost.
+    ColumnSizeByName getColumnSizes() const override;
+
+    Pipe readImpl(
+        const Names & column_names,
+        const StorageSnapshotPtr & storage_snapshot,
+        SelectQueryInfo & query_info,
+        ContextPtr context_,
+        size_t max_block_size,
+        size_t num_streams);
+
     Block prepareSampleBlock(
         const Names & column_names,
         const StorageSnapshotPtr & storage_snapshot,
@@ -135,7 +165,12 @@ private:
     bool is_pandas_df;
     CHDB::DataSourceWrapperPtr data_source_wrapper;
     size_t data_source_row_count = 0;
+    mutable std::mutex column_sizes_mutex;
+    mutable ColumnSizeByName column_sizes;
+    mutable bool column_sizes_computed = false;
     Poco::Logger * logger = &Poco::Logger::get("StoragePython");
+
+    friend class ReadFromPython;
 };
 
 }

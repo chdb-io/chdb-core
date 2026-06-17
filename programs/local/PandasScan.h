@@ -16,6 +16,15 @@ public:
         const size_t count,
         const DB::FormatSettings & format_settings);
 
+    /// PREWHERE gather: materialize only the rows of [cursor, cursor+count)
+    /// selected by `filter` (with `selected` ones). Arrow-backed strings only.
+    static DB::ColumnPtr scanColumnFiltered(
+        const DB::ColumnWrapper & col_wrap,
+        const size_t cursor,
+        const size_t count,
+        const DB::IColumn::Filter & filter,
+        const size_t selected);
+
     static DB::ColumnPtr scanObject(
         const DB::ColumnWrapper & col_wrap,
         const size_t cursor,

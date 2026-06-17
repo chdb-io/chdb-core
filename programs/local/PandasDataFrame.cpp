@@ -1,5 +1,10 @@
 #include "PandasDataFrame.h"
 #include "NumpyType.h"
+
+#include <limits>
+#include <map>
+#include <mutex>
+#include <tuple>
 #include "PandasAnalyzer.h"
 #include "PandasCacheItem.h"
 #include "PythonImporter.h"
@@ -76,7 +81,70 @@ static DataTypePtr inferDataTypeFromPandasColumn(
         numpy_type.type = NumpyNullableType::STRING;
 	}
 
+    /// Arrow-backed string columns expose an O(1) null count. Columns without
+    /// nulls map to plain String instead of Nullable(String): the scan skips
+    /// the null map entirely and downstream kernels take non-nullable paths.
+    if (numpy_type.type == NumpyNullableType::STRING && py::hasattr(column.handle, "array"))
+    {
+        py::object underlying_array = column.handle.attr("array");
+        if (py::hasattr(underlying_array, "_pa_array"))
+        {
+            py::object chunked = underlying_array.attr("_pa_array");
+            if (py::hasattr(chunked, "null_count") && chunked.attr("null_count").cast<Int64>() == 0)
+                return std::make_shared<DataTypeString>();
+        }
+    }
+
     auto data_type = NumpyToDataType(numpy_type);
+
+    /// Datetime columns without NaT map to plain DateTime64: Nullable datetime
+    /// predicates force ternary logic + Nullable filter columns downstream,
+    /// which costs more than the scan itself for selective queries. NaT
+    /// presence is memoized per underlying buffer (one O(n) scan per column
+    /// per DataFrame lifetime).
+    const bool is_datetime = numpy_type.type == NumpyNullableType::DATETIME_NS || numpy_type.type == NumpyNullableType::DATETIME_US
+        || numpy_type.type == NumpyNullableType::DATETIME_MS || numpy_type.type == NumpyNullableType::DATETIME_S;
+    if (is_datetime && data_type->isNullable() && py::hasattr(column.handle, "array")
+        && py::hasattr(column.handle.attr("array"), "asi8"))
+    {
+        py::array asi8 = py::array(column.handle.attr("array").attr("asi8"));
+        const auto * values = static_cast<const Int64 *>(asi8.data());
+        const size_t n = asi8.size();
+        const size_t stride = n ? static_cast<size_t>(asi8.strides(0)) : sizeof(Int64);
+        if (values && stride == sizeof(Int64))
+        {
+            static std::mutex nat_memo_mutex;
+            static std::map<std::tuple<const void *, size_t, Int64, Int64>, bool> nat_memo;
+
+            const Int64 head = n ? values[0] : 0;
+            const Int64 tail = n ? values[n - 1] : 0;
+            const auto key = std::make_tuple(static_cast<const void *>(values), n, head, tail);
+
+            bool has_nat;
+            {
+                std::lock_guard lock(nat_memo_mutex);
+                auto it = nat_memo.find(key);
+                if (it != nat_memo.end())
+                    has_nat = it->second;
+                else
+                {
+                    has_nat = false;
+                    for (size_t i = 0; i < n; ++i)
+                    {
+                        if (values[i] == std::numeric_limits<Int64>::min())
+                        {
+                            has_nat = true;
+                            break;
+                        }
+                    }
+                    nat_memo.emplace(key, has_nat);
+                }
+            }
+
+            if (!has_nat)
+                return removeNullable(data_type);
+        }
+    }
 
     if (!data_type->isNullable())
     {
@@ -198,6 +266,11 @@ static bool tryFillArrowStringColumn(DB::ColumnWrapper & column, const py::objec
         view.validity = static_cast<const UInt8 *>(buffer_address(buffers[0]));
         view.offsets = buffer_address(buffers[1]);
         view.data = static_cast<const char *>(buffer_address(buffers[2]));
+
+        /// A chunk without nulls scans via the bulk-memcpy path even when a
+        /// validity buffer happens to be allocated.
+        if (view.validity && chunk.attr("null_count").cast<Int64>() == 0)
+            view.validity = nullptr;
 
         if (view.length > 0 && view.offsets == nullptr)
             return false;

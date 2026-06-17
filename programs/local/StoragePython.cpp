@@ -10,6 +10,12 @@
 
 #include <DataTypes/DataTypeDate32.h>
 #include <DataTypes/DataTypeDateTime.h>
+#include <Interpreters/ExpressionActions.h>
+#include <Processors/QueryPlan/QueryPlan.h>
+#include <Processors/QueryPlan/SourceStepWithFilter.h>
+#include <Storages/MergeTree/MergeTreeSplitPrewhereIntoReadSteps.h>
+#include <Processors/Sources/NullSource.h>
+#include <QueryPipeline/QueryPipelineBuilder.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeObject.h>
 #include <DataTypes/DataTypeString.h>
@@ -73,12 +79,109 @@ StoragePython::StoragePython(
     setInMemoryMetadata(storage_metadata);
 }
 
+/// Source step for Python tables. Inheriting SourceStepWithFilter makes the
+/// generic WHERE -> PREWHERE plan optimization applicable: it splits the
+/// filter, stores it in query_info.prewhere_info and recomputes the output
+/// header; the pipe is built afterwards, so PythonSource can convert the
+/// predicate columns first and gather the rest only for the rows that pass.
+static Block pythonReadSampleBlock(StoragePython & storage, const Names & column_names, const StorageSnapshotPtr & snapshot)
+{
+    std::vector<bool> is_virtual_column(column_names.size(), false);
+    for (size_t i = 0; i < column_names.size(); ++i)
+        is_virtual_column[i] = snapshot->metadata->isVirtualColumn(column_names[i]);
+    return storage.prepareSampleBlock(column_names, snapshot, is_virtual_column);
+}
+
+class ReadFromPython final : public SourceStepWithFilter
+{
+public:
+    ReadFromPython(
+        const Names & column_names_,
+        const SelectQueryInfo & query_info_,
+        const StorageSnapshotPtr & storage_snapshot_,
+        const ContextPtr & context_,
+        std::shared_ptr<StoragePython> storage_,
+        size_t max_block_size_,
+        size_t num_streams_)
+        : SourceStepWithFilter(
+              std::make_shared<const Block>(pythonReadSampleBlock(*storage_, column_names_, storage_snapshot_)),
+              column_names_,
+              query_info_,
+              storage_snapshot_,
+              context_)
+        , storage(std::move(storage_))
+        , max_block_size(max_block_size_)
+        , num_streams(num_streams_)
+    {
+    }
+
+    String getName() const override { return "ReadFromPython"; }
+
+    /// Keep the header derivation consistent with the pipe built by
+    /// readImpl (prepareSampleBlock), instead of the base implementation's
+    /// storage_snapshot->getSampleBlockForColumns.
+    void updatePrewhereInfo(const PrewhereInfoPtr & prewhere_info_value) override
+    {
+        query_info.prewhere_info = prewhere_info_value;
+        output_header = std::make_shared<const Block>(applyPrewhereActions(
+            pythonReadSampleBlock(*storage, required_source_columns, storage_snapshot),
+            query_info.row_level_filter,
+            prewhere_info_value));
+    }
+
+    void initializePipeline(QueryPipelineBuilder & pipeline, const BuildQueryPipelineSettings &) override
+    {
+        auto pipe = storage->readImpl(
+            required_source_columns, storage_snapshot, query_info, context, max_block_size, num_streams);
+        if (pipe.empty())
+            pipe = Pipe(std::make_shared<NullSource>(getOutputHeader()));
+        pipeline.init(std::move(pipe));
+    }
+
+private:
+    std::shared_ptr<StoragePython> storage;
+    size_t max_block_size;
+    size_t num_streams;
+};
+
+void StoragePython::read(
+    QueryPlan & query_plan,
+    const Names & column_names,
+    const StorageSnapshotPtr & storage_snapshot,
+    SelectQueryInfo & query_info,
+    ContextPtr context_,
+    QueryProcessingStage::Enum /*processed_stage*/,
+    size_t max_block_size,
+    size_t num_streams)
+{
+    storage_snapshot->check(column_names);
+    query_plan.addStep(std::make_unique<ReadFromPython>(
+        column_names,
+        query_info,
+        storage_snapshot,
+        context_,
+        std::static_pointer_cast<StoragePython>(shared_from_this()),
+        max_block_size,
+        num_streams));
+}
+
 Pipe StoragePython::read(
     const Names & column_names,
     const StorageSnapshotPtr & storage_snapshot,
-    SelectQueryInfo & /*query_info*/,
+    SelectQueryInfo & query_info,
     ContextPtr context_,
     QueryProcessingStage::Enum /*processed_stage*/,
+    size_t max_block_size,
+    size_t num_streams)
+{
+    return readImpl(column_names, storage_snapshot, query_info, context_, max_block_size, num_streams);
+}
+
+Pipe StoragePython::readImpl(
+    const Names & column_names,
+    const StorageSnapshotPtr & storage_snapshot,
+    SelectQueryInfo & query_info,
+    ContextPtr context_,
     size_t max_block_size,
     size_t num_streams)
 {
@@ -116,11 +219,118 @@ Pipe StoragePython::read(
     if (!arrow_table_reader)
         prepareColumnCache(column_names, sample_block, this->is_pandas_df, is_virtual_column);
 
+    /// PREWHERE: prepare shared expression actions; sources convert the
+    /// predicate input columns, filter, and gather the remaining columns.
+    PythonSource::PrewhereActionsPtr prewhere;
+    if (query_info.prewhere_info && !arrow_table_reader)
+    {
+        chassert(!query_info.row_level_filter); /// row policies are not used with Python tables
+        auto prewhere_state = std::make_shared<PythonSource::PrewhereActions>();
+        prewhere_state->info = query_info.prewhere_info;
+        prewhere_state->output_header = SourceStepWithFilter::applyPrewhereActions(sample_block, nullptr, query_info.prewhere_info);
+
+        ExpressionActionsSettings actions_settings(context_);
+
+        /// Split into multiple steps (cheapest conditions first) so that
+        /// expensive columns are materialized only for surviving rows; fall
+        /// back to a single step when the expression cannot be split.
+        PrewhereExprInfo split;
+        if (!tryBuildPrewhereSteps(query_info.prewhere_info, actions_settings, split, /*force_short_circuit_execution=*/false))
+        {
+            auto single = std::make_shared<PrewhereExprStep>(PrewhereExprStep{
+                .type = PrewhereExprStep::Filter,
+                .actions = std::make_shared<ExpressionActions>(query_info.prewhere_info->prewhere_actions.clone(), actions_settings),
+                .filter_column_name = query_info.prewhere_info->prewhere_column_name,
+                .remove_filter_column = query_info.prewhere_info->remove_prewhere_column,
+                .need_filter = query_info.prewhere_info->need_filter,
+                .perform_alter_conversions = false,
+                .mutation_version = std::nullopt,
+            });
+            split.steps = {std::move(single)};
+        }
+        prewhere_state->steps = std::move(split.steps);
+
+        /// Per-step source inputs and the set of names the steps produce.
+        NameSet work_block_names;
+        for (const auto & step : prewhere_state->steps)
+        {
+            std::vector<std::pair<size_t, String>> inputs;
+            for (const auto & required : step->actions->getRequiredColumnsWithTypes())
+            {
+                if (!work_block_names.contains(required.name))
+                {
+                    inputs.emplace_back(sample_block.getPositionByName(required.name), required.name);
+                    work_block_names.insert(required.name);
+                }
+            }
+            prewhere_state->step_source_inputs.push_back(std::move(inputs));
+            for (const auto & produced : step->actions->getSampleBlock())
+                work_block_names.insert(produced.name);
+        }
+
+        for (const auto & out_col : prewhere_state->output_header)
+        {
+            PythonSource::PrewhereActions::OutputPlan plan;
+            plan.name = out_col.name;
+            if (!query_info.prewhere_info->remove_prewhere_column
+                && out_col.name == query_info.prewhere_info->prewhere_column_name)
+                plan.kind = PythonSource::PrewhereActions::OutputKind::KeepFilterColumn;
+            else if (work_block_names.contains(out_col.name))
+                plan.kind = PythonSource::PrewhereActions::OutputKind::FromWorkBlock;
+            else
+            {
+                plan.kind = PythonSource::PrewhereActions::OutputKind::GatherFromSource;
+                plan.sample_index = sample_block.getPositionByName(out_col.name);
+            }
+            prewhere_state->outputs.push_back(std::move(plan));
+        }
+
+        prewhere = std::move(prewhere_state);
+    }
+
     Pipes pipes;
     for (size_t stream = 0; stream < num_streams; ++stream)
         pipes.emplace_back(std::make_shared<PythonSource>(
-            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader));
+            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader, prewhere));
     return Pipe::unitePipes(std::move(pipes));
+}
+
+IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
+{
+    std::lock_guard lock(column_sizes_mutex);
+    if (column_sizes_computed)
+        return column_sizes;
+
+    if (!is_pandas_df)
+        return {};
+
+    try
+    {
+        py::gil_scoped_acquire acquire;
+        auto & data_source = data_source_wrapper->getDataSource();
+        /// memory_usage(deep=False) is O(ncols) and counts Arrow buffers for
+        /// arrow-backed columns; good enough to order PREWHERE conditions.
+        py::object usage = data_source.attr("memory_usage")(py::arg("index") = false, py::arg("deep") = false);
+        py::object names = usage.attr("index");
+        py::object values = usage.attr("values");
+        const size_t n = py::len(names);
+        for (size_t i = 0; i < n; ++i)
+        {
+            auto name = py::str(names.attr("__getitem__")(i)).cast<std::string>();
+            auto bytes = values.attr("__getitem__")(i).cast<UInt64>();
+            ColumnSize size;
+            size.data_compressed = bytes;
+            size.data_uncompressed = bytes;
+            column_sizes[name] = size;
+        }
+    }
+    catch (...)
+    {
+        column_sizes.clear();
+    }
+
+    column_sizes_computed = true;
+    return column_sizes;
 }
 
 Block StoragePython::prepareSampleBlock(
