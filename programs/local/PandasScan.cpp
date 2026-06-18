@@ -2,6 +2,8 @@
 #include "PythonConversion.h"
 #include "PythonImporter.h"
 #include "ColumnVectorHelper.h"
+#include <string_view>
+#include <stringzilla/stringzilla.h>
 
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnLowCardinality.h>
@@ -773,6 +775,89 @@ void PandasScan::innerScanArrowString(
 
         row += n;
         remaining -= n;
+    }
+}
+
+template <typename OffsetT>
+static void evalArrowPredSegment(
+    const ArrowStringChunkView & chunk,
+    const size_t local_start,
+    const size_t n,
+    const PandasScan::StringPredicate predicate,
+    const std::string_view needle,
+    unsigned char * out)
+{
+    const OffsetT * off = static_cast<const OffsetT *>(chunk.offsets) + chunk.offset + local_start;
+    const char * data = chunk.data;
+    const UInt8 * validity = chunk.validity;
+    const size_t bit_base = chunk.offset + local_start;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const bool is_valid = !validity || (validity[(bit_base + i) >> 3] & (1u << ((bit_base + i) & 7)));
+        unsigned char r = 0;
+        if (is_valid)
+        {
+            const size_t len = static_cast<size_t>(off[i + 1] - off[i]);
+            switch (predicate)
+            {
+                case PandasScan::StringPredicate::NotEmpty:
+                    r = len > 0;
+                    break;
+                case PandasScan::StringPredicate::Empty:
+                    r = len == 0;
+                    break;
+                case PandasScan::StringPredicate::LikeContains:
+                    r = needle.empty()
+                        || (len >= needle.size()
+                            && sz_find(data + off[i], len, needle.data(), needle.size()) != nullptr);
+                    break;
+            }
+        }
+        out[i] = r;
+    }
+}
+
+void PandasScan::evalArrowStringPredicate(
+    const ColumnWrapper & col_wrap,
+    const size_t cursor,
+    const size_t count,
+    StringPredicate predicate,
+    const std::string & needle,
+    unsigned char * out)
+{
+    const auto & chunks = col_wrap.arrow_string_chunks;
+
+    size_t lo = 0;
+    size_t hi = chunks.size();
+    while (lo < hi)
+    {
+        const size_t mid = (lo + hi) / 2;
+        if (chunks[mid].row_start + chunks[mid].length <= cursor)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    const std::string_view needle_view(needle);
+    size_t row = cursor;
+    size_t remaining = count;
+    size_t out_pos = 0;
+    for (size_t chunk_idx = lo; remaining > 0; ++chunk_idx)
+    {
+        chassert(chunk_idx < chunks.size());
+        const auto & chunk = chunks[chunk_idx];
+        const size_t local_start = row - chunk.row_start;
+        const size_t n = std::min(remaining, chunk.length - local_start);
+
+        if (col_wrap.arrow_large_offsets)
+            evalArrowPredSegment<Int64>(chunk, local_start, n, predicate, needle_view, out + out_pos);
+        else
+            evalArrowPredSegment<Int32>(chunk, local_start, n, predicate, needle_view, out + out_pos);
+
+        row += n;
+        remaining -= n;
+        out_pos += n;
     }
 }
 

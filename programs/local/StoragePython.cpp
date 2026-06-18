@@ -8,8 +8,12 @@
 #include "PyArrowStreamFactory.h"
 #include "PythonUtils.h"
 
+#include <Columns/ColumnConst.h>
+#include <Columns/ColumnString.h>
 #include <DataTypes/DataTypeDate32.h>
 #include <DataTypes/DataTypeDateTime.h>
+#include <Functions/IFunction.h>
+#include <Interpreters/ActionsDAG.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 #include <Processors/QueryPlan/SourceStepWithFilter.h>
@@ -84,6 +88,62 @@ StoragePython::StoragePython(
 /// filter, stores it in query_info.prewhere_info and recomputes the output
 /// header; the pipe is built afterwards, so PythonSource can convert the
 /// predicate columns first and gather the rest only for the rows that pass.
+/// Detect whether `dag` computes `filter_col` as a simple predicate on a single
+/// string INPUT: `notEmpty`/`empty`, or `like` with a pure-substring pattern
+/// (`%needle%`, no other wildcards). On success fills `pred_out.kind`/`needle`.
+static bool detectArrowStringPredicate(
+    const ActionsDAG & dag, const String & filter_col, PythonSource::PrewhereActions::ArrowPredicate & pred_out)
+{
+    const ActionsDAG::Node * out = nullptr;
+    for (const auto * o : dag.getOutputs())
+        if (o->result_name == filter_col)
+        {
+            out = o;
+            break;
+        }
+    if (!out || out->type != ActionsDAG::ActionType::FUNCTION || !out->function_base)
+        return false;
+
+    auto strip_alias = [](const ActionsDAG::Node * n)
+    {
+        while (n->type == ActionsDAG::ActionType::ALIAS && n->children.size() == 1)
+            n = n->children.front();
+        return n;
+    };
+
+    const String fn = out->function_base->getName();
+    if ((fn == "notEmpty" || fn == "empty") && out->children.size() == 1
+        && strip_alias(out->children.front())->type == ActionsDAG::ActionType::INPUT)
+    {
+        pred_out.kind = (fn == "notEmpty") ? CHDB::PandasScan::StringPredicate::NotEmpty
+                                           : CHDB::PandasScan::StringPredicate::Empty;
+        pred_out.needle.clear();
+        return true;
+    }
+    if (fn == "like" && out->children.size() == 2
+        && strip_alias(out->children[0])->type == ActionsDAG::ActionType::INPUT)
+    {
+        const auto * c = strip_alias(out->children[1]);
+        if (c->type == ActionsDAG::ActionType::COLUMN && c->column && c->result_type
+            && WhichDataType(c->result_type).isString() && isColumnConst(*c->column))
+        {
+            const auto pat_ref = c->column->getDataAt(0);
+            const std::string pat(pat_ref.data(), pat_ref.size());
+            if (pat.size() >= 2 && pat.front() == '%' && pat.back() == '%')
+            {
+                const std::string inner = pat.substr(1, pat.size() - 2);
+                if (inner.find_first_of("%_\\") == std::string::npos)
+                {
+                    pred_out.kind = CHDB::PandasScan::StringPredicate::LikeContains;
+                    pred_out.needle = inner;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 static Block pythonReadSampleBlock(StoragePython & storage, const Names & column_names, const StorageSnapshotPtr & snapshot)
 {
     std::vector<bool> is_virtual_column(column_names.size(), false);
@@ -117,6 +177,15 @@ public:
 
     String getName() const override { return "ReadFromPython"; }
 
+    /// Top-N pushdown: a pandas-frame source can materialize only the N rows
+    /// the downstream ORDER BY ... LIMIT keeps (see PythonSource::TopKActions).
+    bool supportsSortLimitPushdown() const override { return storage->is_pandas_df; }
+    void setSortLimitPushdown(const SortDescription & sort_description_, size_t limit_) override
+    {
+        topk_sort = sort_description_;
+        topk_limit = limit_;
+    }
+
     /// Keep the header derivation consistent with the pipe built by
     /// readImpl (prepareSampleBlock), instead of the base implementation's
     /// storage_snapshot->getSampleBlockForColumns.
@@ -132,7 +201,8 @@ public:
     void initializePipeline(QueryPipelineBuilder & pipeline, const BuildQueryPipelineSettings &) override
     {
         auto pipe = storage->readImpl(
-            required_source_columns, storage_snapshot, query_info, context, max_block_size, num_streams);
+            required_source_columns, storage_snapshot, query_info, context, max_block_size, num_streams,
+            topk_sort, topk_limit);
         if (pipe.empty())
             pipe = Pipe(std::make_shared<NullSource>(getOutputHeader()));
         pipeline.init(std::move(pipe));
@@ -142,6 +212,8 @@ private:
     std::shared_ptr<StoragePython> storage;
     size_t max_block_size;
     size_t num_streams;
+    SortDescription topk_sort;
+    size_t topk_limit = 0;
 };
 
 void StoragePython::read(
@@ -183,7 +255,9 @@ Pipe StoragePython::readImpl(
     SelectQueryInfo & query_info,
     ContextPtr context_,
     size_t max_block_size,
-    size_t num_streams)
+    size_t num_streams,
+    const SortDescription & topk_sort,
+    size_t topk_limit)
 {
     storage_snapshot->check(column_names);
 
@@ -251,21 +325,53 @@ Pipe StoragePython::readImpl(
         prewhere_state->steps = std::move(split.steps);
 
         /// Per-step source inputs and the set of names the steps produce.
+        prewhere_state->step_arrow_preds.resize(prewhere_state->steps.size());
         NameSet work_block_names;
-        for (const auto & step : prewhere_state->steps)
+        for (size_t step_idx = 0; step_idx < prewhere_state->steps.size(); ++step_idx)
         {
-            std::vector<std::pair<size_t, String>> inputs;
-            for (const auto & required : step->actions->getRequiredColumnsWithTypes())
+            const auto & step = prewhere_state->steps[step_idx];
+
+            /// Arrow-direct predicate: only for a single-step PREWHERE that is one
+            /// supported predicate on one Arrow-backed string column. Such a step
+            /// reads no work-block columns (it is evaluated on the Arrow buffers),
+            /// so its input is not materialized and any selected output column is
+            /// gathered from the source instead of the work block.
+            bool arrow_fast = false;
+            if (prewhere_state->steps.size() == 1 && column_cache)
             {
-                if (!work_block_names.contains(required.name))
+                const auto required = step->actions->getRequiredColumnsWithTypes();
+                if (required.size() == 1 && sample_block.has(required.front().name))
                 {
-                    inputs.emplace_back(sample_block.getPositionByName(required.name), required.name);
-                    work_block_names.insert(required.name);
+                    const size_t si = sample_block.getPositionByName(required.front().name);
+                    if (si < column_cache->size() && (*column_cache)[si].is_arrow_string)
+                    {
+                        PythonSource::PrewhereActions::ArrowPredicate pred;
+                        if (detectArrowStringPredicate(step->actions->getActionsDAG(), step->filter_column_name, pred))
+                        {
+                            pred.active = true;
+                            pred.sample_index = si;
+                            prewhere_state->step_arrow_preds[step_idx] = std::move(pred);
+                            arrow_fast = true;
+                        }
+                    }
                 }
             }
+
+            std::vector<std::pair<size_t, String>> inputs;
+            if (!arrow_fast)
+            {
+                for (const auto & required : step->actions->getRequiredColumnsWithTypes())
+                {
+                    if (!work_block_names.contains(required.name))
+                    {
+                        inputs.emplace_back(sample_block.getPositionByName(required.name), required.name);
+                        work_block_names.insert(required.name);
+                    }
+                }
+                for (const auto & produced : step->actions->getSampleBlock())
+                    work_block_names.insert(produced.name);
+            }
             prewhere_state->step_source_inputs.push_back(std::move(inputs));
-            for (const auto & produced : step->actions->getSampleBlock())
-                work_block_names.insert(produced.name);
         }
 
         for (const auto & out_col : prewhere_state->output_header)
@@ -288,10 +394,62 @@ Pipe StoragePython::readImpl(
         prewhere = std::move(prewhere_state);
     }
 
+    /// ORDER BY ... LIMIT top-N pushdown (pushed in by the plan optimizer). Only
+    /// usable when every sort key is a plain source column and every output
+    /// column is materializable from the source (no computed PREWHERE outputs).
+    PythonSource::TopKActionsPtr topk;
+    /// Late materialization only pays off when many output columns are avoided
+    /// for the discarded rows. For narrow outputs the per-row gather is already
+    /// cheap, while top-k still pays to accumulate+sort every survivor's sort
+    /// keys -- a net loss at high selectivity. Gate on output width.
+    const size_t topk_output_width = prewhere ? prewhere->output_header.columns() : sample_block.columns();
+    static constexpr size_t TOPK_MIN_OUTPUT_WIDTH = 8;
+    if (topk_limit > 0 && this->is_pandas_df && !arrow_table_reader && !topk_sort.empty()
+        && topk_output_width >= TOPK_MIN_OUTPUT_WIDTH)
+    {
+        bool usable = true;
+        std::vector<size_t> sort_indices;
+        sort_indices.reserve(topk_sort.size());
+        for (const auto & descr : topk_sort)
+        {
+            if (!sample_block.has(descr.column_name))
+            {
+                usable = false;
+                break;
+            }
+            sort_indices.push_back(sample_block.getPositionByName(descr.column_name));
+        }
+
+        /// Every output column must be materializable from the source for the
+        /// top-k rows. GatherFromSource and KeepFilterColumn are fine; a
+        /// FromWorkBlock output (e.g. a PREWHERE input column like URL that is
+        /// also selected) is fine *iff* it is a plain source column, since
+        /// phase 2 re-gathers it from the source by row index. A computed
+        /// column that is not in the source disables the pushdown.
+        if (usable && prewhere)
+            for (const auto & plan : prewhere->outputs)
+                if (plan.kind == PythonSource::PrewhereActions::OutputKind::FromWorkBlock
+                    && !sample_block.has(plan.name))
+                {
+                    usable = false;
+                    break;
+                }
+
+        if (usable)
+        {
+            auto topk_state = std::make_shared<PythonSource::TopKActions>();
+            topk_state->sort_description = topk_sort;
+            topk_state->sort_sample_indices = std::move(sort_indices);
+            topk_state->limit = topk_limit;
+            topk = std::move(topk_state);
+            LOG_DEBUG(logger, "Top-N pushdown enabled: limit={}, sort keys={}", topk_limit, topk_sort.size());
+        }
+    }
+
     Pipes pipes;
     for (size_t stream = 0; stream < num_streams; ++stream)
         pipes.emplace_back(std::make_shared<PythonSource>(
-            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader, prewhere));
+            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader, prewhere, topk));
     return Pipe::unitePipes(std::move(pipes));
 }
 

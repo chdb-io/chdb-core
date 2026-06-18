@@ -290,6 +290,15 @@ void optimizeTreeSecondPass(
             });
     }
 
+    /// ORDER BY ... LIMIT (top-N) pushdown into sources that can cheaply produce
+    /// only the top-N rows. Runs after PREWHERE so a pushed-down WHERE is part of
+    /// the source instead of a downstream FilterStep.
+    traverseQueryPlan(stack, root,
+        [&](auto & frame_node)
+        {
+            trySortLimitPushdownToSource(frame_node);
+        });
+
     traverseQueryPlan(stack, root,
         [&](auto &) {},
         [&](auto & frame_node)

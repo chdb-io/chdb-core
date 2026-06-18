@@ -21,8 +21,10 @@
 #include <Columns/ColumnsCommon.h>
 #include <Columns/FilterDescription.h>
 #include <Interpreters/ExpressionActions.h>
+#include <Interpreters/sortBlock.h>
 #include <Poco/Logger.h>
 #include <Common/COW.h>
+#include <Common/assert_cast.h>
 #include <Common/Exception.h>
 #include <Common/iota.h>
 #include <Common/logger_useful.h>
@@ -72,7 +74,8 @@ PythonSource::PythonSource(
     size_t num_streams,
     const FormatSettings & format_settings_,
     ArrowTableReaderPtr arrow_table_reader_,
-    PrewhereActionsPtr prewhere_)
+    PrewhereActionsPtr prewhere_,
+    TopKActionsPtr topk_)
     : ISource(std::make_shared<Block>(prewhere_ ? prewhere_->output_header.cloneEmpty() : sample_block_.cloneEmpty()))
     , data_source_wrapper(std::move(data_source_wrapper_))
     , isInheritsFromPyReader(isInheritsFromPyReader_)
@@ -87,6 +90,7 @@ PythonSource::PythonSource(
     , format_settings(format_settings_)
     , arrow_table_reader(arrow_table_reader_)
     , prewhere(std::move(prewhere_))
+    , topk(std::move(topk_))
 {
 }
 
@@ -711,23 +715,32 @@ ColumnPtr PythonSource::gatherOneColumn(size_t i, size_t offset, size_t count, c
 /// the rows that survived the previous steps, evaluates its filter and
 /// narrows the selection. Returns an empty chunk for fully-filtered blocks
 /// with `exhausted` = false, so the caller can continue with the next block.
-Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
+bool PythonSource::computeSurvivors(size_t offset, size_t count, Block & work, IColumn::Filter & cumulative, size_t & current_rows)
 {
-    auto [offset, count] = calculateOffsetAndCount();
-    if (count == 0)
-    {
-        exhausted = true;
-        return {};
-    }
-    exhausted = false;
-
-    Block work;
-    size_t current_rows = count;
-    IColumn::Filter cumulative; /// selection over the original block rows; empty = all selected
+    current_rows = count;
 
     for (size_t step_idx = 0; step_idx < prewhere->steps.size(); ++step_idx)
     {
         const auto & step = prewhere->steps[step_idx];
+
+        /// Arrow-direct predicate (single-step PREWHERE only, so cumulative is
+        /// empty here): evaluate the filter on the Arrow buffers without
+        /// materializing the string column into a ColumnString.
+        const auto & arrow_pred = prewhere->step_arrow_preds[step_idx];
+        if (arrow_pred.active)
+        {
+            IColumn::Filter filt(count);
+            PandasScan::evalArrowStringPredicate(
+                (*column_cache)[arrow_pred.sample_index], offset, count, arrow_pred.kind, arrow_pred.needle,
+                reinterpret_cast<unsigned char *>(filt.data()));
+            const size_t selected = countBytesInFilter(filt);
+            if (selected == 0)
+                return false;
+            if (selected < count)
+                cumulative = std::move(filt);
+            current_rows = selected;
+            continue;
+        }
 
         for (const auto & [idx, name] : prewhere->step_source_inputs[step_idx])
         {
@@ -743,7 +756,7 @@ Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
         FilterDescription filter_description(*filter_entry.column);
         const size_t selected = filter_description.countBytesInFilter();
         if (selected == 0)
-            return {};
+            return false;
 
         if (selected < current_rows)
         {
@@ -774,6 +787,26 @@ Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
             kept.column = kept.type->createColumnConst(current_rows, 1u)->convertToFullColumnIfConst();
         }
     }
+
+    return true;
+}
+
+Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
+{
+    auto [offset, count] = calculateOffsetAndCount();
+    if (count == 0)
+    {
+        exhausted = true;
+        return {};
+    }
+    exhausted = false;
+
+    Block work;
+    size_t current_rows = count;
+    IColumn::Filter cumulative; /// selection over the original block rows; empty = all selected
+
+    if (!computeSurvivors(offset, count, work, cumulative, current_rows))
+        return {};
 
     /// Assemble the output following the precomputed plan.
     Columns columns;
@@ -807,6 +840,122 @@ Chunk PythonSource::scanDataToChunkPrewhere(bool & exhausted)
     return Chunk(std::move(columns), current_rows);
 }
 
+ColumnPtr PythonSource::gatherRowsByIndex(size_t sample_index, const PaddedPODArray<UInt64> & gidx, size_t k)
+{
+    /// Per-row materialization (count == 1) reuses the full per-type conversion
+    /// path of convertOneColumn for every column kind; k is tiny (<= limit).
+    MutableColumnPtr out = sample_block.getByPosition(sample_index).type->createColumn();
+    out->reserve(k);
+    for (size_t j = 0; j < k; ++j)
+    {
+        ColumnPtr one = convertOneColumn(sample_index, gidx[j], 1);
+        out->insertFrom(*one, 0);
+    }
+    return out;
+}
+
+Chunk PythonSource::scanDataToChunkTopK()
+{
+    const size_t n_sort = topk->sort_sample_indices.size();
+
+    /// Phase 1: scan every block of this stream, keep only sort-key columns and
+    /// the global row index of each surviving (PREWHERE-passing) row.
+    MutableColumns sort_accum(n_sort);
+    for (size_t s = 0; s < n_sort; ++s)
+        sort_accum[s] = sample_block.getByPosition(topk->sort_sample_indices[s]).type->createColumn();
+    PaddedPODArray<UInt64> gidx_accum;
+
+    for (;;)
+    {
+        auto [offset, count] = calculateOffsetAndCount();
+        if (count == 0)
+            break;
+
+        IColumn::Filter cumulative; /// empty == all rows of the block selected
+        size_t current_rows = count;
+        if (prewhere)
+        {
+            Block work;
+            if (!computeSurvivors(offset, count, work, cumulative, current_rows))
+                continue;
+        }
+
+        for (size_t s = 0; s < n_sort; ++s)
+        {
+            const size_t si = topk->sort_sample_indices[s];
+            ColumnPtr c = cumulative.empty() ? convertOneColumn(si, offset, count)
+                                             : gatherOneColumn(si, offset, count, cumulative, current_rows);
+            sort_accum[s]->insertRangeFrom(*c, 0, current_rows);
+        }
+
+        if (cumulative.empty())
+            for (size_t r = 0; r < count; ++r)
+                gidx_accum.push_back(offset + r);
+        else
+            for (size_t r = 0; r < count; ++r)
+                if (cumulative[r])
+                    gidx_accum.push_back(offset + r);
+    }
+
+    if (gidx_accum.empty())
+        return {};
+
+    /// Partial-sort the survivors by the ORDER BY keys (the global-index column
+    /// rides along) and keep the top-`limit`.
+    Block sort_block;
+    for (size_t s = 0; s < n_sort; ++s)
+        sort_block.insert({std::move(sort_accum[s]),
+                           sample_block.getByPosition(topk->sort_sample_indices[s]).type,
+                           topk->sort_description[s].column_name});
+
+    static const String gidx_name = "__topk_gidx";
+    auto gidx_col = ColumnVector<UInt64>::create();
+    gidx_col->getData().swap(gidx_accum);
+    sort_block.insert({std::move(gidx_col), std::make_shared<DataTypeUInt64>(), gidx_name});
+
+    sortBlock(sort_block, topk->sort_description, topk->limit);
+
+    const auto & sorted_gidx = assert_cast<const ColumnVector<UInt64> &>(*sort_block.getByName(gidx_name).column).getData();
+    const size_t k = std::min<size_t>(topk->limit, sorted_gidx.size());
+
+    /// Phase 2: materialize all output columns for just the top-k global indices.
+    Columns columns;
+    if (prewhere)
+    {
+        columns.reserve(prewhere->outputs.size());
+        for (const auto & plan : prewhere->outputs)
+        {
+            switch (plan.kind)
+            {
+                case PrewhereActions::OutputKind::KeepFilterColumn:
+                {
+                    const auto & out_type = prewhere->output_header.getByName(plan.name).type;
+                    columns.push_back(out_type->createColumnConst(k, 1u)->convertToFullColumnIfConst());
+                    break;
+                }
+                case PrewhereActions::OutputKind::GatherFromSource:
+                    columns.push_back(gatherRowsByIndex(plan.sample_index, sorted_gidx, k));
+                    break;
+                case PrewhereActions::OutputKind::FromWorkBlock:
+                    /// A PREWHERE input that is also selected (e.g. URL): it is a
+                    /// plain source column (validated in readImpl), so gather it
+                    /// from the source by row index like any other output.
+                    columns.push_back(gatherRowsByIndex(sample_block.getPositionByName(plan.name), sorted_gidx, k));
+                    break;
+            }
+        }
+    }
+    else
+    {
+        const size_t ncols = sample_block.columns();
+        columns.reserve(ncols);
+        for (size_t i = 0; i < ncols; ++i)
+            columns.push_back(gatherRowsByIndex(i, sorted_gidx, k));
+    }
+
+    return Chunk(std::move(columns), k);
+}
+
 Chunk PythonSource::generate()
 {
     size_t num_rows = 0;
@@ -831,6 +980,15 @@ Chunk PythonSource::generate()
                 return {};
 
             return std::move(genChunk(num_rows, data));
+        }
+
+        if (topk)
+        {
+            /// Single-shot: one stream emits its local top-N then finishes.
+            if (topk_done)
+                return {};
+            topk_done = true;
+            return scanDataToChunkTopK();
         }
 
         if (prewhere)

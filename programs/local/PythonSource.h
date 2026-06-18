@@ -2,10 +2,12 @@
 
 #include "ArrowTableReader.h"
 #include "DataSourceWrapper.h"
+#include "PandasScan.h"
 #include "PythonUtils.h"
 #include "config.h"
 
 #include <Core/Block.h>
+#include <Core/SortDescription.h>
 #include <Formats/FormatSettings.h>
 #include <Interpreters/ExpressionActionsSettings.h>
 #include <Processors/ISource.h>
@@ -48,15 +50,43 @@ public:
             String name;
         };
 
+        /// A PREWHERE step whose filter is a simple predicate on one Arrow-backed
+        /// string column (e.g. `URL LIKE '%x%'`, `SearchPhrase <> ''`) is
+        /// evaluated directly on the Arrow buffers, skipping materialization of
+        /// the column into a ColumnString. `active` marks such a step.
+        struct ArrowPredicate
+        {
+            bool active = false;
+            CHDB::PandasScan::StringPredicate kind = CHDB::PandasScan::StringPredicate::NotEmpty;
+            size_t sample_index = 0;
+            std::string needle;
+        };
+
         PrewhereInfoPtr info;
         PrewhereExprSteps steps;
         /// Per step: source columns it needs (sample index + name); columns
         /// already produced by earlier steps are consumed from the work block.
         std::vector<std::vector<std::pair<size_t, String>>> step_source_inputs;
+        /// Per step: Arrow-direct predicate (active only for eligible steps).
+        std::vector<ArrowPredicate> step_arrow_preds;
         Block output_header;
         std::vector<OutputPlan> outputs;
     };
     using PrewhereActionsPtr = std::shared_ptr<const PrewhereActions>;
+
+    /// ORDER BY ... LIMIT top-N pushdown: instead of materializing every
+    /// surviving row of every output column and letting a downstream Sort+Limit
+    /// discard all but N, each source scans only the sort-key column(s) (plus
+    /// the PREWHERE predicate), keeps its local top-N rows by global index, and
+    /// materializes the full output columns for just those N. The downstream
+    /// Sort+Limit then merges the per-stream top-N sets into the exact result.
+    struct TopKActions
+    {
+        SortDescription sort_description;        /// ORDER BY keys (names + direction/nulls)
+        std::vector<size_t> sort_sample_indices; /// sample_block position of each sort key
+        size_t limit = 0;                        /// rows to keep per stream (limit + offset)
+    };
+    using TopKActionsPtr = std::shared_ptr<const TopKActions>;
 
     PythonSource(
         CHDB::DataSourceWrapperPtr data_source_wrapper_,
@@ -70,7 +100,8 @@ public:
         size_t num_streams,
         const FormatSettings & format_settings_,
         CHDB::ArrowTableReaderPtr arrow_table_reader_ = nullptr,
-        PrewhereActionsPtr prewhere_ = nullptr);
+        PrewhereActionsPtr prewhere_ = nullptr,
+        TopKActionsPtr topk_ = nullptr);
 
     ~PythonSource() override = default;
 
@@ -120,11 +151,20 @@ private:
 
     Chunk scanDataToChunk();
     Chunk scanDataToChunkPrewhere(bool & exhausted);
+    /// Run the PREWHERE steps for [offset, offset+count); on return `current_rows`
+    /// is the number of survivors and `cumulative` their selection over the block
+    /// (empty == all selected). Returns false when nothing survives.
+    bool computeSurvivors(size_t offset, size_t count, Block & work, IColumn::Filter & cumulative, size_t & current_rows);
+    Chunk scanDataToChunkTopK();
+    /// Materialize column `sample_index` for the `k` rows at the given global indices.
+    ColumnPtr gatherRowsByIndex(size_t sample_index, const PaddedPODArray<UInt64> & gidx, size_t k);
     ColumnPtr convertOneColumn(size_t i, size_t offset, size_t count);
     ColumnPtr gatherOneColumn(size_t i, size_t offset, size_t count, const IColumn::Filter & mask, size_t selected);
     void destory(PyObjectVecPtr & data);
     std::pair<size_t, size_t> calculateOffsetAndCount();
 
     PrewhereActionsPtr prewhere;
+    TopKActionsPtr topk;
+    bool topk_done = false;
 };
 }

@@ -38,6 +38,18 @@ public:
         const void * buf,
         DB::MutableColumnPtr & column);
 
+    /// Direct PREWHERE predicate evaluation on an Arrow-backed string column,
+    /// avoiding materialization of the column into a ColumnString. Fills `out`
+    /// (which has `count` bytes) with 1 for rows matching the predicate.
+    enum class StringPredicate : uint8_t { NotEmpty, Empty, LikeContains };
+    static void evalArrowStringPredicate(
+        const DB::ColumnWrapper & col_wrap,
+        const size_t cursor,
+        const size_t count,
+        StringPredicate predicate,
+        const std::string & needle,
+        unsigned char * out);
+
 private:
     static void innerCheck(const DB::ColumnWrapper & col_wrap);
 

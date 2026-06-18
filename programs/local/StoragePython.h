@@ -4,6 +4,7 @@
 #include "PythonUtils.h"
 #include "config.h"
 
+#include <Core/SortDescription.h>
 #include <Poco/Logger.h>
 #include <QueryPipeline/Pipe.h>
 #include <Storages/ColumnsDescription.h>
@@ -146,7 +147,9 @@ public:
         SelectQueryInfo & query_info,
         ContextPtr context_,
         size_t max_block_size,
-        size_t num_streams);
+        size_t num_streams,
+        const SortDescription & topk_sort = {},
+        size_t topk_limit = 0);
 
     Block prepareSampleBlock(
         const Names & column_names,
