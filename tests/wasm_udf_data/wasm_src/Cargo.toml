@@ -1,0 +1,14 @@
+[package]
+name = "wasm_udf_demo"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny, dependency-free chDB WASM UDF demo module used by tests/test_wasm_udf.py"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

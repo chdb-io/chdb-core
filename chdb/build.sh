@@ -39,6 +39,11 @@ if [ "$(uname)" == "Darwin" ]; then
     HDFS="-DENABLE_HDFS=0 -DENABLE_GSASL_LIBRARY=0 -DENABLE_KRB5=0"
     ICU="-DENABLE_ICU=0"
     SED_INPLACE="sed -i ''"
+    # Enable Rust solely to build the WebAssembly UDF runtime (wasmtime). Keep
+    # delta-kernel-rs and other Rust crates off to minimize the build surface.
+    # ENABLE_WASMTIME must be set explicitly because ENABLE_LIBRARIES=0 below
+    # would otherwise leave it OFF. Requires a Rust toolchain (rustup) on PATH.
+    RUST_FEATURES="-DENABLE_RUST=1 -DENABLE_WASMTIME=1"
     # if Darwin ARM64 (M1, M2), disable AVX
     if [ "$(uname -m)" == "arm64" ]; then
         CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
@@ -76,7 +81,9 @@ elif [ "$(uname)" == "Linux" ]; then
         CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
         LLVM="-DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0"
     fi
-    RUST_FEATURES="-DENABLE_RUST=1 -DENABLE_DELTA_KERNEL_RS=1"
+    # -DENABLE_WASMTIME=1 enables the WebAssembly UDF runtime; it must be set
+    # explicitly because ENABLE_LIBRARIES=0 would otherwise leave it OFF.
+    RUST_FEATURES="-DENABLE_RUST=1 -DENABLE_DELTA_KERNEL_RS=1 -DENABLE_WASMTIME=1"
     CORROSION_CMAKE_FILE="${PROJ_DIR}/contrib/corrosion-cmake/CMakeLists.txt"
     if [ -f "${CORROSION_CMAKE_FILE}" ]; then
         if ! grep -q 'OPENSSL_NO_DEPRECATED_3_0' "${CORROSION_CMAKE_FILE}"; then
