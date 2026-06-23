@@ -484,7 +484,11 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
     }
     catch (...)
     {
+        /// Best-effort cost data: returning empty is fine for correctness, but log so a
+        /// missing memory_usage attribute / failed cast is diagnosable rather than silent.
         column_sizes.clear();
+        LOG_DEBUG(logger, "getColumnSizes failed (ignored, PREWHERE cost ordering falls back): {}",
+                  getCurrentExceptionMessage(/*with_stacktrace=*/false));
     }
 
     column_sizes_computed = true;

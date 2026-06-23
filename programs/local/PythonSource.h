@@ -23,8 +23,6 @@ namespace DB
 namespace py = pybind11;
 
 class PyReader;
-class ExpressionActions;
-using ExpressionActionsPtr = std::shared_ptr<ExpressionActions>;
 
 
 class PythonSource : public ISource
@@ -45,7 +43,7 @@ public:
         };
         struct OutputPlan
         {
-            OutputKind kind;
+            OutputKind kind = OutputKind::GatherFromSource;
             size_t sample_index = 0; /// for GatherFromSource
             String name;
         };

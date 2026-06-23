@@ -117,7 +117,10 @@ void trySortLimitPushdownToSource(QueryPlan::Node & node)
         return;
 
     const size_t limit = limit_step->getLimitForSorting();
-    if (limit == 0 || limit > 65536)
+    /// Upper bound on the top-N size eligible for source-side pushdown; beyond this the
+    /// per-stream accumulate-and-sort cost outweighs the benefit.
+    static constexpr size_t MAX_SORT_LIMIT_PUSHDOWN = 65536;
+    if (limit == 0 || limit > MAX_SORT_LIMIT_PUSHDOWN)
         return;
 
     auto * cur = node.children.front();
