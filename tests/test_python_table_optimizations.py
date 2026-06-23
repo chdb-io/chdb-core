@@ -240,7 +240,11 @@ class TestTopNLateMaterialization(_Base):
 
 
 class TestNonNullInferenceAndPrewhere(_Base):
-    """Optimization (e9abecfdf39): non-null String/DateTime inference + PREWHERE."""
+    """Optimization (e9abecfdf39): non-null String inference + PREWHERE.
+
+    Datetime columns are kept Nullable (numpy datetime64 has no O(1) null
+    metadata), so only the query results below are asserted, not the schema.
+    """
 
     def test_null_free_string_values_intact(self):
         # null-free string column is inferred as non-Nullable String; values must be exact.
@@ -265,7 +269,7 @@ class TestNonNullInferenceAndPrewhere(_Base):
             "id": np.arange(N, dtype=np.int64),
             "when": pd.to_datetime("2021-06-01") + pd.to_timedelta(np.arange(N), unit="s"),
         })
-        # filter + project on the (non-null inferred) datetime column
+        # filter + project on a null-free datetime column (kept Nullable)
         rows = chdb_rows("SELECT id FROM Python(df) WHERE when = '2021-06-01 00:00:10' ORDER BY id", ["id"])
         self.assertEqual(rows, [{"id": "10"}])
         self.assertEqual(chdb_rows("SELECT COUNT(*) AS c FROM Python(df) WHERE when IS NULL", ["c"]),
