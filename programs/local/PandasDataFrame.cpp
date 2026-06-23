@@ -99,9 +99,9 @@ static DataTypePtr inferDataTypeFromPandasColumn(
 
     /// Datetime columns without NaT map to plain DateTime64: Nullable datetime
     /// predicates force ternary logic + Nullable filter columns downstream,
-    /// which costs more than the scan itself for selective queries. NaT
-    /// presence is memoized per underlying buffer (one O(n) scan per column
-    /// per DataFrame lifetime).
+    /// which costs more than the scan itself for selective queries. The NaT
+    /// scan runs once per column per query (schema inference), negligible next
+    /// to materializing the column.
     const bool is_datetime = numpy_type.type == NumpyNullableType::DATETIME_NS || numpy_type.type == NumpyNullableType::DATETIME_US
         || numpy_type.type == NumpyNullableType::DATETIME_MS || numpy_type.type == NumpyNullableType::DATETIME_S;
     if (is_datetime && data_type->isNullable() && py::hasattr(column.handle, "array")
@@ -113,31 +113,13 @@ static DataTypePtr inferDataTypeFromPandasColumn(
         const size_t stride = n ? static_cast<size_t>(asi8.strides(0)) : sizeof(Int64);
         if (values && stride == sizeof(Int64))
         {
-            static std::mutex nat_memo_mutex;
-            static std::map<std::tuple<const void *, size_t, Int64, Int64>, bool> nat_memo;
-
-            const Int64 head = n ? values[0] : 0;
-            const Int64 tail = n ? values[n - 1] : 0;
-            const auto key = std::make_tuple(static_cast<const void *>(values), n, head, tail);
-
-            bool has_nat;
+            bool has_nat = false;
+            for (size_t i = 0; i < n; ++i)
             {
-                std::lock_guard lock(nat_memo_mutex);
-                auto it = nat_memo.find(key);
-                if (it != nat_memo.end())
-                    has_nat = it->second;
-                else
+                if (values[i] == std::numeric_limits<Int64>::min())
                 {
-                    has_nat = false;
-                    for (size_t i = 0; i < n; ++i)
-                    {
-                        if (values[i] == std::numeric_limits<Int64>::min())
-                        {
-                            has_nat = true;
-                            break;
-                        }
-                    }
-                    nat_memo.emplace(key, has_nat);
+                    has_nat = true;
+                    break;
                 }
             }
 
