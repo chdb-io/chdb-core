@@ -280,5 +280,85 @@ class TestNonNullInferenceAndPrewhere(_Base):
         self.assertEqual([int(r["id"]) for r in rows], exp)
 
 
+class TestRegexpReplaceAnchoredExtract(_Base):
+    """REGEXP_REPLACE anchored capture-then-truncate fast path (ported from ClickHouse PR #108270).
+
+    For `^...(group)/.*$` with replacement `\\N`, the trailing `.*$` is stripped and the captured
+    group is emitted directly. Must be result-identical to the full regexp, including the newline
+    fallback: in non-dotall mode `.*$` won't span a newline, so a row whose discarded tail contains
+    '\\n' must return the original string (no match). Expected values are hardcoded re2 semantics.
+    """
+
+    Q28 = r"^https?://(?:www\.)?([^/]+)/.*$"
+
+    def _check(self, str_dtype, pattern, repl, cases):
+        # cases: list of (input, expected). Build a column so vectorConstantConstant (the optimized
+        # path) is exercised, not constant folding of a literal.
+        df = pd.DataFrame({  # noqa: F841 -- referenced by Python(df)
+            "id": np.arange(len(cases), dtype=np.int64),
+            "s": pd.array([c[0] for c in cases], dtype=str_dtype),
+        })
+        pat = pattern.replace("\\", "\\\\").replace("'", "\\'")
+        rep = repl.replace("\\", "\\\\").replace("'", "\\'")
+        rows = chdb_rows(
+            f"SELECT id, REGEXP_REPLACE(s, '{pat}', '{rep}') AS r FROM Python(df) ORDER BY id",
+            ["id", "r"],
+        )
+        for (inp, exp), row in zip(cases, rows):
+            self.assertEqual(row["r"], exp, f"input={inp!r} pat={pattern!r} repl={repl!r}: got {row['r']!r} expected {exp!r}")
+
+    # capturing-group \1 = host; trailing tail stripped; newline tail -> original
+    Q28_CASES = [
+        ("http://www.example.com/path?q=1", "example.com"),
+        ("https://example.org/a", "example.org"),
+        ("http://example.com", "http://example.com"),     # no /path -> no match -> original
+        ("http://www.x.com/", "x.com"),
+        ("http://x/y", "x"),
+        ("http://h.com/a\tb", "h.com"),                   # tab in tail (not newline) -> matches
+        ("http://x.com/a\nb", "http://x.com/a\nb"),       # newline in tail -> fallback -> original
+        ("http://h.com/a\n", "http://h.com/a\n"),         # trailing newline -> no re2 $ match -> original
+        ("not-a-url", "not-a-url"),
+        ("", ""),
+    ]
+
+    def test_q28_host_arrow(self):
+        self._check(ARROW_STR, self.Q28, r"\1", self.Q28_CASES)
+
+    def test_q28_host_object(self):
+        self._check(object, self.Q28, r"\1", self.Q28_CASES)
+
+    def test_group2_host(self):
+        # \2 = host, \1 = scheme
+        cases = [
+            ("http://www.example.com/p", "www.example.com"),
+            ("https://example.org/a/b", "example.org"),
+            ("http://example.com", "http://example.com"),
+            ("http://x.com/a\nb", "http://x.com/a\nb"),   # newline tail -> original
+        ]
+        self._check(ARROW_STR, r"^(https?)://([^/]+)/.*$", r"\2", cases)
+
+    def test_scheme_group1(self):
+        cases = [
+            ("http://www.x.com/p", "http"),
+            ("https://y.org/a", "https"),
+            ("ftp://z.com/a", "ftp://z.com/a"),           # ftp -> no match -> original
+        ]
+        self._check(ARROW_STR, r"^(https?)://(?:www\.)?[^/]+/.*$", r"\1", cases)
+
+    def test_dotall_matches_newline_tail(self):
+        # (?s): dot matches newline, so the trailing .* consumes the newline tail -> host returned
+        cases = [
+            ("http://x.com/a\nb", "x.com"),
+            ("http://h.com/p", "h.com"),
+        ]
+        self._check(ARROW_STR, r"(?s)^https?://(?:www\.)?([^/]+)/.*$", r"\1", cases)
+
+    def test_non_anchored_global_replace_unaffected(self):
+        # not anchored capture-then-truncate -> normal global replace, must stay correct
+        cases = [("a1b2c3", "aXbXcX"), ("http://a/ http://b/", "[a] [b]")]
+        self._check(ARROW_STR, r"[0-9]", "X", [cases[0]])
+        self._check(ARROW_STR, r"https?://([^/]+)/", r"[\1]", [cases[1]])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
