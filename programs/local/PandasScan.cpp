@@ -123,7 +123,7 @@ ColumnPtr PandasScan::scanColumn(
     innerCheck(col_wrap);
 
     const auto & data_type = col_wrap.dest_type;
-    auto column = data_type->createColumn();
+        auto column = data_type->createColumn();
     column->reserve(count);
 
     if (col_wrap.is_category)
@@ -255,7 +255,7 @@ void PandasScan::innerScanObject(
     WhichDataType which,
     size_t stride)
 {
-    const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
+        const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
     const auto * base_ptr = reinterpret_cast<const char *>(objects);
 
     switch (which.idx)
@@ -288,6 +288,15 @@ void PandasScan::innerScanObject(
         }
     case TypeIndex::String:
         {
+            /// The loop below calls into the Python C API (PyUnicode_Check,
+            /// PyFloat_AsDouble, FillColumnString, ...) for every element, so the
+            /// GIL must be held — exactly like the Object/Float64 cases. Without it,
+            /// a Nullable string column (the only case that reaches here) corrupts
+            /// the interpreter state and deadlocks.
+            py::gil_scoped_acquire acquire;
+#if USE_JEMALLOC
+            ::Memory::MemoryCheckScope memory_check_scope;
+#endif
             auto & nullable_col = assert_cast<ColumnNullable &>(*column);
             auto data_column = nullable_col.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_col.getNullMapData();
@@ -731,7 +740,7 @@ void PandasScan::innerScanArrowString(
     const ColumnWrapper & col_wrap,
     MutableColumnPtr & column)
 {
-    ColumnString * column_string;
+        ColumnString * column_string;
     NullMap * null_map = nullptr;
     MutableColumnPtr data_column;
     if (auto * nullable_column = typeid_cast<ColumnNullable *>(column.get()))
