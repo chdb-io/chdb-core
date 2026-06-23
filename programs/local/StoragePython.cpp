@@ -1,5 +1,6 @@
 #include "StoragePython.h"
 #include "NumpyType.h"
+#include <optional>
 #include "PandasDataFrame.h"
 #include "PybindWrapper.h"
 #include "PythonImporter.h"
@@ -260,7 +261,7 @@ Pipe StoragePython::readImpl(
     const SortDescription & topk_sort,
     size_t topk_limit)
 {
-    storage_snapshot->check(column_names);
+        storage_snapshot->check(column_names);
 
     std::vector<bool> is_virtual_column(column_names.size(), false);
     for (size_t i = 0; i < column_names.size(); ++i)
@@ -497,6 +498,22 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
 
     column_sizes_computed = true;
     return column_sizes;
+}
+
+std::optional<UInt64> StoragePython::totalRows(ContextPtr) const
+{
+    if (!is_pandas_df || !data_source_wrapper)
+        return {};
+    try
+    {
+        py::gil_scoped_acquire acquire;
+        /// len(df) is the O(1) row count of a pandas DataFrame.
+        return static_cast<UInt64>(py::len(data_source_wrapper->getDataSource()));
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 Block StoragePython::prepareSampleBlock(

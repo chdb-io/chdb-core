@@ -141,6 +141,11 @@ public:
     /// to order conditions by cost.
     ColumnSizeByName getColumnSizes() const override;
 
+    /// Trivial `SELECT count() FROM Python(df)` (no WHERE/GROUP BY) is answered
+    /// from the source's row count instead of scanning a column.
+    bool supportsTrivialCountOptimization(const StorageSnapshotPtr &, ContextPtr) const override { return is_pandas_df; }
+    std::optional<UInt64> totalRows(ContextPtr) const override;
+
     Pipe readImpl(
         const Names & column_names,
         const StorageSnapshotPtr & storage_snapshot,

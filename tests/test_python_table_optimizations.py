@@ -275,6 +275,38 @@ class TestNonNullInferenceAndPrewhere(_Base):
         self.assertEqual(chdb_rows("SELECT COUNT(*) AS c FROM Python(df) WHERE when IS NULL", ["c"]),
                          [{"c": "0"}])
 
+    def test_masked_int_column_is_nullable(self):
+        # pandas nullable Int64 (masked extension dtype) with NULLs must infer as
+        # Nullable from the dtype alone (no _mask array probe) and preserve NULLs.
+        df = pd.DataFrame({  # noqa: F841
+            "id": np.arange(5, dtype=np.int64),
+            "m": pd.array([10, None, 30, None, 50], dtype="Int64"),
+        })
+        self.assertEqual(chdb_rows("SELECT COUNT(*) AS t, COUNT(m) AS v FROM Python(df)", ["t", "v"]),
+                         [{"t": "5", "v": "3"}])
+        got = sorted(int(r["id"]) for r in chdb_rows("SELECT id FROM Python(df) WHERE m IS NULL", ["id"]))
+        self.assertEqual(got, [1, 3])
+        self.assertEqual(chdb_rows("SELECT m FROM Python(df) WHERE id = 2", ["m"]), [{"m": "30"}])
+
+    def test_plain_int_column_not_nullable(self):
+        # plain numpy int64 -> non-Nullable; no NULLs, values intact
+        df = pd.DataFrame({  # noqa: F841
+            "id": np.arange(N, dtype=np.int64),
+            "v": (np.arange(N, dtype=np.int64) * 2),
+        })
+        self.assertEqual(chdb_rows("SELECT COUNT(*) AS c FROM Python(df) WHERE v IS NULL", ["c"]),
+                         [{"c": "0"}])
+        self.assertEqual(chdb_rows("SELECT v FROM Python(df) WHERE id = 10", ["v"]), [{"v": "20"}])
+
+    def test_trivial_count_exact(self):
+        # SELECT count() with no WHERE is answered from totalRows(); must be exact.
+        df = pd.DataFrame({"id": np.arange(N, dtype=np.int64),  # noqa: F841
+                           "v": (np.arange(N, dtype=np.int64) * 2)})
+        self.assertEqual(chdb_rows("SELECT COUNT(*) AS c FROM Python(df)", ["c"]), [{"c": str(N)}])
+        # a WHERE/GROUP BY count takes the normal (scanning) path and must still be right
+        self.assertEqual(chdb_rows("SELECT COUNT(*) AS c FROM Python(df) WHERE id < 10", ["c"]),
+                         [{"c": "10"}])
+
     def test_prewhere_multi_condition(self):
         # multi-condition WHERE -> multi-step PREWHERE; rows must match pandas exactly
         df = make_df(ARROW_STR)  # noqa: F841

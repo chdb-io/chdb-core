@@ -38,6 +38,13 @@ public:
         return PandasBindColumn(name, type, column);
      }
 
+    /// Extract a single column's Series. This is the per-column hot cost of
+    /// schema inference (one df.__getitem__ per column); call it lazily, only
+    /// for the columns whose type cannot be decided from the dtype alone.
+    py::object getColumn(size_t index) const {
+        return py::reinterpret_borrow<py::object>(getter(names[index]));
+    }
+
 public:
      py::list names;
      py::list types;

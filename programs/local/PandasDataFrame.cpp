@@ -1,6 +1,7 @@
 #include "PandasDataFrame.h"
 #include "NumpyType.h"
 
+#include <functional>
 #include "PandasAnalyzer.h"
 #include "PandasCacheItem.h"
 #include "PythonImporter.h"
@@ -33,19 +34,27 @@ using namespace DB;
 namespace CHDB
 {
 
+/// `get_handle()` lazily extracts the column's Series (df.__getitem__), which is
+/// the dominant per-column cost of schema inference. It is only called for the
+/// column kinds whose type cannot be decided from the dtype alone (category,
+/// object, string null-count); plain numeric/datetime columns are resolved from
+/// the dtype without ever touching the Series.
 static DataTypePtr inferDataTypeFromPandasColumn(
-    PandasBindColumn & column,
+    const py::handle & col_type,
+    const py::handle & col_name,
+    const std::function<py::object()> & get_handle,
     ContextPtr & context,
     DataSourceWrapper & wrapper)
 {
-    auto numpy_type = ConvertNumpyType(column.type);
+    auto numpy_type = ConvertNumpyType(col_type);
 
     if (numpy_type.type == NumpyNullableType::CATEGORY)
     {
-        chassert(py::hasattr(column.handle, "cat"));
-		chassert(py::hasattr(column.handle.attr("cat"), "categories"));
+        py::object handle = get_handle();
+        chassert(py::hasattr(handle, "cat"));
+		chassert(py::hasattr(handle.attr("cat"), "categories"));
 
-        py::array categories = py::array(column.handle.attr("cat").attr("categories"));
+        py::array categories = py::array(handle.attr("cat").attr("categories"));
         auto categories_numpy_type = ConvertNumpyType(categories.attr("dtype"));
         if (categories_numpy_type.type == NumpyNullableType::OBJECT)
         {
@@ -54,9 +63,9 @@ static DataTypePtr inferDataTypeFromPandasColumn(
         }
         else
         {
-            py::array values = py::array(column.handle.attr("to_numpy")());
-            auto col_name = py::str(column.name).cast<std::string>();
-            wrapper.cacheColumnData(col_name, values);
+            py::array values = py::array(handle.attr("to_numpy")());
+            auto name = py::str(col_name).cast<std::string>();
+            wrapper.cacheColumnData(name, values);
             numpy_type = ConvertNumpyType(values.attr("dtype"));
         }
     }
@@ -64,7 +73,7 @@ static DataTypePtr inferDataTypeFromPandasColumn(
     if (numpy_type.type == NumpyNullableType::OBJECT)
     {
 		PandasAnalyzer analyzer(context->getSettingsRef());
-		if (analyzer.Analyze(column.handle))
+		if (analyzer.Analyze(get_handle()))
         {
             const auto & analyzed_type = analyzer.analyzedType();
             const bool use_string_fallback = !context->getQueryContext() || !context->getQueryContext()->isJSONSupported();
@@ -80,14 +89,18 @@ static DataTypePtr inferDataTypeFromPandasColumn(
     /// Arrow-backed string columns expose an O(1) null count. Columns without
     /// nulls map to plain String instead of Nullable(String): the scan skips
     /// the null map entirely and downstream kernels take non-nullable paths.
-    if (numpy_type.type == NumpyNullableType::STRING && py::hasattr(column.handle, "array"))
+    if (numpy_type.type == NumpyNullableType::STRING)
     {
-        py::object underlying_array = column.handle.attr("array");
-        if (py::hasattr(underlying_array, "_pa_array"))
+        py::object handle = get_handle();
+        if (py::hasattr(handle, "array"))
         {
-            py::object chunked = underlying_array.attr("_pa_array");
-            if (py::hasattr(chunked, "null_count") && chunked.attr("null_count").cast<Int64>() == 0)
-                return std::make_shared<DataTypeString>();
+            py::object underlying_array = handle.attr("array");
+            if (py::hasattr(underlying_array, "_pa_array"))
+            {
+                py::object chunked = underlying_array.attr("_pa_array");
+                if (py::hasattr(chunked, "null_count") && chunked.attr("null_count").cast<Int64>() == 0)
+                    return std::make_shared<DataTypeString>();
+            }
         }
     }
 
@@ -97,12 +110,11 @@ static DataTypePtr inferDataTypeFromPandasColumn(
     /// sentinel; no validity bitmap / null_count / mask), so deciding non-Nullable
     /// would require an O(n) scan on every query. Keep datetime Nullable instead.
 
-    if (!data_type->isNullable())
-    {
-        bool column_has_mask = py::hasattr(column.handle.attr("array"), "_mask");
-        if (column_has_mask)
-            return std::make_shared<DataTypeNullable>(data_type);
-    }
+    /// pandas masked/nullable numerics ("Int64", "Float64", "boolean", ...) carry
+    /// a `_mask`; this is exactly the set ConvertNumpyType flags as an extension
+    /// dtype, so Nullable-ness is decided from the dtype without probing the array.
+    if (!data_type->isNullable() && numpy_type.is_nullable_extension)
+        return std::make_shared<DataTypeNullable>(data_type);
 
     return data_type;
 }
@@ -127,11 +139,14 @@ ColumnsDescription PandasDataFrame::getActualTableStructure(DataSourceWrapper & 
 
     for (size_t col_idx = 0; col_idx < column_count; col_idx++)
     {
-        auto col_name = py::str(df.names[col_idx]);
-        auto column = df[col_idx];
-        auto data_type = inferDataTypeFromPandasColumn(column, context, wrapper);
+        py::handle col_name = df.names[col_idx];
+        py::handle col_type = df.types[col_idx];
+        /// Series extraction is deferred: inferDataTypeFromPandasColumn pulls it
+        /// only for category/object/string columns, not plain numeric/datetime.
+        auto get_handle = [&df, col_idx]() { return df.getColumn(col_idx); };
+        auto data_type = inferDataTypeFromPandasColumn(col_type, col_name, get_handle, context, wrapper);
 
-        names_and_types.push_back({col_name, data_type});
+        names_and_types.push_back({py::str(col_name), data_type});
     }
 
     return ColumnsDescription(names_and_types);
@@ -250,7 +265,7 @@ void PandasDataFrame::fillColumn(
     DB::ColumnWrapper & column,
     DataSourceWrapper & wrapper)
 {
-    chassert(py::gil_check());
+        chassert(py::gil_check());
 
     py::object series = data_source[py::str(col_name)];
     py::object dtype = data_source.attr("dtypes")[py::str(col_name)];
