@@ -1,7 +1,6 @@
 #include "PandasDataFrame.h"
 #include "NumpyType.h"
 
-#include <limits>
 #include "PandasAnalyzer.h"
 #include "PandasCacheItem.h"
 #include "PythonImporter.h"
@@ -94,36 +93,9 @@ static DataTypePtr inferDataTypeFromPandasColumn(
 
     auto data_type = NumpyToDataType(numpy_type);
 
-    /// Datetime columns without NaT map to plain DateTime64: Nullable datetime
-    /// predicates force ternary logic + Nullable filter columns downstream,
-    /// which costs more than the scan itself for selective queries. The NaT
-    /// scan runs once per column per query (schema inference), negligible next
-    /// to materializing the column.
-    const bool is_datetime = numpy_type.type == NumpyNullableType::DATETIME_NS || numpy_type.type == NumpyNullableType::DATETIME_US
-        || numpy_type.type == NumpyNullableType::DATETIME_MS || numpy_type.type == NumpyNullableType::DATETIME_S;
-    if (is_datetime && data_type->isNullable() && py::hasattr(column.handle, "array")
-        && py::hasattr(column.handle.attr("array"), "asi8"))
-    {
-        py::array asi8 = py::array(column.handle.attr("array").attr("asi8"));
-        const auto * values = static_cast<const Int64 *>(asi8.data());
-        const size_t n = asi8.size();
-        const size_t stride = n ? static_cast<size_t>(asi8.strides(0)) : sizeof(Int64);
-        if (values && stride == sizeof(Int64))
-        {
-            bool has_nat = false;
-            for (size_t i = 0; i < n; ++i)
-            {
-                if (values[i] == std::numeric_limits<Int64>::min())
-                {
-                    has_nat = true;
-                    break;
-                }
-            }
-
-            if (!has_nat)
-                return removeNullable(data_type);
-        }
-    }
+    /// numpy datetime64 has no O(1) null metadata (NaT is the in-band Int64::min
+    /// sentinel; no validity bitmap / null_count / mask), so deciding non-Nullable
+    /// would require an O(n) scan on every query. Keep datetime Nullable instead.
 
     if (!data_type->isNullable())
     {
