@@ -212,13 +212,6 @@ struct ReplaceRegexpImpl
         for (int i = 0; i < nsub - 2; ++i)
             short_subs.push_back(subs[i]->Incref());
         re2::Regexp * short_re = re2::Regexp::Concat(short_subs.data(), nsub - 2, re->parse_flags());
-        if (short_re == nullptr)
-        {
-            /// Concat consumes the sub references only on success; release them on failure to avoid leaks.
-            for (auto * sub : short_subs)
-                sub->Decref();
-            return {};
-        }
         const std::string short_pattern = short_re->ToString();
         short_re->Decref();
 
