@@ -2,9 +2,6 @@
 #include "NumpyType.h"
 
 #include <limits>
-#include <map>
-#include <mutex>
-#include <tuple>
 #include "PandasAnalyzer.h"
 #include "PandasCacheItem.h"
 #include "PythonImporter.h"
