@@ -52,6 +52,7 @@ extern const int LOGICAL_ERROR;
 extern const int BAD_TYPE_OF_FIELD;
 extern const int NUMBER_OF_ARGUMENTS_DOESNT_MATCH;
 extern const int TYPE_MISMATCH;
+extern const int NOT_IMPLEMENTED;
 }
 
 
@@ -298,7 +299,11 @@ Pipe StoragePython::readImpl(
     PythonSource::PrewhereActionsPtr prewhere;
     if (query_info.prewhere_info && !arrow_table_reader)
     {
-        chassert(!query_info.row_level_filter); /// row policies are not used with Python tables
+        /// Row policies are never expected on Python tables, but chassert would be compiled
+        /// out in release and silently drop the row-level filter (a security hole). Reject
+        /// explicitly so the filter can never be skipped unnoticed.
+        if (query_info.row_level_filter)
+            throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Row-level security policies are not supported on Python tables");
         auto prewhere_state = std::make_shared<PythonSource::PrewhereActions>();
         prewhere_state->info = query_info.prewhere_info;
         prewhere_state->output_header = SourceStepWithFilter::applyPrewhereActions(sample_block, nullptr, query_info.prewhere_info);
