@@ -7,7 +7,7 @@
 #
 # Usage: chdb/build-wasm.sh [configure|build]   (default: configure)
 
-set -e
+set -eo pipefail
 
 PROJ_DIR=$(cd "$(dirname "$0")/.." && pwd)
 # BUILD_DIR can be overridden (e.g. a separate dir for the single-threaded build).
