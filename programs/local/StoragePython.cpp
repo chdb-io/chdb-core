@@ -1,6 +1,5 @@
 #include "StoragePython.h"
 #include "NumpyType.h"
-#include <optional>
 #include "PandasDataFrame.h"
 #include "PybindWrapper.h"
 #include "PythonImporter.h"
@@ -261,7 +260,7 @@ Pipe StoragePython::readImpl(
     const SortDescription & topk_sort,
     size_t topk_limit)
 {
-        storage_snapshot->check(column_names);
+    storage_snapshot->check(column_names);
 
     std::vector<bool> is_virtual_column(column_names.size(), false);
     for (size_t i = 0; i < column_names.size(); ++i)

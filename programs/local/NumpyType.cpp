@@ -1,6 +1,5 @@
 #include "NumpyType.h"
 #include <memory>
-#include <set>
 #include "PythonImporter.h"
 
 #include <Common/IntervalKind.h>
@@ -201,28 +200,12 @@ static NumpyNullableType ConvertNumpyTypeInternal(const String & col_type_str)
 	throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Unsupported data type: {}", col_type_str);
 }
 
-/// pandas masked/nullable extension dtypes. Their repr is the capitalized form
-/// (numpy's plain dtypes are lowercase), and only these carry a `_mask`, so the
-/// presence of one of these names is equivalent to the column being nullable.
-static bool IsNullableExtensionDtype(const String & s)
-{
-	static const std::set<String> ext =
-	{
-		"boolean",
-		"Int8", "Int16", "Int32", "Int64",
-		"UInt8", "UInt16", "UInt32", "UInt64",
-		"Float16", "Float32", "Float64",
-	};
-	return ext.contains(s);
-}
-
 NumpyType ConvertNumpyType(const py::handle & col_type)
 {
 	auto col_type_str = String(py::str(col_type));
 	NumpyType numpy_type;
 
 	numpy_type.type = ConvertNumpyTypeInternal(col_type_str);
-	numpy_type.is_nullable_extension = IsNullableExtensionDtype(col_type_str);
 	if (IsDateTime(numpy_type.type))
     {
 		if (hasattr(col_type, "tz"))

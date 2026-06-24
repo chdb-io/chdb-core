@@ -123,7 +123,7 @@ ColumnPtr PandasScan::scanColumn(
     innerCheck(col_wrap);
 
     const auto & data_type = col_wrap.dest_type;
-        auto column = data_type->createColumn();
+    auto column = data_type->createColumn();
     column->reserve(count);
 
     if (col_wrap.is_category)
@@ -255,7 +255,7 @@ void PandasScan::innerScanObject(
     WhichDataType which,
     size_t stride)
 {
-        const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
+    const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
     const auto * base_ptr = reinterpret_cast<const char *>(objects);
 
     switch (which.idx)
@@ -740,7 +740,7 @@ void PandasScan::innerScanArrowString(
     const ColumnWrapper & col_wrap,
     MutableColumnPtr & column)
 {
-        ColumnString * column_string;
+    ColumnString * column_string;
     NullMap * null_map = nullptr;
     MutableColumnPtr data_column;
     if (auto * nullable_column = typeid_cast<ColumnNullable *>(column.get()))

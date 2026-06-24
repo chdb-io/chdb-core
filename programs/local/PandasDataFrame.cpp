@@ -2,6 +2,7 @@
 #include "NumpyType.h"
 
 #include <functional>
+#include <set>
 #include "PandasAnalyzer.h"
 #include "PandasCacheItem.h"
 #include "PythonImporter.h"
@@ -33,6 +34,42 @@ using namespace DB;
 
 namespace CHDB
 {
+
+/// True iff `dtype` is a pandas masked/nullable extension dtype (Int64, UInt32,
+/// Float64, boolean, ...). Checked structurally against pandas' BaseMaskedDtype
+/// from the dtype object alone (no Series materialization), so every current and
+/// future masked dtype is covered. If pandas' internal BaseMaskedDtype cannot be
+/// located (e.g. a future internal-layout change), falls back to matching the
+/// known masked dtype reprs, so a nullable column is never silently inferred as
+/// non-Nullable.
+static bool isMaskedExtensionDtype(const py::handle & dtype)
+{
+    static const py::handle base_masked_dtype = []() -> py::handle
+    {
+        try
+        {
+            /// Leaked on purpose: never torn down, which avoids a Python decref
+            /// running at process shutdown without the GIL.
+            py::object obj = py::module_::import("pandas.core.dtypes.dtypes").attr("BaseMaskedDtype");
+            return obj.release();
+        }
+        catch (py::error_already_set & e)
+        {
+            e.discard_as_unraisable("locating pandas BaseMaskedDtype");
+            return {};
+        }
+    }();
+
+    if (base_masked_dtype)
+        return py::isinstance(dtype, base_masked_dtype);
+
+    /// Fallback only if BaseMaskedDtype could not be imported.
+    static const std::set<String> masked_reprs = {
+        "boolean", "Int8", "Int16", "Int32", "Int64",
+        "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64",
+    };
+    return masked_reprs.contains(String(py::str(dtype)));
+}
 
 /// `get_handle()` lazily extracts the column's Series (df.__getitem__), which is
 /// the dominant per-column cost of schema inference. It is only called for the
@@ -110,10 +147,10 @@ static DataTypePtr inferDataTypeFromPandasColumn(
     /// sentinel; no validity bitmap / null_count / mask), so deciding non-Nullable
     /// would require an O(n) scan on every query. Keep datetime Nullable instead.
 
-    /// pandas masked/nullable numerics ("Int64", "Float64", "boolean", ...) carry
-    /// a `_mask`; this is exactly the set ConvertNumpyType flags as an extension
-    /// dtype, so Nullable-ness is decided from the dtype without probing the array.
-    if (!data_type->isNullable() && numpy_type.is_nullable_extension)
+    /// pandas masked/nullable numerics (Int64, Float64, boolean, ...) carry a
+    /// `_mask`; detect them structurally from the dtype so Nullable-ness is decided
+    /// without materializing the column's array.
+    if (!data_type->isNullable() && isMaskedExtensionDtype(col_type))
         return std::make_shared<DataTypeNullable>(data_type);
 
     return data_type;
@@ -265,7 +302,7 @@ void PandasDataFrame::fillColumn(
     DB::ColumnWrapper & column,
     DataSourceWrapper & wrapper)
 {
-        chassert(py::gil_check());
+    chassert(py::gil_check());
 
     py::object series = data_source[py::str(col_name)];
     py::object dtype = data_source.attr("dtypes")[py::str(col_name)];

@@ -396,5 +396,93 @@ class TestRegexpReplaceAnchoredExtract(_Base):
         self._check(ARROW_STR, r"https?://([^/]+)/", r"[\1]", [cases[1]])
 
 
+class TestSchemaInferenceCoverage(_Base):
+    """Schema inference (3d4b7c13407): per-column-kind ClickHouse type + Nullable-ness.
+
+    Numeric/datetime types are decided from the dtype alone (no Series materialized);
+    masked/nullable extension dtypes are detected structurally (BaseMaskedDtype).
+    """
+
+    # all pandas masked/nullable extension dtypes
+    MASKED = ["Int8", "Int16", "Int32", "Int64",
+              "UInt8", "UInt16", "UInt32", "UInt64",
+              "Float32", "Float64", "boolean"]
+
+    def _typename(self, df, col):  # noqa: ARG002 -- df referenced by Python(df)
+        return chdb_rows(f"SELECT toTypeName({col}) AS t FROM Python(df) LIMIT 1", ["t"])[0]["t"]
+
+    def test_all_masked_dtypes_infer_nullable(self):
+        # regression: every masked dtype with a NULL -> Nullable, and the NULL is preserved
+        # (not turned into a bogus value). Guards the masked-dtype detection.
+        for dt in self.MASKED:
+            vals = [True, None, False] if dt == "boolean" else [1, None, 3]
+            df = pd.DataFrame({"x": pd.array(vals, dtype=dt)})  # noqa: F841
+            tn = self._typename(df, "x")
+            self.assertTrue(tn.startswith("Nullable("), f"{dt}: type {tn} is not Nullable")
+            self.assertEqual(chdb_rows("SELECT count(*) AS c FROM Python(df) WHERE x IS NULL", ["c"]),
+                             [{"c": "1"}], f"{dt}: IS NULL count")
+            self.assertEqual(chdb_rows("SELECT count(x) AS c FROM Python(df)", ["c"]),
+                             [{"c": "2"}], f"{dt}: non-null count")
+
+    def test_masked_int_values_intact_and_aggregates_skip_null(self):
+        df = pd.DataFrame({"id": np.arange(6, dtype=np.int64),  # noqa: F841
+                           "m": pd.array([10, None, 30, None, 50, 60], dtype="Int64")})
+        self.assertEqual(chdb_rows("SELECT sum(m) AS s, count(m) AS c FROM Python(df)", ["s", "c"]),
+                         [{"s": "150", "c": "4"}])  # 10+30+50+60, nulls skipped
+        self.assertEqual(chdb_rows("SELECT m FROM Python(df) WHERE id = 4", ["m"]), [{"m": "50"}])
+        got = sorted(int(r["id"]) for r in chdb_rows("SELECT id FROM Python(df) WHERE m IS NULL", ["id"]))
+        self.assertEqual(got, [1, 3])
+
+    def test_numpy_integers_non_nullable_exact_type(self):
+        # plain numpy ints -> exact, non-Nullable CH types (lowercase dtype, no _mask)
+        df = pd.DataFrame({  # noqa: F841
+            "i8": np.array([-1, 2], dtype=np.int8),
+            "u16": np.array([1, 2], dtype=np.uint16),
+            "i64": np.array([5, 6], dtype=np.int64),
+        })
+        self.assertEqual(self._typename(df, "i8"), "Int8")
+        self.assertEqual(self._typename(df, "u16"), "UInt16")
+        self.assertEqual(self._typename(df, "i64"), "Int64")
+        self.assertEqual(chdb_rows("SELECT i8, u16, i64 FROM Python(df) WHERE i64 = 5", ["i8", "u16", "i64"]),
+                         [{"i8": "-1", "u16": "1", "i64": "5"}])
+
+    def test_datetime_is_nullable_datetime64(self):
+        df = pd.DataFrame({  # noqa: F841
+            "id": np.arange(3, dtype=np.int64),
+            "ts": pd.to_datetime("2021-06-01") + pd.to_timedelta(np.arange(3), unit="s"),
+        })
+        self.assertTrue(self._typename(df, "ts").startswith("Nullable(DateTime64"),
+                        f"datetime -> {self._typename(df, 'ts')}")
+        self.assertEqual(chdb_rows("SELECT count(*) AS c FROM Python(df) WHERE ts IS NULL", ["c"]),
+                         [{"c": "0"}])
+
+    def test_arrow_string_nullability_follows_content(self):
+        # null-free arrow string -> plain String; with a null -> Nullable(String)
+        df = pd.DataFrame({"s": pd.array(["a", "b", "c"], dtype=ARROW_STR)})  # noqa: F841
+        self.assertEqual(self._typename(df, "s"), "String")
+        df = pd.DataFrame({"s": pd.array(["a", None, "c"], dtype=ARROW_STR)})  # noqa: F841
+        self.assertEqual(self._typename(df, "s"), "Nullable(String)")
+        self.assertEqual(chdb_rows("SELECT count(s) AS v, count(*) AS t FROM Python(df)", ["v", "t"]),
+                         [{"v": "2", "t": "3"}])
+
+    def test_category_is_lowcardinality(self):
+        df = pd.DataFrame({"c": pd.Categorical(["x", "y", "x", "z"])})  # noqa: F841
+        self.assertIn("LowCardinality", self._typename(df, "c"))
+        self.assertEqual(chdb_rows("SELECT count(DISTINCT c) AS d FROM Python(df)", ["d"]), [{"d": "3"}])
+        self.assertEqual(chdb_rows("SELECT count(*) AS n FROM Python(df) WHERE c = 'y'", ["n"]), [{"n": "1"}])
+
+    def test_wide_mixed_frame_all_columns(self):
+        # a wide frame mixing every kind in one go; types + a concrete row must be exact
+        df = make_df(ARROW_STR)  # noqa: F841 -- has int64/int32/int16/uint32/float64/datetime/2 strings/int8
+        self.assertEqual(self._typename(df, "grp"), "Int32")
+        self.assertEqual(self._typename(df, "u32"), "UInt32")
+        self.assertTrue(self._typename(df, "f64").startswith("Nullable(Float64"))  # numpy float -> Nullable
+        self.assertTrue(self._typename(df, "when").startswith("Nullable(DateTime64"))
+        self.assertEqual(self._typename(df, "url"), "String")  # null-free arrow string
+        rows = chdb_rows("SELECT id, grp, u32, url, s, pad FROM Python(df) WHERE id = 12",
+                         ["id", "grp", "u32", "url", "s", "pad"])
+        self.assertEqual(rows, [{"id": "12", "grp": "0", "u32": "36", "url": make_url(12), "s": "v12", "pad": "3"}])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

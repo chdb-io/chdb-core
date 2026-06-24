@@ -39,12 +39,6 @@ enum class NumpyNullableType : uint8_t {
 struct NumpyType {
 	NumpyNullableType type;
 	String timezone;
-	/// True when the dtype is a pandas masked/nullable EXTENSION type ("Int64",
-	/// "UInt32", "Float64", "boolean", ...) rather than a plain numpy dtype
-	/// ("int64", ...). Both map to the same `type`, but the extension form is
-	/// nullable. Lets schema inference decide Nullable-ness from the dtype alone,
-	/// without materializing the column's array to probe for a `_mask`.
-	bool is_nullable_extension = false;
 
 	String toString() const;
 };
