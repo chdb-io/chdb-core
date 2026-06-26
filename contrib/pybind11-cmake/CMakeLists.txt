@@ -47,6 +47,38 @@ message(STATUS "Using stable-ABI pybind11 from ${LIBRARY_DIR}")
 
 set(PYBIND11_LIB_SUFFIX "chdb")
 
+# chdb_spec: On macOS the pybind11 stub/shim dylibs below statically link
+# ClickHouse's bundled libcxx (contrib/libcxx) and export its std::__1::*
+# methods (e.g. std::__1::basic_string) as *weak external* symbols.
+#
+# When numba is imported before chdb it pulls in conda's own libc++.dylib,
+# which exports the same std::__1::* methods as *strong* symbols. dyld resolves
+# a strong definition over a weak one, so conda's libc++ takes over ~86 of the
+# stub's weak basic_string methods -- including the ones pybind11
+# non-limited-api EnsureSharedLibraryIsLoaded() uses to build the shim library
+# name. The two libc++ ABIs differ, so chdb's std::string is misinterpreted:
+# the library-name string is corrupted, dlopen gets a garbled path, and the
+# interpreter aborts at import time.
+#
+# Note: this is a strong-over-weak override, NOT weak<->weak coalescing -- the
+# weak-vs-weak symbol intersection is empty. (pip numba wheels delocate their
+# bundled libc++ so they do not collide and cannot reproduce this; conda numba
+# does, which is what the macOS CI regression step exercises.)
+#
+# The main _chdb.abi3.so already hides these symbols; only these two standalone
+# targets leaked weak std::__1. Strip std::__1 from their export tables so each
+# binds to its own statically linked libcxx internally.
+if (APPLE)
+    set(CHDB_PYBIND11_DARWIN_UNEXPORTED "${CMAKE_CURRENT_BINARY_DIR}/darwin_unexported_libcxx_symbols.txt")
+    file(WRITE "${CHDB_PYBIND11_DARWIN_UNEXPORTED}"
+"__ZNSt3__1*
+__ZNKSt3__1*
+__ZTVNSt3__1*
+__ZTINSt3__1*
+__ZTSNSt3__1*
+")
+endif()
+
 # Build the main pybind11nonlimitedapi_stubs library
 set(STUBS_SOURCES
     "${LIBRARY_DIR}/source/non_limited_api/non_limited_api_stubs.cpp"
@@ -81,6 +113,9 @@ set_target_properties(pybind11_stubs PROPERTIES
 
 if (APPLE)
     target_link_options(pybind11_stubs PRIVATE -undefined dynamic_lookup)
+    if (CHDB_PYBIND11_DARWIN_UNEXPORTED)
+        target_link_options(pybind11_stubs PRIVATE "-Wl,-unexported_symbols_list,${CHDB_PYBIND11_DARWIN_UNEXPORTED}")
+    endif()
 else()
     target_link_options(pybind11_stubs PRIVATE -Wl,--unresolved-symbols=ignore-all)
     if (USE_MUSL)
@@ -123,6 +158,9 @@ if(Python_FOUND OR CHDB_CROSSCOMPILING)
 
     if (APPLE)
         target_link_options(${PYBIND11_NONLIMITEDAPI_LIBNAME} PRIVATE -undefined dynamic_lookup)
+        if (CHDB_PYBIND11_DARWIN_UNEXPORTED)
+            target_link_options(${PYBIND11_NONLIMITEDAPI_LIBNAME} PRIVATE "-Wl,-unexported_symbols_list,${CHDB_PYBIND11_DARWIN_UNEXPORTED}")
+        endif()
     else()
         target_link_options(${PYBIND11_NONLIMITEDAPI_LIBNAME} PRIVATE -Wl,--unresolved-symbols=ignore-all)
         if (USE_MUSL)
