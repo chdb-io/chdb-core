@@ -41,6 +41,21 @@ class TestNumbaCompatibility(unittest.TestCase):
             timeout=180,
         )
 
+    def setUp(self):
+        # If numba can't even be imported on its own -- e.g. the environment has
+        # a numpy that is too new for the installed numba ("Numba needs NumPy
+        # X or less") -- there is nothing to test here, so skip instead of
+        # failing. This never masks the regression we care about: the crash only
+        # happens when chdb is imported *alongside* numba; `import numba` by
+        # itself still succeeds, so a genuine regression is still caught below.
+        probe = self._run_import("import numba")
+        if probe.returncode != 0:
+            self.skipTest(
+                "numba is not importable in this environment "
+                f"(returncode={probe.returncode}); skipping chdb/numba "
+                f"coexistence check.\nstderr={probe.stderr!r}"
+            )
+
     def test_import_numba_then_chdb(self):
         # The order that used to abort: numba first, then chdb.
         proc = self._run_import(
