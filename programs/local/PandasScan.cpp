@@ -2,6 +2,8 @@
 #include "PythonConversion.h"
 #include "PythonImporter.h"
 #include "ColumnVectorHelper.h"
+#include <string_view>
+#include <stringzilla/stringzilla.h>
 
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnLowCardinality.h>
@@ -141,17 +143,17 @@ ColumnPtr PandasScan::scanColumn(
         return column;
     }
 
+    if (col_wrap.is_arrow_string)
+    {
+        /// Plain String for null-free columns, Nullable(String) otherwise.
+        innerScanArrowString(cursor, count, col_wrap, column);
+        return column;
+    }
+
     chassert(data_type->isNullable());
     auto real_type = removeNullable(data_type);
 
     WhichDataType which(real_type);
-
-    if (col_wrap.is_arrow_string)
-    {
-        chassert(which.idx == TypeIndex::String);
-        innerScanArrowString(cursor, count, col_wrap, column);
-        return column;
-    }
 
     if (col_wrap.is_object_type)
     {
@@ -286,6 +288,15 @@ void PandasScan::innerScanObject(
         }
     case TypeIndex::String:
         {
+            /// The loop below calls into the Python C API (PyUnicode_Check,
+            /// PyFloat_AsDouble, FillColumnString, ...) for every element, so the
+            /// GIL must be held — exactly like the Object/Float64 cases. Without it,
+            /// a Nullable string column (the only case that reaches here) corrupts
+            /// the interpreter state and deadlocks.
+            py::gil_scoped_acquire acquire;
+#if USE_JEMALLOC
+            ::Memory::MemoryCheckScope memory_check_scope;
+#endif
             auto & nullable_col = assert_cast<ColumnNullable &>(*column);
             auto data_column = nullable_col.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_col.getNullMapData();
@@ -655,7 +666,7 @@ static void scanArrowStringSegment(
     const size_t local_start,
     const size_t n,
     ColumnString & column_string,
-    NullMap & null_map)
+    NullMap * null_map)
 {
     auto & chars = column_string.getChars();
     auto & offsets = column_string.getOffsets();
@@ -673,9 +684,13 @@ static void scanArrowStringSegment(
     offsets.resize(offsets_old + n);
     auto * offsets_pos = offsets.data() + offsets_old;
 
-    const size_t null_old = null_map.size();
-    null_map.resize(null_old + n);
-    UInt8 * null_pos = null_map.data() + null_old;
+    UInt8 * null_pos = nullptr;
+    if (null_map)
+    {
+        const size_t null_old = null_map->size();
+        null_map->resize(null_old + n);
+        null_pos = null_map->data() + null_old;
+    }
 
     char * dst = reinterpret_cast<char *>(chars.data());
 
@@ -686,11 +701,13 @@ static void scanArrowStringSegment(
         const OffsetT base = off[0];
         for (size_t i = 0; i < n; ++i)
             offsets_pos[i] = chars_pos + static_cast<size_t>(off[i + 1] - base);
-        memset(null_pos, 0, n);
+        if (null_pos)
+            memset(null_pos, 0, n);
         chars_pos += total_bytes;
     }
     else
     {
+        chassert(null_pos); /// nullable schema is guaranteed when the column has nulls
         const UInt8 * validity = chunk.validity;
         const size_t bit_base = chunk.offset + local_start;
         for (size_t i = 0; i < n; ++i)
@@ -723,10 +740,19 @@ void PandasScan::innerScanArrowString(
     const ColumnWrapper & col_wrap,
     MutableColumnPtr & column)
 {
-    auto & nullable_column = assert_cast<ColumnNullable &>(*column);
-    auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
-    auto & null_map = nullable_column.getNullMapData();
-    auto * column_string = assert_cast<ColumnString *>(data_column.get());
+    ColumnString * column_string;
+    NullMap * null_map = nullptr;
+    MutableColumnPtr data_column;
+    if (auto * nullable_column = typeid_cast<ColumnNullable *>(column.get()))
+    {
+        data_column = nullable_column->getNestedColumnPtr()->assumeMutable();
+        null_map = &nullable_column->getNullMapData();
+        column_string = assert_cast<ColumnString *>(data_column.get());
+    }
+    else
+    {
+        column_string = assert_cast<ColumnString *>(column.get());
+    }
 
     const auto & chunks = col_wrap.arrow_string_chunks;
 
@@ -759,6 +785,215 @@ void PandasScan::innerScanArrowString(
         row += n;
         remaining -= n;
     }
+}
+
+template <typename OffsetT>
+static void evalArrowPredSegment(
+    const ArrowStringChunkView & chunk,
+    const size_t local_start,
+    const size_t n,
+    const PandasScan::StringPredicate predicate,
+    const std::string_view needle,
+    unsigned char * out)
+{
+    const OffsetT * off = static_cast<const OffsetT *>(chunk.offsets) + chunk.offset + local_start;
+    const char * data = chunk.data;
+    const UInt8 * validity = chunk.validity;
+    const size_t bit_base = chunk.offset + local_start;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const bool is_valid = !validity || (validity[(bit_base + i) >> 3] & (1u << ((bit_base + i) & 7)));
+        unsigned char r = 0;
+        if (is_valid)
+        {
+            const size_t len = static_cast<size_t>(off[i + 1] - off[i]);
+            switch (predicate)
+            {
+                case PandasScan::StringPredicate::NotEmpty:
+                    r = len > 0;
+                    break;
+                case PandasScan::StringPredicate::Empty:
+                    r = len == 0;
+                    break;
+                case PandasScan::StringPredicate::LikeContains:
+                    r = needle.empty()
+                        || (len >= needle.size()
+                            && sz_find(data + off[i], len, needle.data(), needle.size()) != nullptr);
+                    break;
+            }
+        }
+        out[i] = r;
+    }
+}
+
+void PandasScan::evalArrowStringPredicate(
+    const ColumnWrapper & col_wrap,
+    const size_t cursor,
+    const size_t count,
+    StringPredicate predicate,
+    const std::string & needle,
+    unsigned char * out)
+{
+    const auto & chunks = col_wrap.arrow_string_chunks;
+
+    size_t lo = 0;
+    size_t hi = chunks.size();
+    while (lo < hi)
+    {
+        const size_t mid = (lo + hi) / 2;
+        if (chunks[mid].row_start + chunks[mid].length <= cursor)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    const std::string_view needle_view(needle);
+    size_t row = cursor;
+    size_t remaining = count;
+    size_t out_pos = 0;
+    for (size_t chunk_idx = lo; remaining > 0; ++chunk_idx)
+    {
+        chassert(chunk_idx < chunks.size());
+        const auto & chunk = chunks[chunk_idx];
+        const size_t local_start = row - chunk.row_start;
+        const size_t n = std::min(remaining, chunk.length - local_start);
+
+        if (col_wrap.arrow_large_offsets)
+            evalArrowPredSegment<Int64>(chunk, local_start, n, predicate, needle_view, out + out_pos);
+        else
+            evalArrowPredSegment<Int32>(chunk, local_start, n, predicate, needle_view, out + out_pos);
+
+        row += n;
+        remaining -= n;
+        out_pos += n;
+    }
+}
+
+template <typename OffsetT>
+static void gatherArrowStringSegment(
+    const ArrowStringChunkView & chunk,
+    const size_t local_start,
+    const size_t n,
+    const UInt8 * mask,
+    ColumnString & column_string,
+    NullMap * null_map)
+{
+    auto & chars = column_string.getChars();
+    auto & offsets = column_string.getOffsets();
+
+    const OffsetT * off = static_cast<const OffsetT *>(chunk.offsets) + chunk.offset + local_start;
+    const char * data = chunk.data;
+    const UInt8 * validity = chunk.validity;
+    const size_t bit_base = chunk.offset + local_start;
+
+    /// Exact byte count of the selected rows for a single reserve.
+    size_t selected_bytes = 0;
+    size_t selected_rows = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (!mask[i])
+            continue;
+        ++selected_rows;
+        if (!validity || (validity[(bit_base + i) >> 3] & (1u << ((bit_base + i) & 7))))
+            selected_bytes += static_cast<size_t>(off[i + 1] - off[i]);
+    }
+    if (selected_rows == 0)
+        return;
+
+    size_t chars_pos = chars.size();
+    chars.resize(chars_pos + selected_bytes);
+    char * dst = reinterpret_cast<char *>(chars.data());
+
+    const size_t offsets_old = offsets.size();
+    offsets.reserve(offsets_old + selected_rows);
+    if (null_map)
+        null_map->reserve(null_map->size() + selected_rows);
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (!mask[i])
+            continue;
+
+        const bool is_valid = !validity || (validity[(bit_base + i) >> 3] & (1u << ((bit_base + i) & 7)));
+        if (is_valid)
+        {
+            const size_t len = static_cast<size_t>(off[i + 1] - off[i]);
+            if (len)
+                memcpy(dst + chars_pos, data + off[i], len);
+            chars_pos += len;
+            if (null_map)
+                null_map->push_back(0);
+        }
+        else
+        {
+            chassert(null_map);
+            null_map->push_back(1);
+        }
+        offsets.push_back(chars_pos);
+    }
+}
+
+ColumnPtr PandasScan::scanColumnFiltered(
+    const ColumnWrapper & col_wrap,
+    const size_t cursor,
+    const size_t count,
+    const IColumn::Filter & filter,
+    const size_t selected)
+{
+    chassert(col_wrap.is_arrow_string);
+
+    const auto & data_type = col_wrap.dest_type;
+    auto column = data_type->createColumn();
+    column->reserve(selected);
+
+    ColumnString * column_string;
+    NullMap * null_map = nullptr;
+    MutableColumnPtr data_column;
+    if (auto * nullable_column = typeid_cast<ColumnNullable *>(column.get()))
+    {
+        data_column = nullable_column->getNestedColumnPtr()->assumeMutable();
+        null_map = &nullable_column->getNullMapData();
+        column_string = assert_cast<ColumnString *>(data_column.get());
+    }
+    else
+    {
+        column_string = assert_cast<ColumnString *>(column.get());
+    }
+
+    const auto & chunks = col_wrap.arrow_string_chunks;
+    size_t lo = 0;
+    size_t hi = chunks.size();
+    while (lo < hi)
+    {
+        const size_t mid = (lo + hi) / 2;
+        if (chunks[mid].row_start + chunks[mid].length <= cursor)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    size_t row = cursor;
+    size_t remaining = count;
+    const UInt8 * mask = filter.data();
+    for (size_t chunk_idx = lo; remaining > 0; ++chunk_idx)
+    {
+        chassert(chunk_idx < chunks.size());
+        const auto & chunk = chunks[chunk_idx];
+        const size_t local_start = row - chunk.row_start;
+        const size_t n = std::min(remaining, chunk.length - local_start);
+
+        if (col_wrap.arrow_large_offsets)
+            gatherArrowStringSegment<Int64>(chunk, local_start, n, mask, *column_string, null_map);
+        else
+            gatherArrowStringSegment<Int32>(chunk, local_start, n, mask, *column_string, null_map);
+
+        row += n;
+        remaining -= n;
+        mask += n;
+    }
+
+    return column;
 }
 
 void PandasScan::innerCheck(const ColumnWrapper & col_wrap)

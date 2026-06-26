@@ -1,7 +1,10 @@
+#include <optional>
+#include <Interpreters/ActionsDAG.h>
 #include <Processors/QueryPlan/Optimizations/Optimizations.h>
 #include <Processors/QueryPlan/ExpressionStep.h>
 #include <Processors/QueryPlan/FilterStep.h>
 #include <Processors/QueryPlan/LimitStep.h>
+#include <Processors/QueryPlan/SortingStep.h>
 #include <Processors/QueryPlan/SourceStepWithFilter.h>
 #include <Processors/QueryPlan/ObjectFilterStep.h>
 
@@ -70,6 +73,90 @@ void optimizePrimaryKeyConditionAndLimit(const Stack & stack)
     }
 
     source_step_with_filter->applyFilters();
+}
+
+/// Trace an ExpressionStep output column back to the single source INPUT it
+/// passes through (following ALIAS chains). Returns nullopt for computed
+/// columns, so a sort key that is not a plain source column disables pushdown.
+static std::optional<std::string> resolveThroughExpression(const ActionsDAG & dag, const std::string & out_name)
+{
+    const ActionsDAG::Node * node = nullptr;
+    for (const auto * out : dag.getOutputs())
+        if (out->result_name == out_name)
+        {
+            node = out;
+            break;
+        }
+    if (!node)
+        return std::nullopt;
+
+    while (node->type == ActionsDAG::ActionType::ALIAS)
+    {
+        if (node->children.size() != 1)
+            return std::nullopt;
+        node = node->children.front();
+    }
+
+    if (node->type == ActionsDAG::ActionType::INPUT)
+        return node->result_name;
+    return std::nullopt;
+}
+
+/// ORDER BY ... LIMIT (top-N) pushdown. Match, walking down from a Limit node:
+/// Limit -> Sorting(Full) -> [Expression]* -> source-with-filter that supports it.
+/// Each Expression on the path renames/aliases columns (the analyzer turns
+/// physical names into "__tableN.col" identifiers), so the sort-key names are
+/// resolved back to the source column names before being pushed down. A
+/// FilterStep on the path is rejected: its rows would be filtered downstream of
+/// the source, so the source cannot pre-select the correct top-N. Must run AFTER
+/// PREWHERE optimization, so a pushed-down WHERE is no longer a FilterStep here.
+void trySortLimitPushdownToSource(QueryPlan::Node & node)
+{
+    auto * limit_step = typeid_cast<LimitStep *>(node.step.get());
+    if (!limit_step || limit_step->withTies() || node.children.size() != 1)
+        return;
+
+    const size_t limit = limit_step->getLimitForSorting();
+    /// Upper bound on the top-N size eligible for source-side pushdown; beyond this the
+    /// per-stream accumulate-and-sort cost outweighs the benefit.
+    static constexpr size_t MAX_SORT_LIMIT_PUSHDOWN = 65536;
+    if (limit == 0 || limit > MAX_SORT_LIMIT_PUSHDOWN)
+        return;
+
+    auto * cur = node.children.front();
+    auto * sorting_step = typeid_cast<SortingStep *>(cur->step.get());
+    if (!sorting_step || sorting_step->getType() != SortingStep::Type::Full || cur->children.size() != 1)
+        return;
+
+    SortDescription sort_description = sorting_step->getSortDescription();
+    std::vector<std::string> names;
+    names.reserve(sort_description.size());
+    for (const auto & descr : sort_description)
+        names.push_back(descr.column_name);
+
+    cur = cur->children.front();
+    while (auto * expression_step = typeid_cast<ExpressionStep *>(cur->step.get()))
+    {
+        const auto & dag = expression_step->getExpression();
+        for (auto & name : names)
+        {
+            auto resolved = resolveThroughExpression(dag, name);
+            if (!resolved)
+                return;
+            name = *resolved;
+        }
+        if (cur->children.size() != 1)
+            return;
+        cur = cur->children.front();
+    }
+
+    auto * source = dynamic_cast<SourceStepWithFilterBase *>(cur->step.get());
+    if (!source || !source->supportsSortLimitPushdown())
+        return;
+
+    for (size_t i = 0; i < sort_description.size(); ++i)
+        sort_description[i].column_name = names[i];
+    source->setSortLimitPushdown(sort_description, limit);
 }
 
 }

@@ -16,6 +16,15 @@ public:
         const size_t count,
         const DB::FormatSettings & format_settings);
 
+    /// PREWHERE gather: materialize only the rows of [cursor, cursor+count)
+    /// selected by `filter` (with `selected` ones). Arrow-backed strings only.
+    static DB::ColumnPtr scanColumnFiltered(
+        const DB::ColumnWrapper & col_wrap,
+        const size_t cursor,
+        const size_t count,
+        const DB::IColumn::Filter & filter,
+        const size_t selected);
+
     static DB::ColumnPtr scanObject(
         const DB::ColumnWrapper & col_wrap,
         const size_t cursor,
@@ -28,6 +37,18 @@ public:
         const DB::FormatSettings & format_settings,
         const void * buf,
         DB::MutableColumnPtr & column);
+
+    /// Direct PREWHERE predicate evaluation on an Arrow-backed string column,
+    /// avoiding materialization of the column into a ColumnString. Fills `out`
+    /// (which has `count` bytes) with 1 for rows matching the predicate.
+    enum class StringPredicate : uint8_t { NotEmpty, Empty, LikeContains };
+    static void evalArrowStringPredicate(
+        const DB::ColumnWrapper & col_wrap,
+        const size_t cursor,
+        const size_t count,
+        StringPredicate predicate,
+        const std::string & needle,
+        unsigned char * out);
 
 private:
     static void innerCheck(const DB::ColumnWrapper & col_wrap);
