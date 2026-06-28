@@ -230,6 +230,10 @@ jobs:
             pyenv shell $version
             python -m pip install --upgrade pip
             python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel>=0.40.0 jupyter nbconvert
+            # numba (via llvmlite) bundles its own libc++; tests/test_numba_compatibility.py uses it to
+            # guard against the macOS weak-symbol coalescing crash. Tolerate Python versions that have no
+            # numba wheel yet -- the test auto-skips when numba is unavailable.
+            python -m pip install numba || echo "numba unavailable for Python $version (numba compatibility test will skip)"
             pyenv shell --unset
           done
       - name: Remove /usr/local/bin/python3
@@ -395,6 +399,26 @@ jobs:
             done
             pyenv shell --unset
           done
+        continue-on-error: false
+      - name: "numba import-order regression (conda numba, x86_64)"
+        run: |
+          # Regression guard for the macOS import-order crash. conda's libc++
+          # exports std::__1 as STRONG symbols; without the stub/shim
+          # std::__1-hiding fix they override chdb's WEAK std::__1 (~86
+          # basic_string methods used by pybind11 EnsureSharedLibraryIsLoaded),
+          # corrupting the library-name string and aborting. pip numba wheels
+          # delocate libc++ and cannot reproduce this; conda numba can.
+          curl -Ls -o /tmp/mc.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
+          bash /tmp/mc.sh -b -p "$HOME/mc"
+          source "$HOME/mc/bin/activate"
+          conda create -y -n nb -c conda-forge "python=3.11" numba pip
+          conda activate nb
+          python -m pip install dist/chdb_core-*.whl --force-reinstall --no-cache-dir
+          echo "=== control: import chdb then numba ==="
+          python -c "import chdb; import numba; print(chdb.query('SELECT 2', 'CSV'))"
+          echo "=== regressing: import numba then chdb (must NOT abort with the fix) ==="
+          python -c "import numba; import chdb; print(chdb.query('SELECT 1', 'CSV'))"
+          conda deactivate
         continue-on-error: false
       - name: Test torch compatibility on Python 3.11
         run: |
