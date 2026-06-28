@@ -1,23 +1,38 @@
-set (CLICKHOUSE_LOCAL_SOURCES
-    chdb.cpp
-    ArrowSchema.cpp
-    ArrowStreamWrapper.cpp
-    ArrowTableReader.cpp
-    ChunkCollectorOutputFormat.cpp
-    LocalServer.cpp
-    EmbeddedServer.cpp
-    ChdbClient.cpp
-)
-
-if (NOT USE_PYTHON)
-    set (CHDB_ARROW_SOURCES
-        chdb-arrow.cpp
-        chdb-arrow-output.cpp
-        ArrowStreamSource.cpp
-        StorageArrowStream.cpp
-        TableFunctionArrowStream.cpp
+if (OS_WASM)
+    # WebAssembly build: Apache Arrow is not compiled for wasm, so the Arrow
+    # stream integration (register/scan/storage/table-function) is omitted. Only
+    # the core chdb C API + embedded local server are built. chdb-internal.h still
+    # references the standalone Arrow C Data Interface header (arrow/c/abi.h),
+    # whose include dir is wired below.
+    set (CLICKHOUSE_LOCAL_SOURCES
+        chdb.cpp
+        ChunkCollectorOutputFormat.cpp
+        LocalServer.cpp
+        EmbeddedServer.cpp
+        ChdbClient.cpp
     )
-    set (CLICKHOUSE_LOCAL_SOURCES ${CLICKHOUSE_LOCAL_SOURCES} ${CHDB_ARROW_SOURCES})
+else()
+    set (CLICKHOUSE_LOCAL_SOURCES
+        chdb.cpp
+        ArrowSchema.cpp
+        ArrowStreamWrapper.cpp
+        ArrowTableReader.cpp
+        ChunkCollectorOutputFormat.cpp
+        LocalServer.cpp
+        EmbeddedServer.cpp
+        ChdbClient.cpp
+    )
+
+    if (NOT USE_PYTHON)
+        set (CHDB_ARROW_SOURCES
+            chdb-arrow.cpp
+            chdb-arrow-output.cpp
+            ArrowStreamSource.cpp
+            StorageArrowStream.cpp
+            TableFunctionArrowStream.cpp
+        )
+        set (CLICKHOUSE_LOCAL_SOURCES ${CLICKHOUSE_LOCAL_SOURCES} ${CHDB_ARROW_SOURCES})
+    endif()
 endif()
 
 # Add force function references only for static library builds
@@ -122,6 +137,15 @@ set (CLICKHOUSE_LOCAL_LINK
 )
 
 clickhouse_program_add(local)
+
+if (OS_WASM)
+    # chdb-internal.h includes the standalone Arrow C Data Interface header
+    # (arrow/c/abi.h, dependency-free apart from <stdint.h>) for the
+    # ArrowArrayStream type referenced by the C API surface. Arrow proper is not
+    # built for wasm, so expose just this header from the arrow source tree.
+    target_include_directories(clickhouse-local-lib PRIVATE
+        "${ClickHouse_SOURCE_DIR}/contrib/arrow/cpp/src")
+endif()
 
 if (TARGET ch_contrib::parquet)
     target_link_libraries(clickhouse-local-lib PRIVATE ch_contrib::parquet)

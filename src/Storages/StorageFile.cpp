@@ -26,6 +26,9 @@
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadBufferFromFileDescriptor.h>
 #include <IO/ReadHelpers.h>
+#if defined(OS_WASM)
+#include <IO/ReadBufferFromJSFile.h>
+#endif
 #include <IO/WriteBufferFromFile.h>
 #include <IO/WriteHelpers.h>
 #include <IO/Archives/createArchiveReader.h>
@@ -316,6 +319,18 @@ std::pair<String, String> splitToArchivePathAndPathInArchive(const String & sour
 /// Finds files matching a specified pattern with globs.
 Strings getPathsList(const String & path_with_globs, const String & user_files_path, const ContextPtr & context, size_t & total_bytes_to_read)
 {
+#if defined(OS_WASM)
+    /// A name registered on the JS side (db.registerFile) is read lazily via
+    /// ReadBufferFromJSFile. Keep the name verbatim — no glob expansion, no fs::
+    /// canonicalization, no checkCreationIsAllowed/stat (all of which fail for a
+    /// name with no real wasm-FS path). Bare names, so wasm `file('<name>')` reads
+    /// just like native; unregistered names fall through to the normal MEMFS path.
+    if (auto sz = tryGetJSFileSize(path_with_globs))
+    {
+        total_bytes_to_read += *sz;
+        return {path_with_globs};
+    }
+#endif
     fs::path user_files_absolute_path = fs::weakly_canonical(user_files_path);
     fs::path fs_pattern(path_with_globs);
     if (fs_pattern.is_relative())
@@ -404,6 +419,12 @@ std::unique_ptr<ReadBuffer> selectReadBuffer(
     const struct stat & file_stat,
     ContextPtr context)
 {
+#if defined(OS_WASM)
+    /// A JS-registered file (db.registerFile): read the File/Blob lazily (no fd/mmap/fstat).
+    if (!use_table_fd && tryGetJSFileSize(current_path))
+        return std::make_unique<ReadBufferFromJSFile>(
+            current_path, context->getSettingsRef()[Setting::max_read_buffer_size]);
+#endif
     auto read_method = context->getSettingsRef()[Setting::storage_file_read_method];
 
     /** Using mmap on server-side is unsafe for the following reasons:
@@ -476,6 +497,20 @@ std::unique_ptr<ReadBuffer> selectReadBuffer(
 struct stat getFileStat(const String & current_path, bool use_table_fd, int table_fd, const String & storage_name)
 {
     struct stat file_stat{};
+#if defined(OS_WASM)
+    /// A JS-registered file (db.registerFile): no real file to stat. Report a regular
+    /// file with its actual registered size (0 for an empty file, so
+    /// engine_file_skip_empty_files behaves as for a real empty file).
+    if (!use_table_fd)
+    {
+        if (auto sz = tryGetJSFileSize(current_path))
+        {
+            file_stat.st_mode = S_IFREG;
+            file_stat.st_size = static_cast<off_t>(*sz);
+            return file_stat;
+        }
+    }
+#endif
     if (use_table_fd)
     {
         /// Check if file descriptor allows random reads (and reading it twice).
@@ -1862,7 +1897,13 @@ void StorageFile::read(
         else
             p = &paths;
 
-        if (p->size() == 1 && !fs::exists(p->at(0)))
+        bool path_missing = p->size() == 1 && !fs::exists(p->at(0));
+#if defined(OS_WASM)
+        /// A JS-registered file (db.registerFile) has no real FS path; read lazily.
+        if (path_missing && tryGetJSFileSize(p->at(0)))
+            path_missing = false;
+#endif
+        if (path_missing)
         {
             if (!context->getSettingsRef()[Setting::engine_file_empty_if_not_exists])
                 throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "File {} doesn't exist", p->at(0));

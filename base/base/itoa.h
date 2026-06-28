@@ -21,7 +21,7 @@
 #define INSTANTIATION(T) char * itoa(T i, char * p);
 FOR_INTEGER_TYPES(INSTANTIATION)
 
-#if defined(OS_DARWIN)
+#if defined(OS_DARWIN) || defined(OS_WASM)
 INSTANTIATION(unsigned long)
 INSTANTIATION(long)
 #endif

@@ -12,10 +12,21 @@ namespace DB
 {
 class ColumnsDescription;
 class PullingAsyncPipelineExecutor;
+class PullingPipelineExecutor;
 class PushingAsyncPipelineExecutor;
 class PushingPipelineExecutor;
 class QueryPipeline;
 class ReadBuffer;
+
+/// The pulling executor for SELECT results. The async variant runs the pipeline on
+/// a background thread; in the single-threaded WASM build (no -pthread) that would
+/// deadlock (producer/consumer on one thread), so use the synchronous executor,
+/// which advances the pipeline on the calling thread.
+#if defined(CHDB_WASM_SINGLE_THREADED)
+using LocalPullingExecutor = PullingPipelineExecutor;
+#else
+using LocalPullingExecutor = PullingAsyncPipelineExecutor;
+#endif
 
 /// State of query processing.
 struct LocalQueryState
@@ -29,12 +40,12 @@ struct LocalQueryState
     /// Streams of blocks, that are processing the query.
     BlockIO io;
     /// Current stream to pull blocks from.
-    std::unique_ptr<PullingAsyncPipelineExecutor> executor;
+    std::unique_ptr<LocalPullingExecutor> executor;
     std::unique_ptr<PushingPipelineExecutor> pushing_executor;
     std::unique_ptr<PushingAsyncPipelineExecutor> pushing_async_executor;
     /// For sending data for input() function.
     std::unique_ptr<QueryPipeline> input_pipeline;
-    std::unique_ptr<PullingAsyncPipelineExecutor> input_pipeline_executor;
+    std::unique_ptr<LocalPullingExecutor> input_pipeline_executor;
 
     InternalProfileEventsQueuePtr profile_queue;
     InternalTextLogsQueuePtr logs_queue;

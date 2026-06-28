@@ -4,7 +4,7 @@
 
 #include <pthread.h>
 
-#if defined(OS_DARWIN) || defined(OS_SUNOS)
+#if defined(OS_DARWIN) || defined(OS_SUNOS) || defined(OS_WASM)
 #elif defined(OS_FREEBSD)
 #include <pthread_np.h>
 #else
@@ -98,6 +98,9 @@ void setThreadName(ThreadName name)
     // To avoid the performance penalty, skip os-level thread renaming, and fall back to the
     // cached thread-local name. Note: revert if illumos learns a fast path for thread renaming.
     if ((false))
+#elif defined(OS_WASM)
+    /// Emscripten (single-threaded) has no pthread_setname_np; setting the name is a no-op.
+    if ((false))
 #else
     if (0 != prctl(PR_SET_NAME, thread_name_str.data(), 0, 0, 0))
 #endif
@@ -124,6 +127,8 @@ ThreadName getThreadName()
 #if defined(OS_DARWIN)
     if (pthread_getname_np(pthread_self(), tmp_thread_name, THREAD_NAME_SIZE))
         throw DB::Exception(DB::ErrorCodes::PTHREAD_ERROR, "Cannot get thread name with pthread_getname_np()");
+#elif defined(OS_WASM)
+    /// Emscripten (single-threaded) has no pthread_getname_np; leave the name empty.
 #elif defined(OS_SUNOS)
     // Skip os-level thread name lookup on illumos, since we skip thread renames in setThreadName.
 #elif defined(OS_FREEBSD)

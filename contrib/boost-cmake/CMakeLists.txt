@@ -147,6 +147,10 @@ elseif (ARCH_LOONGARCH64)
     )
 elseif (ARCH_E2K)
     # using BOOST_USE_UCONTEXT=ON, don't use ASM
+elseif (ARCH_WASM)
+    # WASM has no inline/gas assembly; use the ucontext-based fiber backend
+    # (Emscripten provides getcontext/setcontext/makecontext/swapcontext).
+    set (BOOST_USE_UCONTEXT ON)
 elseif(OS_DARWIN)
     set (SRCS_CONTEXT ${SRCS_CONTEXT}
         "${LIBRARY_DIR}/libs/context/src/asm/jump_x86_64_sysv_macho_gas.S"

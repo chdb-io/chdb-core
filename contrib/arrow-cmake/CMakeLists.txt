@@ -19,6 +19,12 @@ if (OS_FREEBSD)
 endif()
 option (ENABLE_PARQUET "Enable parquet" ${ENABLE_PARQUET_DEFAULT})
 
+# ORC (a) is the only consumer of protobuf/protoc here and (b) is not needed for
+# Parquet read. Default ON — matches the previous unconditional ORC build, so non-wasm
+# builds are unchanged; the wasm build forces it OFF in cmake/target.cmake to drop the
+# protobuf/protoc bootstrap.
+option (ENABLE_ORC "Enable ORC (needs protobuf/protoc)" ON)
+
 if (NOT ENABLE_PARQUET)
     message(STATUS "Not using parquet")
     return()
@@ -79,11 +85,13 @@ else ()
 endif()
 set(PROTO_DIR "${ORC_SOURCE_DIR}/../proto")
 
+if (ENABLE_ORC)
 add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
         COMMAND ${PROTOBUF_EXECUTABLE}
         -I ${PROTO_DIR}
         --cpp_out="${CMAKE_CURRENT_BINARY_DIR}"
         "${PROTO_DIR}/orc_proto.proto")
+endif()
 
 # === flatbuffers
 set(FLATBUFFERS_SRC_DIR "${ClickHouse_SOURCE_DIR}/contrib/flatbuffers")
@@ -204,6 +212,7 @@ set(ORC_SRCS
         "${ORC_SOURCE_SRC_DIR}/sargs/TruthValue.cc"
         )
 
+if (ENABLE_ORC)
 add_library(_orc ${ORC_SRCS})
 target_link_libraries(_orc PRIVATE
     ch_contrib::protobuf
@@ -227,6 +236,7 @@ target_include_directories(_orc SYSTEM PRIVATE
     ${ORC_BUILD_SRC_DIR}
     ${ORC_ADDITION_SOURCE_DIR}
     ${ARROW_SRC_DIR})
+endif()
 
 # === arrow
 
@@ -240,9 +250,7 @@ configure_file("${LIBRARY_DIR}/util/config_internal.h.cmake" "${ARROW_GENERATED_
 # find . \( -iname \*.cc -o -iname \*.cpp -o -iname \*.c \) | sort | awk '{print "\"${LIBRARY_DIR}" substr($1,2) "\"" }' | grep -v 'test.cc' | grep -v 'json' | grep -v 'flight' \|
 # grep -v 'csv' | grep -v 'acero' | grep -v 'dataset' | grep -v 'testing' | grep -v 'gpu' | grep -v 'engine' | grep -v 'filesystem' | grep -v 'benchmark.cc'
 set(ARROW_SRCS
-        "${LIBRARY_DIR}/adapters/orc/adapter.cc"
-        "${LIBRARY_DIR}/adapters/orc/options.cc"
-        "${LIBRARY_DIR}/adapters/orc/util.cc"
+        # adapters/orc/*.cc need orc/OrcFile.hh; appended below only when ENABLE_ORC.
         "${LIBRARY_DIR}/array/array_base.cc"
         "${LIBRARY_DIR}/array/array_binary.cc"
         "${LIBRARY_DIR}/array/array_decimal.cc"
@@ -462,11 +470,15 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/vendored/uriparser/UriResolve.c"
         "${LIBRARY_DIR}/vendored/uriparser/UriShorten.c"
         "${LIBRARY_DIR}/visitor.cc"
+        )
 
+# The Arrow<->ORC adapter pulls in orc/OrcFile.hh; only compile it when ORC is on.
+if (ENABLE_ORC)
+    list (APPEND ARROW_SRCS
         "${ARROW_SRC_DIR}/arrow/adapters/orc/adapter.cc"
         "${ARROW_SRC_DIR}/arrow/adapters/orc/util.cc"
-        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc"
-        )
+        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc")
+endif()
 
 
 add_definitions(-DARROW_WITH_BROTLI)
@@ -558,6 +570,17 @@ if (TARGET ch_contrib::jemalloc)
 endif()
 
 
+# file_to_stream.cc / stream_to_file.cc are standalone Arrow CLI tools — each has its own
+# main(). chdb_wasm is an executable with its own (stub) main; in the wasm link one of these
+# tool main()s shadows it and runs on module init (prints a usage line and returns 1). Drop
+# them for wasm — chdb never uses them. Native keeps them (they sit unreferenced in
+# libarrow.a), so non-wasm builds are byte-unaffected.
+if (OS_WASM)
+    list (REMOVE_ITEM ARROW_SRCS
+        "${LIBRARY_DIR}/ipc/file_to_stream.cc"
+        "${LIBRARY_DIR}/ipc/stream_to_file.cc")
+endif ()
+
 add_library(_arrow ${ARROW_SRCS})
 add_library(ch_contrib::arrow ALIAS _arrow)
 
@@ -574,13 +597,15 @@ target_link_libraries(_arrow PRIVATE
     ch_contrib::zstd
     ch_contrib::brotli
     $<$<TARGET_EXISTS:ch_contrib::bzip2>:ch_contrib::bzip2>
-    ch_contrib::curl
+    $<$<TARGET_EXISTS:ch_contrib::curl>:ch_contrib::curl>
     $<$<TARGET_EXISTS:ch_contrib::jemalloc>:ch_contrib::jemalloc>
 )
 
-target_link_libraries(_arrow PUBLIC _orc)
-
-add_dependencies(_arrow protoc)
+# ORC carries the protobuf/protoc dependency; only link/depend on it when enabled.
+if (ENABLE_ORC)
+    target_link_libraries(_arrow PUBLIC _orc)
+    add_dependencies(_arrow protoc)
+endif()
 
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/arrow-cmake/cpp/src")

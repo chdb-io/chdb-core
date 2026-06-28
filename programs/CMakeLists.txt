@@ -40,6 +40,10 @@ add_subdirectory (local)
 add_subdirectory (server)
 # chdb_spec
 
+if (OS_WASM)
+    add_subdirectory (wasm)
+endif ()
+
 clickhouse_add_executable (clickhouse main.cpp)
 
 # A library that prevent usage of several functions from libc.

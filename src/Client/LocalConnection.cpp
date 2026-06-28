@@ -16,6 +16,7 @@
 #include <Parsers/Prometheus/ParserPrometheusQuery.h>
 #include <Processors/Executors/CompletedPipelineExecutor.h>
 #include <Processors/Executors/PullingAsyncPipelineExecutor.h>
+#include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Processors/Executors/PushingAsyncPipelineExecutor.h>
 #include <Processors/Executors/PushingPipelineExecutor.h>
 #include <Processors/Formats/IInputFormat.h>
@@ -320,7 +321,7 @@ void LocalConnection::sendQuery(
         }
 
         state->input_pipeline = std::make_unique<QueryPipeline>(std::move(pipe));
-        state->input_pipeline_executor = std::make_unique<PullingAsyncPipelineExecutor>(*state->input_pipeline);
+        state->input_pipeline_executor = std::make_unique<LocalPullingExecutor>(*state->input_pipeline);
 
     });
     query_context->setInputBlocksReaderCallback([this] (ContextPtr context) -> Block
@@ -363,7 +364,7 @@ void LocalConnection::sendQuery(
         else if (state->io.pipeline.pulling())
         {
             state->block = state->io.pipeline.getHeader();
-            state->executor = std::make_unique<PullingAsyncPipelineExecutor>(state->io.pipeline);
+            state->executor = std::make_unique<LocalPullingExecutor>(state->io.pipeline);
             state->io.pipeline.setConcurrencyControl(false);
         }
         else if (state->io.pipeline.completed())
@@ -447,7 +448,11 @@ void LocalConnection::sendCancel()
 bool LocalConnection::pullBlock(Block & block)
 {
     if (state->executor)
+#if defined(CHDB_WASM_SINGLE_THREADED)
+        return state->executor->pull(block);  // synchronous executor: no timeout arg
+#else
         return state->executor->pull(block, query_context->getSettingsRef()[Setting::interactive_delay] / 1000);
+#endif
 
     return false;
 }

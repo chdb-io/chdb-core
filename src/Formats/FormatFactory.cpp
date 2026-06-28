@@ -270,6 +270,11 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.pretty.display_footer_column_names = settings[Setting::output_format_pretty_display_footer_column_names];
     format_settings.pretty.display_footer_column_names_min_rows = settings[Setting::output_format_pretty_display_footer_column_names_min_rows];
     format_settings.pretty.squash_consecutive_ms = settings[Setting::output_format_pretty_squash_consecutive_ms];
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// Pretty's consecutive-squash buffering runs a background writer thread; disable
+    /// it (write each block directly) in the single-threaded WASM build.
+    format_settings.pretty.squash_consecutive_ms = 0;
+#endif
     format_settings.pretty.squash_max_wait_ms = settings[Setting::output_format_pretty_squash_max_wait_ms];
     format_settings.pretty.highlight_trailing_spaces = settings[Setting::output_format_pretty_highlight_trailing_spaces];
     format_settings.pretty.multiline_fields = settings[Setting::output_format_pretty_multiline_fields];
@@ -528,6 +533,11 @@ InputFormatPtr FormatFactory::getInputImpl(
     if (format_settings.connection_handling)
         parallel_parsing = false;
 
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// Parallel parsing spawns worker threads (impossible without -pthread).
+    parallel_parsing = false;
+#endif
+
     if (parallel_parsing)
     {
         const auto & non_trivial_prefix_and_suffix_checker = creators.non_trivial_prefix_and_suffix_checker;
@@ -744,6 +754,10 @@ OutputFormatPtr FormatFactory::getOutputFormatParallelIfPossible(
     auto format_settings = _format_settings ? *_format_settings : getFormatSettings(context);
     const Settings & settings = context->getSettingsRef();
 
+#if !defined(CHDB_WASM_SINGLE_THREADED)
+    /// Parallel formatting spawns a background collector thread (ThreadFromGlobalPool),
+    /// which is impossible in the single-threaded WASM build (no -pthread). Fall back
+    /// to the serial output format there.
     if (settings[Setting::output_format_parallel_formatting] && getCreators(name).supports_parallel_formatting
         && !settings[Setting::output_format_json_array_of_rows])
     {
@@ -761,6 +775,7 @@ OutputFormatPtr FormatFactory::getOutputFormatParallelIfPossible(
         addExistingProgressToOutputFormat(format, context);
         return format;
     }
+#endif
 
     return getOutputFormat(name, buf, sample, context, format_settings, format_filter_info);
 }

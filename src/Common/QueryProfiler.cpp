@@ -125,7 +125,10 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
 }
 
-#if defined(SIGEV_THREAD_ID)
+/// Emscripten/WASM defines SIGEV_THREAD_ID but its `sigevent` struct lacks the
+/// `_sigev_un` member (and there are no POSIX per-thread timers, signals or stack
+/// unwinding), so the timer-based sampling profiler cannot work there. Disable it.
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
 Timer::Timer()
     : log(getLogger("Timer"))
 {}
@@ -237,7 +240,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
 {
 #if defined(SANITIZER)
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler disabled because they cannot work under sanitizers");
-#elif defined(SIGEV_THREAD_ID)
+#elif defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     /// Sanity check.
     if (!hasPHDRCache())
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler cannot be used without PHDR cache, that is not available for TSan build");
@@ -277,7 +280,7 @@ void QueryProfilerBase<ProfilerImpl>::setPeriod([[maybe_unused]] UInt64 period_)
 {
 #if defined(SANITIZER)
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler disabled because they cannot work under sanitizers");
-#elif defined(SIGEV_THREAD_ID)
+#elif defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     timer.set(period_);
 #else
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler requires SIGEV_THREAD_ID");
@@ -300,7 +303,7 @@ QueryProfilerBase<ProfilerImpl>::~QueryProfilerBase()
 template <typename ProfilerImpl>
 void QueryProfilerBase<ProfilerImpl>::cleanup()
 {
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     timer.stop();
     signal_handler_disarmed = true;
 #endif

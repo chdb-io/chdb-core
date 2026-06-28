@@ -46,6 +46,9 @@
 #include <Core/ServerSettings.h>
 #include <Core/Settings.h>
 #include <IO/ReadWriteBufferFromHTTP.h>
+#if defined(OS_WASM)
+#include <IO/ReadBufferFromWebFetch.h>
+#endif
 #include <IO/HTTPHeaderEntries.h>
 
 #include <algorithm>
@@ -362,7 +365,7 @@ StorageURLSource::StorageURLSource(
     initialize = [=, this]()
     {
         std::vector<String> current_uri_options;
-        std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> uri_and_buf;
+        std::pair<Poco::URI, StorageURLReadBufferPtr> uri_and_buf;
         do
         {
             current_uri_options = (*uri_iterator)();
@@ -388,7 +391,13 @@ StorageURLSource::StorageURLSource(
         while (getContext()->getSettingsRef()[Setting::engine_url_skip_empty_files] && uri_and_buf.second->eof());
 
         curr_uri = uri_and_buf.first;
+#if defined(OS_WASM)
+        /// ReadBufferFromWebFetch does not expose Last-Modified; the schema cache simply
+        /// treats the file as having an unknown modification time.
+        current_file_last_modified = std::nullopt;
+#else
         current_file_last_modified = uri_and_buf.second->tryGetLastModificationTime();
+#endif
         read_buf = std::move(uri_and_buf.second);
         current_file_size = tryGetFileSizeFromReadBuffer(*read_buf);
 
@@ -508,12 +517,19 @@ Chunk StorageURLSource::generate()
                 },
                 getContext());
 
+#if !defined(OS_WASM)
             chassert(dynamic_cast<ReadWriteBufferFromHTTP *>(read_buf.get()));
+#endif
             if (need_headers_virtual_column)
             {
                 if (!http_response_headers_initialized)
                 {
+#if defined(OS_WASM)
+                    /// ReadBufferFromWebFetch does not surface response headers; expose an empty map.
+                    http_response_headers = {};
+#else
                     http_response_headers = dynamic_cast<ReadWriteBufferFromHTTP *>(read_buf.get())->getResponseHeaders();
+#endif
                     http_response_headers_initialized = true;
                 }
 
@@ -540,7 +556,7 @@ Chunk StorageURLSource::generate()
     return {};
 }
 
-std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource::getFirstAvailableURIAndReadBuffer(
+std::pair<Poco::URI, StorageURLReadBufferPtr> StorageURLSource::getFirstAvailableURIAndReadBuffer(
     std::vector<String>::const_iterator & option,
     const std::vector<String>::const_iterator & end,
     ContextPtr context_,
@@ -557,7 +573,7 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
     ReadSettings read_settings = context_->getReadSettings();
 
     size_t options = std::distance(option, end);
-    std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> last_skipped_empty_res;
+    std::pair<Poco::URI, StorageURLReadBufferPtr> last_skipped_empty_res;
     for (; option != end; ++option)
     {
         bool skip_url_not_found_error = glob_url && read_settings.http_skip_not_found_url_for_globs && option == std::prev(end);
@@ -572,7 +588,27 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
 
         try
         {
-            auto res = BuilderRWBufferFromHTTP(request_uri)
+#if defined(OS_WASM)
+            /// No sockets in wasm: fetch over the host JS runtime (synchronous XHR + Range).
+            /// Basic-auth credentials are carried inside request_uri (setCredentials above).
+            (void)http_method;
+            (void)callback;
+            (void)timeouts;
+            (void)delay_initialization;
+            /// skip_url_not_found_error is honored by the buffer: a 404 becomes EOF (empty)
+            /// instead of an error, matching native withSkipNotFound().
+            StorageURLReadBufferPtr res = std::make_unique<ReadBufferFromWebFetch>(
+                request_uri.toString(), headers, static_cast<size_t>(settings[Setting::max_read_buffer_size]),
+                skip_url_not_found_error);
+            /// ReadBufferFromWebFetch is lazy (no request until first read). For a glob with
+            /// several options, probe now so an unreachable option surfaces *here* — a non-found
+            /// option (skip_url_not_found_error=false) throws and the loop skips to the next one;
+            /// a skip-eligible 404 reads as empty. Without this it would only fail at first read.
+            /// Single-URL reads stay lazy.
+            if (options > 1)
+                res->eof();
+#else
+            StorageURLReadBufferPtr res = BuilderRWBufferFromHTTP(request_uri)
                            .withConnectionGroup(HTTPConnectionGroupType::STORAGE)
                            .withMethod(http_method)
                            .withSettings(read_settings)
@@ -586,6 +622,7 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
                            .withHeaders(headers)
                            .withDelayInit(delay_initialization)
                            .create(credentials);
+#endif
 
             if (context_->getSettingsRef()[Setting::engine_url_skip_empty_files] && res->eof() && option != std::prev(end))
             {
@@ -873,7 +910,7 @@ namespace
                 }
             }
 
-            std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> uri_and_buf;
+            std::pair<Poco::URI, StorageURLReadBufferPtr> uri_and_buf;
             do
             {
                 if (current_index == url_options_to_check.size())
@@ -1488,6 +1525,15 @@ std::optional<time_t> IStorageURLBase::tryGetLastModificationTime(
     const Poco::Net::HTTPBasicCredentials & credentials,
     const ContextPtr & context)
 {
+#if defined(OS_WASM)
+    /// ReadBufferFromWebFetch does not expose Last-Modified, and BuilderRWBufferFromHTTP
+    /// needs sockets that wasm lacks. Treat the modification time as unknown.
+    (void)url;
+    (void)headers;
+    (void)credentials;
+    (void)context;
+    return std::nullopt;
+#else
     const auto & settings = context->getSettingsRef();
 
     auto uri = Poco::URI(url);
@@ -1503,6 +1549,7 @@ std::optional<time_t> IStorageURLBase::tryGetLastModificationTime(
                    .create(credentials);
 
     return buf->tryGetLastModificationTime();
+#endif
 }
 
 StorageURL::StorageURL(

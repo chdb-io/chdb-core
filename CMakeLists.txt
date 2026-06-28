@@ -588,6 +588,8 @@ elseif (OS_FREEBSD)
     include(cmake/freebsd/default_libs.cmake)
 elseif (OS_SUNOS)
     include(cmake/sunos/default_libs.cmake)
+elseif (OS_WASM)
+    include(cmake/wasm/default_libs.cmake)
 endif ()
 link_libraries(global-group)
 target_link_libraries(global-group INTERFACE $<TARGET_PROPERTY:global-libs,INTERFACE_LINK_LIBRARIES>)
@@ -595,6 +597,10 @@ target_link_libraries(global-group INTERFACE $<TARGET_PROPERTY:global-libs,INTER
 option (ENABLE_FIU "Enable Fiu" ON)
 
 option(WERROR "Enable -Werror compiler option" ON)
+if (OS_WASM)
+    # Experimental WASM port: too many 32->64/ABI-shaped warnings to treat as errors yet.
+    set (WERROR OFF)
+endif ()
 
 if (WERROR)
     # Don't pollute CMAKE_CXX_FLAGS with -Werror as it will break some CMake checks.
@@ -822,14 +828,52 @@ if (COMPILER_CACHE STREQUAL "chcache" AND CHCACHE_EXECUTABLE_PATH STREQUAL "")
 endif()
 
 # Build native targets if necessary
+#
+# CHDB_SKIP_NATIVE_BOOTSTRAP: hard guard against infinite recursion. The WASM
+# (Emscripten) configure triggers this native bootstrap, but emcmake leaks env
+# vars into the spawned host cmake so it is still seen as cross-compiling and
+# would recurse forever. We pass CHDB_SKIP_NATIVE_BOOTSTRAP=1 to that sub-build
+# so it never re-enters here. protoc still links as a native host ELF because the
+# native sub-build uses a host clang whose default target is x86_64-linux.
 get_property(NATIVE_BUILD_TARGETS GLOBAL PROPERTY NATIVE_BUILD_TARGETS)
 if (NATIVE_BUILD_TARGETS
+    AND NOT CHDB_SKIP_NATIVE_BOOTSTRAP
     AND NOT(
         CMAKE_HOST_SYSTEM_NAME STREQUAL CMAKE_SYSTEM_NAME
         AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL CMAKE_SYSTEM_PROCESSOR
     )
 )
     message (STATUS "Building native targets: ${NATIVE_BUILD_TARGETS}")
+
+    # The native bootstrap (protoc, grpc plugin, ...) must be built with a real
+    # host compiler. Under Emscripten, CMAKE_C_COMPILER is `emcc`, which targets
+    # WASM again -> the native build re-detects OS_WASM and recurses infinitely.
+    # Use a host clang for the native sub-build instead. (emsdk ships clang >= 21,
+    # which satisfies CLANG_MINIMUM_VERSION; the system clang may be too old.)
+    if (OS_WASM)
+        get_filename_component (EMSCRIPTEN_BIN_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
+        set (NATIVE_C_COMPILER   "${EMSCRIPTEN_BIN_DIR}/../bin/clang")
+        set (NATIVE_CXX_COMPILER "${EMSCRIPTEN_BIN_DIR}/../bin/clang++")
+        # Find an ld.lld for the native host build (tools.cmake requires LLD).
+        find_program (CHDB_NATIVE_LINKER NAMES ld.lld ld.lld-23 ld.lld-22 ld.lld-21 ld.lld-20 ld.lld-19 ld.lld-18)
+        if (NOT CHDB_NATIVE_LINKER)
+            message (FATAL_ERROR "WASM native bootstrap needs ld.lld on the host PATH")
+        endif ()
+        # WASM-only sub-build flags. They keep the native bootstrap a plain host build
+        # (drop the hermetic linux toolchain so it is not seen as cross-compiling and
+        # does not recurse, with no leaked Emscripten toolchain) and point it at the
+        # host LLD. They must NOT be applied on other (non-wasm) cross builds — e.g.
+        # macOS-on-Linux — which keep their hermetic toolchain unchanged.
+        set (NATIVE_BOOTSTRAP_EXTRA_ARGS
+            "-DDISABLE_HERMETIC_BUILD=1"
+            "-DCMAKE_TOOLCHAIN_FILE="
+            "-DCHDB_SKIP_NATIVE_BOOTSTRAP=1"
+            "-DLINKER_NAME=${CHDB_NATIVE_LINKER}")
+    else ()
+        set (NATIVE_C_COMPILER   "${CMAKE_C_COMPILER}")
+        set (NATIVE_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+        set (NATIVE_BOOTSTRAP_EXTRA_ARGS "")
+    endif ()
 
     set (NATIVE_BUILD_DIR "${PROJECT_BINARY_DIR}/native")
 
@@ -845,11 +889,15 @@ if (NATIVE_BUILD_TARGETS
         COMMAND ${CMAKE_COMMAND}
             "-G${CMAKE_GENERATOR}"
             "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
-            "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
-            "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            "-DCMAKE_C_COMPILER=${NATIVE_C_COMPILER}"
+            "-DCMAKE_CXX_COMPILER=${NATIVE_CXX_COMPILER}"
             "-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}"
             "-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}"
             "-DCMAKE_BUILD_TYPE=Release"
+            # WASM-only: drop the hermetic toolchain (avoids cross-compile recursion +
+            # leaked Emscripten toolchain) and point at the host LLD. Empty on non-wasm
+            # builds, so their native bootstrap (incl. macOS-on-Linux) is unchanged.
+            ${NATIVE_BOOTSTRAP_EXTRA_ARGS}
             # Avoid overriding .cargo/config.toml with native toolchain.
             "-DENABLE_RUST=OFF"
             # ISA-L requires NASM which may not be available in cross-compilation

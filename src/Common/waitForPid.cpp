@@ -197,6 +197,16 @@ static PollPidResult pollPid(pid_t pid, int timeout_in_ms)
     Pfree(hdl);
     return result;
 }
+#elif defined(OS_WASM)
+
+namespace DB
+{
+
+/// WASM has no child processes (no fork/exec); pollPid never succeeds.
+static PollPidResult pollPid(pid_t /*pid*/, int /*timeout_in_ms*/)
+{
+    return PollPidResult::FAILED;
+}
 #else
     #error "Unsupported OS type"
 #endif

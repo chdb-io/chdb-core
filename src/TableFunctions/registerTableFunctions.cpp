@@ -20,6 +20,9 @@ void registerTableFunctions()
     registerTableFunctionFileCluster(factory);
     registerTableFunctionURL(factory);
     registerTableFunctionURLCluster(factory);
+#if defined(OS_WASM)
+    registerTableFunctionS3(factory);
+#endif
     registerTableFunctionValues(factory);
     registerTableFunctionInput(factory);
     registerTableFunctionGenerate(factory);
