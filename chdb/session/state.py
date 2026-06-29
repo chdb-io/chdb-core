@@ -2,7 +2,7 @@ import warnings
 
 import chdb
 from ..state import sqlitelike as chdb_stateful
-from ..state.sqlitelike import StreamingResult
+from ..state.sqlitelike import StreamingResult, StreamingInserter
 
 
 class Session:
@@ -296,3 +296,28 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
             )
             fmt = "CSV"
         return self._conn.send_query(sql, fmt, params=params)
+
+    def send_insert(self, query, fmt="CSV") -> StreamingInserter:
+        """Begin a streaming INSERT against the session and return a StreamingInserter.
+
+        Write-side dual of :meth:`send_query`. See
+        :meth:`chdb.state.sqlitelike.Connection.send_insert` for full semantics.
+
+        Args:
+            query (str): INSERT statement without a trailing FORMAT clause or data,
+                e.g. ``"INSERT INTO t (a, b)"``.
+            fmt (str, optional): Input format of the appended bytes. Defaults to "CSV".
+
+        Returns:
+            StreamingInserter: a streaming writer (append()/finish()/cancel()).
+
+        Examples:
+            >>> session = Session("test.db")
+            >>> session.query("CREATE TABLE t (a UInt64, b String) ENGINE = MergeTree ORDER BY a")
+            >>> with session.send_insert("INSERT INTO t (a, b)", "CSV") as ins:
+            ...     ins.append("1,one\\n")
+            ...     res = ins.finish()
+            >>> res.rows_written
+            1
+        """
+        return self._conn.send_insert(query, fmt)

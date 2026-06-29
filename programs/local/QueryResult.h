@@ -64,6 +64,35 @@ public:
     std::shared_ptr<void> private_data;
 };
 
+/// Handle for a streaming INSERT (chdb_stream_insert). Returned to the C layer
+/// reinterpret_cast as a chdb_insert_stream, mirroring how StreamQueryResult
+/// backs the read-side streaming handle. `context` is a
+/// CHDB::InsertStreamContext (opaque here to keep this header light — the
+/// thread/queue machinery lives in StreamingInsert.h / ChdbClient). On an init
+/// failure `context` is null and `error_message` carries the reason.
+class InsertStreamResult : public QueryResult
+{
+public:
+    explicit InsertStreamResult(String error_message_ = "")
+        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_))
+    {}
+
+    bool isEmpty() const override { return false; }
+
+    /// Updated as append()/done() observe engine-side errors so that
+    /// chdb_stream_insert_error() reflects the latest failure.
+    void setError(String message) { error_message = std::move(message); }
+
+    std::shared_ptr<void> context;
+
+    /// Back-pointer to the owning DB::ChdbClient (opaque here). The C ABI
+    /// append/done/cancel functions take only the stream handle (no conn), so
+    /// the handle must carry the client to route calls. Valid until the
+    /// connection is closed; closing a connection with an open stream is
+    /// undefined (same contract as the read-side streaming handle).
+    void * owner = nullptr;
+};
+
 using ResultBuffer = std::unique_ptr<std::vector<char>>;
 
 class MaterializedQueryResult : public QueryResult
@@ -174,5 +203,6 @@ using QueryResultPtr = std::unique_ptr<QueryResult>;
 using MaterializedQueryResultPtr = std::unique_ptr<MaterializedQueryResult>;
 using StreamQueryResultPtr = std::unique_ptr<StreamQueryResult>;
 using ChunkQueryResultPtr = std::unique_ptr<ChunkQueryResult>;
+using InsertStreamResultPtr = std::unique_ptr<InsertStreamResult>;
 
 } // namespace CHDB

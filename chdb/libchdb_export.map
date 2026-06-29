@@ -31,6 +31,16 @@
         chdb_stream_fetch_result;
         chdb_stream_cancel_query;
         chdb_destroy_query_result;
+
+        /* Streaming INSERT (write side) */
+        chdb_stream_insert;
+        chdb_stream_insert_n;
+        chdb_stream_append;
+        chdb_stream_done;
+        chdb_stream_cancel_insert;
+        chdb_stream_insert_error;
+        chdb_destroy_insert_stream;
+
         chdb_result_buffer;
         chdb_result_length;
         chdb_result_elapsed;

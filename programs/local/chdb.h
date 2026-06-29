@@ -106,6 +106,15 @@ typedef struct chdb_arrow_array_
 	void * internal_data;
 } * chdb_arrow_array;
 
+// Opaque handle for a streaming INSERT (chdb_stream_insert family).
+// Distinct from chdb_result: it has its own destroy (chdb_destroy_insert_stream)
+// and error accessor (chdb_stream_insert_error), mirroring how the streaming
+// read side keeps its handle separate. Users only interact via API functions.
+typedef struct chdb_insert_stream_
+{
+	void * internal_data;
+} * chdb_insert_stream;
+
 #ifndef CHDB_NO_DEPRECATED
 // WARNING: The following interfaces are deprecated and will be removed in a future version.
 CHDB_EXPORT struct local_result * query_stable(int argc, char ** argv);
@@ -429,6 +438,88 @@ CHDB_EXPORT void chdb_stream_cancel_query(chdb_connection conn, chdb_result * re
  * @param result The result handle to destroy
  */
 CHDB_EXPORT void chdb_destroy_query_result(chdb_result * result);
+
+//===--------------------------------------------------------------------===//
+// Streaming INSERT (write side)
+//===--------------------------------------------------------------------===//
+//
+// Write-side dual of the streaming read API (chdb_stream_query family). Hand it
+// an INSERT statement and an input FORMAT, then push raw FORMAT-encoded bytes in
+// chunks and finalize. The engine parses the bytes with constant memory; the
+// connection accepts no other query/insert while a stream is open.
+//
+// Typical lifecycle:
+//     chdb_insert_stream s = chdb_stream_insert(conn, "INSERT INTO t (a,b)", "CSV");
+//     if (chdb_stream_insert_error(s)) { ... ; chdb_destroy_insert_stream(s); }
+//     for (...) {
+//         if (chdb_stream_append(s, buf, n) != CHDBSuccess) {
+//             fprintf(stderr, "%s\n", chdb_stream_insert_error(s));
+//             chdb_stream_cancel_insert(s);
+//             break;
+//         }
+//     }
+//     chdb_result * r = chdb_stream_done(s);   // commit; carries rows/bytes written or error
+//     chdb_destroy_query_result(r);
+//     chdb_destroy_insert_stream(s);           // always, even on error
+//
+// Cancel semantics follow ClickHouse defaults (no special rollback): a partially
+// written local file is left partial; already-committed MergeTree parts remain;
+// a single S3 object is aborted (never appears).
+
+/**
+ * Begins a streaming INSERT. Sends the INSERT statement (no data) and prepares
+ * to receive FORMAT-encoded bytes via chdb_stream_append().
+ * @param conn Active connection handle
+ * @param query INSERT statement WITHOUT a trailing FORMAT clause or data, e.g. "INSERT INTO t (a,b)"
+ * @param format Input format of the appended bytes, e.g. "CSV", "Native", "Parquet", "JSONEachRow"
+ * @return A stream handle (never NULL). On init failure the handle carries the
+ *         message — check chdb_stream_insert_error() before appending.
+ * @note The handle owns the connection for the stream's lifetime; do not run
+ *       other queries on the same connection until done()/cancel().
+ */
+CHDB_EXPORT chdb_insert_stream chdb_stream_insert(chdb_connection conn, const char * query, const char * format);
+
+/**
+ * Binary-safe variant of chdb_stream_insert() with explicit string lengths.
+ */
+CHDB_EXPORT chdb_insert_stream chdb_stream_insert_n(
+    chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len);
+
+/**
+ * Appends one chunk of raw, FORMAT-encoded bytes to the stream. Binary-safe:
+ * the data may contain NUL bytes (e.g. Parquet/Native), so the length is
+ * required. The bytes are copied; the caller retains ownership of `data`.
+ * @return CHDBSuccess, or CHDBError if the stream already failed (see
+ *         chdb_stream_insert_error()) or was finalized/cancelled.
+ * @note May block to apply backpressure when the engine is slower than the producer.
+ */
+CHDB_EXPORT chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size_t len);
+
+/**
+ * Finalizes the INSERT: signals end-of-input, flushes, and commits.
+ * @return A chdb_result carrying rows_written/bytes_written/elapsed, or an error
+ *         message (chdb_result_error). Free it with chdb_destroy_query_result().
+ * @note Does NOT free the stream handle — call chdb_destroy_insert_stream() too.
+ */
+CHDB_EXPORT chdb_result * chdb_stream_done(chdb_insert_stream stream);
+
+/**
+ * Aborts the INSERT without finalizing. ClickHouse-default cancel semantics
+ * apply (no special rollback). Does not free the handle.
+ */
+CHDB_EXPORT void chdb_stream_cancel_insert(chdb_insert_stream stream);
+
+/**
+ * Returns the latest error message for the stream, or NULL if none.
+ */
+CHDB_EXPORT const char * chdb_stream_insert_error(chdb_insert_stream stream);
+
+/**
+ * Destroys a streaming-insert handle and releases its resources. Must be called
+ * for every handle returned by chdb_stream_insert(), even on the error path. If
+ * the stream was not finalized, it is cancelled first.
+ */
+CHDB_EXPORT void chdb_destroy_insert_stream(chdb_insert_stream stream);
 
 /**
  * Gets pointer to the result data buffer

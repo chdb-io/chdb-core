@@ -6,6 +6,7 @@
 #include <Common/Config/ConfigProcessor.h>
 #include <Core/Names.h>
 #include "QueryResult.h"
+#include "StreamingInsert.h"
 
 #include <memory>
 #include <mutex>
@@ -40,6 +41,31 @@ public:
 
     bool hasStreamingQuery() const;
 
+    /// Streaming INSERT (write side, mirror of the streaming-read methods above).
+    /// Init sends the INSERT query, captures the target structure, and spawns a
+    /// worker thread that pulls parsed blocks from a caller-fed QueueReadBuffer
+    /// and pushes them into the engine. Returns an InsertStreamResult handle
+    /// (never null; carries an error message on init failure).
+    CHDB::QueryResultPtr executeInsertStreamingInit(
+        const char * query, size_t query_len, const char * format, size_t format_len);
+
+    /// Enqueue a chunk of raw, FORMAT-encoded bytes. Returns false on error
+    /// (e.g. the worker already failed); the message is available via
+    /// getInsertStreamError().
+    bool executeInsertStreamingAppend(void * insert_stream, const char * data, size_t len);
+
+    /// Signal end-of-input, join the worker, and return a MaterializedQueryResult
+    /// carrying rows_written/bytes_written/elapsed (or the engine error).
+    CHDB::QueryResultPtr executeInsertStreamingDone(void * insert_stream);
+
+    /// Abort the INSERT (CH-default semantics: no special rollback) and join.
+    void cancelInsertStream(void * insert_stream);
+
+    /// Latest error message for the stream, or empty.
+    const char * getInsertStreamError(void * insert_stream) const;
+
+    bool hasInsertStream() const;
+
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
@@ -71,6 +97,11 @@ private:
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
     void cancelStreamingQueryWithoutLock(void * streaming_result);
 
+    /// Runs on the worker thread: drives the INSERT pipeline to completion,
+    /// pulling from ctx->queue_buf and pushing blocks into the connection.
+    void runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx);
+    void cancelInsertStreamWithoutLock();
+
     EmbeddedServer & server;
     std::unique_ptr<Session> session;
     ConfigurationPtr configuration;
@@ -79,6 +110,7 @@ private:
 #if USE_PYTHON
     std::shared_ptr<CHDB::PythonTableCache> python_table_cache;
 #endif
+    CHDB::InsertStreamContextPtr streaming_insert_context;
     mutable std::mutex client_mutex;
 };
 

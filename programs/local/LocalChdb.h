@@ -28,6 +28,7 @@ class __attribute__((visibility("default"))) cursor_wrapper;
 class __attribute__((visibility("default"))) memoryview_wrapper;
 class __attribute__((visibility("default"))) query_result;
 class __attribute__((visibility("default"))) streaming_query_result;
+class __attribute__((visibility("default"))) streaming_insert_result;
 
 class connection_wrapper
 {
@@ -58,6 +59,11 @@ public:
     query_result * streaming_fetch_result(streaming_query_result * streaming_result);
     py::object streaming_fetch_df(streaming_query_result * streaming_result);
     void streaming_cancel_query(streaming_query_result * streaming_result);
+    /// Streaming INSERT (write side).
+    streaming_insert_result * send_insert(const std::string & query_str, const std::string & format = "CSV");
+    void insert_append(streaming_insert_result * ins, const py::bytes & data);
+    query_result * insert_done(streaming_insert_result * ins);
+    void insert_cancel(streaming_insert_result * ins);
     std::string generate_sql(const std::string & prompt);
 
     // Move the private methods declarations here
@@ -125,6 +131,14 @@ public:
     {
         return chdb_result_storage_bytes_read(result);
     }
+    size_t rows_written()
+    {
+        return chdb_result_rows_written(result);
+    }
+    size_t bytes_written()
+    {
+        return chdb_result_bytes_written(result);
+    }
     double elapsed()
     {
         return chdb_result_elapsed(result);
@@ -161,6 +175,8 @@ public:
     size_t bytes_read() { return result_wrapper->bytes_read(); }
     size_t storage_rows_read() { return result_wrapper->storage_rows_read(); }
     size_t storage_bytes_read() { return result_wrapper->storage_bytes_read(); }
+    size_t rows_written() { return result_wrapper->rows_written(); }
+    size_t bytes_written() { return result_wrapper->bytes_written(); }
     double elapsed() { return result_wrapper->elapsed(); }
     bool has_error() { return result_wrapper->has_error(); }
     py::str error_message() { return result_wrapper->error_message(); }
@@ -189,6 +205,32 @@ public:
         return py::str();
     }
     chdb_result * get_result() { return result; }
+};
+
+/// Python-side handle for a streaming INSERT (write-side dual of
+/// streaming_query_result). Owns the chdb_insert_stream and destroys it on GC.
+class streaming_insert_result
+{
+private:
+    chdb_insert_stream stream;
+
+public:
+    streaming_insert_result(chdb_insert_stream stream_) : stream(stream_) {}
+    ~streaming_insert_result()
+    {
+        chdb_destroy_insert_stream(stream);
+    }
+    bool has_error() { return chdb_stream_insert_error(stream) != nullptr; }
+    py::str error_message()
+    {
+        auto msg = chdb_stream_insert_error(stream);
+        if (msg)
+        {
+            return py::str(msg);
+        }
+        return py::str();
+    }
+    chdb_insert_stream get_stream() { return stream; }
 };
 
 class memoryview_wrapper

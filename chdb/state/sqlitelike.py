@@ -274,6 +274,134 @@ class StreamingResult:
         return pa.RecordBatchReader.from_batches(chdb_reader.schema(), chdb_reader)
 
 
+class InsertResult:
+    """Result of a finished streaming INSERT (returned by :meth:`StreamingInserter.finish`).
+
+    Attributes:
+        rows_written (int): Rows written to the target (including cascaded
+            materialized views), same semantics as X-ClickHouse-Summary.written_rows.
+        bytes_written (int): Bytes written.
+        elapsed (float): Elapsed time in seconds.
+    """
+
+    def __init__(self, rows_written, bytes_written, elapsed):
+        self.rows_written = rows_written
+        self.bytes_written = bytes_written
+        self.elapsed = elapsed
+
+    def __repr__(self):
+        return (
+            f"InsertResult(rows_written={self.rows_written}, "
+            f"bytes_written={self.bytes_written}, elapsed={self.elapsed})"
+        )
+
+
+class StreamingInserter:
+    """Write-side streaming handle returned by :meth:`Connection.send_insert`.
+
+    This is the dual of :class:`StreamingResult`: instead of pulling result
+    chunks out of a query, you push raw FORMAT-encoded byte chunks into an
+    INSERT, in constant memory, then commit with :meth:`finish`.
+
+    The engine parses the bytes with the input format declared in
+    ``send_insert(..., format=...)``. For non-streamable formats (Parquet, ORC)
+    the chunks are accumulated and rows are written at :meth:`finish`.
+
+    Cancel semantics follow ClickHouse defaults (no special rollback): a partially
+    written local file is left partial, already-committed MergeTree parts remain,
+    and a single S3 object is aborted (never appears).
+
+    Examples:
+        >>> conn = connect(":memory:")
+        >>> conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = MergeTree ORDER BY a")
+        >>> with conn.send_insert("INSERT INTO t (a, b)", "CSV") as ins:
+        ...     ins.append("1,one\\n")
+        ...     ins.append("2,two\\n")
+        ...     res = ins.finish()
+        >>> print(res.rows_written)
+        2
+    """
+
+    def __init__(self, c_inserter, conn):
+        self._c_inserter = c_inserter
+        self._conn = conn
+        self._finished = False
+
+    def append(self, data):
+        """Append a chunk of FORMAT-encoded bytes.
+
+        Args:
+            data (bytes | bytearray | memoryview | str): One chunk of data
+                encoded in the stream's input format. ``str`` is UTF-8 encoded
+                (convenient for text formats like CSV/TSV/JSONEachRow).
+
+        Raises:
+            RuntimeError: If the stream is already finished/cancelled, or the
+                engine rejected the data (e.g. a malformed row).
+        """
+        if self._finished:
+            raise RuntimeError("Cannot append to a finished or cancelled insert stream")
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        elif not isinstance(data, bytes):
+            data = bytes(data)
+        try:
+            self._conn.insert_append(self._c_inserter, data)
+        except Exception as e:
+            raise RuntimeError(f"Streaming insert append failed: {str(e)}") from e
+
+    def finish(self) -> InsertResult:
+        """Finalize and commit the INSERT.
+
+        Returns:
+            InsertResult: write statistics (rows_written, bytes_written, elapsed).
+
+        Raises:
+            RuntimeError: If the stream was already finished/cancelled, or the
+                final commit failed.
+        """
+        if self._finished:
+            raise RuntimeError("Insert stream already finished or cancelled")
+        self._finished = True
+        try:
+            result = self._conn.insert_done(self._c_inserter)
+        except Exception as e:
+            raise RuntimeError(f"Streaming insert finish failed: {str(e)}") from e
+        return InsertResult(
+            rows_written=result.rows_written(),
+            bytes_written=result.bytes_written(),
+            elapsed=result.elapsed(),
+        )
+
+    def cancel(self):
+        """Abort the INSERT without committing. Idempotent.
+
+        Raises:
+            RuntimeError: If cancellation fails on the engine side.
+        """
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            self._conn.insert_cancel(self._c_inserter)
+        except Exception as e:
+            raise RuntimeError(f"Failed to cancel insert stream: {str(e)}") from e
+
+    def close(self):
+        """Alias for :meth:`cancel`."""
+        self.cancel()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # No implicit commit: if finish() was not called (including on an
+        # exception), abort the insert. Mirrors StreamingResult.__exit__.
+        if not self._finished:
+            self.cancel()
+        return False
+
+
 class ChdbRecordBatchReader:
     """
     A PyArrow RecordBatchReader wrapper for chdb StreamingResult.
@@ -699,6 +827,52 @@ class Connection:
             self._cleanup_auto_progress_callback,
         )
         return stream_result
+
+    def send_insert(self, query: str, format: str = "CSV") -> StreamingInserter:
+        """Begin a streaming INSERT and return a :class:`StreamingInserter`.
+
+        Write-side dual of :meth:`send_query`. Hand it an INSERT statement
+        (without a trailing ``FORMAT`` clause or data) and the input format of
+        the bytes you will push, then call :meth:`StreamingInserter.append`
+        repeatedly and :meth:`StreamingInserter.finish` to commit.
+
+        Args:
+            query (str): INSERT statement, e.g. ``"INSERT INTO t (a, b)"`` or
+                ``"INSERT INTO FUNCTION s3(...)"``. Do not append ``FORMAT`` or data.
+            format (str, optional): Input format of the appended bytes. Defaults
+                to ``"CSV"``. Any ClickHouse input format is accepted (CSV, TSV,
+                Native, JSONEachRow, Values, Parquet, Arrow, ...). Streamable
+                formats (CSV/TSV/Native/RowBinary/JSONEachRow) parse incrementally;
+                Parquet/ORC are buffered until :meth:`StreamingInserter.finish`.
+
+        Returns:
+            StreamingInserter: a streaming writer supporting append()/finish()/
+            cancel() and the context-manager protocol.
+
+        Raises:
+            RuntimeError: If the INSERT could not be initialized (bad SQL,
+                missing table, or another statement already active).
+
+        .. note::
+            The connection accepts no other query/insert while a streaming
+            insert is open; leaving a ``with`` block without calling finish()
+            cancels the insert (no implicit commit).
+
+        Examples:
+            >>> conn = connect(":memory:")
+            >>> conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = MergeTree ORDER BY a")
+            >>> with conn.send_insert("INSERT INTO t (a, b)", "CSV") as ins:
+            ...     ins.append("1,one\\n2,two\\n")
+            ...     res = ins.finish()
+            >>> res.rows_written
+            2
+
+        .. seealso::
+            :meth:`send_query` - read-side streaming counterpart
+            :class:`StreamingInserter` - streaming writer
+        """
+        c_inserter = self._conn.send_insert(query, format)
+        return StreamingInserter(c_inserter, self._conn)
 
     def __enter__(self):
         """Enter the context manager and return the connection.

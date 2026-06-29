@@ -12,6 +12,15 @@
 #include <Common/Config/ConfigHelper.h>
 #include <Common/CurrentThread.h>
 #include <Common/Exception.h>
+#include <Core/Settings.h>
+#include <Core/Block.h>
+#include <Formats/FormatFactory.h>
+#include <Parsers/ASTInsertQuery.h>
+#include <Interpreters/InterpreterSetQuery.h>
+#include <Processors/Executors/PullingPipelineExecutor.h>
+#include <Processors/Transforms/AddingDefaultsTransform.h>
+#include <QueryPipeline/Pipe.h>
+#include <QueryPipeline/QueryPipeline.h>
 
 #if USE_PYTHON
 #include <DataFrameQueryResult.h>
@@ -28,6 +37,15 @@ namespace ErrorCodes
 {
     extern const int BAD_ARGUMENTS;
     extern const int LOGICAL_ERROR;
+}
+
+namespace Setting
+{
+    extern const SettingsUInt64 max_insert_block_size;
+    extern const SettingsUInt64 max_insert_block_size_bytes;
+    extern const SettingsUInt64 min_insert_block_size_rows;
+    extern const SettingsUInt64 min_insert_block_size_bytes;
+    extern const SettingsBool input_format_parallel_parsing;
 }
 
 ChdbClient::ChdbClient(EmbeddedServer & server_ref)
@@ -225,6 +243,10 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     String query_str(query, query_len);
     String format_str(format, format_len);
 
+    if (streaming_insert_context)
+        return std::make_unique<CHDB::MaterializedQueryResult>(
+            "Cannot run a query while a streaming insert is active on this connection");
+
     try
     {
         DB::ThreadStatus thread_status;
@@ -294,6 +316,10 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
 
     String query_str(query, query_len);
     String format_str(format, format_len);
+
+    if (streaming_insert_context)
+        return std::make_unique<CHDB::StreamQueryResult>(
+            "Cannot start a streaming query while a streaming insert is active on this connection");
 
     try
     {
@@ -488,6 +514,337 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
             local_connection->resetQueryContext();
         }
         python_table_cache->clear();
+#endif
+    }
+}
+
+bool ChdbClient::hasInsertStream() const
+{
+    std::lock_guard<std::mutex> lock(client_mutex);
+    return streaming_insert_context != nullptr;
+}
+
+const char * ChdbClient::getInsertStreamError(void * insert_stream) const
+{
+    auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
+    if (!res)
+        return "";
+    return res->getError().c_str();
+}
+
+CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
+    const char * query, size_t query_len, const char * format, size_t format_len)
+{
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    String query_str(query, query_len);
+    String format_str(format, format_len);
+
+    /// Single-active-statement: the connection has one state/input buffer.
+    if (streaming_query_context || streaming_insert_context)
+        return std::make_unique<CHDB::InsertStreamResult>(
+            "Another streaming query or insert is already active on this connection");
+
+    try
+    {
+        DB::ThreadStatus thread_status;
+
+        if (!connection || !connection->checkConnected(connection_parameters.timeouts))
+            connect();
+
+        /// Keep (query, format) split in the public API, but assemble the full
+        /// statement so the engine knows the input format and treats the data as
+        /// external (streamed) rather than inline.
+        String full_query = query_str;
+        if (!format_str.empty())
+            full_query += " FORMAT " + format_str;
+
+        const auto & settings = client_context->getSettingsRef();
+        const char * begin = full_query.data();
+        const char * pos = begin;
+        const char * end = begin + full_query.size();
+        ASTPtr parsed_query = parseQuery(pos, end, settings, /*allow_multi_statements*/ false);
+        if (!parsed_query)
+            return std::make_unique<CHDB::InsertStreamResult>("Failed to parse INSERT query");
+
+        auto * insert_ast = parsed_query->as<ASTInsertQuery>();
+        if (!insert_ast)
+            return std::make_unique<CHDB::InsertStreamResult>("send_insert requires an INSERT query");
+        if (insert_ast->select)
+            return std::make_unique<CHDB::InsertStreamResult>(
+                "send_insert does not support INSERT ... SELECT (use a normal query)");
+
+        DB::InterpreterSetQuery::applySettingsFromQuery(parsed_query, client_context);
+        connection->setFormatSettings(getFormatSettings(client_context));
+
+        client_context->setCurrentQueryId("");
+
+        auto ctx = std::make_shared<CHDB::InsertStreamContext>();
+        ctx->queue_buf = std::make_shared<CHDB::QueueReadBuffer>();
+        ctx->parsed_query = parsed_query;
+        ctx->full_query = full_query;
+        ctx->format = format_str.empty() ? String("Values") : format_str;
+        ctx->thread_group = DB::CurrentThread::getGroup();
+
+        /// Force non-parallel parsing so the engine builds a pushing pipeline
+        /// (awaiting our sendData blocks) rather than a self-reading completed
+        /// pipeline. Restored in done()/cancel().
+        ctx->prev_parallel_parsing = settings[Setting::input_format_parallel_parsing];
+        client_context->setSetting("input_format_parallel_parsing", false);
+
+        streaming_insert_context = ctx;
+
+        /// All connection I/O (sendQuery, receiveSampleBlock, sendData, finalize)
+        /// happens on the worker thread, so the pushing pipeline is driven from a
+        /// single thread. We block here until the worker reports setup status.
+        auto init_future = ctx->init_promise.get_future();
+        ctx->worker = ThreadFromGlobalPool([this, ctx]() { runInsertStreamWorker(ctx); });
+
+        String init_error = init_future.get();
+        if (!init_error.empty())
+        {
+            if (ctx->worker.joinable())
+                ctx->worker.join();
+            client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+            streaming_insert_context.reset();
+            return std::make_unique<CHDB::InsertStreamResult>(init_error);
+        }
+
+        auto result = std::make_unique<CHDB::InsertStreamResult>();
+        result->context = ctx;
+        result->owner = this;
+        return result;
+    }
+    catch (const Exception & e)
+    {
+        streaming_insert_context.reset();
+        return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, false));
+    }
+    catch (...)
+    {
+        streaming_insert_context.reset();
+        return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(true));
+    }
+}
+
+void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
+{
+    auto signal_init = [&](const String & err)
+    {
+        if (!ctx->init_signaled)
+        {
+            ctx->init_signaled = true;
+            ctx->init_promise.set_value(err);
+        }
+    };
+
+    try
+    {
+        DB::ThreadStatus thread_status;
+        if (ctx->thread_group)
+            DB::CurrentThread::attachToGroupIfDetached(ctx->thread_group);
+
+        auto * local_connection = static_cast<LocalConnection *>(connection.get());
+        auto * insert_ast = ctx->parsed_query->as<ASTInsertQuery>();
+
+        /// Send the INSERT (without data); the engine sets up a pushing pipeline.
+        connection->sendQuery(
+            connection_parameters.timeouts,
+            ctx->full_query,
+            query_parameters,
+            client_context->getCurrentQueryId(),
+            query_processing_stage,
+            &client_context->getSettingsRef(),
+            &client_context->getClientInfo(),
+            /*with_pending_data*/ true,
+            /*external_roles*/ {},
+            [](const Progress &) {});
+
+        Block sample;
+        ColumnsDescription columns;
+        if (!receiveSampleBlock(sample, columns, ctx->parsed_query))
+        {
+            String msg = getErrorMsg();
+            signal_init(msg.empty() ? String("Failed to receive table structure") : msg);
+            ctx->worker_done = true;
+            return;
+        }
+
+        setInsertionTable(*insert_ast);
+        ctx->sample = sample;
+        ctx->columns = columns;
+        ctx->rows_written = local_connection->getCHDBProgress().written_rows;
+        ctx->bytes_written = local_connection->getCHDBProgress().written_bytes;
+
+        const auto & settings = client_context->getSettingsRef();
+        auto source = client_context->getInputFormat(
+            ctx->format,
+            *ctx->queue_buf,
+            ctx->sample,
+            settings[Setting::max_insert_block_size],
+            std::nullopt,
+            settings[Setting::max_insert_block_size_bytes],
+            settings[Setting::min_insert_block_size_rows],
+            settings[Setting::min_insert_block_size_bytes]);
+
+        Pipe pipe(source);
+        if (ctx->columns.hasDefaults())
+        {
+            pipe.addSimpleTransform([&](const SharedHeader & header)
+            {
+                return std::make_shared<AddingDefaultsTransform>(header, ctx->columns, *source, client_context);
+            });
+        }
+
+        QueryPipeline pipeline(std::move(pipe));
+        pipeline.setConcurrencyControl(false);
+        PullingPipelineExecutor executor(pipeline);
+
+        /// Setup succeeded; unblock executeInsertStreamingInit().
+        signal_init("");
+
+        Block block;
+        while (executor.pull(block))
+        {
+            if (ctx->cancelled)
+            {
+                executor.cancel();
+                break;
+            }
+            if (!block.empty())
+                connection->sendData(block, "", false);
+        }
+
+        if (!ctx->cancelled)
+        {
+            connection->sendData({}, "", false);
+            receiveEndOfQueryForInsert();
+        }
+    }
+    catch (...)
+    {
+        ctx->error = std::current_exception();
+        try
+        {
+            ctx->error_message = getCurrentExceptionMessage(true);
+        }
+        catch (...)
+        {
+        }
+        signal_init(ctx->error_message.empty() ? String("Streaming insert failed") : ctx->error_message);
+    }
+    ctx->worker_done = true;
+}
+
+bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char * data, size_t len)
+{
+    CHDB::InsertStreamContextPtr ctx;
+    {
+        std::lock_guard<std::mutex> lock(client_mutex);
+        auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
+        if (!res || !res->context)
+            return false;
+        ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
+        if (ctx->error || ctx->worker_done)
+            return false;
+    }
+    /// Push outside the lock: append() may block on backpressure while the
+    /// worker concurrently drains the queue.
+    if (!ctx->queue_buf->append(data, len))
+        return false;
+    return !ctx->error;
+}
+
+CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream)
+{
+    auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
+    CHDB::InsertStreamContextPtr ctx =
+        (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
+    if (!ctx)
+        return std::make_unique<CHDB::MaterializedQueryResult>(res ? res->getError() : "Invalid insert stream");
+
+    if (ctx->finalized.exchange(true))
+        return std::make_unique<CHDB::MaterializedQueryResult>(
+            res->getError().empty() ? String("Insert stream already finalized") : res->getError());
+
+    /// Signal EOF and let the worker drain + finalize. Do not hold client_mutex
+    /// across the join.
+    ctx->queue_buf->finish();
+    if (ctx->worker.joinable())
+        ctx->worker.join();
+
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    auto * local_connection = static_cast<LocalConnection *>(connection.get());
+    uint64_t rows_written = local_connection->getCHDBProgress().written_rows - ctx->rows_written;
+    uint64_t bytes_written = local_connection->getCHDBProgress().written_bytes - ctx->bytes_written;
+    double elapsed = getElapsedTime();
+
+    String err = ctx->error_message;
+
+    client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+    streaming_insert_context.reset();
+#if USE_PYTHON
+    if (connection)
+    {
+        local_connection->resetQueryContext();
+        local_connection->getSession().getPythonTableCache()->clear();
+    }
+#endif
+
+    if (!err.empty())
+    {
+        res->setError(err);
+        return std::make_unique<CHDB::MaterializedQueryResult>(err);
+    }
+
+    return std::make_unique<CHDB::MaterializedQueryResult>(
+        nullptr, elapsed, 0, 0, 0, 0, rows_written, bytes_written);
+}
+
+void ChdbClient::cancelInsertStream(void * insert_stream)
+{
+    auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
+    CHDB::InsertStreamContextPtr ctx =
+        (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
+    if (!ctx)
+        return;
+
+    if (ctx->finalized.exchange(true))
+        return;
+
+    ctx->cancelled = true;
+    if (connection)
+    {
+        try
+        {
+            connection->sendCancel();
+        }
+        catch (...)
+        {
+            tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
+    }
+    ctx->queue_buf->finish();
+    if (ctx->worker.joinable())
+        ctx->worker.join();
+
+    std::lock_guard<std::mutex> lock(client_mutex);
+    client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+    cancelInsertStreamWithoutLock();
+}
+
+void ChdbClient::cancelInsertStreamWithoutLock()
+{
+    if (streaming_insert_context)
+    {
+        streaming_insert_context.reset();
+#if USE_PYTHON
+        if (connection)
+        {
+            auto * local_connection = static_cast<LocalConnection *>(connection.get());
+            local_connection->resetQueryContext();
+        }
 #endif
     }
 }
