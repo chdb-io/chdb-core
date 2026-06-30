@@ -177,8 +177,10 @@ public:
     void setThrottler(const ThrottlerPtr &) override {}
 
     const Progress & getCHDBProgress() const { return chdb_progress; }
+#if defined(OS_WASM)
     /// chdb-wasm: peak memory observed during the query (for ChdbResult.peakMemoryUsage).
     Int64 getCHDBPeakMemory() const { return chdb_peak_memory; }
+#endif
 #if USE_PYTHON
     void resetQueryContext();
     Session & getSession() const { return *session; }
@@ -215,7 +217,9 @@ private:
     std::optional<LocalQueryState> state;
 
     Progress chdb_progress;
+#if defined(OS_WASM)
     Int64 chdb_peak_memory = 0;
+#endif
 
     /// Last "server" packet.
     std::optional<UInt64> next_packet_type;
@@ -227,6 +231,7 @@ private:
     ReadBuffer * in;
 };
 
+#if defined(OS_WASM)
 /// chdb-wasm: register a hook fired on each query-progress tick with the accumulated
 /// counters (read_rows, total_rows_to_read, read_bytes, total_bytes_to_read,
 /// memory_usage, elapsed_ns). Plain-primitive signature so the wasm glue can forward-
@@ -240,5 +245,6 @@ void setCHDBProgressHook(
 /// SharedArrayBuffer flag the page sets. Returns false when unset (native: never cancels).
 void setCHDBCancelCheck(std::function<bool()> check);
 bool chdbWasmCancelRequested();
+#endif
 
 }

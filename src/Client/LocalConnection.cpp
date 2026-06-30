@@ -117,9 +117,10 @@ void LocalConnection::updateProgress(const Progress & value)
     state->progress.incrementPiecewiseAtomically(value);
 }
 
+#if defined(OS_WASM)
 /// chdb-wasm: a process-global hook fired on every progress tick with the accumulated
 /// chdb progress, so the wasm glue can push live query progress to JS (the browser
-/// progress bar). No-op when unset (native builds never set it).
+/// progress bar). Wasm-only — native builds neither compile nor set these.
 namespace
 {
     std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, int64_t, uint64_t)> g_chdb_progress_hook;
@@ -141,15 +142,17 @@ bool chdbWasmCancelRequested()
 {
     return g_chdb_cancel_check ? g_chdb_cancel_check() : false;
 }
+#endif
 
 void LocalConnection::updateCHDBProgress(const Progress & value)
 {
     chdb_progress.incrementPiecewiseAtomically(value);
 
-    /// memory_usage is a gauge (current), not a summable delta. The executor's Progress
-    /// doesn't carry it (the protocol layer normally injects it from the memory tracker),
-    /// so fall back to the running query's tracker. Report the latest non-zero sample and
-    /// track the peak (for ChdbResult.peakMemoryUsage).
+#if defined(OS_WASM)
+    /// chdb-wasm only: surface live progress + peak memory to JS, and offer a second cancel
+    /// point. memory_usage is a gauge (current), not a summable delta; the executor's
+    /// Progress doesn't carry it (the protocol layer normally injects it from the memory
+    /// tracker), so fall back to the running query's tracker and track the peak.
     Int64 cur_mem = value.memory_usage.load(std::memory_order_relaxed);
     if (cur_mem <= 0)
     {
@@ -173,13 +176,14 @@ void LocalConnection::updateCHDBProgress(const Progress & value)
             chdb_progress.memory_usage.load(std::memory_order_relaxed),
             chdb_progress.elapsed_ns.load(std::memory_order_relaxed));
 
-    /// chdb-wasm: a second cancel point on each progress tick (in addition to the
-    /// interactive-cancel callback) — stop the running query if the page set the flag.
+    /// A second cancel point on each progress tick (in addition to the interactive-cancel
+    /// callback) — stop the running query if the page set the flag.
     if (g_chdb_cancel_check && g_chdb_cancel_check())
     {
         if (auto elem = query_context->getProcessListElement())
             elem->cancelQuery(CancelReason::CANCELLED_BY_USER);
     }
+#endif
 }
 
 void LocalConnection::sendProfileEvents()
@@ -280,7 +284,9 @@ void LocalConnection::sendQuery(
     state.reset();
     state.emplace();
     chdb_progress.reset();
+#if defined(OS_WASM)
     chdb_peak_memory = 0;
+#endif
 
     state->query_id = query_id;
     state->query = query;
