@@ -123,12 +123,23 @@ void LocalConnection::updateProgress(const Progress & value)
 namespace
 {
     std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, int64_t, uint64_t)> g_chdb_progress_hook;
+    std::function<bool()> g_chdb_cancel_check;
 }
 
 void setCHDBProgressHook(
     std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, int64_t, uint64_t)> hook)
 {
     g_chdb_progress_hook = std::move(hook);
+}
+
+void setCHDBCancelCheck(std::function<bool()> check)
+{
+    g_chdb_cancel_check = std::move(check);
+}
+
+bool chdbWasmCancelRequested()
+{
+    return g_chdb_cancel_check ? g_chdb_cancel_check() : false;
 }
 
 void LocalConnection::updateCHDBProgress(const Progress & value)
@@ -153,6 +164,14 @@ void LocalConnection::updateCHDBProgress(const Progress & value)
             chdb_progress.total_bytes_to_read.load(std::memory_order_relaxed),
             chdb_progress.memory_usage.load(std::memory_order_relaxed),
             chdb_progress.elapsed_ns.load(std::memory_order_relaxed));
+
+    /// chdb-wasm: a second cancel point on each progress tick (in addition to the
+    /// interactive-cancel callback) — stop the running query if the page set the flag.
+    if (g_chdb_cancel_check && g_chdb_cancel_check())
+    {
+        if (auto elem = query_context->getProcessListElement())
+            elem->cancelQuery(CancelReason::CANCELLED_BY_USER);
+    }
 }
 
 void LocalConnection::sendProfileEvents()

@@ -18,6 +18,7 @@
 #    include <emscripten/threading.h>
 #endif
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -32,9 +33,19 @@ namespace DB
 void setCHDBProgressHook(
     std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
                        uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)> hook);
+void setCHDBCancelCheck(std::function<bool()> check);
 }
 
+// chdb-wasm cancel flag: lives in shared wasm linear memory, so ANY query thread reads it
+// with a plain atomic load (no per-thread JS globals — the EM_ASM/globalThis approach
+// failed because the check sometimes runs on a pool pthread). The page writes it via the
+// wasm Memory SharedArrayBuffer at the offset chdb_wasm_cancel_flag_addr() returns.
+static std::atomic<int32_t> g_chdb_cancel_flag{0};
+
 extern "C" {
+
+// Offset of the cancel flag in wasm memory, for the page to write via the Memory SAB.
+uintptr_t chdb_wasm_cancel_flag_addr() { return reinterpret_cast<uintptr_t>(&g_chdb_cancel_flag); }
 
 // On wasm the pthread pool is fixed-size (PTHREAD_POOL_SIZE) and cannot grow on
 // demand: the chdb query runs synchronously in a worker, so the calling thread is
@@ -90,6 +101,16 @@ static void chdb_wasm_register_progress_hook()
         },
             (double) read_rows, (double) total_rows_to_read, (double) read_bytes,
             (double) total_bytes_to_read, (double) memory_usage, (double) elapsed_ns);
+    });
+
+    // Cancellation (mt only): the engine polls this on the query thread; we read a
+    // SharedArrayBuffer flag the page sets (globalThis.__chdbCancel). The single-threaded
+    // build has no SAB and never yields mid-query, so it can't be cancelled.
+    DB::setCHDBCancelCheck([]() -> bool
+    {
+        // seq_cst (not relaxed): the query thread must reliably observe the page's
+        // cross-thread Atomics.store of the flag.
+        return g_chdb_cancel_flag.load(std::memory_order_seq_cst) != 0;
     });
 }
 

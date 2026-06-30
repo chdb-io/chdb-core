@@ -64,6 +64,8 @@ export class AsyncChdb {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private onProgress?: (loaded: number, total: number) => void;
+  /** mt-only cancel-flag view into the shared wasm memory (set by create() from init). */
+  private cancelFlag?: Int32Array;
 
   private constructor(worker: any, onProgress?: (loaded: number, total: number) => void) {
     this.worker = worker;
@@ -85,7 +87,9 @@ export class AsyncChdb {
 
     const self = new AsyncChdb(worker, opts.onProgress);
     self.attach();
-    await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
+    const initResult = await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
+    if (initResult?.cancelMem)
+      self.cancelFlag = new Int32Array(initResult.cancelMem, initResult.cancelAddr, 1);
     return self;
   }
 
@@ -113,6 +117,9 @@ export class AsyncChdb {
   }
 
   private request(type: RequestType, payload?: any, transfer?: Transferable[], onProgress?: (p: QueryProgress) => void): Promise<any> {
+    // Clear a stale cancel flag when a new query starts.
+    if (this.cancelFlag && (type === 'query' || type === 'queryConn' || type === 'streamStart'))
+      Atomics.store(this.cancelFlag, 0, 0);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, onProgress });
@@ -130,6 +137,17 @@ export class AsyncChdb {
     const r = wrap(await this.request('query', { sql, format }, undefined, onProgress));
     r.peakMemoryUsage = peak;
     return r;
+  }
+
+  /**
+   * Request cancellation of the currently-running query (mt bundle only): the in-flight
+   * query()/queryStream() rejects with a cancellation error. Throws on the single-threaded
+   * build, which runs queries synchronously and cannot be interrupted mid-query.
+   */
+  cancel(): void {
+    if (!this.cancelFlag)
+      throw new ChdbError('query cancellation is only supported on the multi-threaded (mt) build');
+    Atomics.store(this.cancelFlag, 0, 1);
   }
 
   /**
@@ -233,6 +251,11 @@ export class AsyncChdbConnection {
     const r = wrap(await this.db._queryConn(this.conn, sql, format, onProgress));
     r.peakMemoryUsage = peak;
     return r;
+  }
+
+  /** Cancel the running query (mt only). See AsyncChdb.cancel(). */
+  cancel(): void {
+    this.db.cancel();
   }
 
   /** Stream a query's results chunk-by-chunk (yields the worker between chunks). */

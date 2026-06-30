@@ -90,6 +90,16 @@ listen((req: WorkerRequest) => {
       switch (req.type) {
         case 'init':
           await init(req.payload, req.id);
+          // mt only: share the wasm Memory SAB + the cancel-flag offset so the page can set
+          // the flag, which the C++ cancel check reads with a plain atomic on any thread.
+          // A non-shared heap (st build) => no cancel support.
+          {
+            const b = requireBindings();
+            const cancelMem = b.heapBuffer;
+            if (typeof SharedArrayBuffer !== 'undefined' && cancelMem instanceof SharedArrayBuffer) {
+              result = { cancelMem, cancelAddr: b.cancelFlagAddr() };
+            }
+          }
           break;
         case 'query':
           result = requireBindings().query(req.payload.sql, req.payload.format);

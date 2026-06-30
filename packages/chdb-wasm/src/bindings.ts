@@ -18,6 +18,16 @@ export class ChdbBindings {
     this.mod = mod;
   }
 
+  /** Offset of the engine's cancel flag in wasm memory (page writes it via the heap SAB). */
+  cancelFlagAddr(): number {
+    return num(this.mod.ccall('chdb_wasm_cancel_flag_addr', 'number', [], []));
+  }
+
+  /** The wasm linear memory buffer (a SharedArrayBuffer on the mt build). */
+  get heapBuffer(): ArrayBufferLike {
+    return this.mod.HEAPU8.buffer;
+  }
+
   /** Query the implicit process-wide :memory: connection. */
   query(sql: string, format = 'CSV'): WireResult {
     const r = this.mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, format]);

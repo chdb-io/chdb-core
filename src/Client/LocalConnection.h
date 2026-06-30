@@ -235,4 +235,10 @@ void setCHDBProgressHook(
     std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
                        uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)> hook);
 
+/// chdb-wasm: register a predicate the engine polls during a query (via setCancelCallback
+/// on each connection) to decide whether to cancel it — the wasm glue reads a
+/// SharedArrayBuffer flag the page sets. Returns false when unset (native: never cancels).
+void setCHDBCancelCheck(std::function<bool()> check);
+bool chdbWasmCancelRequested();
+
 }
