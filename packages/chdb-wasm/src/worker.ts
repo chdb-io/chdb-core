@@ -83,21 +83,19 @@ function requireBindings(): ChdbBindings {
 listen((req: WorkerRequest) => {
   void (async () => {
     try {
-      // Tag any in-flight query-progress events with this request's id (read by the C++
-      // progress hook via EM_ASM globalThis.__chdbQueryId); cleared in finally.
-      (globalThis as any).__chdbQueryId = req.id;
       let result: any;
       switch (req.type) {
         case 'init':
           await init(req.payload, req.id);
-          // mt only: share the wasm Memory SAB + the cancel-flag offset so the page can set
-          // the flag, which the C++ cancel check reads with a plain atomic on any thread.
-          // A non-shared heap (st build) => no cancel support.
+          // mt only: share the wasm Memory SAB + the cancel-flag and live-progress offsets.
+          // The page sets the cancel flag (read by the C++ cancel check on any thread) and
+          // polls the progress struct (written by the engine on any thread). A non-shared
+          // heap (st build) => no cancel / no live progress.
           {
             const b = requireBindings();
-            const cancelMem = b.heapBuffer;
-            if (typeof SharedArrayBuffer !== 'undefined' && cancelMem instanceof SharedArrayBuffer) {
-              result = { cancelMem, cancelAddr: b.cancelFlagAddr() };
+            const sharedMem = b.heapBuffer;
+            if (typeof SharedArrayBuffer !== 'undefined' && sharedMem instanceof SharedArrayBuffer) {
+              result = { sharedMem, cancelAddr: b.cancelFlagAddr(), progressAddr: b.progressAddr() };
             }
           }
           break;
@@ -150,8 +148,6 @@ listen((req: WorkerRequest) => {
       post({ id: req.id, ok: true, result }, buf ? [buf] : undefined);
     } catch (e: any) {
       post({ id: req.id, ok: false, error: e && e.message ? e.message : String(e) });
-    } finally {
-      (globalThis as any).__chdbQueryId = 0;
     }
   })();
 });

@@ -23,6 +23,11 @@ export class ChdbBindings {
     return num(this.mod.ccall('chdb_wasm_cancel_flag_addr', 'number', [], []));
   }
 
+  /** Offset of the live-progress struct in wasm memory (page polls it via the heap SAB). */
+  progressAddr(): number {
+    return num(this.mod.ccall('chdb_wasm_progress_addr', 'number', [], []));
+  }
+
   /** The wasm linear memory buffer (a SharedArrayBuffer on the mt build). */
   get heapBuffer(): ArrayBufferLike {
     return this.mod.HEAPU8.buffer;

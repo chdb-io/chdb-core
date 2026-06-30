@@ -43,7 +43,6 @@ export interface QueryOptions {
 interface Pending {
   resolve: (v: any) => void;
   reject: (e: any) => void;
-  onProgress?: (p: QueryProgress) => void;
 }
 
 function wrap(r: WireResult): ChdbResult {
@@ -64,8 +63,9 @@ export class AsyncChdb {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private onProgress?: (loaded: number, total: number) => void;
-  /** mt-only cancel-flag view into the shared wasm memory (set by create() from init). */
+  /** mt-only views into the shared wasm memory (set by create() from init). */
   private cancelFlag?: Int32Array;
+  private progressView?: BigInt64Array;
 
   private constructor(worker: any, onProgress?: (loaded: number, total: number) => void) {
     this.worker = worker;
@@ -88,8 +88,11 @@ export class AsyncChdb {
     const self = new AsyncChdb(worker, opts.onProgress);
     self.attach();
     const initResult = await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
-    if (initResult?.cancelMem)
-      self.cancelFlag = new Int32Array(initResult.cancelMem, initResult.cancelAddr, 1);
+    if (initResult?.sharedMem) {
+      self.cancelFlag = new Int32Array(initResult.sharedMem, initResult.cancelAddr, 1);
+      // 7 × int64: [seq, readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs].
+      self.progressView = new BigInt64Array(initResult.sharedMem, initResult.progressAddr, 7);
+    }
     return self;
   }
 
@@ -104,11 +107,6 @@ export class AsyncChdb {
       this.onProgress?.(msg.loaded, msg.total);
       return;
     }
-    if ('event' in msg && msg.event === 'queryProgress') {
-      const { readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs } = msg;
-      this.pending.get(msg.id)?.onProgress?.({ readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs });
-      return;
-    }
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
@@ -116,25 +114,73 @@ export class AsyncChdb {
     else p.reject(new ChdbError('error' in msg ? msg.error : 'unknown worker error'));
   }
 
-  private request(type: RequestType, payload?: any, transfer?: Transferable[], onProgress?: (p: QueryProgress) => void): Promise<any> {
+  private request(type: RequestType, payload?: any, transfer?: Transferable[]): Promise<any> {
     // Clear a stale cancel flag when a new query starts.
     if (this.cancelFlag && (type === 'query' || type === 'queryConn' || type === 'streamStart'))
       Atomics.store(this.cancelFlag, 0, 0);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onProgress });
+      this.pending.set(id, { resolve, reject });
       (this.worker as any).postMessage({ id, type, payload }, transfer ?? []);
     });
+  }
+
+  /** Snapshot the shared progress struct, rejecting a torn read via the seq guard. */
+  private readProgress(v: BigInt64Array): QueryProgress {
+    for (let i = 0; i < 4; i++) {
+      const s1 = Atomics.load(v, 0);
+      const p: QueryProgress = {
+        readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
+        readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
+        memoryUsage: Number(v[5]), elapsedNs: Number(v[6]),
+      };
+      if (Atomics.load(v, 0) === s1) return p;   // seq unchanged -> consistent snapshot
+    }
+    // Writes are ~ms apart; after a few retries take the (cosmetically-fine) latest read.
+    return {
+      readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
+      readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
+      memoryUsage: Number(v[5]), elapsedNs: Number(v[6]),
+    };
+  }
+
+  /**
+   * Poll the shared progress struct (mt build) while a query runs, invoking cb whenever the
+   * engine advances it. The worker thread blocks in the synchronous query ccall, but THIS
+   * (main) thread's event loop is free, and the engine writes progress from whatever thread
+   * runs the pipeline — so polling shared memory here is the only path that sees intermediate
+   * progress. No-op on the st build (no shared memory). Returns a stop() that clears the
+   * timer and does one final catch-up read (so the last tick, incl. peak memory, is seen).
+   * @internal
+   */
+  _startProgressPoll(cb: (p: QueryProgress) => void): () => void {
+    const view = this.progressView;
+    if (!view) return () => {};
+    let lastSeq = Number(Atomics.load(view, 0));
+    const tick = () => {
+      const seq = Number(Atomics.load(view, 0));
+      if (seq === lastSeq) return;
+      lastSeq = seq;
+      cb(this.readProgress(view));
+    };
+    const timer = setInterval(tick, 80);
+    return () => { clearInterval(timer); tick(); };
   }
 
   /** Run a query on the implicit :memory: connection. opts.onProgress gets live execution progress. */
   async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
     let peak = 0;
-    const onProgress = (p: QueryProgress) => {
+    const stop = this._startProgressPoll((p) => {
       if (p.memoryUsage > peak) peak = p.memoryUsage;
       opts?.onProgress?.(p);
-    };
-    const r = wrap(await this.request('query', { sql, format }, undefined, onProgress));
+    });
+    let result: WireResult;
+    try {
+      result = await this.request('query', { sql, format });
+    } finally {
+      stop();   // final catch-up read updates peak before we wrap
+    }
+    const r = wrap(result);
     r.peakMemoryUsage = peak;
     return r;
   }
@@ -203,8 +249,8 @@ export class AsyncChdb {
   }
 
   /** @internal */
-  _queryConn(conn: ConnHandle, sql: string, format: string, onProgress?: (p: QueryProgress) => void): Promise<WireResult> {
-    return this.request('queryConn', { conn, sql, format }, undefined, onProgress);
+  _queryConn(conn: ConnHandle, sql: string, format: string): Promise<WireResult> {
+    return this.request('queryConn', { conn, sql, format });
   }
   /** @internal */
   _closeConn(conn: ConnHandle): Promise<void> {
@@ -215,8 +261,8 @@ export class AsyncChdb {
     return this.request('streamStart', { conn, sql, format });
   }
   /** @internal */
-  _streamFetch(conn: ConnHandle, stream: ConnHandle, onProgress?: (p: QueryProgress) => void): Promise<{ done: boolean; result?: WireResult }> {
-    return this.request('streamFetch', { conn, stream }, undefined, onProgress);
+  _streamFetch(conn: ConnHandle, stream: ConnHandle): Promise<{ done: boolean; result?: WireResult }> {
+    return this.request('streamFetch', { conn, stream });
   }
   /** @internal */
   _streamCancel(conn: ConnHandle, stream: ConnHandle): Promise<void> {
@@ -244,11 +290,17 @@ export class AsyncChdbConnection {
   }
   async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
     let peak = 0;
-    const onProgress = (p: QueryProgress) => {
+    const stop = this.db._startProgressPoll((p) => {
       if (p.memoryUsage > peak) peak = p.memoryUsage;
       opts?.onProgress?.(p);
-    };
-    const r = wrap(await this.db._queryConn(this.conn, sql, format, onProgress));
+    });
+    let result: WireResult;
+    try {
+      result = await this.db._queryConn(this.conn, sql, format);
+    } finally {
+      stop();
+    }
+    const r = wrap(result);
     r.peakMemoryUsage = peak;
     return r;
   }
@@ -262,19 +314,20 @@ export class AsyncChdbConnection {
   async *queryStream(sql: string, format = 'CSV', opts?: QueryOptions): AsyncGenerator<ChdbResult> {
     const { stream } = await this.db._streamStart(this.conn, sql, format);
     let peak = 0;
-    const onProgress = (p: QueryProgress) => {
+    const stop = this.db._startProgressPoll((p) => {
       if (p.memoryUsage > peak) peak = p.memoryUsage;
       opts?.onProgress?.(p);
-    };
+    });
     try {
       for (;;) {
-        const { done, result } = await this.db._streamFetch(this.conn, stream, onProgress);
+        const { done, result } = await this.db._streamFetch(this.conn, stream);
         if (done || !result) break;
         const r = wrap(result);
         r.peakMemoryUsage = peak;
         yield r;
       }
     } finally {
+      stop();
       await this.db._streamCancel(this.conn, stream);
     }
   }

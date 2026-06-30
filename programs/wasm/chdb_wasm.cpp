@@ -42,10 +42,33 @@ void setCHDBCancelCheck(std::function<bool()> check);
 // wasm Memory SharedArrayBuffer at the offset chdb_wasm_cancel_flag_addr() returns.
 static std::atomic<int32_t> g_chdb_cancel_flag{0};
 
+// chdb-wasm live progress: the engine writes the latest progress here on every tick — on
+// WHATEVER thread runs the pipeline (usually a pool pthread). The page can't be reached
+// from a pool pthread, and the worker thread is blocked in the synchronous query ccall, so
+// neither can relay it. Instead the PAGE polls this struct directly: on the mt build the
+// wasm Memory is a SharedArrayBuffer the page can view (at chdb_wasm_progress_addr()), and
+// the page's own event loop stays free during the query. `seq` is bumped last on write
+// (release) so a reader that observes a new seq also observes the matching fields; the
+// reader re-checks seq to reject a torn read. 7 × int64 (page maps a BigInt64Array).
+struct ChdbProgressShared
+{
+    std::atomic<int64_t> seq{0};
+    std::atomic<int64_t> read_rows{0};
+    std::atomic<int64_t> total_rows_to_read{0};
+    std::atomic<int64_t> read_bytes{0};
+    std::atomic<int64_t> total_bytes_to_read{0};
+    std::atomic<int64_t> memory_usage{0};
+    std::atomic<int64_t> elapsed_ns{0};
+};
+static ChdbProgressShared g_chdb_progress;
+
 extern "C" {
 
 // Offset of the cancel flag in wasm memory, for the page to write via the Memory SAB.
 uintptr_t chdb_wasm_cancel_flag_addr() { return reinterpret_cast<uintptr_t>(&g_chdb_cancel_flag); }
+
+// Offset of the live-progress struct in wasm memory, for the page to poll via the Memory SAB.
+uintptr_t chdb_wasm_progress_addr() { return reinterpret_cast<uintptr_t>(&g_chdb_progress); }
 
 // On wasm the pthread pool is fixed-size (PTHREAD_POOL_SIZE) and cannot grow on
 // demand: the chdb query runs synchronously in a worker, so the calling thread is
@@ -68,10 +91,9 @@ static char arg0[] = "chdb";
 static chdb_connection * g_conn = nullptr;
 
 // Register (once) a query-progress hook on the chdb engine. ClickHouse calls it on every
-// progress tick, on the query thread (the worker running the ccall). We throttle (~100ms)
-// and postMessage a 'queryProgress' event to the page; async.ts routes it by the id
-// worker.ts stashes in self.__chdbQueryId. No-op off the main runtime thread (whose
-// postMessage wouldn't reach the page).
+// progress tick, on whatever thread runs the pipeline (usually a pool pthread). We just
+// publish the latest values into the shared-memory struct the page polls — no postMessage
+// (a pool pthread can't reach the page) and no throttle (the page's poll interval throttles).
 static void chdb_wasm_register_progress_hook()
 {
     static bool registered = false;
@@ -81,31 +103,20 @@ static void chdb_wasm_register_progress_hook()
     DB::setCHDBProgressHook([](uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
                                uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)
     {
-#if defined(__EMSCRIPTEN_PTHREADS__)
-        if (!emscripten_is_main_runtime_thread())
-            return;
-#endif
-        static double last_ms = 0;
-        const double now_ms = emscripten_get_now();
-        if (now_ms - last_ms < 100.0)
-            return;
-        last_ms = now_ms;
-        EM_ASM({
-            if (typeof postMessage === 'function')
-                postMessage({
-                    event: 'queryProgress',
-                    id: (typeof globalThis !== 'undefined' && globalThis.__chdbQueryId) ? globalThis.__chdbQueryId : 0,
-                    readRows: $0, totalRowsToRead: $1, readBytes: $2,
-                    totalBytesToRead: $3, memoryUsage: $4, elapsedNs: $5,
-                });
-        },
-            (double) read_rows, (double) total_rows_to_read, (double) read_bytes,
-            (double) total_bytes_to_read, (double) memory_usage, (double) elapsed_ns);
+        // Write fields first (relaxed), then bump seq last (release) so a reader observing
+        // the new seq is guaranteed to see these fields.
+        g_chdb_progress.read_rows.store(static_cast<int64_t>(read_rows), std::memory_order_relaxed);
+        g_chdb_progress.total_rows_to_read.store(static_cast<int64_t>(total_rows_to_read), std::memory_order_relaxed);
+        g_chdb_progress.read_bytes.store(static_cast<int64_t>(read_bytes), std::memory_order_relaxed);
+        g_chdb_progress.total_bytes_to_read.store(static_cast<int64_t>(total_bytes_to_read), std::memory_order_relaxed);
+        g_chdb_progress.memory_usage.store(memory_usage, std::memory_order_relaxed);
+        g_chdb_progress.elapsed_ns.store(static_cast<int64_t>(elapsed_ns), std::memory_order_relaxed);
+        g_chdb_progress.seq.fetch_add(1, std::memory_order_release);
     });
 
     // Cancellation (mt only): the engine polls this on the query thread; we read a
-    // SharedArrayBuffer flag the page sets (globalThis.__chdbCancel). The single-threaded
-    // build has no SAB and never yields mid-query, so it can't be cancelled.
+    // SharedArrayBuffer flag the page sets via Atomics.store. The single-threaded build has
+    // no SAB and never yields mid-query, so it can't be cancelled.
     DB::setCHDBCancelCheck([]() -> bool
     {
         // seq_cst (not relaxed): the query thread must reliably observe the page's

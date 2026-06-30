@@ -16,7 +16,11 @@ export interface WireResult {
   elapsedSeconds: number;
 }
 
-/** Live query-EXECUTION progress (distinct from the wasm-DOWNLOAD 'progress' event). */
+/**
+ * Live query-EXECUTION progress (distinct from the wasm-DOWNLOAD 'progress' event).
+ * Delivered by the main thread polling a shared-memory struct the engine writes — see
+ * AsyncChdb's progress poll — not by a worker message.
+ */
 export interface QueryProgress {
   readRows: number;
   totalRowsToRead: number;
@@ -56,5 +60,4 @@ export interface WorkerRequest {
 export type WorkerResponse =
   | { id: number; ok: true; result?: any }
   | { id: number; ok: false; error: string }
-  | { id: number; event: 'progress'; loaded: number; total: number }
-  | ({ id: number; event: 'queryProgress' } & QueryProgress);
+  | { id: number; event: 'progress'; loaded: number; total: number };

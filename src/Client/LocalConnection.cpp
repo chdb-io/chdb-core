@@ -146,9 +146,17 @@ void LocalConnection::updateCHDBProgress(const Progress & value)
 {
     chdb_progress.incrementPiecewiseAtomically(value);
 
-    /// memory_usage is a gauge (current), not a summable delta: overwrite it with the
-    /// latest non-zero sample and track the peak (for ChdbResult.peakMemoryUsage).
-    const Int64 cur_mem = value.memory_usage.load(std::memory_order_relaxed);
+    /// memory_usage is a gauge (current), not a summable delta. The executor's Progress
+    /// doesn't carry it (the protocol layer normally injects it from the memory tracker),
+    /// so fall back to the running query's tracker. Report the latest non-zero sample and
+    /// track the peak (for ChdbResult.peakMemoryUsage).
+    Int64 cur_mem = value.memory_usage.load(std::memory_order_relaxed);
+    if (cur_mem <= 0)
+    {
+        if (auto elem = query_context->getProcessListElement())
+            if (auto * mt = elem->getMemoryTracker())
+                cur_mem = mt->get();
+    }
     if (cur_mem > 0)
     {
         chdb_progress.memory_usage.store(cur_mem, std::memory_order_relaxed);
