@@ -16,4 +16,6 @@ _chdb_wasm_result_error
 _chdb_wasm_result_elapsed
 _chdb_wasm_result_rows_read
 _chdb_wasm_result_bytes_read
+_chdb_wasm_result_scanned_rows
+_chdb_wasm_result_scanned_bytes
 _chdb_wasm_free_result

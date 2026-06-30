@@ -9,8 +9,12 @@ const isNode = typeof process !== 'undefined' && !!(process as any).versions?.no
 export interface ChdbResult {
   /** Raw result bytes (CSV/JSON/… per the requested format). */
   data: Uint8Array;
+  /** Result size: rows/bytes RETURNED (e.g. 1 for `SELECT count()`), not source rows scanned. */
   rowsRead: number;
   bytesRead: number;
+  /** Source rows/bytes SCANNED from storage (ClickHouse read_rows) — for "Processed N rows, …". */
+  scannedRows: number;
+  scannedBytes: number;
   elapsedSeconds: number;
   /** Decode the bytes as UTF-8 text. */
   text(): string;
@@ -37,6 +41,8 @@ function wrap(r: WireResult): ChdbResult {
     data: r.data,
     rowsRead: r.rowsRead,
     bytesRead: r.bytesRead,
+    scannedRows: r.scannedRows,
+    scannedBytes: r.scannedBytes,
     elapsedSeconds: r.elapsedSeconds,
     text: () => new TextDecoder().decode(r.data),
   };

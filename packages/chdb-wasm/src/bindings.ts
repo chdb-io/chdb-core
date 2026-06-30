@@ -110,8 +110,10 @@ export class ChdbBindings {
       const data: Uint8Array = this.mod.HEAPU8.slice(bufPtr, bufPtr + len);
       const rowsRead = num(this.mod.ccall('chdb_wasm_result_rows_read', 'number', ['number'], [chunk]));
       const bytesRead = num(this.mod.ccall('chdb_wasm_result_bytes_read', 'number', ['number'], [chunk]));
+      const scannedRows = num(this.mod.ccall('chdb_wasm_result_scanned_rows', 'number', ['number'], [chunk]));
+      const scannedBytes = num(this.mod.ccall('chdb_wasm_result_scanned_bytes', 'number', ['number'], [chunk]));
       const elapsedSeconds = this.mod.ccall('chdb_wasm_result_elapsed', 'number', ['number'], [chunk]);
-      return { done: false, result: { data, rowsRead, bytesRead, elapsedSeconds } };
+      return { done: false, result: { data, rowsRead, bytesRead, scannedRows, scannedBytes, elapsedSeconds } };
     } finally {
       this.mod.ccall('chdb_wasm_free_result', null, ['number'], [chunk]);
     }
@@ -138,8 +140,10 @@ export class ChdbBindings {
 
       const rowsRead = num(this.mod.ccall('chdb_wasm_result_rows_read', 'number', ['number'], [r]));
       const bytesRead = num(this.mod.ccall('chdb_wasm_result_bytes_read', 'number', ['number'], [r]));
+      const scannedRows = num(this.mod.ccall('chdb_wasm_result_scanned_rows', 'number', ['number'], [r]));
+      const scannedBytes = num(this.mod.ccall('chdb_wasm_result_scanned_bytes', 'number', ['number'], [r]));
       const elapsedSeconds = this.mod.ccall('chdb_wasm_result_elapsed', 'number', ['number'], [r]);
-      return { data, rowsRead, bytesRead, elapsedSeconds };
+      return { data, rowsRead, bytesRead, scannedRows, scannedBytes, elapsedSeconds };
     } finally {
       this.mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
     }

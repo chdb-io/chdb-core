@@ -168,6 +168,10 @@ const char * chdb_wasm_result_error(chdb_result * r)  { return r ? chdb_result_e
 double       chdb_wasm_result_elapsed(chdb_result * r){ return r ? chdb_result_elapsed(r) : 0.0; }
 uint64_t     chdb_wasm_result_rows_read(chdb_result * r)  { return r ? chdb_result_rows_read(r) : 0; }
 uint64_t     chdb_wasm_result_bytes_read(chdb_result * r) { return r ? chdb_result_bytes_read(r) : 0; }
+// Source rows/bytes SCANNED from storage (distinct from rows_read/bytes_read, which
+// are the RESULT size) — for the "Processed N rows, … bytes" footer line.
+uint64_t     chdb_wasm_result_scanned_rows(chdb_result * r)  { return r ? chdb_result_storage_rows_read(r) : 0; }
+uint64_t     chdb_wasm_result_scanned_bytes(chdb_result * r) { return r ? chdb_result_storage_bytes_read(r) : 0; }
 void         chdb_wasm_free_result(chdb_result * r)   { if (r) chdb_destroy_query_result(r); }
 
 } // extern "C"

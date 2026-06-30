@@ -10,6 +10,9 @@ export interface WireResult {
   data: Uint8Array;
   rowsRead: number;
   bytesRead: number;
+  /** Source rows/bytes SCANNED from storage (≠ result size); for the "Processed N rows" footer. */
+  scannedRows: number;
+  scannedBytes: number;
   elapsedSeconds: number;
 }
 
