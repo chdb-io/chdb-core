@@ -336,6 +336,7 @@ class StreamingInserter:
                 (convenient for text formats like CSV/TSV/JSONEachRow).
 
         Raises:
+            TypeError: If ``data`` is not bytes/bytearray/memoryview/str.
             RuntimeError: If the stream is already finished/cancelled, or the
                 engine rejected the data (e.g. a malformed row).
         """
@@ -343,8 +344,13 @@ class StreamingInserter:
             raise RuntimeError("Cannot append to a finished or cancelled insert stream")
         if isinstance(data, str):
             data = data.encode("utf-8")
-        elif not isinstance(data, bytes):
+        elif isinstance(data, (bytearray, memoryview)):
             data = bytes(data)
+        elif not isinstance(data, bytes):
+            # Fail fast: e.g. bytes(5) would silently produce 5 NUL bytes.
+            raise TypeError(
+                f"append() expects bytes, bytearray, memoryview, or str, got {type(data).__name__}"
+            )
         try:
             self._conn.insert_append(self._c_inserter, data)
         except Exception as e:

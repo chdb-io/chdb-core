@@ -155,14 +155,18 @@ class TestCApiStreamInsert(unittest.TestCase):
         self.assertIsNotNone(err)
         self.lib.chdb_destroy_insert_stream(stream)
 
-    def test_cancel_and_double_destroy_safe(self):
+    def test_cancel_then_destroy_safe(self):
+        # cancel() then destroy() is the supported teardown. (Destroying a handle
+        # twice is NOT supported — like the read-side chdb_destroy_query_result,
+        # destroy frees the handle with no double-free guard; that's a caller
+        # contract, not exercised here.)
         self._query(b"CREATE TABLE c3 (a UInt64) ENGINE = Memory")
         q = b"INSERT INTO c3 (a)"
         fmt = b"CSV"
         stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
         self.assertEqual(self._append(stream, b"1\n"), CHDBSuccess)
         self.lib.chdb_stream_cancel_insert(stream)
-        # destroy after cancel must be safe (destroy internally re-cancels, guarded).
+        # destroy after cancel must be safe (destroy is a no-op cancel when already finalized).
         self.lib.chdb_destroy_insert_stream(stream)
         # Connection still usable.
         self.assertEqual(self._query(b"SELECT 1"), b"1\n")

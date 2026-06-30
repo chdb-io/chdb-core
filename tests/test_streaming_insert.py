@@ -84,6 +84,15 @@ class TestStreamingInsertConnection(unittest.TestCase):
         self.assertEqual(res.rows_written, 1)
         self.assertEqual(self._rows("SELECT b FROM t", "CSV"), "\"a,b\"\n")
 
+    def test_append_rejects_invalid_type(self):
+        self.conn.query("CREATE TABLE t (a UInt64) ENGINE = Memory")
+        ins = self.conn.send_insert("INSERT INTO t (a)", "CSV")
+        # An int must fail fast, not get silently turned into NUL bytes (bytes(5)).
+        with self.assertRaises(TypeError):
+            ins.append(5)
+        ins.cancel()
+        self.assertEqual(self._rows("SELECT count() FROM t", "CSV"), "0\n")
+
     def test_many_chunks_constant_stream(self):
         self.conn.query("CREATE TABLE t (a UInt64) ENGINE = MergeTree ORDER BY a")
         n = 10000
@@ -115,10 +124,19 @@ class TestStreamingInsertConnection(unittest.TestCase):
     def test_malformed_row_surfaces_error(self):
         self.conn.query("CREATE TABLE t (a UInt64) ENGINE = Memory")
         ins = self.conn.send_insert("INSERT INTO t (a)", "CSV")
-        # "abc" is not a UInt64; the engine should reject it on append or finish.
-        with self.assertRaises(RuntimeError):
+        # "abc" is not a UInt64. Parsing happens asynchronously on the worker, so
+        # the error may surface at append() (if already processed) or at finish();
+        # the contract is that it surfaces no later than finish() and nothing is
+        # committed. Assert on the outcome deterministically rather than on which
+        # stage raises.
+        raised = None
+        try:
             ins.append("abc\n")
             ins.finish()
+        except RuntimeError as e:
+            raised = e
+        self.assertIsNotNone(raised, "a malformed row must raise by finish()")
+        self.assertEqual(self._rows("SELECT count() FROM t", "CSV"), "0\n")
 
     def test_with_block_without_finish_does_not_commit(self):
         # Leaving the context without finish() must cancel (no implicit commit).

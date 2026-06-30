@@ -107,6 +107,11 @@ struct InsertStreamContext
     std::atomic<bool> finalized{false};
 
     /// Set by the worker thread on failure; surfaced via chdb_stream_insert_error.
+    /// `error`/`error_message` are non-atomic and written only by the worker; a
+    /// reader (append on the caller thread) must observe `error_set` (acquire)
+    /// before touching them, establishing a happens-before edge with the worker's
+    /// release store. done()/cancel() read them only after joining the worker.
+    std::atomic<bool> error_set{false};
     std::exception_ptr error;
     std::string error_message;
 

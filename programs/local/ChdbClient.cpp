@@ -107,6 +107,27 @@ void ChdbClient::cleanup()
         if (streaming_query_context && streaming_query_context->streaming_result)
             cancelStreamingQueryWithoutLock(streaming_query_context->streaming_result);
         streaming_query_context.reset();
+
+        /// Tear down any in-flight streaming insert BEFORE freeing connection/
+        /// client_context: the worker thread captured `this` and holds references
+        /// to them, so it must be cancelled and joined first to avoid a
+        /// use-after-free. The worker does not take client_mutex, so joining while
+        /// holding it (we are called under the lock) cannot deadlock.
+        if (streaming_insert_context)
+        {
+            auto ctx = streaming_insert_context;
+            ctx->cancelled = true;
+            if (connection)
+            {
+                try { connection->sendCancel(); } catch (...) { tryLogCurrentException(__PRETTY_FUNCTION__); }
+            }
+            if (ctx->queue_buf)
+                ctx->queue_buf->finish();
+            if (ctx->worker.joinable())
+                ctx->worker.join();
+            streaming_insert_context.reset();
+        }
+
         connection.reset();
         client_context.reset();
         global_context.reset();
@@ -731,6 +752,9 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         catch (...)
         {
         }
+        /// Release-store after writing error/error_message so a reader that
+        /// observes error_set (acquire) sees them fully written.
+        ctx->error_set.store(true, std::memory_order_release);
         signal_init(ctx->error_message.empty() ? String("Streaming insert failed") : ctx->error_message);
     }
     ctx->worker_done = true;
@@ -745,14 +769,16 @@ bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char *
         if (!res || !res->context)
             return false;
         ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
-        if (ctx->error || ctx->worker_done)
+        /// Only the atomic flag is safe to read concurrently with the worker;
+        /// ctx->error/error_message are non-atomic and must not be touched here.
+        if (ctx->error_set.load(std::memory_order_acquire) || ctx->worker_done.load())
             return false;
     }
     /// Push outside the lock: append() may block on backpressure while the
     /// worker concurrently drains the queue.
     if (!ctx->queue_buf->append(data, len))
         return false;
-    return !ctx->error;
+    return !ctx->error_set.load(std::memory_order_acquire);
 }
 
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream)
@@ -780,7 +806,13 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
     uint64_t bytes_written = local_connection->getCHDBProgress().written_bytes - ctx->bytes_written;
     double elapsed = getElapsedTime();
 
+    /// The worker has been joined (happens-before), so reading error/error_message
+    /// is safe here. Treat a set exception_ptr (or error_set) as failure even when
+    /// error_message ended up empty (e.g. getCurrentExceptionMessage threw).
+    const bool failed = ctx->error_set.load(std::memory_order_acquire) || static_cast<bool>(ctx->error);
     String err = ctx->error_message;
+    if (failed && err.empty())
+        err = "Streaming insert failed";
 
     client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
     streaming_insert_context.reset();
@@ -792,7 +824,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
     }
 #endif
 
-    if (!err.empty())
+    if (failed)
     {
         res->setError(err);
         return std::make_unique<CHDB::MaterializedQueryResult>(err);
