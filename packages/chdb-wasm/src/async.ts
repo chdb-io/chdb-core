@@ -2,7 +2,8 @@
 // a worker and queries return Promises, so the calling thread never blocks.
 
 import { ChdbError } from './status.ts';
-import type { ConnHandle, RequestType, WireResult, WorkerResponse } from './protocol.ts';
+import type { ConnHandle, RequestType, WireResult, WorkerResponse, QueryProgress } from './protocol.ts';
+export type { QueryProgress } from './protocol.ts';
 
 const isNode = typeof process !== 'undefined' && !!(process as any).versions?.node;
 
@@ -15,6 +16,8 @@ export interface ChdbResult {
   /** Source rows/bytes SCANNED from storage (ClickHouse read_rows) — for "Processed N rows, …". */
   scannedRows: number;
   scannedBytes: number;
+  /** Peak memory (bytes) observed during execution, tracked from the progress stream. */
+  peakMemoryUsage: number;
   elapsedSeconds: number;
   /** Decode the bytes as UTF-8 text. */
   text(): string;
@@ -31,9 +34,16 @@ export interface CreateOptions {
   onProgress?: (loaded: number, total: number) => void;
 }
 
+/** Per-call options for query()/queryStream(). */
+export interface QueryOptions {
+  /** Live execution-progress callback (mt bundle; throttled ~100 ms in the engine). */
+  onProgress?: (p: QueryProgress) => void;
+}
+
 interface Pending {
   resolve: (v: any) => void;
   reject: (e: any) => void;
+  onProgress?: (p: QueryProgress) => void;
 }
 
 function wrap(r: WireResult): ChdbResult {
@@ -43,6 +53,7 @@ function wrap(r: WireResult): ChdbResult {
     bytesRead: r.bytesRead,
     scannedRows: r.scannedRows,
     scannedBytes: r.scannedBytes,
+    peakMemoryUsage: 0,
     elapsedSeconds: r.elapsedSeconds,
     text: () => new TextDecoder().decode(r.data),
   };
@@ -89,6 +100,11 @@ export class AsyncChdb {
       this.onProgress?.(msg.loaded, msg.total);
       return;
     }
+    if ('event' in msg && msg.event === 'queryProgress') {
+      const { readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs } = msg;
+      this.pending.get(msg.id)?.onProgress?.({ readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs });
+      return;
+    }
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
@@ -96,17 +112,24 @@ export class AsyncChdb {
     else p.reject(new ChdbError('error' in msg ? msg.error : 'unknown worker error'));
   }
 
-  private request(type: RequestType, payload?: any, transfer?: Transferable[]): Promise<any> {
+  private request(type: RequestType, payload?: any, transfer?: Transferable[], onProgress?: (p: QueryProgress) => void): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, onProgress });
       (this.worker as any).postMessage({ id, type, payload }, transfer ?? []);
     });
   }
 
-  /** Run a query on the implicit :memory: connection. */
-  async query(sql: string, format = 'CSV'): Promise<ChdbResult> {
-    return wrap(await this.request('query', { sql, format }));
+  /** Run a query on the implicit :memory: connection. opts.onProgress gets live execution progress. */
+  async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
+    let peak = 0;
+    const onProgress = (p: QueryProgress) => {
+      if (p.memoryUsage > peak) peak = p.memoryUsage;
+      opts?.onProgress?.(p);
+    };
+    const r = wrap(await this.request('query', { sql, format }, undefined, onProgress));
+    r.peakMemoryUsage = peak;
+    return r;
   }
 
   /**
@@ -162,8 +185,8 @@ export class AsyncChdb {
   }
 
   /** @internal */
-  _queryConn(conn: ConnHandle, sql: string, format: string): Promise<WireResult> {
-    return this.request('queryConn', { conn, sql, format });
+  _queryConn(conn: ConnHandle, sql: string, format: string, onProgress?: (p: QueryProgress) => void): Promise<WireResult> {
+    return this.request('queryConn', { conn, sql, format }, undefined, onProgress);
   }
   /** @internal */
   _closeConn(conn: ConnHandle): Promise<void> {
@@ -174,8 +197,8 @@ export class AsyncChdb {
     return this.request('streamStart', { conn, sql, format });
   }
   /** @internal */
-  _streamFetch(conn: ConnHandle, stream: ConnHandle): Promise<{ done: boolean; result?: WireResult }> {
-    return this.request('streamFetch', { conn, stream });
+  _streamFetch(conn: ConnHandle, stream: ConnHandle, onProgress?: (p: QueryProgress) => void): Promise<{ done: boolean; result?: WireResult }> {
+    return this.request('streamFetch', { conn, stream }, undefined, onProgress);
   }
   /** @internal */
   _streamCancel(conn: ConnHandle, stream: ConnHandle): Promise<void> {
@@ -201,18 +224,32 @@ export class AsyncChdbConnection {
     this.db = db;
     this.conn = conn;
   }
-  async query(sql: string, format = 'CSV'): Promise<ChdbResult> {
-    return wrap(await this.db._queryConn(this.conn, sql, format));
+  async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
+    let peak = 0;
+    const onProgress = (p: QueryProgress) => {
+      if (p.memoryUsage > peak) peak = p.memoryUsage;
+      opts?.onProgress?.(p);
+    };
+    const r = wrap(await this.db._queryConn(this.conn, sql, format, onProgress));
+    r.peakMemoryUsage = peak;
+    return r;
   }
 
   /** Stream a query's results chunk-by-chunk (yields the worker between chunks). */
-  async *queryStream(sql: string, format = 'CSV'): AsyncGenerator<ChdbResult> {
+  async *queryStream(sql: string, format = 'CSV', opts?: QueryOptions): AsyncGenerator<ChdbResult> {
     const { stream } = await this.db._streamStart(this.conn, sql, format);
+    let peak = 0;
+    const onProgress = (p: QueryProgress) => {
+      if (p.memoryUsage > peak) peak = p.memoryUsage;
+      opts?.onProgress?.(p);
+    };
     try {
       for (;;) {
-        const { done, result } = await this.db._streamFetch(this.conn, stream);
+        const { done, result } = await this.db._streamFetch(this.conn, stream, onProgress);
         if (done || !result) break;
-        yield wrap(result);
+        const r = wrap(result);
+        r.peakMemoryUsage = peak;
+        yield r;
       }
     } finally {
       await this.db._streamCancel(this.conn, stream);

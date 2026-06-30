@@ -117,9 +117,42 @@ void LocalConnection::updateProgress(const Progress & value)
     state->progress.incrementPiecewiseAtomically(value);
 }
 
+/// chdb-wasm: a process-global hook fired on every progress tick with the accumulated
+/// chdb progress, so the wasm glue can push live query progress to JS (the browser
+/// progress bar). No-op when unset (native builds never set it).
+namespace
+{
+    std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, int64_t, uint64_t)> g_chdb_progress_hook;
+}
+
+void setCHDBProgressHook(
+    std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, int64_t, uint64_t)> hook)
+{
+    g_chdb_progress_hook = std::move(hook);
+}
+
 void LocalConnection::updateCHDBProgress(const Progress & value)
 {
     chdb_progress.incrementPiecewiseAtomically(value);
+
+    /// memory_usage is a gauge (current), not a summable delta: overwrite it with the
+    /// latest non-zero sample and track the peak (for ChdbResult.peakMemoryUsage).
+    const Int64 cur_mem = value.memory_usage.load(std::memory_order_relaxed);
+    if (cur_mem > 0)
+    {
+        chdb_progress.memory_usage.store(cur_mem, std::memory_order_relaxed);
+        if (cur_mem > chdb_peak_memory)
+            chdb_peak_memory = cur_mem;
+    }
+
+    if (g_chdb_progress_hook)
+        g_chdb_progress_hook(
+            chdb_progress.read_rows.load(std::memory_order_relaxed),
+            chdb_progress.total_rows_to_read.load(std::memory_order_relaxed),
+            chdb_progress.read_bytes.load(std::memory_order_relaxed),
+            chdb_progress.total_bytes_to_read.load(std::memory_order_relaxed),
+            chdb_progress.memory_usage.load(std::memory_order_relaxed),
+            chdb_progress.elapsed_ns.load(std::memory_order_relaxed));
 }
 
 void LocalConnection::sendProfileEvents()
@@ -220,6 +253,7 @@ void LocalConnection::sendQuery(
     state.reset();
     state.emplace();
     chdb_progress.reset();
+    chdb_peak_memory = 0;
 
     state->query_id = query_id;
     state->query = query;

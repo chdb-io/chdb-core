@@ -13,9 +13,26 @@
 
 #include "../local/chdb.h"
 
+#include <emscripten.h>
+#if defined(__EMSCRIPTEN_PTHREADS__)
+#    include <emscripten/threading.h>
+#endif
+
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
+
+// Defined in src/Client/LocalConnection.cpp. Forward-declared here instead of including
+// <Client/LocalConnection.h>, which transitively pulls Poco/Net networking headers that
+// aren't on the wasm include path. The signature MUST match the definition exactly.
+namespace DB
+{
+void setCHDBProgressHook(
+    std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+                       uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)> hook);
+}
 
 extern "C" {
 
@@ -39,9 +56,47 @@ static char arg0[] = "chdb";
 
 static chdb_connection * g_conn = nullptr;
 
+// Register (once) a query-progress hook on the chdb engine. ClickHouse calls it on every
+// progress tick, on the query thread (the worker running the ccall). We throttle (~100ms)
+// and postMessage a 'queryProgress' event to the page; async.ts routes it by the id
+// worker.ts stashes in self.__chdbQueryId. No-op off the main runtime thread (whose
+// postMessage wouldn't reach the page).
+static void chdb_wasm_register_progress_hook()
+{
+    static bool registered = false;
+    if (registered)
+        return;
+    registered = true;
+    DB::setCHDBProgressHook([](uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+                               uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)
+    {
+#if defined(__EMSCRIPTEN_PTHREADS__)
+        if (!emscripten_is_main_runtime_thread())
+            return;
+#endif
+        static double last_ms = 0;
+        const double now_ms = emscripten_get_now();
+        if (now_ms - last_ms < 100.0)
+            return;
+        last_ms = now_ms;
+        EM_ASM({
+            if (typeof postMessage === 'function')
+                postMessage({
+                    event: 'queryProgress',
+                    id: (typeof globalThis !== 'undefined' && globalThis.__chdbQueryId) ? globalThis.__chdbQueryId : 0,
+                    readRows: $0, totalRowsToRead: $1, readBytes: $2,
+                    totalBytesToRead: $3, memoryUsage: $4, elapsedNs: $5,
+                });
+        },
+            (double) read_rows, (double) total_rows_to_read, (double) read_bytes,
+            (double) total_bytes_to_read, (double) memory_usage, (double) elapsed_ns);
+    });
+}
+
 // Apply the wasm thread cap on a freshly opened connection (idempotent, cheap).
 static void chdb_wasm_apply_settings(chdb_connection conn)
 {
+    chdb_wasm_register_progress_hook();
     chdb_result * r = chdb_query(conn, "SET max_threads = " CHDB_WASM_MAX_THREADS, "Null");
     if (r)
         chdb_destroy_query_result(r);

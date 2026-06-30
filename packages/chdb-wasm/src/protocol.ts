@@ -16,6 +16,16 @@ export interface WireResult {
   elapsedSeconds: number;
 }
 
+/** Live query-EXECUTION progress (distinct from the wasm-DOWNLOAD 'progress' event). */
+export interface QueryProgress {
+  readRows: number;
+  totalRowsToRead: number;
+  readBytes: number;
+  totalBytesToRead: number;
+  memoryUsage: number;
+  elapsedNs: number;
+}
+
 export type RequestType =
   | 'init'
   | 'query'
@@ -46,4 +56,5 @@ export interface WorkerRequest {
 export type WorkerResponse =
   | { id: number; ok: true; result?: any }
   | { id: number; ok: false; error: string }
-  | { id: number; event: 'progress'; loaded: number; total: number };
+  | { id: number; event: 'progress'; loaded: number; total: number }
+  | ({ id: number; event: 'queryProgress' } & QueryProgress);

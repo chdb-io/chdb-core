@@ -83,6 +83,9 @@ function requireBindings(): ChdbBindings {
 listen((req: WorkerRequest) => {
   void (async () => {
     try {
+      // Tag any in-flight query-progress events with this request's id (read by the C++
+      // progress hook via EM_ASM globalThis.__chdbQueryId); cleared in finally.
+      (globalThis as any).__chdbQueryId = req.id;
       let result: any;
       switch (req.type) {
         case 'init':
@@ -137,6 +140,8 @@ listen((req: WorkerRequest) => {
       post({ id: req.id, ok: true, result }, buf ? [buf] : undefined);
     } catch (e: any) {
       post({ id: req.id, ok: false, error: e && e.message ? e.message : String(e) });
+    } finally {
+      (globalThis as any).__chdbQueryId = 0;
     }
   })();
 });
