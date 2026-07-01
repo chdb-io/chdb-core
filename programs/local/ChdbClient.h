@@ -50,8 +50,8 @@ public:
         const char * query, size_t query_len, const char * format, size_t format_len);
 
     /// Enqueue a chunk of raw, FORMAT-encoded bytes. Returns false on error
-    /// (e.g. the worker already failed); the message is available via
-    /// getInsertStreamError().
+    /// (e.g. the worker already failed); the error is surfaced by
+    /// executeInsertStreamingDone() (and the C ABI chdb_stream_insert_error()).
     bool executeInsertStreamingAppend(void * insert_stream, const char * data, size_t len);
 
     /// Signal end-of-input, join the worker, and return a MaterializedQueryResult
@@ -60,11 +60,6 @@ public:
 
     /// Abort the INSERT (CH-default semantics: no special rollback) and join.
     void cancelInsertStream(void * insert_stream);
-
-    /// Latest error message for the stream, or empty.
-    const char * getInsertStreamError(void * insert_stream) const;
-
-    bool hasInsertStream() const;
 
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;

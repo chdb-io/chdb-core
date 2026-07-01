@@ -539,20 +539,6 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
     }
 }
 
-bool ChdbClient::hasInsertStream() const
-{
-    std::lock_guard<std::mutex> lock(client_mutex);
-    return streaming_insert_context != nullptr;
-}
-
-const char * ChdbClient::getInsertStreamError(void * insert_stream) const
-{
-    auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
-    if (!res)
-        return "";
-    return res->getError().c_str();
-}
-
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     const char * query, size_t query_len, const char * format, size_t format_len)
 {
@@ -638,11 +624,18 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     }
     catch (const Exception & e)
     {
+        /// Restore input_format_parallel_parsing if we already flipped it (the
+        /// non-exception failure path does the same); otherwise it leaks as false
+        /// on client_context for all subsequent queries.
+        if (streaming_insert_context)
+            client_context->setSetting("input_format_parallel_parsing", streaming_insert_context->prev_parallel_parsing);
         streaming_insert_context.reset();
         return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, false));
     }
     catch (...)
     {
+        if (streaming_insert_context)
+            client_context->setSetting("input_format_parallel_parsing", streaming_insert_context->prev_parallel_parsing);
         streaming_insert_context.reset();
         return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(true));
     }
