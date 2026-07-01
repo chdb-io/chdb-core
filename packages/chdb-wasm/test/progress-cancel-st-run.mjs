@@ -93,9 +93,8 @@ async function main() {
     assert.ok(result.ok, 'fixture not ok: ' + (result.fatal || (result.timeout && 'timeout') || '?'));
     assert.strictEqual(result.coi, false, 'page must NOT be cross-origin isolated');
     assert.strictEqual(result.variant, 'st', 'expected st bundle in a non-isolated page');
-    // No live progress on st, and peak 0 — even though the query ran for seconds.
+    // No live progress on st — even though the query ran for seconds.
     assert.strictEqual(result.progressEvents, 0, `st must emit no progress events, got ${result.progressEvents}`);
-    assert.strictEqual(result.peak, 0, `st peakMemoryUsage must be 0, got ${result.peak}`);
     // The query still ran correctly: scanned all source rows + a plausible count.
     assert.strictEqual(result.scannedRows, 200000000, `st query must still scan all rows, got ${result.scannedRows}`);
     assert.ok(result.count > 0, `st query must return a count, got ${result.count}`);
@@ -103,7 +102,7 @@ async function main() {
     assert.ok(result.cancelThrew, 'st cancel() must throw');
     assert.ok(/multi-threaded|mt/i.test(result.cancelErr || ''), 'cancel error should mention the mt requirement, got: ' + result.cancelErr);
 
-    console.log(`PASS (st): no live progress (events=0, peak=0) over a ${result.elapsed.toFixed(1)}s query that scanned ` +
+    console.log(`PASS (st): no live progress (events=0) over a ${result.elapsed.toFixed(1)}s query that scanned ` +
       `${result.scannedRows} rows (count=${result.count}); cancel() threw -> "${(result.cancelErr || '').split('(')[0].trim()}"`);
   } catch (e) {
     if (chromeStderr) console.error('--- chrome stderr (tail) ---\n' + chromeStderr.split('\n').slice(-15).join('\n'));

@@ -1,8 +1,8 @@
 // Headless-Chrome verification of live query progress + mid-query cancel for chdb-wasm.
-// Node's worker_threads have no global postMessage, so the queryProgress events (and thus
-// peakMemoryUsage) can only be exercised in a real browser; cancel needs a SharedArrayBuffer
-// (cross-origin isolated). This serves test/progress-cancel-fixture.html with COOP/COEP and
-// drives the cached Chrome via raw CDP (no puppeteer dependency). Run with Node >=22:
+// Both need the mt bundle on a cross-origin-isolated page (SharedArrayBuffer): the page
+// polls a shared-memory struct the engine writes for progress, and sets a shared-memory flag
+// to cancel. This serves test/progress-cancel-fixture.html with COOP/COEP and drives the
+// cached Chrome via raw CDP (no puppeteer dependency). Run with Node >=22:
 //   node test/progress-cancel-run.mjs
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -103,18 +103,15 @@ async function main() {
     assert.ok(result.progressEvents > 1, `expected multiple progress events, got ${result.progressEvents}`);
     assert.ok(result.progressMonotonic, 'progress readRows must be non-decreasing');
     assert.ok(result.progressHasTotal, 'progress must report totalRowsToRead > 0');
-    assert.ok(result.progressHasMem, 'progress must report memoryUsage > 0');
     assert.ok(result.progressLast && result.progressLast.readRows > 0, 'last progress readRows must be > 0');
     // Genuine streaming, not just a start+end pair: at least one tick strictly between 0 and total.
     assert.ok(result.progressHasIntermediate, 'progress must include an intermediate tick (0 < readRows < total)');
-    // Peak memory (tracked from the progress stream).
-    assert.ok(result.peak > 0, `peakMemoryUsage must be > 0, got ${result.peak}`);
     // Cancel.
     assert.ok(result.cancelOk, 'cancel must reject with QUERY_WAS_CANCELLED, got: ' + result.cancelErr);
     assert.ok(result.cancelMs != null && result.cancelMs < 5000, `cancel should be prompt, got ${result.cancelMs}ms`);
 
-    console.log('PASS: live progress (' + result.progressEvents + ' events, peak=' +
-      (result.peak / 1048576).toFixed(1) + ' MiB), cancel in ' + result.cancelMs + 'ms (' + result.cancelErr.split('.')[0] + ')');
+    console.log('PASS: live progress (' + result.progressEvents + ' events, ' +
+      result.progressElapsed.toFixed(1) + 's scan), cancel in ' + result.cancelMs + 'ms (' + result.cancelErr.split('.')[0] + ')');
   } catch (e) {
     if (chromeStderr) console.error('--- chrome stderr (tail) ---\n' + chromeStderr.split('\n').slice(-15).join('\n'));
     throw e;

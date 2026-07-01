@@ -16,8 +16,6 @@ export interface ChdbResult {
   /** Source rows/bytes SCANNED from storage (ClickHouse read_rows) — for "Processed N rows, …". */
   scannedRows: number;
   scannedBytes: number;
-  /** Peak memory (bytes) observed during execution, tracked from the progress stream. */
-  peakMemoryUsage: number;
   elapsedSeconds: number;
   /** Decode the bytes as UTF-8 text. */
   text(): string;
@@ -52,7 +50,6 @@ function wrap(r: WireResult): ChdbResult {
     bytesRead: r.bytesRead,
     scannedRows: r.scannedRows,
     scannedBytes: r.scannedBytes,
-    peakMemoryUsage: 0,
     elapsedSeconds: r.elapsedSeconds,
     text: () => new TextDecoder().decode(r.data),
   };
@@ -90,8 +87,8 @@ export class AsyncChdb {
     const initResult = await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
     if (initResult?.sharedMem) {
       self.cancelFlag = new Int32Array(initResult.sharedMem, initResult.cancelAddr, 1);
-      // 7 × int64: [seq, readRows, totalRowsToRead, readBytes, totalBytesToRead, memoryUsage, elapsedNs].
-      self.progressView = new BigInt64Array(initResult.sharedMem, initResult.progressAddr, 7);
+      // 6 × int64: [seq, readRows, totalRowsToRead, readBytes, totalBytesToRead, elapsedNs].
+      self.progressView = new BigInt64Array(initResult.sharedMem, initResult.progressAddr, 6);
     }
     return self;
   }
@@ -132,7 +129,7 @@ export class AsyncChdb {
       const p: QueryProgress = {
         readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
         readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
-        memoryUsage: Number(v[5]), elapsedNs: Number(v[6]),
+        elapsedNs: Number(v[5]),
       };
       if (Atomics.load(v, 0) === s1) return p;   // seq unchanged -> consistent snapshot
     }
@@ -140,7 +137,7 @@ export class AsyncChdb {
     return {
       readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
       readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
-      memoryUsage: Number(v[5]), elapsedNs: Number(v[6]),
+      elapsedNs: Number(v[5]),
     };
   }
 
@@ -150,7 +147,7 @@ export class AsyncChdb {
    * (main) thread's event loop is free, and the engine writes progress from whatever thread
    * runs the pipeline — so polling shared memory here is the only path that sees intermediate
    * progress. No-op on the st build (no shared memory). Returns a stop() that clears the
-   * timer and does one final catch-up read (so the last tick, incl. peak memory, is seen).
+   * timer and does one final catch-up read (so the last tick is seen).
    * @internal
    */
   _startProgressPoll(cb: (p: QueryProgress) => void): () => void {
@@ -169,20 +166,12 @@ export class AsyncChdb {
 
   /** Run a query on the implicit :memory: connection. opts.onProgress gets live execution progress. */
   async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
-    let peak = 0;
-    const stop = this._startProgressPoll((p) => {
-      if (p.memoryUsage > peak) peak = p.memoryUsage;
-      opts?.onProgress?.(p);
-    });
-    let result: WireResult;
+    const stop = opts?.onProgress ? this._startProgressPoll(opts.onProgress) : () => {};
     try {
-      result = await this.request('query', { sql, format });
+      return wrap(await this.request('query', { sql, format }));
     } finally {
-      stop();   // final catch-up read updates peak before we wrap
+      stop();
     }
-    const r = wrap(result);
-    r.peakMemoryUsage = peak;
-    return r;
   }
 
   /**
@@ -289,20 +278,12 @@ export class AsyncChdbConnection {
     this.conn = conn;
   }
   async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
-    let peak = 0;
-    const stop = this.db._startProgressPoll((p) => {
-      if (p.memoryUsage > peak) peak = p.memoryUsage;
-      opts?.onProgress?.(p);
-    });
-    let result: WireResult;
+    const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
     try {
-      result = await this.db._queryConn(this.conn, sql, format);
+      return wrap(await this.db._queryConn(this.conn, sql, format));
     } finally {
       stop();
     }
-    const r = wrap(result);
-    r.peakMemoryUsage = peak;
-    return r;
   }
 
   /** Cancel the running query (mt only). See AsyncChdb.cancel(). */
@@ -313,18 +294,12 @@ export class AsyncChdbConnection {
   /** Stream a query's results chunk-by-chunk (yields the worker between chunks). */
   async *queryStream(sql: string, format = 'CSV', opts?: QueryOptions): AsyncGenerator<ChdbResult> {
     const { stream } = await this.db._streamStart(this.conn, sql, format);
-    let peak = 0;
-    const stop = this.db._startProgressPoll((p) => {
-      if (p.memoryUsage > peak) peak = p.memoryUsage;
-      opts?.onProgress?.(p);
-    });
+    const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
     try {
       for (;;) {
         const { done, result } = await this.db._streamFetch(this.conn, stream);
         if (done || !result) break;
-        const r = wrap(result);
-        r.peakMemoryUsage = peak;
-        yield r;
+        yield wrap(result);
       }
     } finally {
       stop();

@@ -177,10 +177,6 @@ public:
     void setThrottler(const ThrottlerPtr &) override {}
 
     const Progress & getCHDBProgress() const { return chdb_progress; }
-#if defined(OS_WASM)
-    /// chdb-wasm: peak memory observed during the query (for ChdbResult.peakMemoryUsage).
-    Int64 getCHDBPeakMemory() const { return chdb_peak_memory; }
-#endif
 #if USE_PYTHON
     void resetQueryContext();
     Session & getSession() const { return *session; }
@@ -217,9 +213,6 @@ private:
     std::optional<LocalQueryState> state;
 
     Progress chdb_progress;
-#if defined(OS_WASM)
-    Int64 chdb_peak_memory = 0;
-#endif
 
     /// Last "server" packet.
     std::optional<UInt64> next_packet_type;
@@ -233,12 +226,12 @@ private:
 
 #if defined(OS_WASM)
 /// chdb-wasm: register a hook fired on each query-progress tick with the accumulated
-/// counters (read_rows, total_rows_to_read, read_bytes, total_bytes_to_read,
-/// memory_usage, elapsed_ns). Plain-primitive signature so the wasm glue can forward-
-/// declare it WITHOUT including this (heavy, Poco/Net-pulling) header. Pass {} to clear.
+/// counters (read_rows, total_rows_to_read, read_bytes, total_bytes_to_read, elapsed_ns).
+/// Plain-primitive signature so the wasm glue can forward-declare it WITHOUT including this
+/// (heavy, Poco/Net-pulling) header. Pass {} to clear.
 void setCHDBProgressHook(
     std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
-                       uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)> hook);
+                       uint64_t total_bytes_to_read, uint64_t elapsed_ns)> hook);
 
 /// chdb-wasm: register a predicate the engine polls during a query (via setCancelCallback
 /// on each connection) to decide whether to cancel it — the wasm glue reads a

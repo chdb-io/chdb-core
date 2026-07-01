@@ -26,7 +26,6 @@ export interface QueryProgress {
   totalRowsToRead: number;
   readBytes: number;
   totalBytesToRead: number;
-  memoryUsage: number;
   elapsedNs: number;
 }
 

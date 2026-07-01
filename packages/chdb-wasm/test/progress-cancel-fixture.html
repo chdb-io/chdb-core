@@ -1,9 +1,9 @@
 <!doctype html><meta charset=utf-8><title>chdb-wasm progress + cancel fixture</title><pre id=o>running…</pre>
-<!-- Driven by test/progress-cancel-run.mjs (cross-origin isolated -> mt bundle, so
-     queryProgress postMessage + the SharedArrayBuffer cancel flag are live).
-     Verifies (1) live execution progress events fire and advance, (2) peakMemoryUsage
-     is reported, (3) db.cancel() interrupts a running query mid-flight. Publishes the
-     findings on window.__RESULT__ for the driver to assert. -->
+<!-- Driven by test/progress-cancel-run.mjs (cross-origin isolated -> mt bundle, so the
+     page can poll the engine's shared-memory progress struct and set the cancel flag).
+     Verifies (1) live execution progress events fire and advance, (2) db.cancel()
+     interrupts a running query mid-flight. Publishes the findings on window.__RESULT__
+     for the driver to assert. -->
 <script type="module">
 import { AsyncChdb, selectBundle } from '../dist/index.js';
 const el = document.getElementById('o');
@@ -15,8 +15,8 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     const db = await AsyncChdb.create({ moduleUrl: b.moduleUrl, wasmUrl: b.wasmUrl });
     const out = { ok: true, variant: b.variant, coi: self.crossOriginIsolated };
 
-    // (1)+(2) LIVE PROGRESS + PEAK. A multi-second scan so the engine emits several
-    // throttled (~100ms) progress ticks; collect them and read peakMemoryUsage.
+    // (1) LIVE PROGRESS. A multi-second scan so the engine emits several throttled (~100ms)
+    // progress ticks; collect them and check they stream (rows/bytes advance).
     const ev = [];
     const pr = await db.query(
       'SELECT count() FROM numbers(800000000) WHERE sipHash64(number) % 3 = 0',
@@ -24,19 +24,17 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     const readRowsSeq = ev.map((e) => e.readRows);
     out.progressEvents = ev.length;
     out.progressElapsed = pr.elapsedSeconds;
-    out.progressFirst = ev.length ? { readRows: ev[0].readRows, total: ev[0].totalRowsToRead, mem: ev[0].memoryUsage } : null;
+    out.progressFirst = ev.length ? { readRows: ev[0].readRows, total: ev[0].totalRowsToRead } : null;
     const last = ev[ev.length - 1];
-    out.progressLast = last ? { readRows: last.readRows, total: last.totalRowsToRead, mem: last.memoryUsage } : null;
+    out.progressLast = last ? { readRows: last.readRows, total: last.totalRowsToRead } : null;
     out.progressMonotonic = ev.every((e, i) => i === 0 || e.readRows >= ev[i - 1].readRows);
     out.progressHasTotal = ev.some((e) => e.totalRowsToRead > 0);
-    out.progressHasMem = ev.some((e) => e.memoryUsage > 0);
     // Genuine streaming (not just a start+end pair): at least one tick strictly between.
     const tot = last ? last.totalRowsToRead : 0;
     out.progressHasIntermediate = ev.some((e) => e.readRows > 0 && tot > 0 && e.readRows < tot);
-    out.peak = pr.peakMemoryUsage;
     out.scannedRows = pr.scannedRows;
     // Keep the trace compact in the log (first 3 + count); the full array stays in __RESULT__.
-    log('progress: events=' + ev.length + ' elapsed=' + out.progressElapsed.toFixed(2) + 's peak=' + out.peak
+    log('progress: events=' + ev.length + ' elapsed=' + out.progressElapsed.toFixed(2) + 's'
       + ' readRows[0..2]=' + JSON.stringify(readRowsSeq.slice(0, 3)) + ' last=' + out.progressLast.readRows);
 
     // (3) CANCEL. A long scan; request cancellation ~600ms in and time how long until the

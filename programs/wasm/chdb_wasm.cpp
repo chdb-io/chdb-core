@@ -32,7 +32,7 @@ namespace DB
 {
 void setCHDBProgressHook(
     std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
-                       uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)> hook);
+                       uint64_t total_bytes_to_read, uint64_t elapsed_ns)> hook);
 void setCHDBCancelCheck(std::function<bool()> check);
 }
 
@@ -49,7 +49,7 @@ static std::atomic<int32_t> g_chdb_cancel_flag{0};
 // wasm Memory is a SharedArrayBuffer the page can view (at chdb_wasm_progress_addr()), and
 // the page's own event loop stays free during the query. `seq` is bumped last on write
 // (release) so a reader that observes a new seq also observes the matching fields; the
-// reader re-checks seq to reject a torn read. 7 × int64 (page maps a BigInt64Array).
+// reader re-checks seq to reject a torn read. 6 × int64 (page maps a BigInt64Array).
 struct ChdbProgressShared
 {
     std::atomic<int64_t> seq{0};
@@ -57,7 +57,6 @@ struct ChdbProgressShared
     std::atomic<int64_t> total_rows_to_read{0};
     std::atomic<int64_t> read_bytes{0};
     std::atomic<int64_t> total_bytes_to_read{0};
-    std::atomic<int64_t> memory_usage{0};
     std::atomic<int64_t> elapsed_ns{0};
 };
 static ChdbProgressShared g_chdb_progress;
@@ -101,7 +100,7 @@ static void chdb_wasm_register_progress_hook()
         return;
     registered = true;
     DB::setCHDBProgressHook([](uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
-                               uint64_t total_bytes_to_read, int64_t memory_usage, uint64_t elapsed_ns)
+                               uint64_t total_bytes_to_read, uint64_t elapsed_ns)
     {
         // Write fields first (relaxed), then bump seq last (release) so a reader observing
         // the new seq is guaranteed to see these fields.
@@ -109,7 +108,6 @@ static void chdb_wasm_register_progress_hook()
         g_chdb_progress.total_rows_to_read.store(static_cast<int64_t>(total_rows_to_read), std::memory_order_relaxed);
         g_chdb_progress.read_bytes.store(static_cast<int64_t>(read_bytes), std::memory_order_relaxed);
         g_chdb_progress.total_bytes_to_read.store(static_cast<int64_t>(total_bytes_to_read), std::memory_order_relaxed);
-        g_chdb_progress.memory_usage.store(memory_usage, std::memory_order_relaxed);
         g_chdb_progress.elapsed_ns.store(static_cast<int64_t>(elapsed_ns), std::memory_order_relaxed);
         g_chdb_progress.seq.fetch_add(1, std::memory_order_release);
     });
