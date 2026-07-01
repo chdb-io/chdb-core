@@ -1,5 +1,5 @@
-// Main-thread async client. Mirrors duckdb-wasm's AsyncDuckDB: the wasm runs in
-// a worker and queries return Promises, so the calling thread never blocks.
+// Main-thread async client: the wasm runs in a worker and queries return Promises,
+// so the calling thread never blocks.
 
 import { ChdbError } from './status.ts';
 import type { ConnHandle, RequestType, WireResult, WorkerResponse, QueryProgress } from './protocol.ts';
