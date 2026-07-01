@@ -124,21 +124,18 @@ export class AsyncChdb {
 
   /** Snapshot the shared progress struct, rejecting a torn read via the seq guard. */
   private readProgress(v: BigInt64Array): QueryProgress {
-    for (let i = 0; i < 4; i++) {
-      const s1 = Atomics.load(v, 0);
-      const p: QueryProgress = {
-        readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
-        readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
-        elapsedNs: Number(v[5]),
-      };
-      if (Atomics.load(v, 0) === s1) return p;   // seq unchanged -> consistent snapshot
-    }
-    // Writes are ~ms apart; after a few retries take the (cosmetically-fine) latest read.
-    return {
+    const snap = (): QueryProgress => ({
       readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
       readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
       elapsedNs: Number(v[5]),
-    };
+    });
+    for (let i = 0; i < 4; i++) {
+      const s1 = Atomics.load(v, 0);
+      const p = snap();
+      if (Atomics.load(v, 0) === s1) return p;   // seq unchanged -> consistent snapshot
+    }
+    // Writes are ~ms apart; after a few retries take the (cosmetically-fine) latest read.
+    return snap();
   }
 
   /**

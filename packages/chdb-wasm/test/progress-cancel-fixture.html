@@ -35,7 +35,7 @@ const log = (m) => { el.textContent += '\n' + m; console.log(m); };
     out.scannedRows = pr.scannedRows;
     // Keep the trace compact in the log (first 3 + count); the full array stays in __RESULT__.
     log('progress: events=' + ev.length + ' elapsed=' + out.progressElapsed.toFixed(2) + 's'
-      + ' readRows[0..2]=' + JSON.stringify(readRowsSeq.slice(0, 3)) + ' last=' + out.progressLast.readRows);
+      + ' readRows[0..2]=' + JSON.stringify(readRowsSeq.slice(0, 3)) + ' last=' + (out.progressLast ? out.progressLast.readRows : 'n/a'));
 
     // (3) CANCEL. A long scan; request cancellation ~600ms in and time how long until the
     // query rejects. Expect QUERY_WAS_CANCELLED (Code: 394) well before its natural end.

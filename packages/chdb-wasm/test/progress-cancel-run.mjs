@@ -6,6 +6,7 @@
 //   node test/progress-cancel-run.mjs
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -54,18 +55,21 @@ async function fetchJSON(url, tries = 50) {
 
 async function main() {
   const port = 9824, cdpPort = 9223;
+  // Fail fast (before opening the socket) if the Chrome binary is missing — otherwise spawn()
+  // reports it as an opaque async ENOENT much later. Set CHROME_BIN to point at your browser.
+  if (!existsSync(CHROME))
+    throw new Error(`Chrome binary not found at ${CHROME}. Set CHROME_BIN to a Chrome/Chromium executable.`);
   const server = await startServer(port);
   const userDir = '/tmp/chdb-cdp-profile';
-  const chrome = spawn(CHROME, [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-    `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${userDir}`,
-    `http://127.0.0.1:${port}/test/progress-cancel-fixture.html`,
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  let chromeStderr = '';
-  chrome.stderr.on('data', (d) => { chromeStderr += d.toString(); });
-
-  let cdp;
+  let chrome, cdp, chromeStderr = '';
   try {
+    chrome = spawn(CHROME, [
+      '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+      `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${userDir}`,
+      `http://127.0.0.1:${port}/test/progress-cancel-fixture.html`,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    chrome.stderr.on('data', (d) => { chromeStderr += d.toString(); });
+
     const ver = await fetchJSON(`http://127.0.0.1:${cdpPort}/json/version`);
     cdp = await CDP.connect(ver.webSocketDebuggerUrl);
     // Find (or wait for) the page target, then attach in flatten mode.
@@ -117,7 +121,7 @@ async function main() {
     throw e;
   } finally {
     try { cdp?.ws.close(); } catch { /* ignore */ }
-    chrome.kill('SIGKILL');
+    chrome?.kill('SIGKILL');
     server.close();
   }
 }
