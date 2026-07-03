@@ -74,6 +74,21 @@ class TestStreamingInsertConnection(unittest.TestCase):
         self.assertEqual(res.rows_written, 2)
         self.assertEqual(self._rows("SELECT a, b FROM t ORDER BY a", "CSV"), "1,\"one\"\n2,\"two\"\n")
 
+    def test_append_chunks_split_mid_row(self):
+        # Chunk boundaries need not align with row (or even token) boundaries:
+        # the engine's input parser consumes the appended chunks as one
+        # continuous byte stream, keeping partial-parse state across chunks.
+        self.conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = Memory")
+        with self.conn.send_insert("INSERT INTO t (a, b)", "CSV") as ins:
+            ins.append("12")         # splits the number itself
+            ins.append("3,hel")      # completes it, splits the string
+            ins.append("lo\n45")     # completes row 1, starts row 2
+            ins.append("6,world\n")  # completes row 2
+            res = ins.finish()
+        self.assertEqual(res.rows_written, 2)
+        self.assertEqual(self._rows("SELECT a, b FROM t ORDER BY a", "CSV"),
+                         '123,"hello"\n456,"world"\n')
+
     def test_bytes_input_binary_safe(self):
         # String column containing a comma and quotes round-trips when sent as
         # properly quoted CSV bytes.

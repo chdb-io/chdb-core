@@ -282,6 +282,32 @@ static void test_multi_block_streaming_parts(chdb_connection conn)
     expect_query(conn, "SELECT count(), sum(a) FROM stp", "50000,1249975000\n");
 }
 
+static void test_append_chunks_split_mid_row(chdb_connection conn)
+{
+    printf("== test_append_chunks_split_mid_row ==\n");
+    chdb_destroy_query_result(run(conn, "CREATE TABLE stsp (a UInt64, b String) ENGINE = Memory"));
+
+    /* Chunk boundaries need not align with row (or even token) boundaries:
+     * the input parser keeps partial-parse state across appended chunks. */
+    chdb_insert_stream stream = chdb_stream_insert(conn, "INSERT INTO stsp (a, b)", "CSV");
+    CHECK(stream != NULL && chdb_stream_insert_error(stream) == NULL, "init ok");
+
+    CHECK(chdb_stream_append(stream, "12", 2) == CHDBSuccess, "split number");
+    CHECK(chdb_stream_append(stream, "3,hel", 5) == CHDBSuccess, "split string");
+    CHECK(chdb_stream_append(stream, "lo\n45", 5) == CHDBSuccess, "cross row boundary");
+    CHECK(chdb_stream_append(stream, "6,world\n", 8) == CHDBSuccess, "complete row 2");
+
+    chdb_result * result = chdb_stream_done(stream);
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn, "SELECT a, b FROM stsp ORDER BY a", "123,\"hello\"\n456,\"world\"\n");
+}
+
 static void test_memory_multi_block_count_sum(chdb_connection conn)
 {
     printf("== test_memory_multi_block_count_sum ==\n");
@@ -755,6 +781,7 @@ int main(int argc, char ** argv)
     test_format_matrix(*conn);
     test_multi_chunk_streaming(*conn);
     test_multi_block_streaming_parts(*conn);
+    test_append_chunks_split_mid_row(*conn);
     test_memory_multi_block_count_sum(*conn);
     test_format_mismatch_payload(*conn);
     test_binary_safe_length(*conn);
