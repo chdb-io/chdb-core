@@ -44,6 +44,7 @@ check('join_small', async () => assert.strictEqual(await q('SELECT a.number FROM
 check('join_big', async () => assert.strictEqual(await q('SELECT count() FROM numbers(100000) a JOIN numbers(100000) b ON a.number = b.number'), '100000'));
 check('subquery', async () => assert.strictEqual(await q('SELECT sum(x) FROM (SELECT number * 2 AS x FROM numbers(1000))'), '999000'));
 check('cte', async () => assert.strictEqual(await q('WITH t AS (SELECT number n FROM numbers(100)) SELECT sum(n) FROM t'), '4950'));
+check('scalar_subquery', async () => assert.strictEqual(await q('SELECT (SELECT count() FROM numbers(10))'), '10'));
 check('arrayjoin', async () => assert.strictEqual(await q('SELECT arrayJoin([1, 2, 3]) AS x ORDER BY x', 'CSV'), '1\n2\n3'));
 check('window', async () => assert.strictEqual(await q('SELECT sum(number) OVER (ORDER BY number) FROM numbers(4)', 'CSV'), '0\n1\n3\n6'));
 
