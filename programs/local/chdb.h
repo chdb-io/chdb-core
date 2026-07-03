@@ -444,16 +444,12 @@ CHDB_EXPORT void chdb_destroy_query_result(chdb_result * result);
 
 /**
  * Begins a streaming INSERT on the given connection.
- * Write-side counterpart of chdb_stream_query(): the INSERT statement is sent
- * first, then raw format-encoded data is pushed in chunks via
- * chdb_stream_append() and committed with chdb_stream_done().
- *
+ * @brief Write-side counterpart of chdb_stream_query(): send the INSERT, then push data in chunks
  * @param conn Active connection handle
  * @param query INSERT statement without FORMAT clause or inline data (e.g., "INSERT INTO t (a, b)")
  * @param format Input format of the appended data (e.g., "CSV", "JSONEachRow", "Parquet")
- * @return Insert stream handle, never NULL; on failure the handle carries the error message
- * @note Check chdb_stream_insert_error() before appending
- * @note The connection accepts no other query or insert while the stream is open
+ * @return Insert stream handle, never NULL; check chdb_stream_insert_error() for init failure
+ * @note The connection accepts no other statement while the stream is open
  */
 CHDB_EXPORT chdb_insert_stream chdb_stream_insert(chdb_connection conn, const char * query, const char * format);
 
@@ -465,39 +461,34 @@ CHDB_EXPORT chdb_insert_stream chdb_stream_insert(chdb_connection conn, const ch
  * @param query_len Length of the query string in bytes
  * @param format Input format of the appended data
  * @param format_len Length of the format string in bytes
- * @return Insert stream handle, never NULL; on failure the handle carries the error message
+ * @return Insert stream handle, never NULL; check chdb_stream_insert_error() for init failure
  */
 CHDB_EXPORT chdb_insert_stream chdb_stream_insert_n(
     chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len);
 
 /**
  * Appends one chunk of raw format-encoded data to the insert stream.
- * @brief Pushes data to the streaming INSERT with binary-safe handling
+ * @brief Pushes data to the streaming INSERT (binary-safe, may block for backpressure)
  * @param stream Insert stream handle from chdb_stream_insert()
- * @param data Chunk bytes encoded in the stream's input format; copied, the caller retains ownership
+ * @param data Chunk bytes in the stream's input format; copied, the caller retains ownership
  * @param len Length of the chunk in bytes
  * @return CHDBSuccess on success, CHDBError if the stream already failed or was finalized
- * @note Data may contain NUL bytes (e.g., Parquet); exactly len bytes are consumed
- * @note May block to apply backpressure when the engine is slower than the producer
  */
 CHDB_EXPORT chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size_t len);
 
 /**
  * Finalizes the streaming INSERT and commits the data.
- * @brief Signals end-of-input, flushes remaining rows and returns write statistics
+ * @brief Signals end-of-input and returns write statistics
  * @param stream Insert stream handle from chdb_stream_insert()
- * @return Result carrying rows/bytes written and elapsed time, or an error message
- * @note Free the returned result with chdb_destroy_query_result()
+ * @return Result with rows/bytes written, or an error; free with chdb_destroy_query_result()
  * @note Does not free the stream handle; call chdb_destroy_insert_stream() as well
  */
 CHDB_EXPORT chdb_result * chdb_stream_done(chdb_insert_stream stream);
 
 /**
  * Cancels ongoing streaming INSERT.
- * @brief Aborts the insert stream without committing
+ * @brief Aborts the insert stream without committing (ClickHouse-default semantics, no rollback)
  * @param stream Insert stream handle to cancel
- * @note ClickHouse-default cancel semantics, no special rollback: already-committed
- *       MergeTree parts remain, a pending single S3 object never appears
  * @note The handle is freed by chdb_destroy_insert_stream(), not here
  */
 CHDB_EXPORT void chdb_stream_cancel_insert(chdb_insert_stream stream);
@@ -512,8 +503,7 @@ CHDB_EXPORT const char * chdb_stream_insert_error(chdb_insert_stream stream);
 /**
  * Destroys an insert stream handle and releases all associated resources.
  * @param stream The insert stream handle to destroy
- * @note Must be called for every handle returned by chdb_stream_insert(), even on error paths
- * @note If the stream was not finalized, it is cancelled first
+ * @note Required for every handle, even on error paths; cancels first if not finalized
  */
 CHDB_EXPORT void chdb_destroy_insert_stream(chdb_insert_stream stream);
 
