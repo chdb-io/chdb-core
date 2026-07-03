@@ -82,6 +82,8 @@ class TestCApiStreamInsert(unittest.TestCase):
         lib.chdb_result_rows_written.argtypes = [ctypes.c_void_p]
         lib.chdb_result_bytes_written.restype = ctypes.c_uint64
         lib.chdb_result_bytes_written.argtypes = [ctypes.c_void_p]
+        lib.chdb_result_elapsed.restype = ctypes.c_double
+        lib.chdb_result_elapsed.argtypes = [ctypes.c_void_p]
         lib.chdb_destroy_query_result.restype = None
         lib.chdb_destroy_query_result.argtypes = [ctypes.c_void_p]
 
@@ -146,6 +148,7 @@ class TestCApiStreamInsert(unittest.TestCase):
             self.assertFalse(self.lib.chdb_result_error(result))
             self.assertEqual(self.lib.chdb_result_rows_written(result), 2)
             self.assertGreater(self.lib.chdb_result_bytes_written(result), 0)
+            self.assertGreaterEqual(self.lib.chdb_result_elapsed(result), 0.0)
         finally:
             self.lib.chdb_destroy_query_result(result)
         self.lib.chdb_destroy_insert_stream(stream)

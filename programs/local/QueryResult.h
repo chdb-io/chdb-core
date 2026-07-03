@@ -138,18 +138,21 @@ public:
     }
 
 public:
+    /// Default member initializers matter for the error-message constructor,
+    /// which sets none of these: accessors like chdb_result_rows_written()
+    /// are callable on error results and must read zeros, not garbage.
     ResultBuffer result_buffer;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
     /// Write progress of INSERT queries, accumulated from the engine's
     /// CountingTransform progress callbacks. Includes rows/bytes written by
     /// cascaded materialized views — same semantics as the HTTP interface's
     /// X-ClickHouse-Summary.written_rows.
-    uint64_t rows_written;
-    uint64_t bytes_written;
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 /// Raw Chunk-bag query result. Produced by ChunkCollectorOutputFormat-backed
@@ -190,15 +193,17 @@ public:
     }
 
 public:
+    /// Same rationale as MaterializedQueryResult: the error-message
+    /// constructor leaves these untouched, so they must default to zero.
     std::vector<DB::Chunk> chunks;
     std::shared_ptr<const DB::Block> header;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
-    uint64_t rows_written;
-    uint64_t bytes_written;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 using QueryResultPtr = std::unique_ptr<QueryResult>;

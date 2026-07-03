@@ -37,8 +37,21 @@ class TestStreamingInsertConnection(unittest.TestCase):
 
         self.assertEqual(res.rows_written, 3)
         self.assertGreater(res.bytes_written, 0)
+        self.assertGreaterEqual(res.elapsed, 0.0)
         out = self._rows("SELECT a, b FROM t ORDER BY a", "CSV")
         self.assertEqual(out, "1,\"one\"\n2,\"two\"\n3,\"three\"\n")
+
+    def test_rows_written_includes_mv_cascade(self):
+        # Same semantics as plain INSERTs (issue #88): rows_written includes
+        # rows cascaded into materialized views, X-ClickHouse-Summary style.
+        self.conn.query("CREATE TABLE src (a UInt64) ENGINE = MergeTree ORDER BY a")
+        self.conn.query("CREATE TABLE dst (a2 UInt64) ENGINE = MergeTree ORDER BY a2")
+        self.conn.query("CREATE MATERIALIZED VIEW mv TO dst AS SELECT a*2 AS a2 FROM src")
+        with self.conn.send_insert("INSERT INTO src (a)", "CSV") as ins:
+            ins.append("1\n2\n3\n")
+            res = ins.finish()
+        self.assertEqual(res.rows_written, 6)  # 3 source + 3 cascaded
+        self.assertEqual(self._rows("SELECT count(), sum(a2) FROM dst", "CSV"), "3,12\n")
 
     def test_single_chunk_multiple_rows(self):
         self.conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = Memory")

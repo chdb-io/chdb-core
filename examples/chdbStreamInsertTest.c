@@ -144,11 +144,39 @@ static void test_full_lifecycle(chdb_connection conn)
         CHECK(chdb_result_error(result) == NULL, "done reports no error");
         CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
         CHECK(chdb_result_bytes_written(result) > 0, "bytes_written > 0");
+        CHECK(chdb_result_elapsed(result) >= 0.0, "elapsed >= 0");
+        /* An INSERT produces no result set: the read-side accessors are empty. */
+        CHECK(chdb_result_length(result) == 0, "no output data");
+        CHECK(chdb_result_rows_read(result) == 0, "rows_read == 0");
         chdb_destroy_query_result(result);
     }
     chdb_destroy_insert_stream(stream);
 
     expect_query(conn, "SELECT a, b FROM st1 ORDER BY a", "1,\"one\"\n2,\"two\"\n");
+}
+
+static void test_mv_cascade_counted_in_rows_written(chdb_connection conn)
+{
+    printf("== test_mv_cascade_counted_in_rows_written ==\n");
+    chdb_destroy_query_result(run(conn, "CREATE TABLE stmv_src (a UInt64) ENGINE = MergeTree ORDER BY a"));
+    chdb_destroy_query_result(run(conn, "CREATE TABLE stmv_dst (a2 UInt64) ENGINE = MergeTree ORDER BY a2"));
+    chdb_destroy_query_result(run(conn, "CREATE MATERIALIZED VIEW stmv TO stmv_dst AS SELECT a*2 AS a2 FROM stmv_src"));
+
+    /* Same semantics as issue #88 for plain INSERTs: rows_written includes
+     * rows cascaded into materialized views, X-ClickHouse-Summary style. */
+    chdb_insert_stream stream = chdb_stream_insert(conn, "INSERT INTO stmv_src (a)", "CSV");
+    CHECK(stream != NULL && chdb_stream_insert_error(stream) == NULL, "init ok");
+    CHECK(chdb_stream_append(stream, "1\n2\n3\n", 6) == CHDBSuccess, "append");
+
+    chdb_result * result = chdb_stream_done(stream);
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 6, "rows_written == 6 (3 source + 3 cascaded)");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn, "SELECT count(), sum(a2) FROM stmv_dst", "3,12\n");
 }
 
 /* One helper for the per-format tests: stream two rows in `format`, finish,
@@ -453,6 +481,7 @@ static void test_malformed_row_error(chdb_connection conn)
     if (result) {
         if (chdb_result_error(result) != NULL)
             error_surfaced = 1;
+        CHECK(chdb_result_rows_written(result) == 0, "error result reports rows_written == 0");
         chdb_destroy_query_result(result);
     }
     CHECK(error_surfaced, "malformed row error surfaced by done() at latest");
@@ -777,6 +806,7 @@ int main(int argc, char ** argv)
     }
 
     test_full_lifecycle(*conn);
+    test_mv_cascade_counted_in_rows_written(*conn);
     test_csv_quoted_content(*conn);
     test_format_matrix(*conn);
     test_multi_chunk_streaming(*conn);
