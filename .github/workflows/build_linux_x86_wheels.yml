@@ -274,6 +274,7 @@ jobs:
           bash -x ./examples/runArrowStreamParse.sh
           bash -x ./examples/runArrowQueryTest.sh
           bash -x ./examples/runInsertProgressTest.sh
+          bash -x ./examples/runStreamInsertTest.sh
       - name: Check ccache statistics
         run: |
           ccache -s
