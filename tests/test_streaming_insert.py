@@ -95,7 +95,7 @@ class TestStreamingInsertConnection(unittest.TestCase):
 
     def test_many_chunks_constant_stream(self):
         self.conn.query("CREATE TABLE t (a UInt64) ENGINE = MergeTree ORDER BY a")
-        n = 10000
+        n = 20000
         with self.conn.send_insert("INSERT INTO t (a)", "CSV") as ins:
             for i in range(n):
                 ins.append(f"{i}\n")
@@ -190,12 +190,69 @@ class TestStreamingInsertConnection(unittest.TestCase):
             # must be rejected (single active statement).
             with self.assertRaises(Exception):
                 self.conn.query("SELECT 1")
+            # And so must a second insert stream.
+            with self.assertRaises(Exception):
+                self.conn.send_insert("INSERT INTO t (a)", "CSV")
         finally:
             ins.finish()
 
     def test_bad_insert_target_errors_at_init(self):
         with self.assertRaises(RuntimeError):
             self.conn.send_insert("INSERT INTO no_such_table (a)", "CSV")
+
+    def test_format_mismatch_payload_errors(self):
+        # Declare CSV but push a JSONEachRow payload: the parser must reject
+        # it no later than finish(), and nothing may be committed.
+        self.conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = Memory")
+        ins = self.conn.send_insert("INSERT INTO t (a, b)", "CSV")
+        raised = None
+        try:
+            ins.append('{"a":1,"b":"one"}\n')
+            ins.finish()
+        except RuntimeError as e:
+            raised = e
+        self.assertIsNotNone(raised, "format-mismatch payload must raise by finish()")
+        self.assertEqual(self._rows("SELECT count() FROM t", "CSV"), "0\n")
+
+    def test_multi_block_streaming_into_memory_engine(self):
+        # Same small-block settings as the MergeTree parts test, but against a
+        # Memory sink: integrity of many incrementally pushed blocks into a
+        # non-MergeTree target (no parts to count, so assert exact count/sum).
+        self.conn.query("CREATE TABLE t (a UInt64) ENGINE = Memory")
+        n = 50000
+        target = (
+            "INSERT INTO t (a) SETTINGS max_insert_block_size=10000, "
+            "min_insert_block_size_rows=10000, min_insert_block_size_bytes=0"
+        )
+        with self.conn.send_insert(target, "CSV") as ins:
+            for i in range(n):
+                ins.append(f"{i}\n")
+            res = ins.finish()
+        self.assertEqual(res.rows_written, n)
+        self.assertEqual(
+            self._rows("SELECT count(), sum(a) FROM t", "CSV"),
+            f"{n},{n * (n - 1) // 2}\n",
+        )
+
+    def test_close_connection_with_active_insert(self):
+        # Closing the connection while an insert stream is open must tear the
+        # stream down safely: the stale inserter degrades to errors (no crash,
+        # neither on use nor when it is garbage-collected) and a fresh
+        # connection works.
+        self.conn.query("CREATE TABLE t (a UInt64) ENGINE = Memory")
+        ins = self.conn.send_insert("INSERT INTO t (a)", "CSV")
+        ins.append("1\n")
+        self.conn.close()
+
+        with self.assertRaises(RuntimeError):
+            ins.append("2\n")
+        with self.assertRaises(RuntimeError):
+            ins.finish()
+        del ins  # GC of the stale handle must be safe
+
+        # Fresh connection works (also keeps tearDown's close() valid).
+        self.conn = chdb.connect(":memory:")
+        self.assertEqual(self.conn.query("SELECT 1", "CSV").data(), "1\n")
 
 
 class TestStreamingInsertSession(unittest.TestCase):

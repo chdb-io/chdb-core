@@ -50,9 +50,11 @@ class TestStreamingInsertFile(unittest.TestCase):
         except ImportError:
             self.skipTest("pyarrow not available")
 
-        # Build a Parquet payload in memory.
-        table = pa.table({"a": pa.array([1, 2, 3], pa.uint64()),
-                          "b": pa.array(["x", "y", "z"])})
+        # Build a Parquet payload in memory (100 rows, matching the volume of
+        # the native C test).
+        n = 100
+        table = pa.table({"a": pa.array(range(n), pa.uint64()),
+                          "b": pa.array([str(i) for i in range(n)])})
         buf = io.BytesIO()
         pq.write_table(table, buf)
         parquet_bytes = buf.getvalue()
@@ -65,9 +67,12 @@ class TestStreamingInsertFile(unittest.TestCase):
             ins.append(parquet_bytes[:mid])
             ins.append(parquet_bytes[mid:])
             res = ins.finish()
-        self.assertEqual(res.rows_written, 3)
-        out = self.conn.query("SELECT a, b FROM t ORDER BY a", "CSV").data()
-        self.assertEqual(out, "1,\"x\"\n2,\"y\"\n3,\"z\"\n")
+        self.assertEqual(res.rows_written, n)
+        out = self.conn.query("SELECT count(), sum(a) FROM t", "CSV").data()
+        self.assertEqual(out, f"{n},{n * (n - 1) // 2}\n")
+        # Spot-check a value to prove column integrity, mirroring the C test.
+        self.assertEqual(self.conn.query("SELECT b FROM t WHERE a = 42", "CSV").data(),
+                         '"42"\n')
 
 
 if __name__ == "__main__":

@@ -124,6 +124,11 @@ void ChdbClient::cleanup()
                 ctx->queue_buf->finish();
             if (ctx->worker.joinable())
                 ctx->worker.join();
+            /// Mark the stream finalized so a handle that outlives this
+            /// connection becomes inert: the C ABI checks this flag before
+            /// dereferencing its (now dangling) owner pointer, making
+            /// append/done/cancel/destroy after close safe error paths.
+            ctx->finalized.store(true, std::memory_order_release);
             streaming_insert_context.reset();
         }
 

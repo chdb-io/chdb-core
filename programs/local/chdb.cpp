@@ -947,12 +947,26 @@ chdb_insert_stream chdb_stream_insert_n(
     }
 }
 
+/// True when the stream has already been finalized by done()/cancel() or by
+/// the owning connection's teardown. Once set, the handle must not touch its
+/// owner pointer (the client may be gone if the connection was closed with
+/// the stream still open) — every entry point below checks this first.
+static bool insert_stream_finalized(InsertStreamResult * res)
+{
+    if (!res->context)
+        return false;
+    auto ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
+    return ctx->finalized.load(std::memory_order_acquire);
+}
+
 chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size_t len)
 {
     if (!stream)
         return CHDBError;
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return CHDBError;
     auto * client = static_cast<DB::ChdbClient *>(res->owner);
     if (!client)
         return CHDBError;
@@ -975,6 +989,8 @@ chdb_result * chdb_stream_done(chdb_insert_stream stream)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null insert stream"));
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Insert stream already finalized"));
     auto * client = static_cast<DB::ChdbClient *>(res->owner);
     if (!client)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid insert stream"));
@@ -1000,6 +1016,8 @@ void chdb_stream_cancel_insert(chdb_insert_stream stream)
         return;
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return;
     auto * client = static_cast<DB::ChdbClient *>(res->owner);
     if (!client)
         return;
@@ -1033,7 +1051,9 @@ void chdb_destroy_insert_stream(chdb_insert_stream stream)
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
     /// If the stream was never finalized, abort it so the worker thread is
     /// joined and engine resources are released before we free the handle.
-    if (res->context && res->owner)
+    /// Skip when already finalized — including by connection teardown, in
+    /// which case res->owner dangles and must not be dereferenced.
+    if (res->context && res->owner && !insert_stream_finalized(res))
     {
         try
         {

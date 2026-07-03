@@ -87,9 +87,11 @@ public:
 
     /// Back-pointer to the owning DB::ChdbClient (opaque here). The C ABI
     /// append/done/cancel functions take only the stream handle (no conn), so
-    /// the handle must carry the client to route calls. Valid until the
-    /// connection is closed; closing a connection with an open stream is
-    /// undefined (same contract as the read-side streaming handle).
+    /// the handle must carry the client to route calls. If the connection is
+    /// closed while the stream is open, teardown cancels the stream and marks
+    /// its context finalized; the C ABI checks that flag before dereferencing
+    /// this pointer, so a stale handle degrades to error returns and a safe
+    /// destroy instead of undefined behavior.
     void * owner = nullptr;
 };
 
