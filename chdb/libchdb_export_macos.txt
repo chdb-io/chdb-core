@@ -27,6 +27,15 @@ _chdb_stream_query_with_params_n
 _chdb_stream_fetch_result
 _chdb_stream_cancel_query
 _chdb_destroy_query_result
+
+_chdb_stream_insert
+_chdb_stream_insert_n
+_chdb_stream_append
+_chdb_stream_done
+_chdb_stream_cancel_insert
+_chdb_stream_insert_error
+_chdb_destroy_insert_stream
+
 _chdb_result_buffer
 _chdb_result_length
 _chdb_result_elapsed

@@ -592,6 +592,77 @@ void connection_wrapper::streaming_cancel_query(streaming_query_result * streami
     chdb_stream_cancel_query(*conn, streaming_result->get_result());
 }
 
+streaming_insert_result * connection_wrapper::send_insert(const std::string & query_str, const std::string & format)
+{
+    py::gil_scoped_release release;
+    auto * stream = chdb_stream_insert_n(*conn, query_str.data(), query_str.size(), format.data(), format.size());
+    auto * err = chdb_stream_insert_error(stream);
+    if (err)
+    {
+        std::string msg_copy(err);
+        chdb_destroy_insert_stream(stream);
+        throw std::runtime_error(msg_copy);
+    }
+    return new streaming_insert_result(stream);
+}
+
+void connection_wrapper::insert_append(streaming_insert_result * ins, const py::bytes & data)
+{
+    if (!ins || !ins->get_stream())
+        throw std::runtime_error("Invalid insert stream");
+
+    /// Borrow the buffer under the GIL (py::bytes accessors need it), then
+    /// release the GIL for the (potentially blocking, backpressured) append.
+    char * buffer = nullptr;
+    Py_ssize_t length = 0;
+    if (PyBytes_AsStringAndSize(data.ptr(), &buffer, &length) != 0)
+        throw std::runtime_error("send_insert append expects bytes");
+
+    chdb_insert_stream stream = ins->get_stream();
+    chdb_state state;
+    {
+        py::gil_scoped_release release;
+        state = chdb_stream_append(stream, buffer, static_cast<size_t>(length));
+    }
+    if (state != CHDBSuccess)
+    {
+        auto * err = chdb_stream_insert_error(stream);
+        throw std::runtime_error(err ? err : "streaming insert append failed");
+    }
+}
+
+query_result * connection_wrapper::insert_done(streaming_insert_result * ins)
+{
+    if (!ins || !ins->get_stream())
+        throw std::runtime_error("Invalid insert stream");
+
+    chdb_result * result = nullptr;
+    {
+        py::gil_scoped_release release;
+        result = chdb_stream_done(ins->get_stream());
+    }
+
+    const auto & error_msg = CHDB::chdb_result_error_string(result);
+    if (!error_msg.empty())
+    {
+        std::string msg_copy(error_msg);
+        chdb_destroy_query_result(result);
+        throw std::runtime_error(msg_copy);
+    }
+
+    return new query_result(result, false);
+}
+
+void connection_wrapper::insert_cancel(streaming_insert_result * ins)
+{
+    py::gil_scoped_release release;
+
+    if (!ins || !ins->get_stream())
+        return;
+
+    chdb_stream_cancel_insert(ins->get_stream());
+}
+
 #if USE_CLIENT_AI
 void connection_wrapper::applyAIParams(std::map<std::string, std::string> & params)
 {
@@ -767,6 +838,8 @@ PYBIND11_MODULE(_chdb, m)
         .def("storage_rows_read", &query_result::storage_rows_read)
         .def("storage_bytes_read", &query_result::storage_bytes_read)
         .def("elapsed", &query_result::elapsed)
+        .def("rows_written", &query_result::rows_written)
+        .def("bytes_written", &query_result::bytes_written)
         .def("get_memview", &query_result::get_memview)
         .def("has_error", &query_result::has_error)
         .def("error_message", &query_result::error_message);
@@ -775,6 +848,11 @@ PYBIND11_MODULE(_chdb, m)
         .def(py::init<chdb_result *>(), py::return_value_policy::take_ownership)
         .def("has_error", &streaming_query_result::has_error)
         .def("error_message", &streaming_query_result::error_message);
+
+    py::class_<streaming_insert_result>(m, "streaming_insert_result")
+        .def(py::init<chdb_insert_stream>(), py::return_value_policy::take_ownership)
+        .def("has_error", &streaming_insert_result::has_error)
+        .def("error_message", &streaming_insert_result::error_message);
 
     py::class_<DB::PyReader, std::shared_ptr<DB::PyReader>>(m, "PyReader")
         .def(
@@ -875,7 +953,29 @@ PYBIND11_MODULE(_chdb, m)
             "streaming_cancel_query",
             &connection_wrapper::streaming_cancel_query,
             py::arg("streaming_result"),
-            "Cancel a streaming query");
+            "Cancel a streaming query")
+        .def(
+            "send_insert",
+            &connection_wrapper::send_insert,
+            py::arg("query_str"),
+            py::arg("format") = "CSV",
+            "Begin a streaming INSERT and return a streaming_insert_result handle")
+        .def(
+            "insert_append",
+            &connection_wrapper::insert_append,
+            py::arg("insert_result"),
+            py::arg("data"),
+            "Append a chunk of FORMAT-encoded bytes to a streaming INSERT")
+        .def(
+            "insert_done",
+            &connection_wrapper::insert_done,
+            py::arg("insert_result"),
+            "Finalize a streaming INSERT and return a query_result with write stats")
+        .def(
+            "insert_cancel",
+            &connection_wrapper::insert_cancel,
+            py::arg("insert_result"),
+            "Abort a streaming INSERT without committing");
 
     CHDB::ChdbPyType::initialize(m);
     CHDB::PythonUDFRegistry::instance();

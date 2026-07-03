@@ -914,6 +914,174 @@ void chdb_destroy_query_result(chdb_result * result)
     delete query_result;
 }
 
+chdb_insert_stream chdb_stream_insert(chdb_connection conn, const char * query, const char * format)
+{
+    return chdb_stream_insert_n(conn, query, query ? std::strlen(query) : 0, format, format ? std::strlen(format) : 0);
+}
+
+chdb_insert_stream chdb_stream_insert_n(
+    chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len)
+{
+    if (!conn)
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Unexpected null connection"));
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Invalid or closed connection"));
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto query_result = client->executeInsertStreamingInit(query, query_len, format, format_len);
+        if (!query_result)
+            return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Insert stream initialization failed"));
+        return reinterpret_cast<chdb_insert_stream>(query_result.release());
+    }
+    catch (const std::exception & e)
+    {
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult(std::string("Error: ") + e.what()));
+    }
+    catch (...)
+    {
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult(DB::getCurrentExceptionMessage(true)));
+    }
+}
+
+/// True when the stream has already been finalized by done()/cancel() or by
+/// the owning connection's teardown. Once set, the handle must not touch its
+/// owner pointer (the client may be gone if the connection was closed with
+/// the stream still open) — every entry point below checks this first.
+static bool insert_stream_finalized(InsertStreamResult * res)
+{
+    if (!res->context)
+        return false;
+    auto ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
+    return ctx->finalized.load(std::memory_order_acquire);
+}
+
+chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size_t len)
+{
+    if (!stream)
+        return CHDBError;
+
+    auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return CHDBError;
+    auto * client = static_cast<DB::ChdbClient *>(res->owner);
+    if (!client)
+        return CHDBError;
+
+    try
+    {
+        const bool ok = client->executeInsertStreamingAppend(res, static_cast<const char *>(data), len);
+        return ok ? CHDBSuccess : CHDBError;
+    }
+    catch (...)
+    {
+        res->setError(DB::getCurrentExceptionMessage(true));
+        return CHDBError;
+    }
+}
+
+chdb_result * chdb_stream_done(chdb_insert_stream stream)
+{
+    if (!stream)
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null insert stream"));
+
+    auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Insert stream already finalized"));
+    auto * client = static_cast<DB::ChdbClient *>(res->owner);
+    if (!client)
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid insert stream"));
+
+    try
+    {
+        auto query_result = client->executeInsertStreamingDone(res);
+        return reinterpret_cast<chdb_result *>(query_result.release());
+    }
+    catch (const std::exception & e)
+    {
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(std::string("Error: ") + e.what()));
+    }
+    catch (...)
+    {
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(DB::getCurrentExceptionMessage(true)));
+    }
+}
+
+void chdb_stream_cancel_insert(chdb_insert_stream stream)
+{
+    if (!stream)
+        return;
+
+    auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (insert_stream_finalized(res))
+        return;
+    auto * client = static_cast<DB::ChdbClient *>(res->owner);
+    if (!client)
+        return;
+
+    try
+    {
+        client->cancelInsertStream(res);
+    }
+    catch (...)
+    {
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+    }
+    /// Note: the handle is freed by chdb_destroy_insert_stream(), not here.
+}
+
+const char * chdb_stream_insert_error(chdb_insert_stream stream)
+{
+    if (!stream)
+        return nullptr;
+
+    auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    const std::string & err = res->getError();
+    if (!err.empty())
+        return err.c_str();
+
+    /// The worker records its failure (e.g. a parse error or
+    /// MEMORY_LIMIT_EXCEEDED) in the context, not on the handle; surface it
+    /// here so a failed append can be diagnosed before done() is called. The
+    /// error_set acquire pairs with the worker's release-store, after which
+    /// the worker never touches error_message again; the context is kept
+    /// alive by the handle's shared_ptr.
+    if (res->context)
+    {
+        auto ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
+        if (ctx->error_set.load(std::memory_order_acquire) && !ctx->error_message.empty())
+            return ctx->error_message.c_str();
+    }
+    return nullptr;
+}
+
+void chdb_destroy_insert_stream(chdb_insert_stream stream)
+{
+    if (!stream)
+        return;
+
+    auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    /// If the stream was never finalized, abort it so the worker thread is
+    /// joined and engine resources are released before we free the handle.
+    /// Skip when already finalized — including by connection teardown, in
+    /// which case res->owner dangles and must not be dereferenced.
+    if (res->context && res->owner && !insert_stream_finalized(res))
+    {
+        try
+        {
+            static_cast<DB::ChdbClient *>(res->owner)->cancelInsertStream(res);
+        }
+        catch (...)
+        {
+            DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
+    }
+    delete res;
+}
+
 char * chdb_result_buffer(chdb_result * result)
 {
     if (!result)

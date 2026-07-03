@@ -64,6 +64,37 @@ public:
     std::shared_ptr<void> private_data;
 };
 
+/// Handle for a streaming INSERT (chdb_stream_insert). Returned to the C layer
+/// reinterpret_cast as a chdb_insert_stream, mirroring how StreamQueryResult
+/// backs the read-side streaming handle. `context` is a
+/// CHDB::InsertStreamContext (opaque here to keep this header light — the
+/// thread/queue machinery lives in StreamingInsert.h / ChdbClient). On an init
+/// failure `context` is null and `error_message` carries the reason.
+class InsertStreamResult : public QueryResult
+{
+public:
+    explicit InsertStreamResult(String error_message_ = "")
+        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_))
+    {}
+
+    bool isEmpty() const override { return false; }
+
+    /// Updated as append()/done() observe engine-side errors so that
+    /// chdb_stream_insert_error() reflects the latest failure.
+    void setError(String message) { error_message = std::move(message); }
+
+    std::shared_ptr<void> context;
+
+    /// Back-pointer to the owning DB::ChdbClient (opaque here). The C ABI
+    /// append/done/cancel functions take only the stream handle (no conn), so
+    /// the handle must carry the client to route calls. If the connection is
+    /// closed while the stream is open, teardown cancels the stream and marks
+    /// its context finalized; the C ABI checks that flag before dereferencing
+    /// this pointer, so a stale handle degrades to error returns and a safe
+    /// destroy instead of undefined behavior.
+    void * owner = nullptr;
+};
+
 using ResultBuffer = std::unique_ptr<std::vector<char>>;
 
 class MaterializedQueryResult : public QueryResult
@@ -107,18 +138,21 @@ public:
     }
 
 public:
+    /// Default member initializers matter for the error-message constructor,
+    /// which sets none of these: accessors like chdb_result_rows_written()
+    /// are callable on error results and must read zeros, not garbage.
     ResultBuffer result_buffer;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
     /// Write progress of INSERT queries, accumulated from the engine's
     /// CountingTransform progress callbacks. Includes rows/bytes written by
     /// cascaded materialized views — same semantics as the HTTP interface's
     /// X-ClickHouse-Summary.written_rows.
-    uint64_t rows_written;
-    uint64_t bytes_written;
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 /// Raw Chunk-bag query result. Produced by ChunkCollectorOutputFormat-backed
@@ -159,20 +193,23 @@ public:
     }
 
 public:
+    /// Same rationale as MaterializedQueryResult: the error-message
+    /// constructor leaves these untouched, so they must default to zero.
     std::vector<DB::Chunk> chunks;
     std::shared_ptr<const DB::Block> header;
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    uint64_t storage_rows_read;
-    uint64_t storage_bytes_read;
-    uint64_t rows_written;
-    uint64_t bytes_written;
+    double elapsed = 0.0;
+    uint64_t rows_read = 0;
+    uint64_t bytes_read = 0;
+    uint64_t storage_rows_read = 0;
+    uint64_t storage_bytes_read = 0;
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
 };
 
 using QueryResultPtr = std::unique_ptr<QueryResult>;
 using MaterializedQueryResultPtr = std::unique_ptr<MaterializedQueryResult>;
 using StreamQueryResultPtr = std::unique_ptr<StreamQueryResult>;
 using ChunkQueryResultPtr = std::unique_ptr<ChunkQueryResult>;
+using InsertStreamResultPtr = std::unique_ptr<InsertStreamResult>;
 
 } // namespace CHDB

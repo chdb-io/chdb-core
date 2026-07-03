@@ -288,6 +288,7 @@ jobs:
           bash -x ./examples/runArrowStreamParse.sh
           bash -x ./examples/runArrowQueryTest.sh
           bash -x ./examples/runInsertProgressTest.sh
+          bash -x ./examples/runStreamInsertTest.sh
       - name: Check ccache statistics
         run: |
           ccache -s
@@ -320,6 +321,40 @@ jobs:
           mkdir -p tmp/core
           echo "tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
           ulimit -c unlimited
+      - name: Start MinIO for S3 streaming-insert tests
+        continue-on-error: true
+        run: |
+          # Provide a local S3-compatible endpoint so tests/test_streaming_insert_s3.py
+          # runs in CI. Best-effort: the test self-skips if the endpoint is unreachable,
+          # so a download/start hiccup never fails the build.
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64)  OSARCH=linux-amd64 ;;
+            Linux-aarch64) OSARCH=linux-arm64 ;;
+            Darwin-arm64)  OSARCH=darwin-arm64 ;;
+            Darwin-x86_64) OSARCH=darwin-amd64 ;;
+            *) echo "unknown platform $(uname -s)-$(uname -m); skipping MinIO"; exit 0 ;;
+          esac
+          BIN="$HOME/.local/bin"; mkdir -p "$BIN"
+          command -v minio >/dev/null 2>&1 || { curl -sSL "https://dl.min.io/server/minio/release/$OSARCH/minio" -o "$BIN/minio" && chmod +x "$BIN/minio"; }
+          command -v mc    >/dev/null 2>&1 || { curl -sSL "https://dl.min.io/client/mc/release/$OSARCH/mc"       -o "$BIN/mc"    && chmod +x "$BIN/mc"; }
+          export PATH="$BIN:$PATH"
+          mkdir -p /tmp/minio_data
+          MINIO_ROOT_USER=clickhouse MINIO_ROOT_PASSWORD=clickhouse \
+            minio server --address ":11111" /tmp/minio_data > /tmp/minio.log 2>&1 &
+          for i in $(seq 1 20); do
+            if mc alias set ciminio http://localhost:11111 clickhouse clickhouse >/dev/null 2>&1; then
+              mc mb --ignore-existing ciminio/test >/dev/null 2>&1 || true
+              {
+                echo "CHDB_S3_TEST=1"
+                echo "CHDB_S3_ENDPOINT=http://localhost:11111/test"
+                echo "CHDB_S3_ACCESS_KEY=clickhouse"
+                echo "CHDB_S3_SECRET_KEY=clickhouse"
+              } >> "$GITHUB_ENV"
+              echo "MinIO ready on :11111; S3 streaming-insert tests enabled."
+              break
+            fi
+            sleep 1
+          done
       - name: Test wheel on all Python versions
         run: |
           ulimit -c unlimited
