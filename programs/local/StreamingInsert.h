@@ -120,11 +120,6 @@ struct InsertStreamContext
     uint64_t bytes_written = 0;
     double elapsed = 0.0;
 
-    /// We force input_format_parallel_parsing=0 for the duration of the insert
-    /// (parallel parsing makes the engine build a self-reading `completed()`
-    /// pipeline that bypasses our pushed blocks and blocks sendQuery). This
-    /// remembers the connection's prior value so done()/cancel() can restore it.
-    bool prev_parallel_parsing = true;
 };
 
 using InsertStreamContextPtr = std::shared_ptr<InsertStreamContext>;

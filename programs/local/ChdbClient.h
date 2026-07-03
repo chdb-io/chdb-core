@@ -97,6 +97,12 @@ private:
     void runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx);
     void cancelInsertStreamWithoutLock();
 
+    /// Restores the connection settings saved by executeInsertStreamingInit
+    /// (which applies the INSERT's SETTINGS clause + forces non-parallel
+    /// parsing onto client_context). Mirrors ClientBase's old_settings
+    /// SCOPE_EXIT so statement-level SETTINGS never leak past the stream.
+    void restoreSettingsAfterInsertStream();
+
     EmbeddedServer & server;
     std::unique_ptr<Session> session;
     ConfigurationPtr configuration;
@@ -106,6 +112,9 @@ private:
     std::shared_ptr<CHDB::PythonTableCache> python_table_cache;
 #endif
     CHDB::InsertStreamContextPtr streaming_insert_context;
+    /// Connection settings snapshot taken before applying the streaming
+    /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().
+    std::unique_ptr<Settings> insert_stream_saved_settings;
     mutable std::mutex client_mutex;
 };
 

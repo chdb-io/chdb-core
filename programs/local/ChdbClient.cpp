@@ -45,7 +45,6 @@ namespace Setting
     extern const SettingsUInt64 max_insert_block_size_bytes;
     extern const SettingsUInt64 min_insert_block_size_rows;
     extern const SettingsUInt64 min_insert_block_size_bytes;
-    extern const SettingsBool input_format_parallel_parsing;
 }
 
 ChdbClient::ChdbClient(EmbeddedServer & server_ref)
@@ -581,6 +580,12 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
             return std::make_unique<CHDB::InsertStreamResult>(
                 "send_insert does not support INSERT ... SELECT (use a normal query)");
 
+        /// Snapshot the connection settings before applying the INSERT's
+        /// SETTINGS clause; restored by restoreSettingsAfterInsertStream() when
+        /// the stream ends (mirrors ClientBase's old_settings SCOPE_EXIT, so
+        /// e.g. `SETTINGS s3_max_single_part_upload_size=...` on one streaming
+        /// insert never leaks into later statements on this connection).
+        insert_stream_saved_settings = std::make_unique<Settings>(client_context->getSettingsRef());
         DB::InterpreterSetQuery::applySettingsFromQuery(parsed_query, client_context);
         connection->setFormatSettings(getFormatSettings(client_context));
 
@@ -595,8 +600,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
 
         /// Force non-parallel parsing so the engine builds a pushing pipeline
         /// (awaiting our sendData blocks) rather than a self-reading completed
-        /// pipeline. Restored in done()/cancel().
-        ctx->prev_parallel_parsing = settings[Setting::input_format_parallel_parsing];
+        /// pipeline. Undone by the settings restore in done()/cancel().
         client_context->setSetting("input_format_parallel_parsing", false);
 
         streaming_insert_context = ctx;
@@ -612,7 +616,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
         {
             if (ctx->worker.joinable())
                 ctx->worker.join();
-            client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+            restoreSettingsAfterInsertStream();
             streaming_insert_context.reset();
             return std::make_unique<CHDB::InsertStreamResult>(init_error);
         }
@@ -624,20 +628,29 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     }
     catch (const Exception & e)
     {
-        /// Restore input_format_parallel_parsing if we already flipped it (the
-        /// non-exception failure path does the same); otherwise it leaks as false
-        /// on client_context for all subsequent queries.
-        if (streaming_insert_context)
-            client_context->setSetting("input_format_parallel_parsing", streaming_insert_context->prev_parallel_parsing);
+        /// Restore any settings the INSERT already applied (the non-exception
+        /// failure path does the same); otherwise they leak on client_context
+        /// for all subsequent statements.
+        restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
         return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, false));
     }
     catch (...)
     {
-        if (streaming_insert_context)
-            client_context->setSetting("input_format_parallel_parsing", streaming_insert_context->prev_parallel_parsing);
+        restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
         return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(true));
+    }
+}
+
+void ChdbClient::restoreSettingsAfterInsertStream()
+{
+    if (insert_stream_saved_settings)
+    {
+        client_context->setSettings(*insert_stream_saved_settings);
+        insert_stream_saved_settings.reset();
+        if (connection)
+            connection->setFormatSettings(getFormatSettings(client_context));
     }
 }
 
@@ -807,7 +820,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
     if (failed && err.empty())
         err = "Streaming insert failed";
 
-    client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+    restoreSettingsAfterInsertStream();
     streaming_insert_context.reset();
 #if USE_PYTHON
     if (connection)
@@ -855,7 +868,7 @@ void ChdbClient::cancelInsertStream(void * insert_stream)
         ctx->worker.join();
 
     std::lock_guard<std::mutex> lock(client_mutex);
-    client_context->setSetting("input_format_parallel_parsing", ctx->prev_parallel_parsing);
+    restoreSettingsAfterInsertStream();
     cancelInsertStreamWithoutLock();
 }
 

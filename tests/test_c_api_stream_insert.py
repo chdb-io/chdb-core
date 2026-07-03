@@ -14,9 +14,31 @@ import ctypes
 import os
 import platform
 import unittest
+import urllib.error
+import urllib.request
+import uuid
 
 CHDBSuccess = 0
 CHDBError = 1
+
+# S3 (MinIO) settings — same contract as test_streaming_insert_s3.py: enabled
+# only when explicitly requested AND the endpoint is reachable.
+S3_ENDPOINT = os.environ.get("CHDB_S3_ENDPOINT", "http://localhost:11111/test")
+S3_ACCESS_KEY = os.environ.get("CHDB_S3_ACCESS_KEY", "clickhouse")
+S3_SECRET_KEY = os.environ.get("CHDB_S3_SECRET_KEY", "clickhouse")
+
+
+def _s3_available():
+    if os.environ.get("CHDB_S3_TEST") != "1":
+        return False
+    base = S3_ENDPOINT.rsplit("/", 1)[0]
+    try:
+        urllib.request.urlopen(base, timeout=3)
+        return True
+    except urllib.error.HTTPError:
+        return True  # server answered => reachable
+    except Exception:
+        return False
 
 
 def _find_libchdb():
@@ -170,6 +192,85 @@ class TestCApiStreamInsert(unittest.TestCase):
         self.lib.chdb_destroy_insert_stream(stream)
         # Connection still usable.
         self.assertEqual(self._query(b"SELECT 1"), b"1\n")
+
+
+@unittest.skipIf(_LIB_PATH is None, "libchdb.so/dylib not found; set CHDB_LIB_PATH")
+@unittest.skipUnless(_s3_available(), "set CHDB_S3_TEST=1 and run MinIO to enable S3 tests")
+class TestCApiStreamInsertS3(unittest.TestCase):
+    """S3-target streaming INSERT via the raw C ABI (mirrors the Python-level
+    test_streaming_insert_s3.py: happy-path roundtrip + multipart-abort cancel)."""
+
+    @classmethod
+    def setUpClass(cls):
+        TestCApiStreamInsert.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TestCApiStreamInsert.tearDownClass.__func__(cls)
+
+    def setUp(self):
+        self.url = f"{S3_ENDPOINT}/c_abi_stream_{uuid.uuid4().hex}.csv"
+
+    def _s3_fn(self):
+        return (
+            f"s3('{self.url}', '{S3_ACCESS_KEY}', '{S3_SECRET_KEY}', "
+            "'CSV', 'a UInt64, b String')"
+        )
+
+    def _query(self, sql, fmt=b"CSV"):
+        result = self.lib.chdb_query(self.conn, sql, fmt)
+        try:
+            err = self.lib.chdb_result_error(result)
+            if err:
+                raise RuntimeError(err.decode("utf-8", "replace"))
+            n = self.lib.chdb_result_length(result)
+            buf = self.lib.chdb_result_buffer(result)
+            return ctypes.string_at(buf, n) if (buf and n) else b""
+        finally:
+            self.lib.chdb_destroy_query_result(result)
+
+    def test_s3_roundtrip_via_c_abi(self):
+        q = f"INSERT INTO FUNCTION {self._s3_fn()}".encode()
+        fmt = b"CSV"
+        stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
+        self.assertIsNone(self.lib.chdb_stream_insert_error(stream))
+
+        payload = b"1,one\n2,two\n"
+        buf = (ctypes.c_char * len(payload)).from_buffer_copy(payload)
+        self.assertEqual(
+            self.lib.chdb_stream_append(stream, buf, len(payload)), CHDBSuccess
+        )
+        result = self.lib.chdb_stream_done(stream)
+        try:
+            self.assertFalse(self.lib.chdb_result_error(result))
+            self.assertEqual(self.lib.chdb_result_rows_written(result), 2)
+        finally:
+            self.lib.chdb_destroy_query_result(result)
+        self.lib.chdb_destroy_insert_stream(stream)
+
+        out = self._query(f"SELECT count(), sum(a) FROM {self._s3_fn()}".encode())
+        self.assertEqual(out, b"2,3\n")
+
+    def test_s3_cancel_multipart_leaves_no_object_via_c_abi(self):
+        q = (
+            f"INSERT INTO FUNCTION {self._s3_fn()} "
+            "SETTINGS s3_min_upload_part_size = 1, s3_max_single_part_upload_size = 1"
+        ).encode()
+        fmt = b"CSV"
+        stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
+        self.assertIsNone(self.lib.chdb_stream_insert_error(stream))
+
+        for i in range(1000):
+            row = f"{i},val{i}\n".encode()
+            buf = (ctypes.c_char * len(row)).from_buffer_copy(row)
+            if self.lib.chdb_stream_append(stream, buf, len(row)) != CHDBSuccess:
+                break
+        self.lib.chdb_stream_cancel_insert(stream)
+        self.lib.chdb_destroy_insert_stream(stream)
+
+        # The never-completed object must not exist.
+        with self.assertRaises(RuntimeError):
+            self._query(f"SELECT count() FROM {self._s3_fn()}".encode())
 
 
 if __name__ == "__main__":
