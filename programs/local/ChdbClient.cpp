@@ -768,6 +768,12 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         ctx->error_set.store(true, std::memory_order_release);
         signal_init(ctx->error_message.empty() ? String("Streaming insert failed") : ctx->error_message);
     }
+    /// Close the queue on the way out (idempotent). Critical on the error
+    /// path: the producer may be blocked in a full-queue push, and with the
+    /// worker gone nobody would ever pop — without this, a worker failure
+    /// (e.g. MEMORY_LIMIT_EXCEEDED) deadlocks the appending thread. After
+    /// finish(), a blocked push returns false and append reports the error.
+    ctx->queue_buf->finish();
     ctx->worker_done = true;
 }
 

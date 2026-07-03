@@ -1040,7 +1040,22 @@ const char * chdb_stream_insert_error(chdb_insert_stream stream)
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
     const std::string & err = res->getError();
-    return err.empty() ? nullptr : err.c_str();
+    if (!err.empty())
+        return err.c_str();
+
+    /// The worker records its failure (e.g. a parse error or
+    /// MEMORY_LIMIT_EXCEEDED) in the context, not on the handle; surface it
+    /// here so a failed append can be diagnosed before done() is called. The
+    /// error_set acquire pairs with the worker's release-store, after which
+    /// the worker never touches error_message again; the context is kept
+    /// alive by the handle's shared_ptr.
+    if (res->context)
+    {
+        auto ctx = std::static_pointer_cast<CHDB::InsertStreamContext>(res->context);
+        if (ctx->error_set.load(std::memory_order_acquire) && !ctx->error_message.empty())
+            return ctx->error_message.c_str();
+    }
+    return nullptr;
 }
 
 void chdb_destroy_insert_stream(chdb_insert_stream stream)

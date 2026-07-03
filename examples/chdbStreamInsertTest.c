@@ -365,6 +365,59 @@ static void test_memory_multi_block_count_sum(chdb_connection conn)
     expect_query(conn, "SELECT count(), sum(a) FROM stm", "50000,1249975000\n");
 }
 
+static void test_memory_limit_error(chdb_connection conn)
+{
+    printf("== test_memory_limit_error ==\n");
+    chdb_destroy_query_result(run(conn, "CREATE TABLE stml (a UInt64, b String) ENGINE = Null"));
+
+    /* Tiny per-query limit + block squashing disabled from flushing early, so
+     * the worker's accumulation must exceed the limit. The failure has to
+     * surface as a clean append/done error with the engine's message (the
+     * dying worker closes the queue, releasing any blocked producer), never a
+     * deadlock — and the connection must stay usable after cancel. */
+    chdb_insert_stream stream = chdb_stream_insert(
+        conn,
+        "INSERT INTO stml (a, b) SETTINGS max_memory_usage=52428800, "
+        "max_insert_block_size=100000000, min_insert_block_size_rows=100000000, "
+        "min_insert_block_size_bytes=0",
+        "CSV");
+    CHECK(stream != NULL && chdb_stream_insert_error(stream) == NULL, "init ok");
+
+    static char chunk[140000];
+    size_t pos = 0;
+    for (int i = 0; i < 1000; i++)
+        pos += (size_t)snprintf(chunk + pos, sizeof(chunk) - pos,
+                                "%d,yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+                                "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n", i);
+
+    int got_error = 0;
+    const char * msg = NULL;
+    for (int i = 0; i < 5000 && !got_error; i++) {   /* ~650 MB vs 50 MB limit */
+        if (chdb_stream_append(stream, chunk, pos) != CHDBSuccess) {
+            got_error = 1;
+            msg = chdb_stream_insert_error(stream);
+        }
+    }
+    if (!got_error) {
+        chdb_result * result = chdb_stream_done(stream);
+        if (result) {
+            msg = chdb_result_error(result);
+            got_error = (msg != NULL);
+            if (got_error)
+                CHECK(strstr(msg, "emory limit") != NULL, "done error mentions memory limit");
+            chdb_destroy_query_result(result);
+        }
+    } else {
+        CHECK(msg != NULL && strstr(msg, "emory limit") != NULL, "append error mentions memory limit");
+        chdb_stream_cancel_insert(stream);
+    }
+    CHECK(got_error, "memory limit must surface as an error, not silence or a hang");
+    chdb_destroy_insert_stream(stream);
+
+    /* Connection stays usable. */
+    expect_query(conn, "SELECT 1", "1\n");
+}
+
 static void test_format_mismatch_payload(chdb_connection conn)
 {
     printf("== test_format_mismatch_payload ==\n");
@@ -813,6 +866,7 @@ int main(int argc, char ** argv)
     test_multi_block_streaming_parts(*conn);
     test_append_chunks_split_mid_row(*conn);
     test_memory_multi_block_count_sum(*conn);
+    test_memory_limit_error(*conn);
     test_format_mismatch_payload(*conn);
     test_binary_safe_length(*conn);
     test_empty_stream(*conn);

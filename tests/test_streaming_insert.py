@@ -228,6 +228,32 @@ class TestStreamingInsertConnection(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.conn.send_insert("INSERT INTO no_such_table (a)", "CSV")
 
+    def test_memory_limit_error_surfaces_cleanly(self):
+        # A worker-side MEMORY_LIMIT_EXCEEDED must terminate the stream as a
+        # clean RuntimeError carrying the real engine message — the dying
+        # worker closes the queue, so a producer blocked in a full-queue
+        # append is released instead of deadlocking — and the connection must
+        # be reusable after cancel(). ENGINE=Null keeps the disk untouched.
+        self.conn.query("CREATE TABLE t (a UInt64, b String) ENGINE = Null")
+        target = (
+            "INSERT INTO t (a, b) SETTINGS max_memory_usage=52428800, "
+            "max_insert_block_size=100000000, min_insert_block_size_rows=100000000, "
+            "min_insert_block_size_bytes=0"
+        )
+        chunk = "".join(f"{i},{'y' * 120}\n" for i in range(1000))
+        ins = self.conn.send_insert(target, "CSV")
+        err = None
+        try:
+            for _ in range(5000):  # ~650 MB if nothing stopped it; limit is 50 MB
+                ins.append(chunk)
+            ins.finish()
+        except RuntimeError as e:
+            err = str(e)
+            ins.cancel()
+        self.assertIsNotNone(err, "memory limit must surface as RuntimeError")
+        self.assertIn("emory limit", err)
+        self.assertEqual(self.conn.query("SELECT 1", "CSV").data(), "1\n")
+
     def test_format_mismatch_payload_errors(self):
         # Declare CSV but push a JSONEachRow payload: the parser must reject
         # it no later than finish(), and nothing may be committed.
