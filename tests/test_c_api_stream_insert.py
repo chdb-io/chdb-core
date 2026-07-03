@@ -251,6 +251,49 @@ class TestCApiStreamInsertS3(unittest.TestCase):
         out = self._query(f"SELECT count(), sum(a) FROM {self._s3_fn()}".encode())
         self.assertEqual(out, b"2,3\n")
 
+    def test_s3_large_multipart_streaming_roundtrip_via_c_abi(self):
+        # Volume parity with the Python-level test: ~12 MB pushed in ~450
+        # mid-size chunks through the raw C ABI, small engine blocks so data
+        # flows incrementally, 5 MiB part size (MinIO's minimum) + forced
+        # multipart => the object is really uploaded via multiple UploadPart
+        # calls. Read back exact count/sum.
+        n = 450_000
+        rows_per_chunk = 1000
+        q = (
+            f"INSERT INTO FUNCTION {self._s3_fn()} "
+            "SETTINGS s3_min_upload_part_size = 5242880, "
+            "s3_max_single_part_upload_size = 1, "
+            "max_insert_block_size = 50000, min_insert_block_size_rows = 50000, "
+            "min_insert_block_size_bytes = 0"
+        ).encode()
+        fmt = b"CSV"
+        stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
+        self.assertIsNone(self.lib.chdb_stream_insert_error(stream))
+
+        pad = "x" * 20
+        for start in range(0, n, rows_per_chunk):
+            chunk = "".join(
+                f"{i},{pad}\n" for i in range(start, start + rows_per_chunk)
+            ).encode()
+            buf = (ctypes.c_char * len(chunk)).from_buffer_copy(chunk)
+            self.assertEqual(
+                self.lib.chdb_stream_append(stream, buf, len(chunk)),
+                CHDBSuccess,
+                f"append failed at row {start}",
+            )
+
+        result = self.lib.chdb_stream_done(stream)
+        try:
+            err = self.lib.chdb_result_error(result)
+            self.assertIsNone(err, err)
+            self.assertEqual(self.lib.chdb_result_rows_written(result), n)
+        finally:
+            self.lib.chdb_destroy_query_result(result)
+        self.lib.chdb_destroy_insert_stream(stream)
+
+        out = self._query(f"SELECT count(), sum(a) FROM {self._s3_fn()}".encode())
+        self.assertEqual(out, f"{n},{n * (n - 1) // 2}\n".encode())
+
     def test_s3_cancel_multipart_leaves_no_object_via_c_abi(self):
         q = (
             f"INSERT INTO FUNCTION {self._s3_fn()} "
