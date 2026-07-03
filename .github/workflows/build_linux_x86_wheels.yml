@@ -488,8 +488,11 @@ jobs:
       - name: Package debug symbols
         run: |
           ls *.debug
-          tar -czvf linux-x86_64-debuginfo.tar.gz *.debug
-          ls -lh linux-x86_64-debuginfo.tar.gz
+          # xz instead of gzip: the x86_64 debuginfo exceeds GitHub's 2 GiB
+          # release-asset limit as .tar.gz, so the upload step 422'd silently
+          # (masked by continue-on-error) and every release shipped without it.
+          XZ_OPT='-T0 -4' tar -cJvf linux-x86_64-debuginfo.tar.xz *.debug
+          ls -lh linux-x86_64-debuginfo.tar.xz
       # -----------------------------------------------------------------------
       # chdb-core-lite: build & test the slim variant of the wheel (~50 MB)
       # The slim variant goes through the same chdb/build.sh + make wheel path,
@@ -658,7 +661,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         continue-on-error: true
         run: |
-          gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.gz --clobber
+          gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       - uses: actions/upload-artifact@v4
@@ -668,7 +671,7 @@ jobs:
             ./dist/*.whl
             ./linux-x86_64-libchdb.tar.gz
             ./linux-x86_64-libchdb-static.tar.gz
-            ./linux-x86_64-debuginfo.tar.gz
+            ./linux-x86_64-debuginfo.tar.xz
           overwrite: true
       - name: Upload pypi
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
