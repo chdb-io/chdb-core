@@ -193,6 +193,31 @@ static void test_format_matrix(chdb_connection conn)
     format_roundtrip(conn, "stf_values", "Values", "(1,'one'),(2,'two')");
 }
 
+static void test_csv_quoted_content(chdb_connection conn)
+{
+    printf("== test_csv_quoted_content ==\n");
+    chdb_destroy_query_result(run(conn, "CREATE TABLE stq (a UInt64, b String) ENGINE = Memory"));
+
+    chdb_insert_stream stream = chdb_stream_insert(conn, "INSERT INTO stq (a, b)", "CSV");
+    CHECK(stream != NULL && chdb_stream_insert_error(stream) == NULL, "init ok");
+
+    /* Quoted CSV content: an embedded comma and an escaped double quote must
+     * survive the roundtrip intact (parsing semantics, not just byte safety). */
+    const char payload[] = "1,\"a,b\"\n2,\"say \"\"hi\"\"\"\n";
+    CHECK(chdb_stream_append(stream, payload, strlen(payload)) == CHDBSuccess, "append quoted rows");
+
+    chdb_result * result = chdb_stream_done(stream);
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn, "SELECT b FROM stq WHERE a = 1", "\"a,b\"\n");
+    expect_query(conn, "SELECT b FROM stq WHERE a = 2", "\"say \"\"hi\"\"\"\n");
+}
+
 static void test_multi_chunk_streaming(chdb_connection conn)
 {
     printf("== test_multi_chunk_streaming ==\n");
@@ -559,6 +584,52 @@ static void test_parquet_buffered_input(chdb_connection conn)
     expect_query(conn, "SELECT b FROM st9 WHERE a = 42", "\"42\"\n");
 }
 
+/* Streaming INSERT into an on-disk database (the C analog of the Python
+ * Session test), made stronger: the connection is closed and REOPENED on the
+ * same path to prove the streamed rows were durably persisted. Runs after the
+ * main in-memory connection is closed (one embedded server at a time). */
+static void test_persistent_db_roundtrip(void)
+{
+    printf("== test_persistent_db_roundtrip ==\n");
+    if (system("rm -rf chdb_stream_c_db") != 0) { /* best-effort cleanup */ }
+
+    char arg0[] = "clickhouse";
+    char arg1[] = "--path=chdb_stream_c_db";
+    char * args[] = {arg0, arg1};
+
+    chdb_connection * conn = chdb_connect(2, args);
+    CHECK(conn != NULL, "path connection opens");
+    if (!conn)
+        return;
+
+    chdb_destroy_query_result(run(*conn,
+        "CREATE TABLE default.stperf (a UInt64, b String) ENGINE = MergeTree ORDER BY a"));
+
+    chdb_insert_stream stream = chdb_stream_insert(*conn, "INSERT INTO default.stperf (a, b)", "CSV");
+    CHECK(stream != NULL && chdb_stream_insert_error(stream) == NULL, "init ok");
+    CHECK(chdb_stream_append(stream, "1,one\n2,two\n", 12) == CHDBSuccess, "append");
+    chdb_result * result = chdb_stream_done(stream);
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(*conn, "SELECT a, b FROM default.stperf ORDER BY a", "1,\"one\"\n2,\"two\"\n");
+    chdb_close_conn(conn);
+
+    /* Reopen the same path: the streamed data must have been persisted. */
+    chdb_connection * conn2 = chdb_connect(2, args);
+    CHECK(conn2 != NULL, "path connection reopens");
+    if (conn2) {
+        expect_query(*conn2, "SELECT a, b FROM default.stperf ORDER BY a", "1,\"one\"\n2,\"two\"\n");
+        chdb_close_conn(conn2);
+    }
+
+    if (system("rm -rf chdb_stream_c_db") != 0) { /* best-effort cleanup */ }
+}
+
 int main(int argc, char ** argv)
 {
     (void)argc; (void)argv;
@@ -573,6 +644,7 @@ int main(int argc, char ** argv)
     }
 
     test_full_lifecycle(*conn);
+    test_csv_quoted_content(*conn);
     test_format_matrix(*conn);
     test_multi_chunk_streaming(*conn);
     test_multi_block_streaming_parts(*conn);
@@ -589,6 +661,10 @@ int main(int argc, char ** argv)
     test_parquet_buffered_input(*conn);
 
     chdb_close_conn(conn);
+
+    /* Needs its own connection (on-disk path), so it runs after the main
+     * in-memory connection is closed. */
+    test_persistent_db_roundtrip();
 
     printf("\n== summary: %d failed assertions ==\n", g_failed_assertions);
     return g_failed_assertions == 0 ? 0 : 1;
