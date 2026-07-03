@@ -21,7 +21,8 @@ class TestStreamingInsertCancel(unittest.TestCase):
         self.conn = chdb.connect(":memory:")
 
     def tearDown(self):
-        self.conn.close()
+        if getattr(self, "conn", None) is not None:
+            self.conn.close()
         shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_cancel_unfinalized_memory_commits_nothing(self):

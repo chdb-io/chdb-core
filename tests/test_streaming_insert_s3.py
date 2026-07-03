@@ -46,7 +46,8 @@ class TestStreamingInsertS3(unittest.TestCase):
         self.url = f"{ENDPOINT}/{self.key}"
 
     def tearDown(self):
-        self.conn.close()
+        if getattr(self, "conn", None) is not None:
+            self.conn.close()
 
     def _s3_fn(self, structure="a UInt64, b String", fmt="CSV"):
         return f"s3('{self.url}', '{ACCESS_KEY}', '{SECRET_KEY}', '{fmt}', '{structure}')"

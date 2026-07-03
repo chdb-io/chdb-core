@@ -20,7 +20,8 @@ class TestStreamingInsertConnection(unittest.TestCase):
         self.conn = chdb.connect(":memory:")
 
     def tearDown(self):
-        self.conn.close()
+        if getattr(self, "conn", None) is not None:
+            self.conn.close()
 
     def _rows(self, query, fmt="CSV"):
         return self.conn.query(query, fmt).data()
@@ -315,7 +316,8 @@ class TestStreamingInsertSession(unittest.TestCase):
         self.sess = session.Session(test_dir)
 
     def tearDown(self):
-        self.sess.close()
+        if getattr(self, "sess", None) is not None:
+            self.sess.close()
         shutil.rmtree(test_dir, ignore_errors=True)
 
     def test_session_send_insert_roundtrip(self):

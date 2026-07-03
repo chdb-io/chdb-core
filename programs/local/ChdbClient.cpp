@@ -129,6 +129,10 @@ void ChdbClient::cleanup()
             /// dereferencing its (now dangling) owner pointer, making
             /// append/done/cancel/destroy after close safe error paths.
             ctx->finalized.store(true, std::memory_order_release);
+            /// Keep teardown symmetric with done()/cancel(): restore the
+            /// settings snapshot (connection/client_context are still alive
+            /// here) so no stale saved-settings state is left behind.
+            restoreSettingsAfterInsertStream();
             streaming_insert_context.reset();
         }
 
@@ -818,9 +822,16 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
 
     std::lock_guard<std::mutex> lock(client_mutex);
 
+    /// Guard the connection like the USE_PYTHON block below: if teardown reset
+    /// it before we acquired the lock, report zero progress instead of crashing.
     auto * local_connection = static_cast<LocalConnection *>(connection.get());
-    uint64_t rows_written = local_connection->getCHDBProgress().written_rows - ctx->rows_written;
-    uint64_t bytes_written = local_connection->getCHDBProgress().written_bytes - ctx->bytes_written;
+    uint64_t rows_written = 0;
+    uint64_t bytes_written = 0;
+    if (local_connection)
+    {
+        rows_written = local_connection->getCHDBProgress().written_rows - ctx->rows_written;
+        bytes_written = local_connection->getCHDBProgress().written_bytes - ctx->bytes_written;
+    }
     double elapsed = getElapsedTime();
 
     /// The worker has been joined (happens-before), so reading error/error_message
