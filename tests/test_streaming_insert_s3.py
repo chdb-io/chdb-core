@@ -63,6 +63,39 @@ class TestStreamingInsertS3(unittest.TestCase):
         ).data()
         self.assertEqual(out, "1,\"one\"\n2,\"two\"\n")
 
+    def test_s3_true_multipart_streaming_roundtrip(self):
+        # TRUE streaming volume test: ~12 MB pushed in ~450 mid-size chunks, with
+        # small engine blocks so data flows through sendData incrementally, and a
+        # 5 MiB S3 part size (MinIO's minimum) + forced multipart so the object is
+        # really uploaded via multiple UploadPart calls before Complete. Read back
+        # and verify exact count and sum — proves integrity across chunk, block,
+        # and upload-part boundaries.
+        n = 450_000
+        rows_per_chunk = 1000
+        target = (
+            f"INSERT INTO FUNCTION {self._s3_fn('a UInt64, b String')} "
+            "SETTINGS s3_min_upload_part_size = 5242880, "
+            "s3_max_single_part_upload_size = 1, "
+            "max_insert_block_size = 50000, min_insert_block_size_rows = 50000, "
+            "min_insert_block_size_bytes = 0"
+        )
+        ins = self.conn.send_insert(target, "CSV")
+        chunk = []
+        for i in range(n):
+            chunk.append(f"{i},{'x' * 20}\n")
+            if len(chunk) == rows_per_chunk:
+                ins.append("".join(chunk))
+                chunk = []
+        if chunk:
+            ins.append("".join(chunk))
+        res = ins.finish()
+        self.assertEqual(res.rows_written, n)
+
+        out = self.conn.query(
+            f"SELECT count(), sum(a) FROM {self._s3_fn('a UInt64, b String')}", "CSV"
+        ).data().strip()
+        self.assertEqual(out, f"{n},{n * (n - 1) // 2}")
+
     def test_cancel_multipart_leaves_no_object(self):
         # Force multipart so cancel exercises AbortMultipartUpload, and the
         # object must never materialize.

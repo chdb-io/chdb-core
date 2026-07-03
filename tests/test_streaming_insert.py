@@ -104,6 +104,33 @@ class TestStreamingInsertConnection(unittest.TestCase):
         self.assertEqual(self._rows("SELECT count(), sum(a) FROM t", "CSV"),
                          f"{n},{n * (n - 1) // 2}\n")
 
+    def test_multi_block_streaming_creates_multiple_parts(self):
+        # Prove TRUE streaming (not one coalesced write): shrink the insert
+        # block size so the worker pushes multiple blocks through sendData as
+        # appends arrive; each block lands as a separate MergeTree part. With
+        # default settings (~1M-row blocks) this data would be a single part.
+        self.conn.query("CREATE TABLE t (a UInt64) ENGINE = MergeTree ORDER BY a")
+        n = 50000
+        target = (
+            "INSERT INTO t (a) SETTINGS max_insert_block_size=10000, "
+            "min_insert_block_size_rows=10000, min_insert_block_size_bytes=0"
+        )
+        with self.conn.send_insert(target, "CSV") as ins:
+            for i in range(n):
+                ins.append(f"{i}\n")
+            res = ins.finish()
+        self.assertEqual(res.rows_written, n)
+        parts = int(
+            self.conn.query(
+                "SELECT count() FROM system.parts WHERE table='t' AND active", "CSV"
+            ).data().strip()
+        )
+        self.assertGreaterEqual(parts, 2, "expected multiple parts => multiple streamed blocks")
+        self.assertEqual(
+            self._rows("SELECT count(), sum(a) FROM t", "CSV"),
+            f"{n},{n * (n - 1) // 2}\n",
+        )
+
     def test_empty_stream_finishes_with_zero_rows(self):
         self.conn.query("CREATE TABLE t (a UInt64) ENGINE = Memory")
         ins = self.conn.send_insert("INSERT INTO t (a)", "CSV")
