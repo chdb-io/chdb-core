@@ -22,7 +22,9 @@ export function startMockCatalog({ port, descriptor }) {
         'Content-Length': Buffer.byteLength(payload),
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
+        'Access-Control-Expose-Headers': '*',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       res.end(payload);
     };
@@ -31,7 +33,9 @@ export function startMockCatalog({ port, descriptor }) {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
+        'Access-Control-Expose-Headers': '*',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       res.end();
       return;

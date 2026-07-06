@@ -1,0 +1,44 @@
+<!doctype html><meta charset=utf-8><title>chdb-wasm DataLakeCatalog browser fixture</title><pre id=o>running…</pre>
+<!-- Driven by test/datalake-browser-run.mjs. Creates ENGINE=DataLakeCatalog against
+     a mock Iceberg REST catalog (?catalog=port) and reads Iceberg-on-S3 data from a
+     CORS-proxied moto endpoint (?s3=port) — all through the sync-XHR bridge on wasm
+     pthreads. Publishes results on window.__RESULT__ for the driver to assert. -->
+<script type="module">
+import { AsyncChdb, selectBundle } from '../dist/index.js';
+const el = document.getElementById('o');
+const log = (m) => { el.textContent += '\n' + m; console.log(m); };
+const params = new URLSearchParams(location.search);
+const catalogPort = params.get('catalog');
+const s3Port = params.get('s3');
+(async () => {
+  const out = { ok: false };
+  try {
+    const b = selectBundle({ baseUrl: new URL('../dist', import.meta.url).href });
+    out.variant = b.variant;
+    out.coi = self.crossOriginIsolated;
+    log('coi=' + self.crossOriginIsolated + ' -> variant=' + b.variant);
+    const db = await AsyncChdb.create({ moduleUrl: b.moduleUrl, wasmUrl: b.wasmUrl });
+    const conn = await db.connect();
+    const Q = async (sql, fmt) => (await conn.query(sql, fmt || 'TabSeparated')).text().trim();
+    await Q('SET allow_experimental_database_iceberg = 1');
+    await Q(`
+      CREATE DATABASE lake
+      ENGINE = DataLakeCatalog('http://127.0.0.1:${catalogPort}/v1', 'testing', 'testing')
+      SETTINGS catalog_type = 'rest', warehouse = 'warehouse',
+               storage_endpoint = 'http://127.0.0.1:${s3Port}', vended_credentials = false`);
+    out.tables = await Q('SHOW TABLES FROM lake');
+    log('tables: ' + out.tables);
+    out.schema = await Q('DESCRIBE lake.`lakehouse.events`', 'CSV');
+    out.rows = await Q('SELECT id, name, score FROM lake.`lakehouse.events` ORDER BY id', 'CSV');
+    log('rows: ' + out.rows);
+    out.agg = await Q('SELECT count(), sum(id), round(avg(score), 2) FROM lake.`lakehouse.events`');
+    await Q('DROP DATABASE lake');
+    out.ok = true;
+    log('done');
+  } catch (e) {
+    out.fatal = String((e && e.message) || e);
+    log('FATAL: ' + out.fatal);
+  }
+  window.__RESULT__ = out;
+})();
+</script>
