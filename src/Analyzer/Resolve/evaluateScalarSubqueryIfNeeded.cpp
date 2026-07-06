@@ -10,6 +10,7 @@
 #include <Planner/Utils.h>
 
 #include <Processors/Executors/PullingAsyncPipelineExecutor.h>
+#include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Processors/QueryPlan/LimitStep.h>
 #include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
 #include <Processors/QueryPlan/BuildQueryPipelineSettings.h>
@@ -238,7 +239,11 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
                 io.pipeline.setQuota(subquery_context->getQuota());
             }
 
+#ifdef CHDB_WASM_SINGLE_THREADED
+            std::optional<PullingPipelineExecutor> executor;
+#else
             std::optional<PullingAsyncPipelineExecutor> executor;
+#endif
             Chunk chunk;
 
             if (!skip_execution_for_exists)
@@ -248,8 +253,10 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
                 io.pipeline.setConcurrencyControl(context->getSettingsRef()[Setting::use_concurrency_control]);
 
                 executor.emplace(io.pipeline);
+#ifndef CHDB_WASM_SINGLE_THREADED
                 if (auto cancel_cb = context->hasQueryContext() ? context->getQueryContext()->getInteractiveCancelCallback() : nullptr)
                     executor->setCancelCallback(std::move(cancel_cb), std::max(UInt64(100), context->getSettingsRef()[Setting::interactive_delay] / 1000));
+#endif
                 while (chunk.getNumRows() == 0 && executor->pull(chunk))
                 {
                 }
