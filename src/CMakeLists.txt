@@ -143,6 +143,8 @@ add_headers_and_sources(dbms Storages/ObjectStorage/Azure)
 add_headers_and_sources(dbms Storages/ObjectStorage/S3)
 add_headers_and_sources(dbms Storages/ObjectStorage/HDFS)
 add_headers_and_sources(dbms Storages/ObjectStorage/Local)
+# WASM web-fetch data plane; sources are #if defined(OS_WASM) guarded (empty TUs elsewhere).
+add_headers_and_sources(dbms Storages/ObjectStorage/WasmWeb)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes/Common)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes/Iceberg)
@@ -188,6 +190,8 @@ add_headers_and_sources(dbms Databases/DataLake)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Cached)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Local)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Web)
+# WASM web-fetch data plane; sources are #if defined(OS_WASM) guarded (empty TUs elsewhere).
+add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/WasmWeb)
 
 add_headers_and_sources(dbms Storages/Cache)
 if (TARGET ch_contrib::hivemetastore)
