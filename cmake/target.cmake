@@ -118,7 +118,10 @@ if (OS_WASM)
     # (native protoc bootstrap, networked object stores, heavy columnar formats).
     set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
     set (ENABLE_CAPNP OFF CACHE INTERNAL "")
-    set (ENABLE_AVRO OFF CACHE INTERNAL "")
+    # Avro ON: pure C++ (boost::iostreams + snappy, both already built for WASM).
+    # It is the gate for Iceberg/Paimon metadata reading and, together with
+    # Parquet, for the DataLakeCatalog database engine.
+    set (ENABLE_AVRO ON CACHE INTERNAL "")
     # Parquet READ via a slim Arrow build: Parquet + Thrift on, ORC off (ORC is the
     # only consumer of protobuf/protoc, which stay off) and Arrow's curl/HDFS object
     # store paths guarded out in contrib/arrow-cmake.
