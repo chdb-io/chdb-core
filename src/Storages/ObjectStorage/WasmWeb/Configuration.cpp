@@ -117,9 +117,32 @@ void StorageWasmWebConfiguration::fromAST(ASTs & args, ContextPtr context, bool 
         key_prefix = key_prefix.substr(1);
 
     if (raw_uri.starts_with("s3://") || raw_uri.starts_with("S3://"))
+    {
+        /// Virtual-hosted rewrite: the bucket lives in the hostname, keys don't carry it.
         bucket = Poco::URI(raw_uri).getHost();
+        keys_carry_bucket = false;
+    }
     else
-        bucket = key_prefix.substr(0, key_prefix.find('/'));
+    {
+        /// http(s) endpoint. Virtual-hosted hosts (bucket.s3.region.amazonaws.com,
+        /// bucket.s3-accesspoint..., MinIO vhost setups) embed the bucket as the
+        /// first host label; everything else is path-style and the bucket is the
+        /// first segment of every key.
+        const String host = uri.getHost();
+        const size_t first_dot = host.find('.');
+        const bool virtual_hosted = first_dot != String::npos
+            && (host.compare(first_dot, 4, ".s3.") == 0 || host.compare(first_dot, 4, ".s3-") == 0);
+        if (virtual_hosted)
+        {
+            bucket = host.substr(0, first_dot);
+            keys_carry_bucket = false;
+        }
+        else
+        {
+            bucket = key_prefix.substr(0, key_prefix.find('/'));
+            keys_carry_bucket = true;
+        }
+    }
 
     path = key_prefix;
     paths = {path};
@@ -149,6 +172,9 @@ ObjectStoragePtr StorageWasmWebConfiguration::createObjectStorage(
 {
     WasmWebObjectStorageSettings storage_settings;
     storage_settings.base_url = base_url;
+    /// listObjects strips the bucket from key prefixes; only meaningful when
+    /// keys actually carry it (path-style). Virtual-hosted keys are bucket-free.
+    storage_settings.bucket = keys_carry_bucket ? bucket : String{};
     storage_settings.region = region;
     if (!no_sign)
     {

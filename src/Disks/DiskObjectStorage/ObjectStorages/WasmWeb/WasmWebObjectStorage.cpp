@@ -9,7 +9,14 @@
 #include <IO/WasmHTTPBridge.h>
 #include <IO/WasmS3Auth.h>
 
+#include <Poco/DOM/DOMParser.h>
+#include <Poco/DOM/Document.h>
+#include <Poco/DOM/Element.h>
+#include <Poco/DOM/NodeList.h>
 #include <Poco/String.h>
+#include <Poco/URI.h>
+
+#include <limits>
 
 namespace DB
 {
@@ -19,6 +26,7 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
     extern const int NETWORK_ERROR;
     extern const int FILE_DOESNT_EXIST;
+    extern const int INCORRECT_DATA;
 }
 
 WasmWebObjectStorage::WasmWebObjectStorage(WasmWebObjectStorageSettings settings_)
@@ -30,9 +38,15 @@ WasmWebObjectStorage::WasmWebObjectStorage(WasmWebObjectStorageSettings settings
 
 String WasmWebObjectStorage::urlFor(const std::string & path) const
 {
-    if (path.starts_with('/'))
-        return settings.base_url + path;
-    return settings.base_url + "/" + path;
+    /// Percent-encode the key with the exact AWS unreserved set: object keys may
+    /// contain spaces/'%'/'#' (Delta partition values do), which would otherwise
+    /// break the XHR URL and never match the SigV4 canonical URI. signV4Request
+    /// decodes + re-encodes the path with the same set, so the signature covers
+    /// byte-identical bytes to what the transport sends.
+    std::string_view key = path;
+    while (key.starts_with('/'))
+        key.remove_prefix(1);
+    return settings.base_url + "/" + WasmS3::uriEncode(String(key), /*encode_slash=*/false);
 }
 
 HTTPHeaderEntries WasmWebObjectStorage::headersFor(const String & method, const String & url) const
@@ -50,15 +64,22 @@ HTTPHeaderEntries WasmWebObjectStorage::headersFor(const String & method, const 
 std::unique_ptr<ReadBufferFromFileBase> WasmWebObjectStorage::readObject( /// NOLINT
     const StoredObject & object,
     const ReadSettings & read_settings,
-    std::optional<size_t>) const
+    std::optional<size_t> read_hint) const
 {
+    /// Data-lake manifests carry exact file sizes; seeding them here spares a
+    /// signed HEAD per file (and works on endpoints that only permit GET).
+    std::optional<size_t> known_size = read_hint;
+    if (!known_size && object.bytes_size != 0 && object.bytes_size != std::numeric_limits<uint64_t>::max())
+        known_size = object.bytes_size;
+
     const String url = urlFor(object.remote_path);
     return std::make_unique<ReadBufferFromWebFetch>(
         url,
         HTTPHeaderEntries{},
         read_settings.remote_fs_buffer_size,
         /* skip_not_found */ false,
-        /* headers_provider */ [this, url](const std::string & method) { return headersFor(method, url); });
+        /* headers_provider */ [this, url](const std::string & method) { return headersFor(method, url); },
+        known_size);
 }
 
 std::optional<ObjectMetadata> WasmWebObjectStorage::tryGetObjectMetadata(const std::string & path, bool /* with_tags */) const
@@ -117,6 +138,91 @@ ObjectMetadata WasmWebObjectStorage::getObjectMetadata(const std::string & path,
 bool WasmWebObjectStorage::exists(const StoredObject & object) const
 {
     return tryGetObjectMetadata(object.remote_path, /* with_tags */ false).has_value();
+}
+
+void WasmWebObjectStorage::listObjects(const std::string & path, RelativePathsWithMetadata & children, size_t max_keys) const
+{
+    /// With a path-style endpoint object keys carry the bucket as their first
+    /// segment, but ListObjectsV2 addresses the bucket in the URL path and its
+    /// prefix/keys are bucket-relative — strip it here, re-prepend it below so
+    /// the returned paths keep readObject()'s key semantics.
+    String list_base = settings.base_url;
+    String key_prefix_to_readd;
+    String prefix = path;
+    if (!settings.bucket.empty() && prefix.starts_with(settings.bucket + "/"))
+    {
+        list_base += "/" + settings.bucket;
+        key_prefix_to_readd = settings.bucket + "/";
+        prefix = prefix.substr(settings.bucket.size() + 1);
+    }
+
+    String continuation_token;
+    do
+    {
+        String encoded_prefix;
+        Poco::URI::encode(prefix, "/&?=+ ", encoded_prefix);
+        String url = list_base + "/?list-type=2&prefix=" + encoded_prefix;
+        if (max_keys)
+            url += "&max-keys=" + std::to_string(max_keys);
+        if (!continuation_token.empty())
+        {
+            String encoded_token;
+            Poco::URI::encode(continuation_token, "/&?=+ ", encoded_token);
+            url += "&continuation-token=" + encoded_token;
+        }
+
+        HTTPHeaderEntries headers = headersFor("GET", url);
+        String blob;
+        for (const auto & entry : headers)
+        {
+            blob += entry.name;
+            blob += ": ";
+            blob += entry.value;
+            blob += '\n';
+        }
+        auto result = performWasmHTTPRequest("GET", url, blob, {});
+        if (result.status < 200 || result.status >= 300)
+            throw Exception(ErrorCodes::NETWORK_ERROR, "Failed to list '{}' (HTTP status {})", url, result.status);
+
+        Poco::XML::DOMParser parser;
+        Poco::AutoPtr<Poco::XML::Document> document;
+        try
+        {
+            document = parser.parseString(result.body);
+        }
+        catch (const Poco::Exception & e)
+        {
+            throw Exception(ErrorCodes::INCORRECT_DATA, "Cannot parse ListObjectsV2 response for '{}': {}", url, e.displayText());
+        }
+
+        Poco::AutoPtr<Poco::XML::NodeList> contents = document->getElementsByTagName("Contents");
+        for (unsigned long i = 0; i < contents->length(); ++i)
+        {
+            const auto * element = dynamic_cast<Poco::XML::Element *>(contents->item(i));
+            if (!element)
+                continue;
+            const auto * key_node = element->getChildElement("Key");
+            if (!key_node)
+                continue;
+            ObjectMetadata metadata;
+            metadata.is_size_known = false;
+            if (const auto * size_node = element->getChildElement("Size"))
+            {
+                metadata.size_bytes = std::stoull(size_node->innerText());
+                metadata.is_size_known = true;
+            }
+            if (const auto * etag_node = element->getChildElement("ETag"))
+                metadata.etag = etag_node->innerText();
+            children.emplace_back(std::make_shared<RelativePathWithMetadata>(key_prefix_to_readd + key_node->innerText(), std::move(metadata)));
+            if (max_keys && children.size() >= max_keys)
+                return;
+        }
+
+        continuation_token.clear();
+        Poco::AutoPtr<Poco::XML::NodeList> token_nodes = document->getElementsByTagName("NextContinuationToken");
+        if (token_nodes->length() > 0)
+            continuation_token = token_nodes->item(0)->innerText();
+    } while (!continuation_token.empty());
 }
 
 ReadSettings WasmWebObjectStorage::patchSettings(const ReadSettings & read_settings) const

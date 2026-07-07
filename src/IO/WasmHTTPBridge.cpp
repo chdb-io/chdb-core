@@ -78,7 +78,7 @@ EM_JS(int, chdb_wasm_http_request_js, (
                 'var ab=Buffer.from(await r.arrayBuffer());' +
                 'var hs="";r.headers.forEach(function(v,k){hs+=k+": "+v+NL});' +
                 'process.stdout.write(JSON.stringify({s:r.status,h:hs,b:ab.toString("base64")}));' +
-                '}).catch(function(e){process.stdout.write(JSON.stringify({s:-1,h:"",b:""}))});});';
+                '}).catch(function(e){process.stdout.write(JSON.stringify({s:-1,h:"",b:"",m:String(e&&e.message||e)}))});});';
             var fullBlob = headersBlob || "";
             if (rangeOff >= 0) fullBlob += (fullBlob ? "\n" : "") + 'Range: bytes=' + rangeOff + '-' + (rangeOff + rangeLen - 1);
             var res = cp.spawnSync(
@@ -91,7 +91,10 @@ EM_JS(int, chdb_wasm_http_request_js, (
             }
             var parsed = JSON.parse(res.stdout.toString());
             if (parsed.s < 0) {
-                if (typeof console !== 'undefined') console.error('chdb wasm http bridge: fetch failed', method, url);
+                // parsed.m carries the child-side cause (DNS failure, connection refused,
+                // V8 string cap on huge unranged bodies, ...) — without it every failure
+                // would be an indistinguishable NETWORK_ERROR.
+                if (typeof console !== 'undefined') console.error('chdb wasm http bridge: fetch failed', method, url, parsed.m || "");
                 return -1;
             }
             status = parsed.s;
@@ -110,8 +113,18 @@ EM_JS(int, chdb_wasm_http_request_js, (
         var hdrBytes = new TextEncoder().encode(respHeaders);
         var hdrPtr = 0;
         var bodyPtr = 0;
-        if (hdrBytes.length) { hdrPtr = _malloc(BigInt(hdrBytes.length)); HEAPU8.set(hdrBytes, Number(hdrPtr)); }
-        if (respBytes && respBytes.length) { bodyPtr = _malloc(BigInt(respBytes.length)); HEAPU8.set(respBytes, Number(bodyPtr)); }
+        // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting;
+        // writing at address 0 would smash static data and surface as silent EOF.
+        if (hdrBytes.length) {
+            hdrPtr = _malloc(BigInt(hdrBytes.length));
+            if (!Number(hdrPtr)) throw new Error('bridge OOM allocating ' + hdrBytes.length + ' header bytes');
+            HEAPU8.set(hdrBytes, Number(hdrPtr));
+        }
+        if (respBytes && respBytes.length) {
+            bodyPtr = _malloc(BigInt(respBytes.length));
+            if (!Number(bodyPtr)) { if (Number(hdrPtr)) _free(hdrPtr); throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes'); }
+            HEAPU8.set(respBytes, Number(bodyPtr));
+        }
         var dv = new DataView(HEAPU8.buffer);
         var out = Number(out_ptr);
         dv.setBigInt64(out, BigInt(status), true);

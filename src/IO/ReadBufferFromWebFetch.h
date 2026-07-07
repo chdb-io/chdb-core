@@ -29,9 +29,12 @@ public:
 
     /// skip_not_found_: when true, a 404 is treated as end-of-file (empty) instead of an
     /// error — mirrors the native withSkipNotFound() used for http_skip_not_found_url_for_globs.
+    /// known_file_size_: pre-known object size (e.g. from data-lake manifests); avoids the
+    /// HEAD request tryGetFileSize() would otherwise issue (some endpoints only permit GET).
     explicit ReadBufferFromWebFetch(
         std::string url_, HTTPHeaderEntries headers_ = {}, size_t buffer_size = DBMS_DEFAULT_BUFFER_SIZE,
-        bool skip_not_found_ = false, HeadersProvider headers_provider_ = {});
+        bool skip_not_found_ = false, HeadersProvider headers_provider_ = {},
+        std::optional<size_t> known_file_size_ = std::nullopt);
 
     off_t seek(off_t off, int whence) override;
     off_t getPosition() override;

@@ -33,8 +33,9 @@ void appendHeadersBlob(std::string & blob, const HTTPHeaderEntries & entries)
 }
 
 ReadBufferFromWebFetch::ReadBufferFromWebFetch(
-    std::string url_, HTTPHeaderEntries headers_, size_t buffer_size, bool skip_not_found_, HeadersProvider headers_provider_)
-    : ReadBufferFromFileBase(buffer_size, nullptr, 0)
+    std::string url_, HTTPHeaderEntries headers_, size_t buffer_size, bool skip_not_found_, HeadersProvider headers_provider_,
+    std::optional<size_t> known_file_size_)
+    : ReadBufferFromFileBase(buffer_size, nullptr, 0, known_file_size_)
     , url(std::move(url_))
     , headers(std::move(headers_))
     , headers_provider(std::move(headers_provider_))

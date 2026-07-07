@@ -63,6 +63,9 @@ private:
     String base_url;
     /// Bucket (S3) or first path segment; informational (IcebergPathResolver namespace).
     String bucket;
+    /// Whether object keys start with "<bucket>/" (path-style endpoints) — drives
+    /// listObjects' bucket stripping; false for virtual-hosted URLs.
+    bool keys_carry_bucket = false;
     String region;
     String access_key_id;
     String secret_access_key;

@@ -14,6 +14,11 @@ struct WasmWebObjectStorageSettings
     /// slash. For S3 this is the (virtual-hosted or path-style) bucket root.
     String base_url;
 
+    /// S3 bucket name, used by listObjects (ListObjectsV2). With a path-style
+    /// endpoint the bucket is the first segment of every object key; with a
+    /// virtual-hosted URL it is part of the host and absent from keys.
+    String bucket;
+
     /// When access_key_id is set, every request carries AWS SigV4 headers
     /// (computed per request — the signature covers the method and expires).
     String region;
@@ -69,6 +74,10 @@ public:
     ObjectMetadata getObjectMetadata(const std::string & path, bool with_tags) const override;
 
     std::optional<ObjectMetadata> tryGetObjectMetadata(const std::string & path, bool with_tags) const override;
+
+    /// S3 ListObjectsV2 with pagination (data lakes use it to discover metadata
+    /// versions / log files when the catalog does not pin them explicitly).
+    void listObjects(const std::string & path, RelativePathsWithMetadata & children, size_t max_keys) const override;
 
     void copyObject( /// NOLINT
         const StoredObject & object_from,

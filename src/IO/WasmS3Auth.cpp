@@ -79,6 +79,28 @@ void rewriteS3Source(const String & source, String & out_url, String & out_regio
     }
 }
 
+String uriEncode(const String & s, bool encode_slash)
+{
+    static const char hexu[] = "0123456789ABCDEF";
+    String out;
+    out.reserve(s.size());
+    for (unsigned char c : s)
+    {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+            || c == '-' || c == '_' || c == '.' || c == '~')
+            out += static_cast<char>(c);
+        else if (c == '/' && !encode_slash)
+            out += '/';
+        else
+        {
+            out += '%';
+            out += hexu[c >> 4];
+            out += hexu[c & 0xf];
+        }
+    }
+    return out;
+}
+
 #if USE_SSL
 
 namespace
@@ -101,29 +123,6 @@ String sha256HexLower(const String & s)
 {
     const String raw = encodeSHA256(s); /// 32 raw bytes
     return toLowerHex(reinterpret_cast<const uint8_t *>(raw.data()), raw.size());
-}
-
-/// AWS RFC3986 percent-encoding. Leaves unreserved bytes; '/' is preserved in paths.
-String uriEncode(const String & s, bool encode_slash)
-{
-    static const char hexu[] = "0123456789ABCDEF";
-    String out;
-    out.reserve(s.size());
-    for (unsigned char c : s)
-    {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-            || c == '-' || c == '_' || c == '.' || c == '~')
-            out += static_cast<char>(c);
-        else if (c == '/' && !encode_slash)
-            out += '/';
-        else
-        {
-            out += '%';
-            out += hexu[c >> 4];
-            out += hexu[c & 0xf];
-        }
-    }
-    return out;
 }
 
 }
