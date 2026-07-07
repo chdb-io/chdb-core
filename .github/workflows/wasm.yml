@@ -125,6 +125,8 @@ jobs:
       # Python venv with the lakehouse packages (the tests skip without it).
       - name: Set up data-lake test venv (pyiceberg + moto)
         run: |
+          # The self-hosted image lacks ensurepip (Debian splits it out).
+          sudo apt-get install -y --no-install-recommends python3-venv
           python3 -m venv "${GITHUB_WORKSPACE}/.iceberg-venv"
           "${GITHUB_WORKSPACE}/.iceberg-venv/bin/pip" install -q "pyiceberg[sql-sqlite]" pyarrow "moto[server]" s3fs deltalake
 
