@@ -1,5 +1,6 @@
-// Minimal Iceberg REST catalog serving exactly one table, for the DataLakeCatalog
-// wasm tests. Implements the subset ClickHouse's RestCatalog actually calls:
+// Minimal Iceberg REST catalog serving one namespace of tables, for the
+// DataLakeCatalog wasm tests. Implements the subset ClickHouse's RestCatalog
+// actually calls:
 //   GET /v1/config?warehouse=...            -> {defaults:{}, overrides:{}}
 //   GET /v1/namespaces[?parent=...]         -> namespace listing (one level)
 //   GET /v1/namespaces/{ns}/tables          -> table identifier listing
@@ -9,7 +10,12 @@
 import http from 'node:http';
 
 export function startMockCatalog({ port, descriptor }) {
-  const { namespace, table, metadata_location, metadata } = descriptor;
+  // descriptor: { namespace, tables: [{name, metadata_location, metadata}, ...] }
+  // (a single-table descriptor {namespace, table, metadata_location, metadata}
+  //  is accepted too, for older fixtures)
+  const { namespace } = descriptor;
+  const tables = descriptor.tables
+    ?? [{ name: descriptor.table, metadata_location: descriptor.metadata_location, metadata: descriptor.metadata }];
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
@@ -51,15 +57,22 @@ export function startMockCatalog({ port, descriptor }) {
     }
 
     if (path === `/v1/namespaces/${namespace}/tables`)
-      return send(200, { identifiers: [{ namespace: [namespace], name: table }] });
+      return send(200, { identifiers: tables.map((t) => ({ namespace: [namespace], name: t.name })) });
 
-    if (path === `/v1/namespaces/${namespace}/tables/${table}`)
-      return send(200, { 'metadata-location': metadata_location, metadata, config: {} });
+    const table = tables.find((t) => path === `/v1/namespaces/${namespace}/tables/${t.name}`);
+    if (table)
+      return send(200, { 'metadata-location': table.metadata_location, metadata: table.metadata, config: {} });
 
     return send(404, { error: { message: `not found: ${req.method} ${req.url}`, type: 'NoSuchTableException', code: 404 } });
   });
 
-  return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => resolve(server));
+  // Reject on listen errors (e.g. EADDRINUSE from a leaked process) so callers'
+  // try/finally cleanup runs instead of the process dying on an unhandled 'error'.
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve(server);
+    });
   });
 }

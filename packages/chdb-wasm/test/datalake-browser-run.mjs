@@ -48,7 +48,19 @@ function startPageServer(port) {
       res.end(await readFile(join(pkgDir, rel)));
     } catch { res.statusCode = 404; res.end('not found'); }
   });
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+  return listenOrReject(server, port);
+}
+
+// Reject on listen errors (e.g. EADDRINUSE from a leaked process) so the callers'
+// try/finally cleanup runs instead of the process dying on an unhandled 'error'.
+function listenOrReject(server, port) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve(server);
+    });
+  });
 }
 
 // moto speaks no CORS; the page (COEP + cross-origin XHR with Authorization/Range
@@ -95,20 +107,36 @@ function startCorsProxy(port, upstream) {
         res.setHeader('Content-Length', body.length);
       res.end(body);
     } catch (e) {
+      // Log server-side (the page can't read a CORS-blocked body) and keep the
+      // CORS headers so the browser reports 502 instead of an opaque status 0.
+      console.error(`cors-proxy: ${req.method} ${req.url} -> ${e}`);
+      setCors();
       res.statusCode = 502;
       res.end(String(e));
     }
   });
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+  return listenOrReject(server, port);
 }
 
 // --- 1. moto + table fixture ---
 const moto = spawn(PY, ['-m', 'moto.server', '-p', String(S3_PORT)], { stdio: ['ignore', 'ignore', 'pipe'] });
+// Drain stderr: werkzeug logs every S3 request there, and an unread 64KB pipe
+// eventually blocks moto entirely; it's also the only diagnostics on failure.
+let motoStderr = '';
+moto.stderr.on('data', (d) => { motoStderr += d; });
 const deadline = Date.now() + 30000;
 for (;;) {
+  if (moto.exitCode !== null) {
+    console.error('moto exited early:\n' + motoStderr);
+    process.exit(1);
+  }
   try { await fetch(`http://127.0.0.1:${S3_PORT}`); break; }
   catch {
-    if (Date.now() > deadline) { console.error('moto did not come up'); process.exit(1); }
+    if (Date.now() > deadline) {
+      console.error('moto did not come up:\n' + motoStderr);
+      moto.kill('SIGKILL');
+      process.exit(1);
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
 }
@@ -140,7 +168,10 @@ try {
   assert.ok(r.ok, `fixture not ok: ${r.fatal || '?'}`);
   assert.strictEqual(r.coi, true, 'page must be cross-origin isolated');
   assert.strictEqual(r.variant, 'mt', 'DataLakeCatalog needs the threaded bundle');
-  assert.strictEqual(r.tables, 'lakehouse.events', `SHOW TABLES: ${r.tables}`);
+  assert.strictEqual(
+    r.tables.split('\n').sort().join(','),
+    'lakehouse.city_events,lakehouse.deleted_events,lakehouse.events',
+    `SHOW TABLES: ${r.tables}`);
   assert.ok(r.schema.includes('"id","Nullable(Int64)"'), `schema: ${r.schema}`);
   assert.strictEqual(
     r.rows,
