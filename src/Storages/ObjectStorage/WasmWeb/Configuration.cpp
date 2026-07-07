@@ -24,6 +24,11 @@ namespace Setting
     extern const SettingsBool schema_inference_use_cache_for_url;
 }
 
+namespace DataLakeStorageSetting
+{
+    extern const DataLakeStorageSettingsString storage_region;
+}
+
 namespace ErrorCodes
 {
     extern const int BAD_ARGUMENTS;
@@ -83,6 +88,9 @@ void StorageWasmWebConfiguration::fromAST(ASTs & args, ContextPtr context, bool 
         }
         literal_args.push_back(evaluateConstantExpressionOrIdentifierAsLiteral(arg, context));
     }
+
+    if (literal_args.empty())
+        throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "WasmWeb storage requires a url argument");
 
     raw_uri = checkAndGetLiteralArgument<String>(literal_args[0], "url");
 
@@ -170,6 +178,20 @@ StorageObjectStorageQuerySettings StorageWasmWebConfiguration::getQuerySettings(
 ObjectStoragePtr StorageWasmWebConfiguration::createObjectStorage(
     ContextPtr, bool /* readonly */, CredentialsConfigurationCallback /* refresh_credentials_callback */)
 {
+    /// An explicit SETTINGS storage_region overrides the hostname-derived SigV4
+    /// region (S3-compatible endpoints often don't encode their region in the
+    /// host). Only reachable through DataLakeConfiguration, which implements
+    /// getDataLakeSettings(); the base fallback throws, hence the guard.
+    try
+    {
+        const auto & lake_settings = getDataLakeSettings();
+        if (lake_settings[DataLakeStorageSetting::storage_region].changed)
+            region = lake_settings[DataLakeStorageSetting::storage_region].value;
+    }
+    catch (...) /// NOLINT(bugprone-empty-catch)
+    {
+    }
+
     WasmWebObjectStorageSettings storage_settings;
     storage_settings.base_url = base_url;
     /// listObjects strips the bucket from key prefixes; only meaningful when

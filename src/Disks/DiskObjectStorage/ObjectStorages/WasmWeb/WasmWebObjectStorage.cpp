@@ -5,6 +5,7 @@
 #include <Common/Exception.h>
 #include <Common/ObjectStorageKeyGenerator.h>
 #include <IO/ReadBufferFromWebFetch.h>
+#include <IO/ReadHelpers.h>
 #include <IO/ReadSettings.h>
 #include <IO/WasmHTTPBridge.h>
 #include <IO/WasmS3Auth.h>
@@ -118,8 +119,10 @@ std::optional<ObjectMetadata> WasmWebObjectStorage::tryGetObjectMetadata(const s
         std::string value(line.substr(colon + 2));
         if (Poco::icompare(name, "Content-Length") == 0)
         {
-            metadata.size_bytes = std::stoull(value);
-            metadata.is_size_known = true;
+            /// tryParse: a malformed server-supplied length must degrade to
+            /// "size unknown", not escape as std::invalid_argument.
+            if (tryParse(metadata.size_bytes, value))
+                metadata.is_size_known = true;
         }
         else if (Poco::icompare(name, "ETag") == 0)
             metadata.etag = value;
@@ -208,8 +211,8 @@ void WasmWebObjectStorage::listObjects(const std::string & path, RelativePathsWi
             metadata.is_size_known = false;
             if (const auto * size_node = element->getChildElement("Size"))
             {
-                metadata.size_bytes = std::stoull(size_node->innerText());
-                metadata.is_size_known = true;
+                if (tryParse(metadata.size_bytes, size_node->innerText()))
+                    metadata.is_size_known = true;
             }
             if (const auto * etag_node = element->getChildElement("ETag"))
                 metadata.etag = etag_node->innerText();

@@ -2,6 +2,7 @@
 
 #if defined(OS_WASM)
 
+#include <IO/ReadHelpers.h>
 #include <IO/WasmHTTPBridge.h>
 #include <Common/Exception.h>
 
@@ -129,7 +130,11 @@ std::optional<size_t> ReadBufferFromWebFetch::tryGetFileSize()
                     continue;
                 if (Poco::icompare(std::string(line.substr(0, colon)), "Content-Length") == 0)
                 {
-                    file_size = std::stoull(std::string(line.substr(colon + 2)));
+                    /// tryParse: a malformed Content-Length degrades to "size
+                    /// unknown" instead of escaping as std::invalid_argument.
+                    UInt64 parsed_size = 0;
+                    if (tryParse(parsed_size, std::string(line.substr(colon + 2))))
+                        file_size = parsed_size;
                     break;
                 }
             }
