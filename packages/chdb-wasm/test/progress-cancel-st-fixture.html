@@ -1,0 +1,46 @@
+<!doctype html><meta charset=utf-8><title>chdb-wasm st progress/cancel fixture</title><pre id=o>running…</pre>
+<!-- Driven by test/progress-cancel-st-run.mjs (NO COOP/COEP -> non-isolated -> st bundle).
+     On the single-threaded build there is no SharedArrayBuffer, so the page can't poll the
+     engine's progress struct and queries run synchronously in the worker (uninterruptible).
+     Verifies that progress + cancel DEGRADE as documented: onProgress never fires and
+     db.cancel() throws — while the query itself runs fine and still reports scannedRows.
+     Publishes findings on window.__RESULT__. -->
+<script type="module">
+import { AsyncChdb, selectBundle } from '../dist/index.js';
+const el = document.getElementById('o');
+const log = (m) => { el.textContent += '\n' + m; console.log(m); };
+(async () => {
+  try {
+    const b = selectBundle({ baseUrl: new URL('../dist', import.meta.url).href });
+    log('coi=' + self.crossOriginIsolated + ' SAB=' + (typeof SharedArrayBuffer !== 'undefined') + ' -> variant=' + b.variant);
+    const db = await AsyncChdb.create({ moduleUrl: b.moduleUrl, wasmUrl: b.wasmUrl });
+    const out = { ok: true, variant: b.variant, coi: self.crossOriginIsolated };
+
+    // A multi-second scan WITH an onProgress callback. On st it must run to completion with
+    // ZERO progress events (no shared memory to poll) — but the query works and still reports
+    // scannedRows from the final result.
+    const ev = [];
+    const pr = await db.query(
+      'SELECT count() FROM numbers(200000000) WHERE sipHash64(number) % 7 = 0',
+      'CSV', { onProgress: (p) => ev.push(p) });
+    out.progressEvents = ev.length;
+    out.elapsed = pr.elapsedSeconds;
+    out.scannedRows = pr.scannedRows;
+    out.count = Number(pr.text().trim());
+    log('progress: events=' + ev.length + ' elapsed=' + out.elapsed.toFixed(2) + 's scannedRows=' + out.scannedRows + ' count=' + out.count);
+
+    // cancel() is mt-only: on st it must throw synchronously (no cancel flag).
+    out.cancelThrew = false;
+    try { db.cancel(); } catch (e) { out.cancelThrew = true; out.cancelErr = String((e && e.message) || e).slice(0, 140); }
+    log('cancel: threw=' + out.cancelThrew + ' err=' + out.cancelErr);
+
+    await db.terminate();
+    log('done: ' + JSON.stringify(out));
+    window.__RESULT__ = out;
+  } catch (e) {
+    log('FATAL ' + ((e && e.message) || e));
+    window.__RESULT__ = { fatal: String((e && e.message) || e).slice(0, 200) };
+  }
+})();
+setTimeout(() => { if (window.__RESULT__ === undefined) window.__RESULT__ = { timeout: true }; }, 90000);
+</script>

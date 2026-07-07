@@ -10,7 +10,23 @@ export interface WireResult {
   data: Uint8Array;
   rowsRead: number;
   bytesRead: number;
+  /** Source rows/bytes SCANNED from storage (≠ result size); for the "Processed N rows" footer. */
+  scannedRows: number;
+  scannedBytes: number;
   elapsedSeconds: number;
+}
+
+/**
+ * Live query-EXECUTION progress (distinct from the wasm-DOWNLOAD 'progress' event).
+ * Delivered by the main thread polling a shared-memory struct the engine writes — see
+ * AsyncChdb's progress poll — not by a worker message.
+ */
+export interface QueryProgress {
+  readRows: number;
+  totalRowsToRead: number;
+  readBytes: number;
+  totalBytesToRead: number;
+  elapsedNs: number;
 }
 
 export type RequestType =

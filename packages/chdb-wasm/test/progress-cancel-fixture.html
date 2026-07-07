@@ -1,0 +1,63 @@
+<!doctype html><meta charset=utf-8><title>chdb-wasm progress + cancel fixture</title><pre id=o>running…</pre>
+<!-- Driven by test/progress-cancel-run.mjs (cross-origin isolated -> mt bundle, so the
+     page can poll the engine's shared-memory progress struct and set the cancel flag).
+     Verifies (1) live execution progress events fire and advance, (2) db.cancel()
+     interrupts a running query mid-flight. Publishes the findings on window.__RESULT__
+     for the driver to assert. -->
+<script type="module">
+import { AsyncChdb, selectBundle } from '../dist/index.js';
+const el = document.getElementById('o');
+const log = (m) => { el.textContent += '\n' + m; console.log(m); };
+(async () => {
+  try {
+    const b = selectBundle({ baseUrl: new URL('../dist', import.meta.url).href });
+    log('coi=' + self.crossOriginIsolated + ' SAB=' + (typeof SharedArrayBuffer !== 'undefined') + ' -> variant=' + b.variant);
+    const db = await AsyncChdb.create({ moduleUrl: b.moduleUrl, wasmUrl: b.wasmUrl });
+    const out = { ok: true, variant: b.variant, coi: self.crossOriginIsolated };
+
+    // (1) LIVE PROGRESS. A multi-second scan so the engine emits several throttled (~100ms)
+    // progress ticks; collect them and check they stream (rows/bytes advance).
+    const ev = [];
+    const pr = await db.query(
+      'SELECT count() FROM numbers(800000000) WHERE sipHash64(number) % 3 = 0',
+      'CSV', { onProgress: (p) => ev.push(p) });
+    const readRowsSeq = ev.map((e) => e.readRows);
+    out.progressEvents = ev.length;
+    out.progressElapsed = pr.elapsedSeconds;
+    out.progressFirst = ev.length ? { readRows: ev[0].readRows, total: ev[0].totalRowsToRead } : null;
+    const last = ev[ev.length - 1];
+    out.progressLast = last ? { readRows: last.readRows, total: last.totalRowsToRead } : null;
+    out.progressMonotonic = ev.every((e, i) => i === 0 || e.readRows >= ev[i - 1].readRows);
+    out.progressHasTotal = ev.some((e) => e.totalRowsToRead > 0);
+    // Genuine streaming (not just a start+end pair): at least one tick strictly between.
+    const tot = last ? last.totalRowsToRead : 0;
+    out.progressHasIntermediate = ev.some((e) => e.readRows > 0 && tot > 0 && e.readRows < tot);
+    out.scannedRows = pr.scannedRows;
+    // Keep the trace compact in the log (first 3 + count); the full array stays in __RESULT__.
+    log('progress: events=' + ev.length + ' elapsed=' + out.progressElapsed.toFixed(2) + 's'
+      + ' readRows[0..2]=' + JSON.stringify(readRowsSeq.slice(0, 3)) + ' last=' + (out.progressLast ? out.progressLast.readRows : 'n/a'));
+
+    // (3) CANCEL. A long scan; request cancellation ~600ms in and time how long until the
+    // query rejects. Expect QUERY_WAS_CANCELLED (Code: 394) well before its natural end.
+    let cancelErr = null, cancelMs = null;
+    const t0 = performance.now();
+    const running = db.query('SELECT count() FROM numbers(500000000) WHERE sipHash64(number) > 1')
+      .then(() => { cancelErr = 'NO_ERROR (query completed)'; })
+      .catch((e) => { cancelErr = String((e && e.message) || e); cancelMs = performance.now() - t0; });
+    setTimeout(() => { try { db.cancel(); } catch (e) { out.cancelThrow = String((e && e.message) || e); } }, 600);
+    await running;
+    out.cancelMs = cancelMs == null ? null : Math.round(cancelMs);
+    out.cancelErr = (cancelErr || '').slice(0, 140);
+    out.cancelOk = /QUERY_WAS_CANCELLED|Code:\s*394/.test(cancelErr || '');
+    log('cancel: ok=' + out.cancelOk + ' ms=' + out.cancelMs + ' err=' + out.cancelErr);
+
+    await db.terminate();
+    log('done: ' + JSON.stringify(out));
+    window.__RESULT__ = out;
+  } catch (e) {
+    log('FATAL ' + ((e && e.message) || e));
+    window.__RESULT__ = { fatal: String((e && e.message) || e).slice(0, 200) };
+  }
+})();
+setTimeout(() => { if (window.__RESULT__ === undefined) window.__RESULT__ = { timeout: true }; }, 90000);
+</script>

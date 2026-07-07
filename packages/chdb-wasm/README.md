@@ -1,6 +1,6 @@
 # chdb-wasm
 
-[chdb](https://github.com/chdb-io/chdb) (an embedded [ClickHouse](https://clickhouse.com)) compiled to WebAssembly, with an **async, non-blocking, worker-based** JS/TS API — modeled on [duckdb-wasm](https://github.com/duckdb/duckdb-wasm).
+[chdb](https://github.com/chdb-io/chdb) (an embedded [ClickHouse](https://clickhouse.com)) compiled to WebAssembly, with an **async, non-blocking, worker-based** JS/TS API.
 
 The wasm engine runs inside a Web Worker, so queries return Promises and the
 caller's thread (your UI / event loop) is never blocked.

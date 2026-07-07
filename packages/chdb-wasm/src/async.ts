@@ -1,16 +1,21 @@
-// Main-thread async client. Mirrors duckdb-wasm's AsyncDuckDB: the wasm runs in
-// a worker and queries return Promises, so the calling thread never blocks.
+// Main-thread async client: the wasm runs in a worker and queries return Promises,
+// so the calling thread never blocks.
 
 import { ChdbError } from './status.ts';
-import type { ConnHandle, RequestType, WireResult, WorkerResponse } from './protocol.ts';
+import type { ConnHandle, RequestType, WireResult, WorkerResponse, QueryProgress } from './protocol.ts';
+export type { QueryProgress } from './protocol.ts';
 
 const isNode = typeof process !== 'undefined' && !!(process as any).versions?.node;
 
 export interface ChdbResult {
   /** Raw result bytes (CSV/JSON/… per the requested format). */
   data: Uint8Array;
+  /** Result size: rows/bytes RETURNED (e.g. 1 for `SELECT count()`), not source rows scanned. */
   rowsRead: number;
   bytesRead: number;
+  /** Source rows/bytes SCANNED from storage (ClickHouse read_rows) — for "Processed N rows, …". */
+  scannedRows: number;
+  scannedBytes: number;
   elapsedSeconds: number;
   /** Decode the bytes as UTF-8 text. */
   text(): string;
@@ -27,6 +32,12 @@ export interface CreateOptions {
   onProgress?: (loaded: number, total: number) => void;
 }
 
+/** Per-call options for query()/queryStream(). */
+export interface QueryOptions {
+  /** Live execution-progress callback (mt bundle; throttled ~100 ms in the engine). */
+  onProgress?: (p: QueryProgress) => void;
+}
+
 interface Pending {
   resolve: (v: any) => void;
   reject: (e: any) => void;
@@ -37,6 +48,8 @@ function wrap(r: WireResult): ChdbResult {
     data: r.data,
     rowsRead: r.rowsRead,
     bytesRead: r.bytesRead,
+    scannedRows: r.scannedRows,
+    scannedBytes: r.scannedBytes,
     elapsedSeconds: r.elapsedSeconds,
     text: () => new TextDecoder().decode(r.data),
   };
@@ -47,6 +60,9 @@ export class AsyncChdb {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private onProgress?: (loaded: number, total: number) => void;
+  /** mt-only views into the shared wasm memory (set by create() from init). */
+  private cancelFlag?: Int32Array;
+  private progressView?: BigInt64Array;
 
   private constructor(worker: any, onProgress?: (loaded: number, total: number) => void) {
     this.worker = worker;
@@ -68,7 +84,12 @@ export class AsyncChdb {
 
     const self = new AsyncChdb(worker, opts.onProgress);
     self.attach();
-    await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
+    const initResult = await self.request('init', { moduleUrl: opts.moduleUrl, wasmUrl: opts.wasmUrl });
+    if (initResult?.sharedMem) {
+      self.cancelFlag = new Int32Array(initResult.sharedMem, initResult.cancelAddr, 1);
+      // 6 × int64: [seq, readRows, totalRowsToRead, readBytes, totalBytesToRead, elapsedNs].
+      self.progressView = new BigInt64Array(initResult.sharedMem, initResult.progressAddr, 6);
+    }
     return self;
   }
 
@@ -91,6 +112,9 @@ export class AsyncChdb {
   }
 
   private request(type: RequestType, payload?: any, transfer?: Transferable[]): Promise<any> {
+    // Clear a stale cancel flag when a new query starts.
+    if (this.cancelFlag && (type === 'query' || type === 'queryConn' || type === 'streamStart'))
+      Atomics.store(this.cancelFlag, 0, 0);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -98,9 +122,64 @@ export class AsyncChdb {
     });
   }
 
-  /** Run a query on the implicit :memory: connection. */
-  async query(sql: string, format = 'CSV'): Promise<ChdbResult> {
-    return wrap(await this.request('query', { sql, format }));
+  /** Snapshot the shared progress struct, rejecting a torn read via the seq guard. */
+  private readProgress(v: BigInt64Array): QueryProgress {
+    const snap = (): QueryProgress => ({
+      readRows: Number(v[1]), totalRowsToRead: Number(v[2]),
+      readBytes: Number(v[3]), totalBytesToRead: Number(v[4]),
+      elapsedNs: Number(v[5]),
+    });
+    for (let i = 0; i < 4; i++) {
+      const s1 = Atomics.load(v, 0);
+      const p = snap();
+      if (Atomics.load(v, 0) === s1) return p;   // seq unchanged -> consistent snapshot
+    }
+    // Writes are ~ms apart; after a few retries take the (cosmetically-fine) latest read.
+    return snap();
+  }
+
+  /**
+   * Poll the shared progress struct (mt build) while a query runs, invoking cb whenever the
+   * engine advances it. The worker thread blocks in the synchronous query ccall, but THIS
+   * (main) thread's event loop is free, and the engine writes progress from whatever thread
+   * runs the pipeline — so polling shared memory here is the only path that sees intermediate
+   * progress. No-op on the st build (no shared memory). Returns a stop() that clears the
+   * timer and does one final catch-up read (so the last tick is seen).
+   * @internal
+   */
+  _startProgressPoll(cb: (p: QueryProgress) => void): () => void {
+    const view = this.progressView;
+    if (!view) return () => {};
+    let lastSeq = Number(Atomics.load(view, 0));
+    const tick = () => {
+      const seq = Number(Atomics.load(view, 0));
+      if (seq === lastSeq) return;
+      lastSeq = seq;
+      cb(this.readProgress(view));
+    };
+    const timer = setInterval(tick, 80);
+    return () => { clearInterval(timer); tick(); };
+  }
+
+  /** Run a query on the implicit :memory: connection. opts.onProgress gets live execution progress. */
+  async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
+    const stop = opts?.onProgress ? this._startProgressPoll(opts.onProgress) : () => {};
+    try {
+      return wrap(await this.request('query', { sql, format }));
+    } finally {
+      stop();
+    }
+  }
+
+  /**
+   * Request cancellation of the currently-running query (mt bundle only): the in-flight
+   * query()/queryStream() rejects with a cancellation error. Throws on the single-threaded
+   * build, which runs queries synchronously and cannot be interrupted mid-query.
+   */
+  cancel(): void {
+    if (!this.cancelFlag)
+      throw new ChdbError('query cancellation is only supported on the multi-threaded (mt) build');
+    Atomics.store(this.cancelFlag, 0, 1);
   }
 
   /**
@@ -195,13 +274,24 @@ export class AsyncChdbConnection {
     this.db = db;
     this.conn = conn;
   }
-  async query(sql: string, format = 'CSV'): Promise<ChdbResult> {
-    return wrap(await this.db._queryConn(this.conn, sql, format));
+  async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
+    const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
+    try {
+      return wrap(await this.db._queryConn(this.conn, sql, format));
+    } finally {
+      stop();
+    }
+  }
+
+  /** Cancel the running query (mt only). See AsyncChdb.cancel(). */
+  cancel(): void {
+    this.db.cancel();
   }
 
   /** Stream a query's results chunk-by-chunk (yields the worker between chunks). */
-  async *queryStream(sql: string, format = 'CSV'): AsyncGenerator<ChdbResult> {
+  async *queryStream(sql: string, format = 'CSV', opts?: QueryOptions): AsyncGenerator<ChdbResult> {
     const { stream } = await this.db._streamStart(this.conn, sql, format);
+    const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
     try {
       for (;;) {
         const { done, result } = await this.db._streamFetch(this.conn, stream);
@@ -209,6 +299,7 @@ export class AsyncChdbConnection {
         yield wrap(result);
       }
     } finally {
+      stop();
       await this.db._streamCancel(this.conn, stream);
     }
   }

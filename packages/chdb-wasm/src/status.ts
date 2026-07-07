@@ -1,6 +1,6 @@
 // Error / status model. (Type-stripping friendly: no `enum`.)
 
-/** Coarse status of a chdb operation, mirroring duckdb-wasm's StatusCode idea. */
+/** Coarse status of a chdb operation. */
 export const StatusCode = {
   OK: 'OK',
   ERROR: 'ERROR',

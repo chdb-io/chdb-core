@@ -13,11 +13,61 @@
 
 #include "../local/chdb.h"
 
+#include <emscripten.h>
+#if defined(__EMSCRIPTEN_PTHREADS__)
+#    include <emscripten/threading.h>
+#endif
+
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 
+// Defined in src/Client/LocalConnection.cpp. Forward-declared here instead of including
+// <Client/LocalConnection.h>, which transitively pulls Poco/Net networking headers that
+// aren't on the wasm include path. The signature MUST match the definition exactly.
+namespace DB
+{
+void setCHDBProgressHook(
+    std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+                       uint64_t total_bytes_to_read, uint64_t elapsed_ns)> hook);
+void setCHDBCancelCheck(std::function<bool()> check);
+}
+
+// chdb-wasm cancel flag: lives in shared wasm linear memory, so ANY query thread reads it
+// with a plain atomic load (no per-thread JS globals — the EM_ASM/globalThis approach
+// failed because the check sometimes runs on a pool pthread). The page writes it via the
+// wasm Memory SharedArrayBuffer at the offset chdb_wasm_cancel_flag_addr() returns.
+static std::atomic<int32_t> g_chdb_cancel_flag{0};
+
+// chdb-wasm live progress: the engine writes the latest progress here on every tick — on
+// WHATEVER thread runs the pipeline (usually a pool pthread). The page can't be reached
+// from a pool pthread, and the worker thread is blocked in the synchronous query ccall, so
+// neither can relay it. Instead the PAGE polls this struct directly: on the mt build the
+// wasm Memory is a SharedArrayBuffer the page can view (at chdb_wasm_progress_addr()), and
+// the page's own event loop stays free during the query. `seq` is bumped last on write
+// (release) so a reader that observes a new seq also observes the matching fields; the
+// reader re-checks seq to reject a torn read. 6 × int64 (page maps a BigInt64Array).
+struct ChdbProgressShared
+{
+    std::atomic<int64_t> seq{0};
+    std::atomic<int64_t> read_rows{0};
+    std::atomic<int64_t> total_rows_to_read{0};
+    std::atomic<int64_t> read_bytes{0};
+    std::atomic<int64_t> total_bytes_to_read{0};
+    std::atomic<int64_t> elapsed_ns{0};
+};
+static ChdbProgressShared g_chdb_progress;
+
 extern "C" {
+
+// Offset of the cancel flag in wasm memory, for the page to write via the Memory SAB.
+uintptr_t chdb_wasm_cancel_flag_addr() { return reinterpret_cast<uintptr_t>(&g_chdb_cancel_flag); }
+
+// Offset of the live-progress struct in wasm memory, for the page to poll via the Memory SAB.
+uintptr_t chdb_wasm_progress_addr() { return reinterpret_cast<uintptr_t>(&g_chdb_progress); }
 
 // On wasm the pthread pool is fixed-size (PTHREAD_POOL_SIZE) and cannot grow on
 // demand: the chdb query runs synchronously in a worker, so the calling thread is
@@ -39,9 +89,44 @@ static char arg0[] = "chdb";
 
 static chdb_connection * g_conn = nullptr;
 
+// Register (once) a query-progress hook on the chdb engine. ClickHouse calls it on every
+// progress tick, on whatever thread runs the pipeline (usually a pool pthread). We just
+// publish the latest values into the shared-memory struct the page polls — no postMessage
+// (a pool pthread can't reach the page) and no throttle (the page's poll interval throttles).
+static void chdb_wasm_register_progress_hook()
+{
+    static bool registered = false;
+    if (registered)
+        return;
+    registered = true;
+    DB::setCHDBProgressHook([](uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+                               uint64_t total_bytes_to_read, uint64_t elapsed_ns)
+    {
+        // Write fields first (relaxed), then bump seq last (release) so a reader observing
+        // the new seq is guaranteed to see these fields.
+        g_chdb_progress.read_rows.store(static_cast<int64_t>(read_rows), std::memory_order_relaxed);
+        g_chdb_progress.total_rows_to_read.store(static_cast<int64_t>(total_rows_to_read), std::memory_order_relaxed);
+        g_chdb_progress.read_bytes.store(static_cast<int64_t>(read_bytes), std::memory_order_relaxed);
+        g_chdb_progress.total_bytes_to_read.store(static_cast<int64_t>(total_bytes_to_read), std::memory_order_relaxed);
+        g_chdb_progress.elapsed_ns.store(static_cast<int64_t>(elapsed_ns), std::memory_order_relaxed);
+        g_chdb_progress.seq.fetch_add(1, std::memory_order_release);
+    });
+
+    // Cancellation (mt only): the engine polls this on the query thread; we read a
+    // SharedArrayBuffer flag the page sets via Atomics.store. The single-threaded build has
+    // no SAB and never yields mid-query, so it can't be cancelled.
+    DB::setCHDBCancelCheck([]() -> bool
+    {
+        // seq_cst (not relaxed): the query thread must reliably observe the page's
+        // cross-thread Atomics.store of the flag.
+        return g_chdb_cancel_flag.load(std::memory_order_seq_cst) != 0;
+    });
+}
+
 // Apply the wasm thread cap on a freshly opened connection (idempotent, cheap).
 static void chdb_wasm_apply_settings(chdb_connection conn)
 {
+    chdb_wasm_register_progress_hook();
     chdb_result * r = chdb_query(conn, "SET max_threads = " CHDB_WASM_MAX_THREADS, "Null");
     if (r)
         chdb_destroy_query_result(r);
@@ -168,6 +253,10 @@ const char * chdb_wasm_result_error(chdb_result * r)  { return r ? chdb_result_e
 double       chdb_wasm_result_elapsed(chdb_result * r){ return r ? chdb_result_elapsed(r) : 0.0; }
 uint64_t     chdb_wasm_result_rows_read(chdb_result * r)  { return r ? chdb_result_rows_read(r) : 0; }
 uint64_t     chdb_wasm_result_bytes_read(chdb_result * r) { return r ? chdb_result_bytes_read(r) : 0; }
+// Source rows/bytes SCANNED from storage (distinct from rows_read/bytes_read, which
+// are the RESULT size) — for the "Processed N rows, … bytes" footer line.
+uint64_t     chdb_wasm_result_scanned_rows(chdb_result * r)  { return r ? chdb_result_storage_rows_read(r) : 0; }
+uint64_t     chdb_wasm_result_scanned_bytes(chdb_result * r) { return r ? chdb_result_storage_bytes_read(r) : 0; }
 void         chdb_wasm_free_result(chdb_result * r)   { if (r) chdb_destroy_query_result(r); }
 
 } // extern "C"

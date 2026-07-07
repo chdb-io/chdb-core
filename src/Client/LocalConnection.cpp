@@ -117,9 +117,55 @@ void LocalConnection::updateProgress(const Progress & value)
     state->progress.incrementPiecewiseAtomically(value);
 }
 
+#if defined(OS_WASM)
+/// chdb-wasm: a process-global hook fired on every progress tick with the accumulated
+/// chdb progress, so the wasm glue can push live query progress to JS (the browser
+/// progress bar). Wasm-only — native builds neither compile nor set these.
+namespace
+{
+    std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t)> g_chdb_progress_hook;
+    std::function<bool()> g_chdb_cancel_check;
+}
+
+void setCHDBProgressHook(
+    std::function<void(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t)> hook)
+{
+    g_chdb_progress_hook = std::move(hook);
+}
+
+void setCHDBCancelCheck(std::function<bool()> check)
+{
+    g_chdb_cancel_check = std::move(check);
+}
+
+bool chdbWasmCancelRequested()
+{
+    return g_chdb_cancel_check ? g_chdb_cancel_check() : false;
+}
+#endif
+
 void LocalConnection::updateCHDBProgress(const Progress & value)
 {
     chdb_progress.incrementPiecewiseAtomically(value);
+
+#if defined(OS_WASM)
+    /// chdb-wasm only: surface live progress to JS, and offer a second cancel point.
+    if (g_chdb_progress_hook)
+        g_chdb_progress_hook(
+            chdb_progress.read_rows.load(std::memory_order_relaxed),
+            chdb_progress.total_rows_to_read.load(std::memory_order_relaxed),
+            chdb_progress.read_bytes.load(std::memory_order_relaxed),
+            chdb_progress.total_bytes_to_read.load(std::memory_order_relaxed),
+            chdb_progress.elapsed_ns.load(std::memory_order_relaxed));
+
+    /// A second cancel point on each progress tick (in addition to the interactive-cancel
+    /// callback) — stop the running query if the page set the flag.
+    if (g_chdb_cancel_check && g_chdb_cancel_check())
+    {
+        if (auto elem = query_context->getProcessListElement())
+            elem->cancelQuery(CancelReason::CANCELLED_BY_USER);
+    }
+#endif
 }
 
 void LocalConnection::sendProfileEvents()
