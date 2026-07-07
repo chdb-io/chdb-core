@@ -26,6 +26,10 @@ def main() -> None:
             "s3.access-key-id": access_key,
             "s3.secret-access-key": secret_key,
             "s3.region": "us-east-1",
+            # fsspec (s3fs) instead of pyarrow S3FileIO: the aws-sdk-cpp multipart
+            # upload wedges against moto on loaded CI runners (curl 28 stalls);
+            # fsspec+moto is the combination pyiceberg's own CI uses.
+            "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO",
             # Generous timeouts for slow/busy CI runners (curl 28 low-speed watchdog).
             "s3.connect-timeout": "60",
             "s3.request-timeout": "60",
