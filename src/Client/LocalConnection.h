@@ -224,4 +224,20 @@ private:
     ReadBuffer * in;
 };
 
+#if defined(OS_WASM)
+/// chdb-wasm: register a hook fired on each query-progress tick with the accumulated
+/// counters (read_rows, total_rows_to_read, read_bytes, total_bytes_to_read, elapsed_ns).
+/// Plain-primitive signature so the wasm glue can forward-declare it WITHOUT including this
+/// (heavy, Poco/Net-pulling) header. Pass {} to clear.
+void setCHDBProgressHook(
+    std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+                       uint64_t total_bytes_to_read, uint64_t elapsed_ns)> hook);
+
+/// chdb-wasm: register a predicate the engine polls during a query (via setCancelCallback
+/// on each connection) to decide whether to cancel it — the wasm glue reads a
+/// SharedArrayBuffer flag the page sets. Returns false when unset (native: never cancels).
+void setCHDBCancelCheck(std::function<bool()> check);
+bool chdbWasmCancelRequested();
+#endif
+
 }

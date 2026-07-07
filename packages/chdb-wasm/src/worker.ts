@@ -87,6 +87,17 @@ listen((req: WorkerRequest) => {
       switch (req.type) {
         case 'init':
           await init(req.payload, req.id);
+          // mt only: share the wasm Memory SAB + the cancel-flag and live-progress offsets.
+          // The page sets the cancel flag (read by the C++ cancel check on any thread) and
+          // polls the progress struct (written by the engine on any thread). A non-shared
+          // heap (st build) => no cancel / no live progress.
+          {
+            const b = requireBindings();
+            const sharedMem = b.heapBuffer;
+            if (typeof SharedArrayBuffer !== 'undefined' && sharedMem instanceof SharedArrayBuffer) {
+              result = { sharedMem, cancelAddr: b.cancelFlagAddr(), progressAddr: b.progressAddr() };
+            }
+          }
           break;
         case 'query':
           result = requireBindings().query(req.payload.sql, req.payload.format);

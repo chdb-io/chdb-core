@@ -165,6 +165,12 @@ void ChdbClient::connect()
         send_profile_events,
         server_display_name);
         connection->setDefaultDatabase("default");
+#if defined(OS_WASM)
+    /// chdb-wasm: enable ClickHouse's interactive-cancel path (polled frequently between
+    /// chunks by the executor) so a query can be cancelled from JS. chdbWasmCancelRequested()
+    /// reads the shared-memory cancel flag. Wasm-only — native chdb's path is unaffected.
+    connection->setCancelCallback([] { return chdbWasmCancelRequested(); });
+#endif
 }
 
 Poco::Util::LayeredConfiguration & ChdbClient::getClientConfiguration()
