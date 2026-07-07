@@ -24,6 +24,9 @@ def main() -> None:
         "AWS_REGION": "us-east-1",
         "AWS_ALLOW_HTTP": "true",
         "AWS_S3_ALLOW_UNSAFE_RENAME": "true",
+        # Generous timeout for slow/busy CI runners (object_store default is 30s
+        # total per request, which a loaded moto can exceed).
+        "timeout": "120s",
     }
 
     data = pa.table(

@@ -26,6 +26,9 @@ def main() -> None:
             "s3.access-key-id": access_key,
             "s3.secret-access-key": secret_key,
             "s3.region": "us-east-1",
+            # Generous timeouts for slow/busy CI runners (curl 28 low-speed watchdog).
+            "s3.connect-timeout": "60",
+            "s3.request-timeout": "60",
         },
     )
 
