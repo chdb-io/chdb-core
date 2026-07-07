@@ -126,7 +126,7 @@ jobs:
       - name: Set up data-lake test venv (pyiceberg + moto)
         run: |
           python3 -m venv "${GITHUB_WORKSPACE}/.iceberg-venv"
-          "${GITHUB_WORKSPACE}/.iceberg-venv/bin/pip" install -q "pyiceberg[sql-sqlite]" pyarrow "moto[server]" s3fs
+          "${GITHUB_WORKSPACE}/.iceberg-venv/bin/pip" install -q "pyiceberg[sql-sqlite]" pyarrow "moto[server]" s3fs deltalake
 
       # MinIO strictly verifies SigV4 signatures (moto does not), closing the
       # signing loop. Downloaded once into the workspace; tests skip without it.
@@ -152,13 +152,14 @@ jobs:
           CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
           CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
 
-      - name: DataLakeCatalog + Iceberg-on-S3 (mt, MinIO — verified SigV4)
+      - name: DataLakeCatalog + Iceberg-on-S3 (mt + st, MinIO — verified SigV4)
         env:
           ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
           MINIO_BIN: ${{ github.workspace }}/.bin/minio
           CHDB_S3_BACKEND: minio
-          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm/programs/wasm/chdb.mjs
-        run: node packages/chdb-wasm/test/datalake.test.mjs
+        run: |
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
 
       - name: Unity catalog + Delta Lake (mt + st)
         env:
