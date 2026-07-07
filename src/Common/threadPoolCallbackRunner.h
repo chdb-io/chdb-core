@@ -222,6 +222,13 @@ public:
             executeCallback(*promise, std::move(my_callback), std::move(thread_group), thread_name);
         };
 
+#ifdef CHDB_WASM_SINGLE_THREADED
+        /// Single-threaded WASM build: no worker thread can be created. These are
+        /// finite fire-and-wait tasks (callers enqueue then waitForAllToFinish),
+        /// so running them inline on the calling thread preserves the semantics;
+        /// exceptions land in the promise via executeCallback as usual.
+        task_func();
+#else
         try
         {
             /// Note: calling method scheduleOrThrowOnError in intentional, because we don't want to throw exceptions
@@ -236,6 +243,7 @@ public:
             promise->set_exception(std::current_exception());
             throw;
         }
+#endif
 
         return task;
     }
