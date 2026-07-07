@@ -772,12 +772,6 @@ SchemaCache & StorageObjectStorage::getSchemaCache(const ContextPtr & context, c
             context->getConfigRef().getUInt("schema_inference_cache_max_elements_for_azure", DEFAULT_SCHEMA_CACHE_ELEMENTS));
         return schema_cache;
     }
-    if (storage_engine_name == "local")
-    {
-        static SchemaCache schema_cache(
-            context->getConfigRef().getUInt("schema_inference_cache_max_elements_for_local", DEFAULT_SCHEMA_CACHE_ELEMENTS));
-        return schema_cache;
-    }
 #if defined(OS_WASM)
     if (storage_engine_name == "web")
     {
@@ -787,6 +781,12 @@ SchemaCache & StorageObjectStorage::getSchemaCache(const ContextPtr & context, c
         return schema_cache;
     }
 #endif
+    if (storage_engine_name == "local")
+    {
+        static SchemaCache schema_cache(
+            context->getConfigRef().getUInt("schema_inference_cache_max_elements_for_local", DEFAULT_SCHEMA_CACHE_ELEMENTS));
+        return schema_cache;
+    }
     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Unsupported storage type: {}", storage_engine_name);
 }
 

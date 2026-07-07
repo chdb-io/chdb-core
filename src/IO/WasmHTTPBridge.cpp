@@ -86,7 +86,7 @@ EM_JS(int, chdb_wasm_http_request_js, (
                 { input: reqBody ? Buffer.from(reqBody) : Buffer.alloc(0), maxBuffer: 1 << 30 });
             if (res.status !== 0 || !res.stdout || !res.stdout.length) {
                 if (typeof console !== 'undefined')
-                    console.error('chdb wasm http bridge: fetch child failed', method, url, res.status, res.error || '', res.stderr ? res.stderr.toString() : '');
+                    console.error('chdb wasm http bridge: fetch child failed', method, url, res.status, res.error || "", res.stderr ? res.stderr.toString() : "");
                 return -1;
             }
             var parsed = JSON.parse(res.stdout.toString());

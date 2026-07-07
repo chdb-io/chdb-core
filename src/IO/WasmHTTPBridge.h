@@ -1,5 +1,7 @@
 #pragma once
 
+#if defined(OS_WASM)
+
 #include <string>
 
 namespace DB
@@ -37,3 +39,5 @@ WasmHTTPResult performWasmHTTPRequest(
     long long range_length = -1);
 
 }
+
+#endif

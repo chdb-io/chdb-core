@@ -1,5 +1,7 @@
 #pragma once
 
+#if defined(OS_WASM)
+
 #include <IO/HTTPHeaderEntries.h>
 #include <base/types.h>
 
@@ -32,3 +34,5 @@ HTTPHeaderEntries signV4Request(
     const String & session_token);
 
 }
+
+#endif
