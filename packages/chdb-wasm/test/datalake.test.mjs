@@ -40,6 +40,7 @@ const MINIO_BIN = process.env.MINIO_BIN || 'minio';
 
 const S3_PORT = 15968;
 const CATALOG_PORT = 15969;
+const AUTH_CATALOG_PORT = 15971;
 const S3_ENDPOINT = `http://127.0.0.1:${S3_PORT}`;
 const BUCKET = 'lakebucket';
 // moto accepts any credentials; MinIO's defaults require >= 8-char secrets.
@@ -91,6 +92,7 @@ for (;;) {
 }
 
 let mockServer;
+let authServer;
 let db;
 try {
   // Create the bucket with a signed request (MinIO rejects anonymous PUTs).
@@ -168,9 +170,96 @@ boto3.client("s3", endpoint_url="${S3_ENDPOINT}", aws_access_key_id="${KEY}",
   console.log('ok: copy-on-write delete snapshot applied (deleted rows absent)');
 
   await q('DROP DATABASE lake');
+
+  // ==== OAuth + vended credentials + pagination (a second catalog instance) ====
+  // A `broken` table (metadata-location pointing at a missing object) rides along
+  // for the error-path assertions; with pageSize=2 the 4 tables need 2 pages and
+  // the extra empty namespace needs 2 namespace pages.
+  const brokenMeta = structuredClone(descriptor.tables.find((t) => t.name === 'events').metadata);
+  brokenMeta.location = `s3://${BUCKET}/warehouse/lakehouse/broken`;
+  const authDescriptor = {
+    namespace: descriptor.namespace,
+    tables: [
+      ...descriptor.tables,
+      {
+        name: 'broken',
+        metadata_location: `s3://${BUCKET}/warehouse/lakehouse/broken/metadata/00000-broken.metadata.json`,
+        metadata: brokenMeta,
+      },
+    ],
+  };
+  authServer = await startMockCatalog({
+    port: AUTH_CATALOG_PORT,
+    descriptor: authDescriptor,
+    auth: { clientId: 'chdb-client', clientSecret: 'chdb-secret', tokenMaxUses: 5 },
+    // NB: the vended s3.endpoint needs a trailing slash — getMetadataLocation's
+    // prefix-strip of the endpoint-based location fails without it (same in the
+    // native engine) and metadata paths would double up.
+    vend: { accessKey: KEY, secretKey: SECRET, endpoint: `${S3_ENDPOINT}/` },
+    pageSize: 2,
+    extraNamespaces: ['emptyns'],
+  });
+
+  // No storage_endpoint and no credentials in the DDL: both must arrive as
+  // vended credentials in LoadTableResult.config (s3.endpoint + key/secret).
+  await q(`
+    CREATE DATABASE lake2
+    ENGINE = DataLakeCatalog('http://127.0.0.1:${AUTH_CATALOG_PORT}/v1')
+    SETTINGS catalog_type = 'rest', warehouse = 'warehouse',
+             catalog_credential = 'chdb-client:chdb-secret'`);
+
+  const tables2 = await q('SHOW TABLES FROM lake2');
+  assert.strictEqual(
+    tables2.split('\n').sort().join(','),
+    'lakehouse.broken,lakehouse.city_events,lakehouse.deleted_events,lakehouse.events',
+    `SHOW TABLES (paginated): ${tables2}`);
+  assert.ok(authServer.stats.maxPageRequests >= 2, `pagination exercised: ${JSON.stringify(authServer.stats)}`);
+  console.log('ok: OAuth-protected catalog listing across pages (+ empty namespace)');
+
+  const rows2 = await q('SELECT count(), sum(id) FROM lake2.`lakehouse.events`');
+  assert.strictEqual(rows2, '7\t28', `vended-creds read: ${rows2}`);
+  assert.ok(authServer.stats.delegationHeaderSeen >= 1,
+    `X-Iceberg-Access-Delegation sent: ${JSON.stringify(authServer.stats)}`);
+  console.log(`ok: vended credentials (endpoint + keys from the catalog${BACKEND === 'minio' ? ', MinIO-verified' : ''})`);
+
+  // tokenMaxUses=5 guarantees mid-flight 401s: the client must fetch a fresh
+  // token and retry (RestCatalog's refresh-and-retry path).
+  assert.ok(authServer.stats.oauthTokensIssued >= 2,
+    `token refresh happened: ${JSON.stringify(authServer.stats)}`);
+  console.log(`ok: expired-token 401 -> refresh -> retry (${authServer.stats.oauthTokensIssued} tokens issued)`);
+
+  // ==== error paths ====
+  const errOf = async (sql) => { try { await q(sql); return ''; } catch (e) { return String(e.message || e); } };
+
+  const unknownErr = await errOf('SELECT * FROM lake2.`lakehouse.nope`');
+  assert.ok(/nope/.test(unknownErr) && /UNKNOWN_TABLE|doesn't exist|does not exist/i.test(unknownErr),
+    `unknown table error: ${unknownErr}`);
+  console.log('ok: unknown table -> clean UNKNOWN_TABLE error');
+
+  const brokenErr = await errOf('SELECT * FROM lake2.`lakehouse.broken`');
+  assert.ok(/404|Not found|NETWORK_ERROR/i.test(brokenErr), `missing metadata error: ${brokenErr}`);
+  assert.strictEqual(await q('SELECT 1'), '1', 'connection still usable after a failed read');
+  console.log('ok: missing metadata object -> clean error, connection survives');
+
+  const badCredsErr = await errOf(`
+    CREATE DATABASE badcreds
+    ENGINE = DataLakeCatalog('http://127.0.0.1:${AUTH_CATALOG_PORT}/v1')
+    SETTINGS catalog_type = 'rest', warehouse = 'warehouse',
+             catalog_credential = 'wrong:nope'`)
+    || await errOf('SELECT * FROM badcreds.`lakehouse.events`');
+  // Upstream wart (native behaves the same): retrieveAccessToken() extracts
+  // `access_token` from the 401 error body without checking, so the user sees
+  // Poco::InvalidAccessException instead of a clean 401. Assert it at least
+  // fails loudly; tighten to /401/ if upstream ever improves the message.
+  assert.ok(/401|invalid_client|Invalid access/i.test(badCredsErr), `bad catalog creds error: ${badCredsErr}`);
+  await errOf('DROP DATABASE badcreds');
+  console.log('ok: wrong catalog credentials -> query fails (error quality tracked upstream)');
+
+  await q('DROP DATABASE lake2');
   console.log(`PASS datalake.test (DataLakeCatalog REST + Iceberg-on-S3, backend=${BACKEND})`);
 } finally {
   if (db) await db.terminate().catch(() => {});
   if (mockServer) mockServer.close();
+  if (authServer) authServer.close();
   s3.kill('SIGKILL');
 }
