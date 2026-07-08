@@ -1,6 +1,5 @@
 /**
- * chdbQueryParamsTest.c — usage examples for the parameter-binding C API
- * (chdb_query_with_params family).
+ * chdbQueryParamsTest.c — chdb_query_with_params usage at a glance.
  *
  * Queries use {name:Type} placeholders. Parameters are two parallel string
  * arrays: names[i] pairs with values[i]. Values are always strings — the
@@ -18,17 +17,11 @@
 
 static int g_failed = 0;
 
-/* Run a parameterized query and check its CSV output. */
-static void expect(chdb_connection conn, const char * label, const char * query,
-                   const char * const * names, const char * const * values,
-                   size_t count, const char * expected)
+/* Print the result (or the error) of one call. */
+static void show(const char * label, chdb_result * r)
 {
-    chdb_result * r = chdb_query_with_params(conn, query, "CSV", names, values, count);
-    const char * err = r ? chdb_result_error(r) : "null result";
-    int ok = !err && chdb_result_length(r) == strlen(expected)
-                  && memcmp(chdb_result_buffer(r), expected, strlen(expected)) == 0;
-    printf("%-24s %s\n", label, ok ? "OK" : (err ? err : "MISMATCH"));
-    if (!ok) g_failed++;
+    if (!r || chdb_result_error(r)) { printf("%-22s ERROR: %s\n", label, r ? chdb_result_error(r) : "null"); g_failed++; }
+    else printf("%-22s -> %.*s", label, (int)chdb_result_length(r), chdb_result_buffer(r));
     chdb_destroy_query_result(r);
 }
 
@@ -39,57 +32,76 @@ int main(void)
     chdb_connection * conn = chdb_connect(2, args);
     if (!conn) return 1;
 
-    chdb_result * r = chdb_query(*conn,
+    chdb_result * setup = chdb_query(*conn,
         "CREATE TABLE users (id UInt32, name String) ENGINE = Memory;"
         "INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'O''Hara')", "CSV");
-    chdb_destroy_query_result(r);
+    chdb_destroy_query_result(setup);
 
-    /* Basic scalars. */
+    /* 1. Scalars: values are strings, {name:Type} does the typing. */
     {
-        const char * n[] = {"id", "name"}, * v[] = {"42", "Alice"};
-        expect(*conn, "scalars",
-               "SELECT {id:UInt32} AS id, {name:String} AS name", n, v, 2, "42,\"Alice\"\n");
+        const char * names[]  = {"id", "name"};
+        const char * values[] = {"42", "Alice"};
+        show("1. scalars", chdb_query_with_params(*conn,
+            "SELECT {id:UInt32} AS id, {name:String} AS name",
+            "CSV", names, values, 2));
     }
-    /* No escaping, no SQL injection — the main reason to use parameters. */
+
+    /* 2. Strings need no escaping — and can't inject. */
     {
-        const char * n[] = {"who"}, * v[] = {"O'Hara"};
-        expect(*conn, "quote-safe WHERE",
-               "SELECT id FROM users WHERE name = {who:String}", n, v, 1, "3\n");
+        const char * names[]  = {"who"};
+        const char * values[] = {"O'Hara"};
+        show("2. quote-safe WHERE", chdb_query_with_params(*conn,
+            "SELECT id FROM users WHERE name = {who:String}",
+            "CSV", names, values, 1));
     }
-    /* Array parameter for IN. */
+
+    /* 3. Array parameter for IN. */
     {
-        const char * n[] = {"ids"}, * v[] = {"[1,3]"};
-        expect(*conn, "array / IN",
-               "SELECT count() FROM users WHERE id IN {ids:Array(UInt32)}", n, v, 1, "2\n");
+        const char * names[]  = {"ids"};
+        const char * values[] = {"[1,3]"};
+        show("3. array / IN", chdb_query_with_params(*conn,
+            "SELECT count() FROM users WHERE id IN {ids:Array(UInt32)}",
+            "CSV", names, values, 1));
     }
-    /* Identifier parameter: bind a table (or column) name. */
+
+    /* 4. Identifier parameter: bind a table (or column) name. */
     {
-        const char * n[] = {"tbl"}, * v[] = {"users"};
-        expect(*conn, "identifier",
-               "SELECT count() FROM {tbl:Identifier}", n, v, 1, "3\n");
+        const char * names[]  = {"tbl"};
+        const char * values[] = {"users"};
+        show("4. identifier", chdb_query_with_params(*conn,
+            "SELECT count() FROM {tbl:Identifier}",
+            "CSV", names, values, 1));
     }
-    /* By-name matching: array order != SQL order; one param used twice. */
+
+    /* 5. Matching is by name: array order is independent of SQL order,
+     *    and one parameter can be referenced multiple times. */
     {
-        const char * n[] = {"name", "id"}, * v[] = {"Alice", "7"};
-        expect(*conn, "by-name + reuse",
-               "SELECT {id:UInt32} + {id:UInt32}, {name:String}", n, v, 2, "14,\"Alice\"\n");
+        const char * names[]  = {"name", "id"};
+        const char * values[] = {"Alice", "7"};
+        show("5. by-name + reuse", chdb_query_with_params(*conn,
+            "SELECT {id:UInt32} + {id:UInt32} AS twice, {name:String} AS name",
+            "CSV", names, values, 2));
     }
-    /* _n variant: explicit lengths, values may contain NUL bytes. */
+
+    /* 6. _n variant: explicit lengths, values may contain NUL bytes. */
     {
-        const char * n[] = {"s"}, * v[] = {"a\0b"};
-        const size_t nl[] = {1}, vl[] = {3};
-        const char * q = "SELECT length({s:String})";
-        chdb_result * res = chdb_query_with_params_n(*conn, q, strlen(q), "CSV", 3, n, nl, v, vl, 1);
-        int ok = res && !chdb_result_error(res) && memcmp(chdb_result_buffer(res), "3\n", 2) == 0;
-        printf("%-24s %s\n", "_n (embedded NUL)", ok ? "OK" : "FAIL");
-        if (!ok) g_failed++;
-        chdb_destroy_query_result(res);
+        const char * names[]     = {"s"};
+        const char * values[]    = {"a\0b"};                /* 3 bytes, embedded NUL */
+        const size_t name_lens[]  = {1};
+        const size_t value_lens[] = {3};
+        const char * query = "SELECT length({s:String}) AS len";
+        show("6. _n, embedded NUL", chdb_query_with_params_n(*conn,
+            query, strlen(query), "CSV", 3,
+            names, name_lens, values, value_lens, 1));
     }
-    /* Streaming query with parameters: same arrays, then the usual fetch loop. */
+
+    /* 7. Streaming query with parameters: same arrays, then the fetch loop. */
     {
-        const char * n[] = {"limit"}, * v[] = {"100000"};
+        const char * names[]  = {"limit"};
+        const char * values[] = {"100000"};
         chdb_result * stream = chdb_stream_query_with_params(*conn,
-            "SELECT number FROM numbers({limit:UInt64})", "CSV", n, v, 1);
+            "SELECT number FROM numbers({limit:UInt64})",
+            "CSV", names, values, 1);
         size_t rows = 0;
         for (;;) {
             chdb_result * chunk = chdb_stream_fetch_result(*conn, stream);
@@ -99,16 +111,18 @@ int main(void)
             rows += got;
         }
         chdb_destroy_query_result(stream);
-        printf("%-24s %s\n", "streaming + params", rows == 100000 ? "OK" : "FAIL");
+        printf("%-22s -> %zu rows\n", "7. streaming + params", rows);
         if (rows != 100000) g_failed++;
     }
-    /* A missing parameter is a clean error. */
+
+    /* 8. A missing parameter is a clean error (BAD_QUERY_PARAMETER). */
     {
-        chdb_result * res = chdb_query_with_params(*conn, "SELECT {nope:UInt32}", "CSV", NULL, NULL, 0);
-        int ok = res && chdb_result_error(res) != NULL;
-        printf("%-24s %s\n", "missing param -> error", ok ? "OK" : "FAIL");
-        if (!ok) g_failed++;
-        chdb_destroy_query_result(res);
+        chdb_result * r = chdb_query_with_params(*conn,
+            "SELECT {nope:UInt32}", "CSV", NULL, NULL, 0);
+        printf("%-22s -> %s\n", "8. missing param",
+               (r && chdb_result_error(r)) ? "error, as expected" : "NO ERROR (bug!)");
+        if (!(r && chdb_result_error(r))) g_failed++;
+        chdb_destroy_query_result(r);
     }
 
     chdb_close_conn(conn);
