@@ -34,7 +34,7 @@ static void expect(chdb_connection conn, const char * label, const char * query,
 
 int main(void)
 {
-    char arg0[] = "clickhouse", arg1[] = "--multiquery";
+    char arg0[] = "chdb", arg1[] = "--multiquery";
     char * args[] = {arg0, arg1};
     chdb_connection * conn = chdb_connect(2, args);
     if (!conn) return 1;
