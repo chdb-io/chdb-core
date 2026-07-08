@@ -51,8 +51,8 @@ jobs:
             echo "Waiting for dpkg lock (held by unattended-upgrades)..."
             sleep 5
           done
-          sudo apt-get update
-          sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+          sudo apt-get -o DPkg::Lock::Timeout=300 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y make build-essential libssl-dev zlib1g-dev \
             libbz2-dev libreadline-dev wget curl llvm \
             libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
             libffi-dev liblzma-dev libsqlite3-dev golang-go liblz4-dev
@@ -85,8 +85,8 @@ jobs:
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 21
-          sudo apt-get install -y make cmake ccache ninja-build yasm gawk wget
-          sudo apt-get install -y lld-21
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y make cmake ccache ninja-build yasm gawk wget
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y lld-21
           if ! command -v wasm-ld &> /dev/null; then
             sudo ln -sf /usr/bin/wasm-ld-21 /usr/bin/wasm-ld || true
           fi
@@ -94,8 +94,8 @@ jobs:
       - name: Update git
         run: |
           sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y git
+          sudo apt-get -o DPkg::Lock::Timeout=300 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y git
           git --version
       - uses: actions/checkout@v3
         with:

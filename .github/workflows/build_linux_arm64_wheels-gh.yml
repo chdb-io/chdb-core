@@ -52,8 +52,8 @@ jobs:
           fi
       - name: Install Python build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+          sudo apt-get -o DPkg::Lock::Timeout=300 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y make build-essential libssl-dev zlib1g-dev \
             libbz2-dev libreadline-dev wget curl llvm \
             libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
             libffi-dev liblzma-dev libsqlite3-dev golang-go liblz4-dev
@@ -74,7 +74,7 @@ jobs:
           mkdir -p $HOME/.local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b $HOME/.local/bin
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          sudo apt-get update && sudo apt-get install -y jq lsb-release
+          sudo apt-get -o DPkg::Lock::Timeout=300 update && sudo apt-get -o DPkg::Lock::Timeout=300 install -y jq lsb-release
 
           # Detect OS distribution info
           DISTRO_ID=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
@@ -163,9 +163,9 @@ jobs:
           sudo ./llvm.sh 21
           which clang++-21
           clang++-21 --version
-          sudo apt-get install -y make cmake ccache ninja-build yasm gawk wget
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y make cmake ccache ninja-build yasm gawk wget
           # Install WebAssembly linker (wasm-ld)
-          sudo apt-get install -y lld-21
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y lld-21
           # Create symlink for wasm-ld
           if ! command -v wasm-ld &> /dev/null; then
             sudo ln -sf /usr/bin/wasm-ld-21 /usr/bin/wasm-ld || true
@@ -175,8 +175,8 @@ jobs:
       - name: Update git
         run: |
           sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y git
+          sudo apt-get -o DPkg::Lock::Timeout=300 update
+          sudo apt-get -o DPkg::Lock::Timeout=300 install -y git
           git --version
       - uses: actions/checkout@v3
         with:
@@ -366,7 +366,7 @@ jobs:
 
           # Install lldb for debugging when DEBUG_MODE is enabled
           if [ "$DEBUG_MODE" == "true" ]; then
-            sudo apt-get install -y lldb-21
+            sudo apt-get -o DPkg::Lock::Timeout=300 install -y lldb-21
             sudo ln -sf /usr/bin/lldb-21 /usr/bin/lldb || true
           fi
 
