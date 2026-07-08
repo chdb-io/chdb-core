@@ -17,11 +17,18 @@
 
 static int g_failed = 0;
 
-/* Print the result (or the error) of one call. */
-static void show(const char * label, chdb_result * r)
+/* Print one call's result and check it against the expected CSV output. */
+static void show(const char * label, const char * expected, chdb_result * r)
 {
-    if (!r || chdb_result_error(r)) { printf("%-22s ERROR: %s\n", label, r ? chdb_result_error(r) : "null"); g_failed++; }
-    else printf("%-22s -> %.*s", label, (int)chdb_result_length(r), chdb_result_buffer(r));
+    const char * err = r ? chdb_result_error(r) : "null result";
+    if (err) { printf("%-22s ERROR: %s\n", label, err); g_failed++; }
+    else {
+        int ok = chdb_result_length(r) == strlen(expected)
+              && memcmp(chdb_result_buffer(r), expected, strlen(expected)) == 0;
+        printf("%-22s -> %.*s%s", label,
+               (int)chdb_result_length(r), chdb_result_buffer(r), ok ? "" : "   [MISMATCH]\n");
+        if (!ok) g_failed++;
+    }
     chdb_destroy_query_result(r);
 }
 
@@ -41,7 +48,7 @@ int main(void)
     {
         const char * names[]  = {"id", "name"};
         const char * values[] = {"42", "Alice"};
-        show("1. scalars", chdb_query_with_params(*conn,
+        show("1. scalars", "42,\"Alice\"\n", chdb_query_with_params(*conn,
             "SELECT {id:UInt32} AS id, {name:String} AS name",
             "CSV", names, values, 2));
     }
@@ -50,7 +57,7 @@ int main(void)
     {
         const char * names[]  = {"who"};
         const char * values[] = {"O'Hara"};
-        show("2. quote-safe WHERE", chdb_query_with_params(*conn,
+        show("2. quote-safe WHERE", "3\n", chdb_query_with_params(*conn,
             "SELECT id FROM users WHERE name = {who:String}",
             "CSV", names, values, 1));
     }
@@ -59,7 +66,7 @@ int main(void)
     {
         const char * names[]  = {"ids"};
         const char * values[] = {"[1,3]"};
-        show("3. array / IN", chdb_query_with_params(*conn,
+        show("3. array / IN", "2\n", chdb_query_with_params(*conn,
             "SELECT count() FROM users WHERE id IN {ids:Array(UInt32)}",
             "CSV", names, values, 1));
     }
@@ -68,7 +75,7 @@ int main(void)
     {
         const char * names[]  = {"tbl"};
         const char * values[] = {"users"};
-        show("4. identifier", chdb_query_with_params(*conn,
+        show("4. identifier", "3\n", chdb_query_with_params(*conn,
             "SELECT count() FROM {tbl:Identifier}",
             "CSV", names, values, 1));
     }
@@ -78,7 +85,7 @@ int main(void)
     {
         const char * names[]  = {"name", "id"};
         const char * values[] = {"Alice", "7"};
-        show("5. by-name + reuse", chdb_query_with_params(*conn,
+        show("5. by-name + reuse", "14,\"Alice\"\n", chdb_query_with_params(*conn,
             "SELECT {id:UInt32} + {id:UInt32} AS twice, {name:String} AS name",
             "CSV", names, values, 2));
     }
@@ -90,7 +97,7 @@ int main(void)
         const size_t name_lens[]  = {1};
         const size_t value_lens[] = {3};
         const char * query = "SELECT length({s:String}) AS len";
-        show("6. _n, embedded NUL", chdb_query_with_params_n(*conn,
+        show("6. _n, embedded NUL", "3\n", chdb_query_with_params_n(*conn,
             query, strlen(query), "CSV", 3,
             names, name_lens, values, value_lens, 1));
     }
