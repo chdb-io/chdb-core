@@ -130,6 +130,14 @@ static void chdb_wasm_apply_settings(chdb_connection conn)
     chdb_result * r = chdb_query(conn, "SET max_threads = " CHDB_WASM_MAX_THREADS, "Null");
     if (r)
         chdb_destroy_query_result(r);
+    // Data-lake catalogs are a headline wasm feature: pre-enable the BETA gates
+    // (session defaults only — the engine defaults are untouched and a user
+    // SET overrides this). Paimon stays off (EXPERIMENTAL tier).
+    r = chdb_query(conn,
+        "SET allow_database_iceberg = 1, allow_experimental_database_unity_catalog = 1",
+        "Null");
+    if (r)
+        chdb_destroy_query_result(r);
 #if defined(CHDB_WASM_SINGLE_THREADED)
     // The single-threaded build has no thread pool (no -pthread), so the Parquet (V3)
     // reader's decoder/prefetch pools can't be created ("Cannot schedule a task"). Force
