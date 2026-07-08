@@ -246,6 +246,9 @@ void registerStorageIceberg(StorageFactory & factory)
             else
 #if USE_AWS_S3
                 configuration = std::make_shared<StorageS3IcebergConfiguration>(storage_settings);
+#elif defined(OS_WASM)
+                /// WASM has no AWS SDK: s3:// tables go through the web-fetch data plane.
+                configuration = std::make_shared<StorageWasmWebIcebergConfiguration>(storage_settings);
 #endif
             if (configuration == nullptr)
             {
@@ -286,6 +289,24 @@ void registerStorageIceberg(StorageFactory & factory)
             }
             else
                 configuration = std::make_shared<StorageS3IcebergConfiguration>(storage_settings);
+            return createStorageObjectStorage(args, configuration);
+        },
+        {
+            .supports_settings = true,
+            .supports_sort_order = true,
+            .supports_schema_inference = true,
+            .source_access_type = AccessTypeObjects::Source::S3,
+            .has_builtin_setting_fn = DataLakeStorageSettings::hasBuiltin,
+        });
+#    elif defined(OS_WASM)
+    /// WASM has no AWS SDK: the IcebergS3 engine reads via the web-fetch data
+    /// plane (the `disk` setting is not supported here).
+    factory.registerStorage(
+        IcebergS3Definition::storage_engine_name,
+        [&](const StorageFactory::Arguments & args)
+        {
+            const auto storage_settings = getDataLakeStorageSettings(*args.storage_def);
+            auto configuration = std::make_shared<StorageWasmWebIcebergConfiguration>(storage_settings);
             return createStorageObjectStorage(args, configuration);
         },
         {
@@ -758,6 +779,28 @@ void registerStorageDeltaLake(StorageFactory & factory)
             .supports_schema_inference = true,
             .source_access_type = AccessTypeObjects::Source::FILE,
             .has_builtin_setting_fn = StorageObjectStorageSettings::hasBuiltin,
+        });
+}
+#endif
+
+#if USE_PARQUET && !USE_DELTA_KERNEL_RS && defined(OS_WASM)
+/// WASM has no rust delta-kernel: the legacy C++ DeltaLakeMetadata replays the
+/// log, and data is read through the web-fetch data plane.
+void registerStorageDeltaLake(StorageFactory & factory)
+{
+    factory.registerStorage(
+        DeltaLakeDefinition::storage_engine_name,
+        [&](const StorageFactory::Arguments & args)
+        {
+            const auto storage_settings = getDataLakeStorageSettings(*args.storage_def);
+            auto configuration = std::make_shared<StorageWasmWebDeltaLakeConfiguration>(storage_settings);
+            return createStorageObjectStorage(args, configuration);
+        },
+        {
+            .supports_settings = true,
+            .supports_schema_inference = true,
+            .source_access_type = AccessTypeObjects::Source::S3,
+            .has_builtin_setting_fn = DataLakeStorageSettings::hasBuiltin,
         });
 }
 #endif

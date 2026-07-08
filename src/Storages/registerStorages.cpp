@@ -45,6 +45,8 @@ void registerStorageS3Queue(StorageFactory & factory);
 
 #if USE_PARQUET && USE_DELTA_KERNEL_RS
 void registerStorageDeltaLake(StorageFactory & factory);
+#elif USE_PARQUET && defined(OS_WASM)
+void registerStorageDeltaLake(StorageFactory & factory);
 #endif
 
 #if USE_AVRO
@@ -166,6 +168,8 @@ void registerStorages()
 #endif
 
 #if USE_PARQUET && USE_DELTA_KERNEL_RS
+    registerStorageDeltaLake(factory);
+#elif USE_PARQUET && defined(OS_WASM)
     registerStorageDeltaLake(factory);
 #endif
 

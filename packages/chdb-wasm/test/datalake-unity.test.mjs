@@ -93,6 +93,12 @@ try {
   assert.strictEqual(agg, '4\t99', `aggregate: ${agg}`);
   console.log('ok: aggregation');
 
+  // Catalog-less direct read through the deltaLake() table function (legacy
+  // C++ log replay — no rust delta-kernel on wasm).
+  const tf = await q(`SELECT count(), max(price) FROM deltaLake('${S3_ENDPOINT}/${BUCKET}/unity/sales', 'testing', 'testing')`);
+  assert.strictEqual(tf, '4\t99', `deltaLake direct read: ${tf}`);
+  console.log('ok: deltaLake() direct read');
+
   await q('DROP DATABASE unity');
   console.log('PASS datalake-unity.test (Unity catalog + Delta Lake legacy metadata via wasm web fetch)');
 } finally {

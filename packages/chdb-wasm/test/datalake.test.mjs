@@ -171,6 +171,16 @@ boto3.client("s3", endpoint_url="${S3_ENDPOINT}", aws_access_key_id="${KEY}",
 
   await q('DROP DATABASE lake');
 
+  // ==== catalog-less direct reads: icebergS3()/iceberg() table functions ====
+  // No catalog pins the metadata file, so the reader must DISCOVER the latest
+  // metadata version by listing the metadata/ prefix (ListObjectsV2 path).
+  const tfUrl = `${S3_ENDPOINT}/${BUCKET}/warehouse/lakehouse/events`;
+  const tf = await q(`SELECT count(), sum(id) FROM icebergS3('${tfUrl}', '${KEY}', '${SECRET}')`);
+  assert.strictEqual(tf, '7\t28', `icebergS3 direct read: ${tf}`);
+  const tfAlias = await q(`SELECT count() FROM iceberg('${tfUrl}', '${KEY}', '${SECRET}')`);
+  assert.strictEqual(tfAlias, '7', `iceberg alias: ${tfAlias}`);
+  console.log('ok: icebergS3()/iceberg() direct read (metadata discovery via ListObjectsV2)');
+
   // ==== OAuth + vended credentials + pagination (a second catalog instance) ====
   // A `broken` table (metadata-location pointing at a missing object) rides along
   // for the error-path assertions; with pageSize=2 the 4 tables need 2 pages and
