@@ -128,6 +128,65 @@ class TestNullAndExceptionHandling(unittest.TestCase):
         self.assertEqual(str(ret).strip(), "5")
         chdb.drop_function("add_two")
 
+    # ── on_null="skip" over mixed NULL/non-NULL columns: function must not be
+    #    called for NULL rows (not even with discarded placeholder values) ──
+
+    def test_null_skip_mixed_column_skips_calls(self):
+        calls = []
+
+        def tracked(x):
+            calls.append(x)
+            return x * 10
+
+        chdb.create_function("tracked_skip", tracked, arg_types=[INT64], return_type=INT64, on_null="skip")
+        ret = self.session.query(
+            "SELECT tracked_skip(x) FROM (SELECT CAST(arrayJoin([1, 2, NULL]) AS Nullable(Int64)) AS x)", "CSV")
+        self.assertEqual(str(ret).strip(), "10\n20\n\\N")
+        self.assertEqual(sorted(calls), [1, 2])
+        chdb.drop_function("tracked_skip")
+
+    def test_null_skip_propagate_no_placeholder_exception(self):
+        # With skip + propagate (the defaults), a NULL row must not fail the
+        # query by invoking the function with a placeholder value (0 here,
+        # which would raise ZeroDivisionError).
+        chdb.create_function("recip_skip", lambda x: 100 // x, arg_types=[INT64], return_type=INT64)
+        ret = self.session.query(
+            "SELECT recip_skip(x) FROM (SELECT CAST(arrayJoin([50, NULL, 20]) AS Nullable(Int64)) AS x)", "CSV")
+        self.assertEqual(str(ret).strip(), "2\n\\N\n5")
+        chdb.drop_function("recip_skip")
+
+    def test_null_skip_multi_arg_mixed_column(self):
+        calls = []
+
+        def tracked_add(a, b):
+            calls.append((a, b))
+            return a + b
+
+        chdb.create_function("tracked_add", tracked_add, arg_types=[INT64, INT64], return_type=INT64, on_null="skip")
+        self.session.query(
+            "CREATE TABLE null_pairs (id Int64, a Nullable(Int64), b Nullable(Int64)) ENGINE = Memory")
+        self.session.query(
+            "INSERT INTO null_pairs VALUES (1, 1, 10), (2, NULL, 20), (3, 3, NULL), (4, NULL, NULL), (5, 5, 50)")
+        ret = self.session.query("SELECT tracked_add(a, b) FROM null_pairs ORDER BY id", "CSV")
+        self.assertEqual(str(ret).strip(), "11\n\\N\n\\N\n\\N\n55")
+        self.assertEqual(sorted(calls), [(1, 10), (5, 50)])
+        self.session.query("DROP TABLE null_pairs")
+        chdb.drop_function("tracked_add")
+
+    def test_null_pass_mixed_column_receives_none(self):
+        calls = []
+
+        def collect(x):
+            calls.append(x)
+            return -1 if x is None else x * 10
+
+        chdb.create_function("collect_pass", collect, arg_types=[INT64], return_type=INT64, on_null="pass")
+        ret = self.session.query(
+            "SELECT collect_pass(x) FROM (SELECT CAST(arrayJoin([1, NULL, 3]) AS Nullable(Int64)) AS x)", "CSV")
+        self.assertEqual(str(ret).strip(), "10\n-1\n30")
+        self.assertEqual(calls, [1, None, 3])
+        chdb.drop_function("collect_pass")
+
     # ── on_null="pass": NULL input → None passed to function ──
 
     def test_null_pass_receives_none(self):

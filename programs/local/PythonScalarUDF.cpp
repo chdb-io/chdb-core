@@ -834,6 +834,26 @@ DB::ColumnPtr PythonScalarUDF::executeImpl(
 
     for (size_t row = 0; row < input_rows_count; ++row)
     {
+        if (null_handling == NullHandling::SKIP)
+        {
+            bool has_null_arg = false;
+            for (const auto & arg : arguments)
+            {
+                if (arg.column->isNullAt(row))
+                {
+                    has_null_arg = true;
+                    break;
+                }
+            }
+
+            if (has_null_arg)
+            {
+                /// The return type is always Nullable, so the default value is NULL.
+                result_column->insertDefault();
+                continue;
+            }
+        }
+
         py::tuple py_args(arguments.size());
         for (size_t i = 0; i < arguments.size(); ++i)
         {
