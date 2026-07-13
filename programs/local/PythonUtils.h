@@ -98,8 +98,16 @@ inline bool isPandasDf(const py::object & obj)
     return execWithGIL(
         [&]()
         {
-            auto pd_data_frame_type = py::module_::import("pandas").attr("DataFrame");
-            return py::isinstance(obj, pd_data_frame_type);
+            try
+            {
+                auto pd_data_frame_type = py::module_::import("pandas").attr("DataFrame");
+                return py::isinstance(obj, pd_data_frame_type);
+            }
+            catch (const py::error_already_set &)
+            {
+                /// pandas is not installed: the object cannot be a DataFrame.
+                return false;
+            }
         });
 }
 
@@ -109,8 +117,16 @@ inline bool isPyarrowTable(const py::object & obj)
     return execWithGIL(
         [&]()
         {
-            auto table_type = py::module_::import("pyarrow").attr("Table");
-            return py::isinstance(obj, table_type);
+            try
+            {
+                auto table_type = py::module_::import("pyarrow").attr("Table");
+                return py::isinstance(obj, table_type);
+            }
+            catch (const py::error_already_set &)
+            {
+                /// pyarrow is not installed: the object cannot be a Table.
+                return false;
+            }
         });
 }
 

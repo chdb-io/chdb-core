@@ -114,6 +114,37 @@ else:
 print("PANDAS_ONLY_OK")
 """
 
+_BODY_PYTHON_TABLE_FUNCTION = """
+import chdb
+
+# Object discovery for Python() must not be derailed by the pandas/pyarrow
+# type probes failing to import them: a plain dict is still queryable.
+data = {"a": [1, 2, 3], "b": ["x", "y", "z"]}
+res = chdb.query("SELECT b, a * 2 AS a2 FROM Python(data) ORDER BY a", "CSV")
+assert res.bytes() == b'"x",2\\n"y",4\\n"z",6\\n', res.bytes()
+
+class Reader(chdb.PyReader):
+    def __init__(self, data):
+        self.data = data
+        self.cursor = 0
+        super().__init__(data)
+
+    def get_schema(self):
+        return [("a", "int"), ("b", "str")]
+
+    def read(self, col_names, count):
+        if self.cursor >= 3:
+            return []
+        block = [self.data[c][self.cursor:self.cursor + count] for c in col_names]
+        self.cursor += count
+        return block
+
+reader = Reader(data)
+assert chdb.query("SELECT count() FROM Python(reader)", "CSV").bytes() == b"3\\n"
+
+print("PYTHON_TABLE_OK")
+"""
+
 
 class TestQueryWithoutPandasPyarrow(unittest.TestCase):
     def _run_blocked(self, blocked, body):
@@ -145,6 +176,12 @@ class TestQueryWithoutPandasPyarrow(unittest.TestCase):
     def test_query_works_with_only_pandas_missing(self):
         out = self._run_blocked(("pandas",), _BODY_PANDAS_ONLY_MISSING)
         self.assertIn("PANDAS_ONLY_OK", out)
+
+    def test_python_table_function_works_without_pandas_and_pyarrow(self):
+        out = self._run_blocked(
+            ("pandas", "pyarrow", "numpy"), _BODY_PYTHON_TABLE_FUNCTION
+        )
+        self.assertIn("PYTHON_TABLE_OK", out)
 
 
 if __name__ == "__main__":
