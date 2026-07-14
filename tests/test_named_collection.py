@@ -150,17 +150,17 @@ class TestNamedCollectionReadonly(unittest.TestCase):
 
             sess.query("SET readonly=2")
 
-            with self.assertRaisesRegex(Exception, "readonly"):
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
                 sess.query("CREATE NAMED COLLECTION x AS a=1")
-            with self.assertRaisesRegex(Exception, "readonly"):
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
                 sess.query("ALTER NAMED COLLECTION aws SET url='https://evil.example.com/y.parquet'")
-            with self.assertRaisesRegex(Exception, "readonly"):
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
                 sess.query("DROP NAMED COLLECTION aws")
 
             # The operator's collection is intact and no new one appeared.
             self.assertEqual(self._collection_names(sess), '"aws"\n')
             keys = sess.query(
-                "SELECT mapKeys(collection) FROM system.named_collections WHERE name = 'aws'"
+                "SELECT arraySort(mapKeys(collection)) FROM system.named_collections WHERE name = 'aws'"
             )
             self.assertEqual(str(keys), "\"['access_key_id','url']\"\n")
         finally:
@@ -170,7 +170,7 @@ class TestNamedCollectionReadonly(unittest.TestCase):
         sess = session.Session(self.test_dir)
         try:
             sess.query("SET readonly=1")
-            with self.assertRaisesRegex(Exception, "readonly"):
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
                 sess.query("CREATE NAMED COLLECTION x AS a=1")
             self.assertEqual(self._collection_names(sess), "")
         finally:
@@ -180,7 +180,7 @@ class TestNamedCollectionReadonly(unittest.TestCase):
         sess = session.Session(self.test_dir)
         try:
             sess.query("SET allow_ddl=0")
-            with self.assertRaisesRegex(Exception, "DDL queries are prohibited"):
+            with self.assertRaisesRegex(RuntimeError, "DDL queries are prohibited"):
                 sess.query("CREATE NAMED COLLECTION x AS a=1")
             self.assertEqual(self._collection_names(sess), "")
         finally:
