@@ -466,7 +466,8 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
-          python -m pip install dist/*.whl --force-reinstall
+          # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           pyenv shell --unset
         continue-on-error: false
@@ -598,7 +599,8 @@ jobs:
           pyenv shell 3.11
           python -m pip uninstall -y chdb-core || true
           python -m pip uninstall -y chdb-core-lite || true
-          python -m pip install dist/chdb_core_lite-*manylinux*.whl --force-reinstall
+          # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+          python -m pip install dist/chdb_core_lite-*manylinux*.whl "pyarrow<25" --force-reinstall
           CHDB_LITE=1 PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           python -m pip uninstall -y chdb-core-lite
           pyenv shell --unset
