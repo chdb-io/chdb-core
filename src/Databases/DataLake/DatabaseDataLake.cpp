@@ -241,12 +241,16 @@ std::shared_ptr<DataLake::ICatalog> DatabaseDataLake::getCatalog() const
 
         case DB::DatabaseDataLakeCatalogType::GLUE:
         {
+#if USE_AWS_S3
             catalog_impl = std::make_shared<DataLake::GlueCatalog>(
                 url,
                 Context::getGlobalContextInstance(),
                 catalog_parameters,
                 table_engine_definition);
             break;
+#else
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot use 'glue' database engine: ClickHouse was compiled without USE_AWS_S3 build option");
+#endif
         }
         case DB::DatabaseDataLakeCatalogType::ICEBERG_HIVE:
         {
@@ -334,6 +338,13 @@ std::shared_ptr<StorageObjectStorageConfiguration> DatabaseDataLake::getConfigur
                 {
                     return std::make_shared<StorageS3IcebergConfiguration>(storage_settings);
                 }
+#elif defined(OS_WASM)
+                /// No AWS SDK on WASM: s3:// table locations are read over
+                /// http(s) through the host JS environment (SigV4 in C++).
+                case DB::DatabaseDataLakeStorageType::S3:
+                {
+                    return std::make_shared<StorageWasmWebIcebergConfiguration>(storage_settings);
+                }
 #endif
 #if USE_AZURE_BLOB_STORAGE
                 case DB::DatabaseDataLakeStorageType::Azure:
@@ -379,6 +390,11 @@ std::shared_ptr<StorageObjectStorageConfiguration> DatabaseDataLake::getConfigur
                 case DB::DatabaseDataLakeStorageType::S3:
                 {
                     return std::make_shared<StorageS3DeltaLakeConfiguration>(storage_settings);
+                }
+#elif defined(OS_WASM)
+                case DB::DatabaseDataLakeStorageType::S3:
+                {
+                    return std::make_shared<StorageWasmWebDeltaLakeConfiguration>(storage_settings);
                 }
 #endif
 #if USE_AZURE_BLOB_STORAGE
@@ -437,6 +453,11 @@ std::shared_ptr<StorageObjectStorageConfiguration> DatabaseDataLake::getConfigur
                 case DB::DatabaseDataLakeStorageType::S3:
                 {
                     return std::make_shared<StorageS3PaimonConfiguration>(storage_settings);
+                }
+#elif defined(OS_WASM)
+                case DB::DatabaseDataLakeStorageType::S3:
+                {
+                    return std::make_shared<StorageWasmWebPaimonConfiguration>(storage_settings);
                 }
 #endif
 #if USE_AZURE_BLOB_STORAGE

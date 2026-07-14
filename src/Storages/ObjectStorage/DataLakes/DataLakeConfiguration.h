@@ -17,6 +17,9 @@
 #include <Storages/ObjectStorage/HDFS/Configuration.h>
 #include <Storages/ObjectStorage/Local/Configuration.h>
 #include <Storages/ObjectStorage/S3/Configuration.h>
+#if defined(OS_WASM)
+#include <Storages/ObjectStorage/WasmWeb/Configuration.h>
+#endif
 #include <Storages/ObjectStorage/StorageObjectStorage.h>
 #include <Storages/StorageFactory.h>
 #include <Storages/ColumnsDescription.h>
@@ -445,6 +448,14 @@ using StorageHDFSPaimonConfiguration = DataLakeConfiguration<StorageHDFSConfigur
 
 using StorageLocalIcebergConfiguration = DataLakeConfiguration<StorageLocalConfiguration, IcebergMetadata>;
 using StorageLocalPaimonConfiguration = DataLakeConfiguration<StorageLocalConfiguration, PaimonMetadata>;
+
+#if defined(OS_WASM)
+/// WASM data plane: table data is fetched over http(s) through the host JS
+/// environment (no AWS SDK / raw sockets), so s3:// table locations from a
+/// data-lake catalog map to these instead of the StorageS3Configuration ones.
+using StorageWasmWebIcebergConfiguration = DataLakeConfiguration<StorageWasmWebConfiguration, IcebergMetadata>;
+using StorageWasmWebPaimonConfiguration = DataLakeConfiguration<StorageWasmWebConfiguration, PaimonMetadata>;
+#endif
 #endif
 
 #if USE_PARQUET
@@ -457,6 +468,10 @@ using StorageAzureDeltaLakeConfiguration = DataLakeConfiguration<StorageAzureCon
 #endif
 
 using StorageLocalDeltaLakeConfiguration = DataLakeConfiguration<StorageLocalConfiguration, DeltaLakeMetadata>;
+
+#if defined(OS_WASM)
+using StorageWasmWebDeltaLakeConfiguration = DataLakeConfiguration<StorageWasmWebConfiguration, DeltaLakeMetadata>;
+#endif
 
 #endif
 

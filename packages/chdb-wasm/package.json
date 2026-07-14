@@ -1,6 +1,6 @@
 {
   "name": "chdb-wasm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "chdb (ClickHouse) compiled to WebAssembly, with an async, non-blocking, worker-based API",
   "type": "module",
   "license": "Apache-2.0",

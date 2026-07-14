@@ -38,6 +38,10 @@ env:
 
 jobs:
   build-and-test:
+    # Skip draft PRs — the 2h build/test cycle only runs once the PR is marked
+    # ready (`ready_for_review` is in the trigger types, so that transition
+    # starts a run). Pushes to main, tags and manual dispatch are unaffected.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Self-hosted Linux x86_64 runner (same pool as the native wheel builds). The
     # .wasm artifact is host-independent, so one platform is enough. No
     # free-disk-space step: that is for ephemeral GitHub-hosted images and would
@@ -115,6 +119,66 @@ jobs:
           CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm-st/programs/wasm/chdb.mjs
         run: node packages/chdb-wasm/test/matrix.test.mjs
 
+      # Data-lake tests are self-contained: pyiceberg writes real Iceberg tables
+      # into moto (a local in-process S3), and a ~60-line Node mock serves the
+      # Iceberg REST catalog endpoints — no external services. They only need a
+      # Python venv with the lakehouse packages (the tests skip without it).
+      - name: Set up data-lake test venv (pyiceberg + moto)
+        run: |
+          # The self-hosted image lacks ensurepip (Debian splits it out).
+          sudo apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv "${GITHUB_WORKSPACE}/.iceberg-venv"
+          "${GITHUB_WORKSPACE}/.iceberg-venv/bin/pip" install -q "pyiceberg[sql-sqlite]" pyarrow "moto[server]" s3fs deltalake
+
+      # MinIO strictly verifies SigV4 signatures (moto does not), closing the
+      # signing loop. Downloaded once into the workspace; tests skip without it.
+      - name: Fetch MinIO
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.bin"
+          if [ ! -x "${GITHUB_WORKSPACE}/.bin/minio" ]; then
+            curl -fsSL -o "${GITHUB_WORKSPACE}/.bin/minio" https://dl.min.io/server/minio/release/linux-amd64/minio
+            chmod +x "${GITHUB_WORKSPACE}/.bin/minio"
+          fi
+
+      - name: Iceberg local table via MEMFS (mt + st)
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+        run: |
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/iceberg-local.test.mjs
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/iceberg-local.test.mjs
+
+      - name: DataLakeCatalog + Iceberg-on-S3 (mt + st, moto)
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+        run: |
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
+
+      - name: DataLakeCatalog + Iceberg-on-S3 (mt + st, MinIO — verified SigV4)
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+          MINIO_BIN: ${{ github.workspace }}/.bin/minio
+          CHDB_S3_BACKEND: minio
+        run: |
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake.test.mjs
+
+      - name: Unity catalog + Delta Lake (mt + st)
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+        run: |
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake-unity.test.mjs
+          CHDB_WASM_MJS="${GITHUB_WORKSPACE}/buildwasm-st/programs/wasm/chdb.mjs" node packages/chdb-wasm/test/datalake-unity.test.mjs
+
+      # A REAL Iceberg REST catalog (apache/iceberg-rest-fixture in docker) +
+      # MinIO — validates against genuine catalog responses. Skips without docker.
+      - name: DataLakeCatalog against a real REST catalog (mt)
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+          MINIO_BIN: ${{ github.workspace }}/.bin/minio
+          CHDB_WASM_MJS: ${{ github.workspace }}/buildwasm/programs/wasm/chdb.mjs
+        run: node packages/chdb-wasm/test/datalake-real-catalog.test.mjs
+
       # puppeteer's bundled Chrome needs these system shared libraries (libatk,
       # libnss3, libgbm, ...); the self-hosted runner does not preinstall them.
       # Install per-package with `|| true` so Ubuntu 24.04's t64 ABI renames
@@ -146,6 +210,14 @@ jobs:
           npm run build
           ls -la dist/chdb.wasm dist/st/chdb.wasm
           node test/browser-run.mjs
+
+      # Same DataLakeCatalog flow inside a cross-origin-isolated Chrome page
+      # (exercises the sync-XHR transport branch; Node uses a different one).
+      - name: DataLakeCatalog headless-Chrome test
+        working-directory: packages/chdb-wasm
+        env:
+          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
+        run: node test/datalake-browser-run.mjs
 
       # Keep the artifact for download/inspection (kept short to save storage).
       - name: Upload wasm artifact
