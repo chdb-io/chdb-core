@@ -12,6 +12,15 @@ name: wasm
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after build + all tests pass'
+        type: boolean
+        default: false
+      version:
+        description: 'npm version to publish (e.g. 0.3.1); required when publish is checked'
+        type: string
+        default: ''
   push:
     branches:
       - main
@@ -284,23 +293,31 @@ jobs:
       # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
       # and headless-Chrome tests) ran first, so a tag that fails tests never ships.
       # dist/ is already built by the npm step above; the version is taken from the tag. ----
-      - name: Set npm version from tag
-        # was: startsWith(github.ref, 'refs/tags/v') — disabled: chdb-wasm is not
-        # distributed on tags (neither npm nor GitHub Release asset) for now.
-        if: false
+      # ---- npm publish: MANUAL ONLY. Run the workflow via workflow_dispatch with
+      # `publish` checked and a `version`; everything above (build, the full test
+      # matrix, the split pipeline) must have passed to reach here. Tag-driven
+      # publishing stays disabled (was: startsWith(github.ref, 'refs/tags/v')).
+      - name: Set npm version (manual publish)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
         working-directory: packages/chdb-wasm
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
+            || { echo "publish requires a semver 'version' input, got: '$VERSION'"; exit 1; }
           echo "Publishing chdb-wasm@$VERSION"
           npm pkg set version="$VERSION"
 
       - name: Publish to npm
-        # was: startsWith(github.ref, 'refs/tags/v') — disabled: chdb-wasm is not
-        # distributed on tags (neither npm nor GitHub Release asset) for now.
-        if: false
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
         working-directory: packages/chdb-wasm
+        env:
+          VERSION: ${{ inputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          # setup-node was not given registry-url, so NODE_AUTH_TOKEN alone is
+          # inert; write the registry auth explicitly.
+          npm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"
           # Prerelease tags (e.g. v0.2.0-beta.1, semver versions containing '-') go
           # under the `next` dist-tag so `npm install chdb-wasm` (which resolves
           # `latest`) keeps getting the last STABLE release; stable tags get `latest`.
@@ -313,15 +330,14 @@ jobs:
           npm publish "$TGZ" --tag "$TAG"
           # Hand the tarball path to the release-upload step below.
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Best-effort: attach the published npm tarball (chdb-wasm-<version>.tgz — it embeds
       # both wasm bundles) to the GitHub release, creating the release if the tag has none
       # yet. continue-on-error — the npm publish above is the real deliverable.
       - name: Attach the npm tarball to the GitHub release
-        # was: startsWith(github.ref, 'refs/tags/v') — disabled: chdb-wasm is not
-        # distributed on tags (neither npm nor GitHub Release asset) for now.
+        # Tag runs only (a manual-dispatch publish has no tag/release to attach
+        # to) and tag-driven distribution stays disabled for now
+        # (was: startsWith(github.ref, 'refs/tags/v')).
         if: false
         continue-on-error: true
         run: |
