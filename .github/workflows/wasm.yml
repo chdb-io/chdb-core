@@ -287,7 +287,7 @@ jobs:
             split-out-st/chdb.mjs
             split-out-st/chdb.wasm
             split-out-st/chdb.deferred.wasm
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
       # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
