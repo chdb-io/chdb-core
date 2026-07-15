@@ -13,17 +13,29 @@
 // CHDB_WASM_MJS for that. This file tests what is SPLIT-specific.
 
 import assert from 'node:assert';
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdtempSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, copyFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
+// An UNSET env var skips that bundle; a SET one pointing at a dir without the
+// split artifacts fails loudly — otherwise a pipeline regression that stops
+// emitting chdb.deferred.wasm would silently turn CI's run into a skip.
 const bundles = [
   ['mt', process.env.CHDB_SPLIT_MT_DIR],
   ['st', process.env.CHDB_SPLIT_ST_DIR],
-].filter(([, dir]) => dir && existsSync(join(dir, 'chdb.deferred.wasm')));
+].filter(([variant, dir]) => {
+  if (!dir) return false;
+  for (const f of ['chdb.mjs', 'chdb.wasm', 'chdb.deferred.wasm']) {
+    if (!existsSync(join(dir, f))) {
+      console.error(`FAIL split.test: CHDB_SPLIT_${variant.toUpperCase()}_DIR=${dir} is set but ${f} is missing`);
+      process.exit(1);
+    }
+  }
+  return true;
+});
 
 if (!bundles.length) {
   console.log('SKIP split.test: set CHDB_SPLIT_MT_DIR / CHDB_SPLIT_ST_DIR to split output dirs');
@@ -36,6 +48,11 @@ const ok = (label) => { checks++; console.log(`ok: ${label}`); };
 // Runs a probe script in a CHILD process: lazy-load state is per-instance, so
 // cold-path and no-deferred checks each need a fresh process. Returns
 // {status, stdout, stderr}; timeout guards against the historical hang modes.
+const tmpRoot = mkdtempSync(join(tmpdir(), 'chdb-split-test-'));
+process.on('exit', () => rmSync(tmpRoot, { recursive: true, force: true }));
+let tmpSeq = 0;
+const tmpFile = (name) => { mkdirSync(join(tmpRoot, String(++tmpSeq))); return join(tmpRoot, String(tmpSeq), name); };
+
 function probe(dir, body, timeoutMs = 300000) {
   const script = `
     import { AsyncChdb } from ${JSON.stringify(join(pkgDir, 'dist/index.js'))};
@@ -45,7 +62,7 @@ function probe(dir, body, timeoutMs = 300000) {
     await db.terminate();
     process.exit(0);
   `;
-  const file = join(mkdtempSync(join(tmpdir(), 'chdb-split-test-')), 'probe.mjs');
+  const file = tmpFile('probe.mjs');
   writeFileSync(file, script);
   return spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: timeoutMs });
 }
@@ -73,7 +90,7 @@ for (const [variant, dir] of bundles) {
   }
 
   // ---- hot paths: engine + full SDK surface, no deferred involvement ------
-  // (asserted for real below by renaming the deferred module away)
+  // (asserted for real below against a copy that has no deferred module)
   {
     const r = probe(dir, `
       console.log(await q('SELECT sum(number), count() FROM numbers(1000)'));
@@ -117,41 +134,45 @@ for (const [variant, dir] of bundles) {
   // ---- cold path: lazy-loads the deferred module and computes correctly ---
   {
     // toModifiedJulianDay/fromModifiedJulianDay are deliberately NOT in
-    // profile-corpus.sql — keep it that way or this test stops testing.
+    // profile-corpus.sql; enforced here, or adding them to the corpus would
+    // silently turn the cold-path checks into hot-path ones.
+    const corpus = readFileSync(join(pkgDir, 'tools/split/profile-corpus.sql'), 'utf8');
+    assert.ok(!corpus.includes('ModifiedJulianDay'), 'profile-corpus.sql must not contain the cold-probe functions');
     const r = probe(dir, `console.log(await q("SELECT toModifiedJulianDay('2024-03-15'), fromModifiedJulianDay(60384)"));`);
     assert.strictEqual(r.status, 0, `cold probe failed: ${r.stderr?.slice(-300)}`);
     assert.strictEqual(lastLine(r), '60384,"2024-03-15"');
     ok(`${variant}: cold function lazy-loads deferred module, exact result`);
   }
 
-  // ---- negative controls: deferred module renamed away ---------------------
+  // ---- negative controls: a COPY of the bundle without the deferred module.
+  // Never mutate the real dir: a hard kill mid-test would leave it broken for
+  // whatever reads it next (in CI, the split-artifact upload).
   {
-    const deferred = join(dir, 'chdb.deferred.wasm');
-    renameSync(deferred, deferred + '.hidden');
-    try {
-      // Everything above except the cold query must STILL work: init, session,
-      // streaming, files, error reporting — proof the primary is self-contained.
-      const hot = probe(dir, `
-        console.log(await q('SELECT sum(number), count() FROM numbers(1000)'));
-        const conn = await db.connect();
-        await conn.query('CREATE TABLE t (x Int32) ENGINE = Memory');
-        await conn.query('INSERT INTO t SELECT number FROM numbers(10)');
-        console.log((await conn.query('SELECT sum(x) FROM t')).text().trim());
-        try { await q('SELECT no_such_function_xyz(1)'); } catch (e) { console.log('ERROR-OK'); }
-      `);
-      assert.strictEqual(hot.status, 0, `hot-without-deferred failed: ${hot.stderr?.slice(-300)}`);
-      assert.strictEqual(hot.stdout.trim().split('\n').join('|'), '499500,1000|45|ERROR-OK');
-      ok(`${variant}: primary fully self-contained without deferred module`);
+    const noDeferred = join(tmpRoot, `no-deferred-${variant}`);
+    mkdirSync(noDeferred);
+    copyFileSync(join(dir, 'chdb.mjs'), join(noDeferred, 'chdb.mjs'));
+    copyFileSync(join(dir, 'chdb.wasm'), join(noDeferred, 'chdb.wasm'));
 
-      // The cold query must fail FAST with a real error — not hang (the
-      // historical failure mode) and not succeed.
-      const cold = probe(dir, `console.log(await q("SELECT toModifiedJulianDay('2024-03-15')"));`, 120000);
-      assert.notStrictEqual(cold.status, 0, 'cold query without deferred must fail');
-      assert.notStrictEqual(cold.status, null, 'cold query without deferred must not hang until timeout');
-      ok(`${variant}: cold call without deferred fails fast (no hang)`);
-    } finally {
-      renameSync(deferred + '.hidden', deferred);
-    }
+    // Everything above except the cold query must STILL work: init, session,
+    // streaming, files, error reporting — proof the primary is self-contained.
+    const hot = probe(noDeferred, `
+      console.log(await q('SELECT sum(number), count() FROM numbers(1000)'));
+      const conn = await db.connect();
+      await conn.query('CREATE TABLE t (x Int32) ENGINE = Memory');
+      await conn.query('INSERT INTO t SELECT number FROM numbers(10)');
+      console.log((await conn.query('SELECT sum(x) FROM t')).text().trim());
+      try { await q('SELECT no_such_function_xyz(1)'); } catch (e) { console.log('ERROR-OK'); }
+    `);
+    assert.strictEqual(hot.status, 0, `hot-without-deferred failed: ${hot.stderr?.slice(-300)}`);
+    assert.strictEqual(hot.stdout.trim().split('\n').join('|'), '499500,1000|45|ERROR-OK');
+    ok(`${variant}: primary fully self-contained without deferred module`);
+
+    // The cold query must fail FAST with a real error — not hang (the
+    // historical failure mode) and not succeed.
+    const cold = probe(noDeferred, `console.log(await q("SELECT toModifiedJulianDay('2024-03-15')"));`, 120000);
+    assert.notStrictEqual(cold.status, 0, 'cold query without deferred must fail');
+    assert.notStrictEqual(cold.status, null, 'cold query without deferred must not hang until timeout');
+    ok(`${variant}: cold call without deferred fails fast (no hang)`);
   }
 }
 
@@ -159,7 +180,7 @@ for (const [variant, dir] of bundles) {
 {
   // patch-glue is idempotent on an already-patched glue…
   const patched = join(bundles[0][1], 'chdb.mjs');
-  const tmp = join(mkdtempSync(join(tmpdir(), 'chdb-split-test-')), 'glue.mjs');
+  const tmp = tmpFile('glue.mjs');
   copyFileSync(patched, tmp);
   const before = readFileSync(tmp, 'utf8');
   const again = spawnSync(process.execPath, [join(pkgDir, 'tools/split/patch-glue.mjs'), tmp, '--lazy-load'], { encoding: 'utf8' });
@@ -176,7 +197,8 @@ for (const [variant, dir] of bundles) {
 
   // copy-artifacts refuses a WASM_SPLIT_MODULE build tree (its chdb.wasm is
   // the profiling-instrumented module, never shippable).
-  const fakeBuild = mkdtempSync(join(tmpdir(), 'chdb-split-test-'));
+  const fakeBuild = join(tmpRoot, 'fake-build');
+  mkdirSync(fakeBuild);
   for (const f of ['chdb.mjs', 'chdb.wasm', 'chdb.wasm.orig']) writeFileSync(join(fakeBuild, f), 'x');
   const guard = spawnSync(process.execPath, [join(pkgDir, 'scripts/copy-artifacts.mjs'), fakeBuild], { encoding: 'utf8' });
   assert.notStrictEqual(guard.status, 0, 'copy-artifacts must reject an instrumented build tree');

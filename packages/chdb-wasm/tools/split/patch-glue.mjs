@@ -40,6 +40,7 @@ if (!file || (!doLazy && !doProfile)) {
 }
 
 let src = readFileSync(file, 'utf8');
+const srcBefore = src;
 
 function replaceCounted(what, anchor, replacement, expected) {
   const n = src.split(anchor).length - 1;
@@ -66,7 +67,9 @@ if (doLazy) {
     replaceCounted(
       'lazy-load(redispatch)',
       'return wasmTable.get(BigInt(base))(...args)}',
-      'var pt__=Object.values(wasmRawExports).find((v)=>v instanceof WebAssembly.Table&&v!==wasmTable)||wasmTable;'
+      'var pts__=Object.values(wasmRawExports).filter((v)=>v instanceof WebAssembly.Table&&v!==wasmTable);'
+        + 'if(pts__.length!==1)throw new Error("chdb split: expected exactly one placeholder table, found "+pts__.length);'
+        + 'var pt__=pts__[0];'
         + 'return pt__.get(typeof pt__.length==="bigint"?BigInt(base):Number(base))(...args)}',
       1);
     console.log('lazy-load: patched (2 sites + placeholder-table redispatch)');
@@ -87,14 +90,20 @@ if (doProfile) {
     // parentPort in Node). Memory64: the pointer parameter is a raw i64 ->
     // BigInt; the byte-count parameter is i32 -> Number.
     const anchor = 'else if(msgData.target==="setimmediate"){}';
+    // try/catch so ANY failure still posts a reply — otherwise the runner
+    // burns its per-worker timeout with no indication of the real cause.
     const branch =
       'else if(cmd==="chdbWriteProfile"){' +
-      'var wp__=wasmExports["__write_profile"];' +
-      'var n__=wp__?Number(wp__(BigInt(msgData.ptr),msgData.cap)):-1;' +
+      'var n__=-1;' +
+      'try{var wp__=wasmExports["__write_profile"];' +
+      'if(wp__)n__=Number(wp__(BigInt(msgData.ptr),msgData.cap))}' +
+      'catch(e__){n__=-1}' +
       'postMessage({cmd:"callHandler",handler:"__chdbProfileWritten",args:[msgData.tag,n__]})}';
     replaceCounted('profile-collect', anchor, branch + anchor, 1);
     console.log('profile-collect: patched');
   }
 }
 
-writeFileSync(file, src);
+// Don't dirty the mtime when every branch was a no-op (already patched /
+// single-threaded skip) — that can trigger spurious downstream rebuilds.
+if (src !== srcBefore) writeFileSync(file, src);

@@ -7,7 +7,7 @@
 //   stBuildDir = ../../buildwasm-st/programs/wasm (single-threaded, OFF)       -> dist/st/
 // The single-threaded bundle is optional: if its build dir is absent it is skipped.
 
-import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,7 +37,14 @@ function copyBundle(buildDir, destDir, { required }) {
     process.exit(1);
   }
   const files = ['chdb.mjs', 'chdb.wasm'];
-  if (existsSync(join(buildDir, 'chdb.deferred.wasm'))) files.push('chdb.deferred.wasm');
+  if (existsSync(join(buildDir, 'chdb.deferred.wasm'))) {
+    files.push('chdb.deferred.wasm');
+  } else if (existsSync(join(destDir, 'chdb.deferred.wasm'))) {
+    // Don't ship a stale deferred module left over from a previous split run —
+    // it would no longer correspond to the chdb.wasm being copied.
+    rmSync(join(destDir, 'chdb.deferred.wasm'));
+    console.log(`removed stale chdb.deferred.wasm from ${destDir.replace(pkgDir + '/', '')}/`);
+  }
   for (const f of files) {
     copyFileSync(join(buildDir, f), join(destDir, f));
     console.log(`copied ${f} -> ${destDir.replace(pkgDir + '/', '')}/`);

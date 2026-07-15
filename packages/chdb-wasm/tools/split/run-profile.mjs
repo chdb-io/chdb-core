@@ -68,8 +68,23 @@ writeFileSync(join(staticDir, 'people.jsonl'), PEOPLE_JSONL);
 
 // --- fixture services (all out-of-process) -----------------------------------
 const children = [];
-const substitutions = { '{HTTP}': `http://127.0.0.1:${HTTP_PORT}` };
+// {HTTP} only when the fixture host will actually run: in the INIT_PROBE pass
+// it does not, and an unconditional substitution would aim the url()
+// statements at a dead endpoint (recorded as failures) instead of skipping.
+const substitutions = {};
+if (!INIT_PROBE) substitutions['{HTTP}'] = `http://127.0.0.1:${HTTP_PORT}`;
 let moto = null;
+
+// Registered BEFORE startLake(): moto is spawned inside it, and a failure in a
+// later startup step (bucket PUT, table fixtures) must not orphan it on its
+// port. 'exit' doesn't fire on signals; without those handlers a killed runner
+// orphans moto and fixture-host, and the next run fails on EADDRINUSE.
+const cleanup = () => {
+  for (const c of children) c.kill('SIGKILL');
+  if (moto) moto.kill('SIGKILL');
+};
+process.on('exit', cleanup);
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { cleanup(); process.exit(143); });
 
 async function startLake() {
   if (process.env.CHDB_SKIP_LAKE === '1' || !existsSync(PY)) return false;
@@ -107,7 +122,9 @@ if (!INIT_PROBE) {
       '--catalog-port', String(CATALOG_PORT), '--iceberg-descriptor', join(staticDir, 'iceberg-descriptor.json'),
       '--unity-port', String(UNITY_PORT), '--unity-descriptor', join(staticDir, 'unity-descriptor.json'));
   }
-  const host = spawn(process.execPath, [join(here, 'fixture-host.mjs'), ...hostArgs], { stdio: ['ignore', 'pipe', 'inherit'] });
+  // stdin 'pipe' (not 'ignore'): fixture-host watches it to detect parent
+  // death even when our cleanup handlers never run (SIGKILL).
+  const host = spawn(process.execPath, [join(here, 'fixture-host.mjs'), ...hostArgs], { stdio: ['pipe', 'pipe', 'inherit'] });
   children.push(host);
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('fixture-host did not become ready')), 15000);
@@ -116,15 +133,6 @@ if (!INIT_PROBE) {
   });
   console.log(`fixtures ready (lake: ${lake ? 'on' : 'OFF — data-lake statements will be skipped'})`);
 }
-
-const cleanup = () => {
-  for (const c of children) c.kill('SIGKILL');
-  if (moto) moto.kill('SIGKILL');
-};
-process.on('exit', cleanup);
-// 'exit' doesn't fire on signals; without these a killed runner orphans moto
-// and fixture-host, and the next run fails on EADDRINUSE.
-for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { cleanup(); process.exit(143); });
 
 // --- load the instrumented module --------------------------------------------
 const factory = (await import(pathToFileURL(join(bundleDir, 'chdb.mjs')).href)).default;
@@ -259,9 +267,14 @@ mod.ccall('chdb_wasm_close_conn', null, ['number'], [conn]);
 const wp = mod.wasmExports?.__write_profile;
 if (!wp) throw new Error('__write_profile export missing — is this the instrumented bundle?');
 const profLen = Number(rawCall(wp, 0n, 0));
+
+const workers = mod.PThread ? [...mod.PThread.runningWorkers, ...mod.PThread.unusedWorkers] : [];
 // wasm export names are minified at this link level, so malloc must be reached
-// through the glue's Module._malloc alias (raw, unwrapped on Memory64).
-const bufPtr = num(rawCall(mod._malloc, profLen));
+// through the glue's Module._malloc alias (raw, unwrapped on Memory64). One
+// SLOT PER INSTANCE: a worker that answers after its collection timed out
+// still writes into its own slot, never into one being read for another.
+const bufPtr = num(rawCall(mod._malloc, profLen * (workers.length + 1)));
+if (!bufPtr) throw new Error(`_malloc(${profLen * (workers.length + 1)}) failed for the profile buffers`);
 
 const profiles = [];
 {
@@ -270,22 +283,23 @@ const profiles = [];
   console.log(`profile main: ${n} bytes`);
 }
 
-const PThread = mod.PThread;
-if (PThread) {
-  const workers = [...PThread.runningWorkers, ...PThread.unusedWorkers];
+if (workers.length) {
   let collected = 0, timedOut = 0;
   for (let i = 0; i < workers.length; i++) {
+    const slot = bufPtr + profLen * (1 + i);
     const n = await new Promise((resolve) => {
       // A worker parked in a blocking wait (Atomics.wait) can't service
       // messages; skip it after a short timeout rather than hanging. Its
       // coverage is lost, which at worst means an unnecessary lazy load at
       // runtime — never a failure (see patch-glue.mjs --lazy-load).
       const t = setTimeout(() => resolve(-2), 5000);
-      mod.__chdbProfileWritten = (tag, len) => { clearTimeout(t); resolve(len); };
-      workers[i].postMessage({ cmd: 'chdbWriteProfile', ptr: bufPtr, cap: profLen, tag: i });
+      // Tag check: a worker that answers AFTER its timeout must not resolve a
+      // later worker's promise with the wrong length.
+      mod.__chdbProfileWritten = (tag, len) => { if (tag !== i) return; clearTimeout(t); resolve(len); };
+      workers[i].postMessage({ cmd: 'chdbWriteProfile', ptr: slot, cap: profLen, tag: i });
     });
     if (n > 0) {
-      profiles.push(Uint8Array.from(mod.HEAPU8.slice(bufPtr, bufPtr + n)));
+      profiles.push(Uint8Array.from(mod.HEAPU8.slice(slot, slot + n)));
       collected++;
     } else if (n === -2) timedOut++;
   }

@@ -13,20 +13,28 @@
 //   fixture-host.mjs --http-port N --static-dir DIR
 //       [--catalog-port N --iceberg-descriptor FILE]
 //       [--unity-port N --unity-descriptor FILE]
-// Prints "READY" on stdout once everything listens; exits with the parent.
+// Prints "READY" on stdout once everything listens; exits when the parent
+// dies (watchdog on the piped stdin — survives even a SIGKILL'd parent).
 
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const args = {};
 for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].replace(/^--/, '')] = process.argv[i + 1];
 
 const testDir = join(dirname(fileURLToPath(import.meta.url)), '../../test');
-const { startMockCatalog } = await import(join(testDir, 'datalake/mock-rest-catalog.mjs'));
-const { startMockUnityCatalog } = await import(join(testDir, 'datalake/mock-unity-catalog.mjs'));
+// pathToFileURL: a raw filesystem path is not a valid ESM specifier on Windows.
+const { startMockCatalog } = await import(pathToFileURL(join(testDir, 'datalake/mock-rest-catalog.mjs')).href);
+const { startMockUnityCatalog } = await import(pathToFileURL(join(testDir, 'datalake/mock-unity-catalog.mjs')).href);
+
+// Parent-liveness watchdog: the runner spawns us with a piped stdin; when the
+// parent dies for ANY reason (including SIGKILL, where its cleanup handlers
+// never run), the pipe closes and we exit instead of orphaning the ports.
+process.stdin.resume();
+process.stdin.on('close', () => process.exit(0));
+process.stdin.on('end', () => process.exit(0));
 
 function listenOrReject(server, port) {
   return new Promise((resolve, reject) => {
