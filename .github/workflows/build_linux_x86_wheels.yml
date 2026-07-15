@@ -11,19 +11,19 @@ on:
         required: false
         default: 'true'
         type: boolean
-# DEBUG-SVE256 disabled:   release:
-# DEBUG-SVE256 disabled:     types: [published]
-# DEBUG-SVE256 disabled:   push:
-# DEBUG-SVE256 disabled:     branches:
-# DEBUG-SVE256 disabled:       - main
-# DEBUG-SVE256 disabled:     paths-ignore:
-# DEBUG-SVE256 disabled:       - '**/*.md'
-# DEBUG-SVE256 disabled:   pull_request:
-# DEBUG-SVE256 disabled:     types: [opened, synchronize, reopened, ready_for_review]
-# DEBUG-SVE256 disabled:     branches:
-# DEBUG-SVE256 disabled:       - main
-# DEBUG-SVE256 disabled:     paths-ignore:
-# DEBUG-SVE256 disabled:       - '**/*.md'
+  release:
+    types: [published]
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
 
 
 env:

@@ -1,8 +1,8 @@
 name: Pull-CI
 
 on:
-# DEBUG-SVE256 disabled:   pull_request:
-# DEBUG-SVE256 disabled:     types: [opened, synchronize]
+  pull_request:
+    types: [opened, synchronize]
 
 jobs:
   build:
