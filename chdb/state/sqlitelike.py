@@ -21,6 +21,13 @@ except ImportError:
     pa = None
 
 
+def _require_pyarrow(feature):
+    if pa is None:
+        raise ImportError(
+            f'{feature} requires pyarrow. Install it via "pip install pyarrow".'
+        )
+
+
 _arrow_format = set({"arrowtable"})
 _df_format = set({"dataframe", "datastore"})
 _process_result_format_funs = {
@@ -271,10 +278,7 @@ class StreamingResult:
                 "record_batch() can only be used with arrow format. "
                 "Please use format='Arrow' when calling send_query."
             )
-        if pa is None:
-            raise ImportError(
-                'record_batch() requires pyarrow. Install it via "pip install pyarrow".'
-            )
+        _require_pyarrow("record_batch()")
 
         chdb_reader = ChdbRecordBatchReader(self, rows_per_batch)
         return pa.RecordBatchReader.from_batches(chdb_reader.schema(), chdb_reader)
@@ -709,6 +713,7 @@ class Connection:
         lower_output_format = format.lower()
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
 
         progress_callback = self._setup_auto_progress_callback()
@@ -815,6 +820,9 @@ class Connection:
         supports_record_batch = lower_output_format == "arrow"
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            # Fail fast: otherwise the missing-pyarrow ImportError would only
+            # surface on the first fetch(), wrapped into a RuntimeError.
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
         if lower_output_format == "datastore":
             format = "DataFrame"

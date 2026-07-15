@@ -25,7 +25,9 @@ class _Blocker:
 
     def find_spec(self, name, path=None, target=None):
         if name.split(".")[0] in self.blocked:
-            raise ImportError(f"No module named {{name!r}} (blocked by test)")
+            raise ModuleNotFoundError(
+                f"No module named {{name!r}} (blocked by test)", name=name
+            )
 
 sys.meta_path.insert(0, _Blocker({blocked!r}))
 sys.path.insert(0, {chdb_parent!r})
@@ -49,7 +51,8 @@ assert "42" in str(conn.query("SELECT 42", "CSV"))
 
 cur = conn.cursor()
 cur.execute("SELECT 1 as v, 'hello' as s")
-assert cur.fetchall() == ((1, "hello"),), cur.fetchall()
+rows = cur.fetchall()
+assert rows == ((1, "hello"),), rows
 
 chunks = list(conn.send_query("SELECT number FROM numbers(10)", "CSV"))
 assert len(chunks) > 0
@@ -67,12 +70,15 @@ _BODY_ARROW_DF_RAISE = """
 import chdb
 
 conn = chdb.connect(":memory:")
+stream = conn.send_query("SELECT 1", "Arrow")
 try:
-    conn.send_query("SELECT 1", "Arrow").record_batch()
+    stream.record_batch()
 except ImportError as e:
     assert "pyarrow" in str(e), e
 else:
     raise AssertionError("record_batch() should require pyarrow")
+finally:
+    stream.close()
 
 try:
     conn.query("SELECT 1", "ArrowTable")
@@ -80,6 +86,14 @@ except ImportError:
     pass
 else:
     raise AssertionError("ArrowTable output should require pyarrow")
+
+# send_query must fail fast too, not on the first fetch()
+try:
+    conn.send_query("SELECT 1", "ArrowTable")
+except ImportError as e:
+    assert "pyarrow" in str(e), e
+else:
+    raise AssertionError("ArrowTable streaming should require pyarrow")
 conn.close()
 
 try:
