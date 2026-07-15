@@ -32,7 +32,7 @@
 //                     profile. C++ mangled names are identical across the two
 //                     links, so the st hot set fills exactly that gap.
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, existsSync, createWriteStream } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, existsSync, rmSync, createWriteStream } from 'node:fs';
 import { spawnSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { join, dirname } from 'node:path';
@@ -94,6 +94,11 @@ run(process.execPath, [join(here, 'patch-glue.mjs'), join(staging, 'chdb.mjs'), 
 // reaches it two ways: the main corpus pass boots via chdb_wasm_connect, the
 // light init-probe pass boots via connectionless chdb_wasm_query.
 if (!argv.includes('--skip-profile-run')) {
+  // A fresh profiling run must not inherit .data files from a previous run in
+  // a reused --out dir: run-profile only overwrites what it produces, and
+  // leftovers (possibly from a DIFFERENT build) would be merged in below.
+  if (existsSync(profilesDir))
+    for (const f of readdirSync(profilesDir)) if (f.endsWith('.data')) rmSync(join(profilesDir, f));
   for (const extraEnv of [{}, { CHDB_INIT_PROBE: 'global', CHDB_PROFILE_PREFIX: 'initprobe' }]) {
     const r = spawnSync(process.execPath, [join(here, 'run-profile.mjs')], {
       stdio: 'inherit',

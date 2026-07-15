@@ -13,7 +13,7 @@
 // Usage: verify-split.mjs <dir with chdb.mjs + chdb.wasm + chdb.deferred.wasm>
 
 import { spawnSync } from 'node:child_process';
-import { renameSync, existsSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { renameSync, existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,12 @@ if (!dir || !existsSync(join(dir, 'chdb.deferred.wasm'))) {
   process.exit(2);
 }
 const pkgDir = join(dirname(fileURLToPath(import.meta.url)), '../..');
+
+// One temp root for all probe scripts, removed on exit (repeated runs would
+// otherwise accumulate chdb-verify-* dirs under the system temp dir).
+const tmpRoot = mkdtempSync(join(tmpdir(), 'chdb-verify-'));
+process.on('exit', () => rmSync(tmpRoot, { recursive: true, force: true }));
+let tmpSeq = 0;
 
 // Deliberately NOT in profile-corpus.sql — keep it that way.
 const COLD_SQL = 'SELECT toModifiedJulianDay(\'2024-03-15\'), fromModifiedJulianDay(60384)';
@@ -38,7 +44,8 @@ const probe = (label, sql, expectOk) => {
     await db.terminate();
     process.exit(0);
   `;
-  const scriptFile = join(mkdtempSync(join(tmpdir(), 'chdb-verify-')), 'probe.mjs');
+  mkdirSync(join(tmpRoot, String(++tmpSeq)));
+  const scriptFile = join(tmpRoot, String(tmpSeq), 'probe.mjs');
   writeFileSync(scriptFile, script);
   const r = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 300000 });
   if (r.status === null) {
