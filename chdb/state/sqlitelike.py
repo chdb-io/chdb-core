@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Optional, Any
 import sys
 from decimal import Decimal
@@ -10,13 +12,20 @@ from chdb.progress_display import (
     create_auto_progress_callback as _create_auto_progress_callback,
 )
 
-# try import pyarrow if failed, raise ImportError with suggestion
+# pyarrow is optional: it is only needed for the Arrow-based APIs
+# (ArrowTable output, record_batch streaming). Everything else (CSV, JSON,
+# Parquet, dbapi, sessions, ...) must keep working without it.
 try:
     import pyarrow as pa  # noqa
-except ImportError as e:
-    print(f"ImportError: {e}")
-    print('Please install pyarrow via "pip install pyarrow"')
-    raise ImportError("Failed to import pyarrow") from None
+except ImportError:
+    pa = None
+
+
+def _require_pyarrow(feature):
+    if pa is None:
+        raise ImportError(
+            f'{feature} requires pyarrow. Install it via "pip install pyarrow".'
+        )
 
 
 _arrow_format = set({"arrowtable"})
@@ -269,6 +278,7 @@ class StreamingResult:
                 "record_batch() can only be used with arrow format. "
                 "Please use format='Arrow' when calling send_query."
             )
+        _require_pyarrow("record_batch()")
 
         chdb_reader = ChdbRecordBatchReader(self, rows_per_batch)
         return pa.RecordBatchReader.from_batches(chdb_reader.schema(), chdb_reader)
@@ -703,6 +713,7 @@ class Connection:
         lower_output_format = format.lower()
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
 
         progress_callback = self._setup_auto_progress_callback()
@@ -809,6 +820,9 @@ class Connection:
         supports_record_batch = lower_output_format == "arrow"
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            # Fail fast: otherwise the missing-pyarrow ImportError would only
+            # surface on the first fetch(), wrapped into a RuntimeError.
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
         if lower_output_format == "datastore":
             format = "DataFrame"

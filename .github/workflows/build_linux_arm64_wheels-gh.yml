@@ -144,7 +144,8 @@ jobs:
             echo "Installing dependencies for Python $version"
             pyenv shell $version
             python -m pip install --upgrade pip
-            python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel jupyter nbconvert
+            # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+            python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain
@@ -382,7 +383,10 @@ jobs:
               echo "Testing chdb on Python $version with $PANDAS_CONSTRAINT"
               echo "=============================================="
               pyenv shell $version
-              python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" --force-reinstall
+              # pyarrow 25.0.0 aarch64 aborts reading dictionary-encoded parquet
+              # (parquet::ParquetStatusException: Index not in dictionary bounds)
+              # when loaded alongside chdb; x86_64 is unaffected. Pin until fixed.
+              python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" "pyarrow<25" --force-reinstall
               echo "Installed pandas version:"
               python -c "import pandas; print(pandas.__version__)"
               python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"
@@ -434,7 +438,7 @@ jobs:
           pyenv shell 3.14
           for PANDAS_CONSTRAINT in "pandas<3.0" "pandas>=3.0"; do
             echo "=== Benchmarks with $PANDAS_CONSTRAINT ==="
-            python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" --force-reinstall --no-cache-dir -q
+            python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" "pyarrow<25" --force-reinstall --no-cache-dir -q
             for bench in tests/benchmarks/bench_*.py; do
               echo "--- Running $bench ---"
               python "$bench"
@@ -448,7 +452,7 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
-          python -m pip install dist/*.whl --force-reinstall
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           python -m pip install pytest
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pytest tests/test_torch_compatibility.py -v
@@ -463,7 +467,8 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
-          python -m pip install dist/*.whl --force-reinstall
+          # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           pyenv shell --unset
         continue-on-error: false
@@ -473,7 +478,7 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.9
-          python -m pip install dist/*.whl --force-reinstall
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           jupyter nbconvert --to notebook --execute tests/test_data_insertion.ipynb --output test_data_insertion_output.ipynb
           pyenv shell --unset
         continue-on-error: false
@@ -573,7 +578,8 @@ jobs:
             # list both, and uninstalling lite later could leave a half-cleaned tree.
             python -m pip uninstall -y chdb-core || true
             python -m pip uninstall -y chdb-core-lite || true
-            python -m pip install dist/chdb_core_lite-*manylinux*.whl --force-reinstall
+            # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+            python -m pip install dist/chdb_core_lite-*manylinux*.whl "pyarrow<25" --force-reinstall
             python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"
             # Full test suite + lite-only tests (CHDB_LITE=1 unlocks tests/test_chdb_core_lite.py)
             CHDB_LITE=1 make test
@@ -595,7 +601,8 @@ jobs:
           pyenv shell 3.11
           python -m pip uninstall -y chdb-core || true
           python -m pip uninstall -y chdb-core-lite || true
-          python -m pip install dist/chdb_core_lite-*manylinux*.whl --force-reinstall
+          # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
+          python -m pip install dist/chdb_core_lite-*manylinux*.whl "pyarrow<25" --force-reinstall
           CHDB_LITE=1 PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           python -m pip uninstall -y chdb-core-lite
           pyenv shell --unset
