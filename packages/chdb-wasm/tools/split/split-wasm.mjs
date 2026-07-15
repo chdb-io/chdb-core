@@ -145,6 +145,14 @@ const keepStream = createWriteStream(keepFile);
 {
   console.log(`$ ${wasmSplit} --print-profile=${merged} ${orig}  (streamed)`);
   const p = spawn(wasmSplit, [`--print-profile=${merged}`, orig, ...FEATURES], { stdio: ['ignore', 'pipe', 'inherit'] });
+  // Attach BEFORE draining stdout: 'exit' can fire while buffered output is
+  // still being consumed, and a one-shot listener added afterwards never
+  // settles. 'close' fires after the stdio streams end; 'error' covers spawn
+  // failure (e.g. missing wasm-split binary).
+  const exited = new Promise((res, rej) => {
+    p.on('error', rej);
+    p.on('close', (c) => (c === 0 ? res() : rej(new Error(`print-profile exited with ${c}`))));
+  });
   const rl = createInterface({ input: p.stdout, crlfDelay: Infinity });
   for await (const line of rl) {
     if (line.startsWith('+ ')) {
@@ -169,7 +177,7 @@ const keepStream = createWriteStream(keepFile);
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }
-  await new Promise((res, rej) => p.on('exit', (c) => (c === 0 ? res() : rej(new Error(`print-profile exited with ${c}`)))));
+  await exited;
   await Promise.all([keepStream, emitHot].filter(Boolean).map((s) => new Promise((r) => s.end(r))));
 }
 // Without a name section print-profile emits bare function INDICES; the
