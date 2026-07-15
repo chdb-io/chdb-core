@@ -97,7 +97,7 @@ SELECT x.number FROM numbers(4) AS x JOIN numbers(4) AS y USING (number) ORDER B
 SELECT count() FROM numbers(100) AS a JOIN numbers(100) AS b ON a.number = b.number JOIN numbers(100) AS c ON b.number = c.number;
 SET join_algorithm = 'partial_merge';
 SELECT count() FROM numbers(1000) AS a JOIN numbers(1000) AS b ON a.number = b.number;
-SET join_algorithm = 'hash';
+SET join_algorithm = DEFAULT;
 
 -- ============================================================================
 -- 6. Window functions
@@ -123,18 +123,9 @@ SELECT uniq(number % 100), uniqExact(number % 100), uniqCombined(number % 100), 
 SELECT quantile(0.5)(number), quantiles(0.25, 0.5, 0.75)(number), quantileExact(0.9)(number), quantileTiming(0.5)(number % 1000), quantileBFloat16(0.5)(number), median(number) FROM numbers(10000);
 SELECT topK(3)(number % 10), topKWeighted(3)(number % 10, number % 4 + 1) FROM numbers(10000);
 SELECT groupArray(number), groupUniqArray(number % 3), groupArraySample(3)(number) FROM numbers(10);
-SELECT groupArrayMovingSum(3)(number), groupArrayMovingAvg(3)(number) FROM numbers(10);
-SELECT groupBitAnd(number), groupBitOr(number), groupBitXor(number) FROM numbers(1, 100);
-SELECT groupBitmap(toUInt32(number % 50)), bitmapCardinality(groupBitmapState(toUInt32(number % 50))) FROM numbers(1000);
 SELECT corr(toFloat64(number), number * 2.0), covarPop(toFloat64(number), number + 1.0), covarSamp(toFloat64(number), number + 1.0) FROM numbers(100);
 SELECT stddevPop(number), stddevSamp(number), varPop(number), varSamp(number), skewPop(number), skewSamp(number), kurtPop(number), kurtSamp(number) FROM numbers(1000);
 SELECT deltaSum(number), sumCount(number) FROM numbers(100);
-SELECT histogram(5)(toFloat64(number % 100)) FROM numbers(1000);
-SELECT simpleLinearRegression(toFloat64(number), toFloat64(2 * number + 1)) FROM numbers(100);
-SELECT mannWhitneyUTest(toFloat64(number % 17), number % 2) FROM numbers(200);
-SELECT studentTTest(toFloat64(number % 13), number % 2), welchTTest(toFloat64(number % 13), number % 2) FROM numbers(200);
-SELECT rankCorr(toFloat64(number % 7), toFloat64(number % 11)) FROM numbers(200);
-SELECT cramersV(number % 3, number % 5), theilsU(number % 3, number % 5) FROM numbers(1000);
 SELECT sumMap(map(number % 4, number)) FROM numbers(100);
 SELECT sumArray([number, number + 1]), avgArray([number, number * 2]) FROM numbers(100);
 SELECT countMerge(s) FROM (SELECT countState() AS s FROM numbers(100));
@@ -143,10 +134,7 @@ SELECT finalizeAggregation(initializeAggregation('uniqState', 42)), finalizeAggr
 SELECT sumForEach([number, number + 1]) FROM numbers(10);
 SELECT countResample(0, 10, 2)(number) FROM numbers(10);
 SELECT sumDistinct(number % 5), avgOrNull(number), maxOrDefault(number) FROM numbers(100);
-SELECT sequenceMatch('(?1)(?2)')(toDateTime(number), number % 3 = 0, number % 3 = 1) FROM numbers(100);
 SELECT windowFunnel(10)(toDateTime(number), number % 5 = 0, number % 5 = 1, number % 5 = 2) FROM numbers(100);
-SELECT retention(number % 7 = 0, number % 7 = 1, number % 7 = 2) FROM numbers(49);
-SELECT exponentialMovingAverage(5)(toFloat64(number), number) FROM numbers(50);
 SELECT number % 3 AS g, groupArrayIf(number, number % 2 = 0) FROM numbers(20) GROUP BY g ORDER BY g;
 
 -- ============================================================================
@@ -216,7 +204,6 @@ SELECT arrayReduce('sum', range(10)), arrayReduce('uniq', [1, 1, 2]), arrayReduc
 SELECT arrayJoin([1, 2, 3]) AS x, x * 10 FROM system.one;
 SELECT number, arr FROM numbers(3) ARRAY JOIN [10, 20] AS arr ORDER BY number, arr;
 SELECT number, arr FROM numbers(2) LEFT ARRAY JOIN emptyArrayInt32() AS arr;
-SELECT arrayAUC([0.1, 0.4, 0.35, 0.8], [0, 0, 1, 1]);
 
 -- ============================================================================
 -- 12. Tuple / Map functions
@@ -372,7 +359,7 @@ SELECT * FROM file('/corpus/people_names.csv', CSVWithNames) ORDER BY id;
 SELECT * FROM file('/corpus/people.tsv', TSV, 'id UInt32, name String, score Float64') ORDER BY id;
 SELECT * FROM file('/corpus/people.jsonl', JSONEachRow) ORDER BY id;
 DESCRIBE file('/corpus/people_names.csv');
-SELECT count() FROM file('/corpus/people*.csv', CSVWithNames);
+SELECT count() FROM file('/corpus/people{2,_names}.csv', CSVWithNames);
 INSERT INTO FUNCTION file('/corpus/out.parquet', Parquet) SELECT number AS id, toString(number) AS s, number / 3 AS f FROM numbers(1000);
 SELECT count(), sum(id), max(f) FROM file('/corpus/out.parquet', Parquet);
 SELECT id, s FROM file('/corpus/out.parquet') WHERE id % 100 = 0 ORDER BY id;
@@ -436,6 +423,8 @@ SELECT * FROM system.one;
 SELECT number FROM system.numbers LIMIT 5;
 SET max_threads = 2;
 SELECT sum(number) FROM numbers(100000);
+-- back to 1, the wasm product default (chdb_wasm.cpp caps max_threads at connect;
+-- plain DEFAULT would jump to 'auto' and diverge from shipped behavior).
 SET max_threads = 1;
 
 -- ============================================================================
@@ -506,8 +495,10 @@ SELECT histogram(5)(toFloat64(number % 100)) FROM numbers(1000);
 SELECT simpleLinearRegression(toFloat64(number), toFloat64(2 * number + 1)) FROM numbers(100);
 SELECT mannWhitneyUTest(toFloat64(number % 17), number % 2) FROM numbers(200);
 SELECT studentTTest(toFloat64(number % 13), number % 2) FROM numbers(200);
+SELECT welchTTest(toFloat64(number % 13), number % 2) FROM numbers(200);
 SELECT rankCorr(toFloat64(number % 7), toFloat64(number % 11)) FROM numbers(200);
 SELECT cramersV(number % 3, number % 5) FROM numbers(1000);
+SELECT theilsU(number % 3, number % 5) FROM numbers(1000);
 SELECT sequenceMatch('(?1)(?2)')(toDateTime(number), number % 3 = 0, number % 3 = 1) FROM numbers(100);
 SELECT retention(number % 7 = 0, number % 7 = 1) FROM numbers(49);
 SELECT exponentialMovingAverage(5)(toFloat64(number), number) FROM numbers(50);

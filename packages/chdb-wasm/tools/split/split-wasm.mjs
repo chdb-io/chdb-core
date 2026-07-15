@@ -37,7 +37,6 @@ import { spawnSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -47,9 +46,14 @@ const opt = (name, dflt) => {
 };
 const buildDir = opt('build');
 const outDir = opt('out');
-const wasmSplit = opt('wasm-split', process.env.WASM_SPLIT || join(homedir(), 'code/emsdk/upstream/bin/wasm-split'));
+const wasmSplit = opt('wasm-split', process.env.WASM_SPLIT
+  || (process.env.EMSDK && join(process.env.EMSDK, 'upstream/bin/wasm-split')));
 if (!buildDir || !outDir) {
   console.error('usage: split-wasm.mjs --build <dir> --out <dir> [--wasm-split <bin>] [--skip-profile-run]');
+  process.exit(2);
+}
+if (!wasmSplit || !existsSync(wasmSplit)) {
+  console.error(`wasm-split not found${wasmSplit ? ` at ${wasmSplit}` : ''} — pass --wasm-split, or set WASM_SPLIT / EMSDK (source emsdk_env.sh)`);
   process.exit(2);
 }
 const orig = join(buildDir, 'chdb.wasm.orig');
@@ -71,6 +75,8 @@ const FEATURES = [
 const run = (cmd, args) => {
   console.log(`$ ${cmd} ${args.join(' ')}`);
   const r = spawnSync(cmd, args, { stdio: 'inherit' });
+  // spawnSync doesn't throw on spawn failure: status stays null, the cause is in r.error.
+  if (r.error) throw new Error(`failed to run ${cmd}: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`${cmd} exited with ${r.status}`);
 };
 const mb = (p) => `${(statSync(p).size / 1048576).toFixed(1)}MB`;
@@ -96,8 +102,10 @@ if (!argv.includes('--skip-profile-run')) {
     if (r.status !== 0) throw new Error(`run-profile.mjs exited with ${r.status}`);
   }
 }
-const profiles = readdirSync(profilesDir).filter((f) => f.endsWith('.data')).map((f) => join(profilesDir, f));
-if (!profiles.length) throw new Error(`no profiles in ${profilesDir}`);
+const profiles = existsSync(profilesDir)
+  ? readdirSync(profilesDir).filter((f) => f.endsWith('.data')).map((f) => join(profilesDir, f))
+  : [];
+if (!profiles.length) throw new Error(`no profiles in ${profilesDir} — run without --skip-profile-run first`);
 console.log(`${profiles.length} instance profiles`);
 
 // --- 3. merge -------------------------------------------------------------------

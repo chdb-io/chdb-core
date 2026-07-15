@@ -41,6 +41,13 @@ const probe = (label, sql, expectOk) => {
   const scriptFile = join(mkdtempSync(join(tmpdir(), 'chdb-verify-')), 'probe.mjs');
   writeFileSync(scriptFile, script);
   const r = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 300000 });
+  if (r.status === null) {
+    // Timeout/kill is the historical hang mode of a broken lazy loader —
+    // never an "expected failure", regardless of expectOk.
+    console.error(`FAIL ${label}: child killed (${r.error?.code || 'signal ' + r.signal}) — hang instead of a clean exit`);
+    failed = true;
+    return;
+  }
   const ok = r.status === 0;
   if (ok !== expectOk) {
     // No process.exit here: it would skip the caller's finally and leave
