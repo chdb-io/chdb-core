@@ -27,6 +27,7 @@ else()
         set (CHDB_ARROW_SOURCES
             chdb-arrow.cpp
             chdb-arrow-output.cpp
+            chdb-adbc.cpp
             ArrowStreamSource.cpp
             StorageArrowStream.cpp
             TableFunctionArrowStream.cpp
