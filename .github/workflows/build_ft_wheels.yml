@@ -160,20 +160,21 @@ jobs:
           name: chdb-ft-linux-x86_64
           path: ft_dist/*.whl
           overwrite: true
-      - name: Upload FT wheels to pypi
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
-        run: |
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init -)"
-          ft_full=$(pyenv versions --bare | grep 't$' | head -1)
-          if [ -z "$ft_full" ]; then
-            echo "ERROR: no free-threading Python found in pyenv (expected one ending in 't')" >&2
-            exit 1
-          fi
-          export PYENV_VERSION=$ft_full
-          python -m pip install twine
-          python -m twine upload ft_dist/*.whl
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      # NOTE: Free-threading wheels PyPI publishing temporarily disabled; uncomment to re-enable.
+      # - name: Upload FT wheels to pypi
+      #   if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
+      #   run: |
+      #     export PATH="$HOME/.pyenv/bin:$PATH"
+      #     eval "$(pyenv init -)"
+      #     ft_full=$(pyenv versions --bare | grep 't$' | head -1)
+      #     if [ -z "$ft_full" ]; then
+      #       echo "ERROR: no free-threading Python found in pyenv (expected one ending in 't')" >&2
+      #       exit 1
+      #     fi
+      #     export PYENV_VERSION=$ft_full
+      #     python -m pip install twine
+      #     python -m twine upload ft_dist/*.whl
+      #   env:
+      #     TWINE_USERNAME: __token__
+      #     TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
 
