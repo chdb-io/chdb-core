@@ -706,8 +706,25 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         ColumnsDescription columns;
         if (!receiveSampleBlock(sample, columns, ctx->parsed_query))
         {
-            String msg = getErrorMsg();
-            signal_init(msg.empty() ? String("Failed to receive table structure") : msg);
+            /// receiveSampleBlock stored the real cause in server_exception (via
+            /// onReceiveExceptionFromServer) but, unlike the query paths, does not
+            /// format it into getErrorMsg() — so surface server_exception here
+            /// instead of dropping it for a generic message (issue #612).
+            String reason = getErrorMsg();
+            if (reason.empty())
+            {
+                try
+                {
+                    processError("receiveSampleBlock");
+                }
+                catch (...)
+                {
+                    reason = getCurrentExceptionMessage(true);
+                }
+            }
+            signal_init(reason.empty()
+                ? String("Failed to receive table structure")
+                : "Failed to receive table structure: " + reason);
             ctx->worker_done = true;
             return;
         }
