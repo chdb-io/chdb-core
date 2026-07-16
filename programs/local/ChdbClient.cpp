@@ -709,7 +709,8 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
             /// receiveSampleBlock stored the real cause in server_exception (via
             /// onReceiveExceptionFromServer) but, unlike the query paths, does not
             /// format it into getErrorMsg() — so surface server_exception here
-            /// instead of dropping it for a generic message (issue #612).
+            /// instead of dropping it for a generic message (issue #612). The
+            /// generic fallback only applies when the engine reported nothing.
             String reason = getErrorMsg();
             if (reason.empty())
             {
@@ -723,8 +724,8 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
                 }
             }
             signal_init(reason.empty()
-                ? String("Failed to receive table structure")
-                : "Failed to receive table structure: " + reason);
+                ? String("Streaming INSERT initialization failed (no error reported by the engine)")
+                : reason);
             ctx->worker_done = true;
             return;
         }
