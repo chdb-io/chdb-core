@@ -72,9 +72,9 @@ class Session:
     def close(self):
         """Close the session and cleanup resources.
 
-        This method closes the underlying connection and resets the global session state.
-        After calling this method, the session becomes invalid and cannot be used for
-        further queries.
+        This method closes the underlying connection. After calling this method,
+        the session becomes invalid and cannot be used for further queries. Other
+        open sessions are not affected.
 
         .. note::
             This method is automatically called when the session is used as a context manager
