@@ -30,6 +30,8 @@ _chdb_destroy_query_result
 
 _chdb_stream_insert
 _chdb_stream_insert_n
+_chdb_stream_insert_with_params
+_chdb_stream_insert_with_params_n
 _chdb_stream_append
 _chdb_stream_done
 _chdb_stream_cancel_insert

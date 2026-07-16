@@ -35,6 +35,8 @@
         /* Streaming INSERT (write side) */
         chdb_stream_insert;
         chdb_stream_insert_n;
+        chdb_stream_insert_with_params;
+        chdb_stream_insert_with_params_n;
         chdb_stream_append;
         chdb_stream_done;
         chdb_stream_cancel_insert;
