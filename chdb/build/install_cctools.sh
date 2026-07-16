@@ -30,6 +30,11 @@ if [ -z "${CCTOOLS:-}" ]; then
         export CCTOOLS=$(cd ~/cctools && pwd)
         cd ${CCTOOLS}
 
+        # An interrupted install leaves partial clones behind (without the
+        # <triple>-ld marker checked above), and a bare `git clone` fails on
+        # a leftover non-empty directory. Start from a clean slate.
+        rm -rf apple-libtapi cctools-port
+
         git clone https://github.com/tpoechtrager/apple-libtapi.git
         cd apple-libtapi
         git checkout 15dfc2a8c9a2a89d06ff227560a69f5265b692f9
