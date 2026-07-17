@@ -181,6 +181,42 @@ class TestCApiStreamInsert(unittest.TestCase):
         self.assertTrue(stream)  # handle is non-NULL even on init failure
         err = self.lib.chdb_stream_insert_error(stream)
         self.assertIsNotNone(err)
+        # The error must carry the engine's reason, not just a generic string.
+        self.assertIn("does_not_exist", err.decode("utf-8", "replace"))
+        self.lib.chdb_destroy_insert_stream(stream)
+
+    def test_init_error_surfaces_engine_exception(self):
+        # Regression for chdb-io/chdb#612: the sample-block handshake used to
+        # swallow the engine exception and report only the fixed string
+        # "Failed to receive table structure". The real reason (here: an
+        # unknown type in the table-function structure argument) must be
+        # present in chdb_stream_insert_error().
+        q = (b"INSERT INTO FUNCTION file('/tmp/chdb_issue612_%s.csv', 'CSV', "
+             b"'id UInt64, x Nonexistent')" % uuid.uuid4().hex.encode())
+        fmt = b"CSV"
+        stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
+        self.assertTrue(stream)
+        err = self.lib.chdb_stream_insert_error(stream)
+        self.assertIsNotNone(err)
+        msg = err.decode("utf-8", "replace")
+        self.assertIn("Nonexistent", msg)
+        self.assertIn("UNKNOWN_TYPE", msg)
+        self.lib.chdb_destroy_insert_stream(stream)
+
+    def test_init_error_surfaces_unwritable_path(self):
+        # Second failure class from chdb-io/chdb#612: destination path cannot
+        # be created. The filesystem error must not be collapsed into a
+        # reason-free message.
+        q = (b"INSERT INTO FUNCTION file('/proc/cannot/chdb_issue612.csv', "
+             b"'CSV', 'id UInt64')")
+        fmt = b"CSV"
+        stream = self.lib.chdb_stream_insert_n(self.conn, q, len(q), fmt, len(fmt))
+        self.assertTrue(stream)
+        err = self.lib.chdb_stream_insert_error(stream)
+        self.assertIsNotNone(err)
+        msg = err.decode("utf-8", "replace")
+        self.assertNotEqual(msg, "Failed to receive table structure")
+        self.assertIn("/proc/cannot", msg)
         self.lib.chdb_destroy_insert_stream(stream)
 
     def test_cancel_then_destroy_safe(self):
