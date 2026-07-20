@@ -1427,8 +1427,10 @@ def connect(connection_string: str = ":memory:") -> Connection:
     """Create a connection to chDB background server.
 
     This function establishes a connection to the chDB (ClickHouse) database engine.
-    Only one open connection is allowed per process. Multiple calls with the same
-    connection string will return the same connection object.
+    Each call returns an independent connection object, and any number of connections
+    to the same database path may be open at the same time. Session state (such as
+    the current database selected with ``USE`` and settings applied with ``SET``)
+    is kept per connection and does not affect other connections.
 
     Args:
         connection_string (str, optional): Database connection string. Defaults to ":memory:".
@@ -1475,11 +1477,22 @@ def connect(connection_string: str = ":memory:") -> Connection:
         - Context manager protocol for automatic cleanup
 
     Raises:
-        RuntimeError: If connection to database fails
+        RuntimeError: If connection to database fails, or if a different database
+            path is requested while connections to another path are still open
+
+    .. note::
+        A process hosts a single embedded engine bound to a single database path.
+        Any number of connections to that path may coexist; ``close()`` releases
+        only its own connection, and the engine shuts down when the last open
+        connection is closed. To open a different database path, close all
+        existing connections first — otherwise ``connect()`` raises RuntimeError.
 
     .. warning::
-        Only one connection per process is supported. Creating a new connection
-        will close any existing connection.
+        Concurrent queries from different connections (or threads) are safe and
+        run in parallel. However, while a streaming query started with
+        :meth:`Connection.send_query` is still open on a connection, issuing
+        another query on that same connection returns an empty result. Serialize
+        queries per connection, or use separate connections.
 
     Examples:
         >>> # In-memory database
