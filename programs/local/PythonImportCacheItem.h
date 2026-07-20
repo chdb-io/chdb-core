@@ -3,6 +3,7 @@
 #include "PybindWrapper.h"
 
 #include <base/types.h>
+#include <atomic>
 #include <mutex>
 
 namespace CHDB {
@@ -54,6 +55,10 @@ private:
 	PythonImportCacheItem * parent;
 	py::handle object;
 	std::once_flag load_flag;
+	/// Free-threaded builds only: set (release) after the call_once initializer
+	/// has published `object`, giving steady-state accesses a lock-free fast
+	/// path that skips the hierarchy rebuild and the call_once entirely.
+	std::atomic<bool> loaded{false};
 };
 
 } // namespace CHDB
