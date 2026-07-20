@@ -39,12 +39,11 @@ PythonObjectType GetPythonObjectType(const py::handle & obj)
 	if (obj.is_none())
 		return PythonObjectType::None;
 
-	if (obj.is(import_cache.pandas.NaT()))
-		return PythonObjectType::None;
-
-	if (obj.is(import_cache.pandas.NA()))
-		return PythonObjectType::None;
-
+	/// Exact builtin scalars first, ahead of anything that touches the import
+	/// cache: bool/int/float/str can never be pandas.NaT/NA (still checked
+	/// below, before the datetime family NaT belongs to). On the UDF result
+	/// path this function runs once per row, and the cache-item lookups are
+	/// pure overhead for the overwhelmingly common scalar results.
 	if (py::isinstance<py::bool_>(obj))
 		return PythonObjectType::Bool;
 
@@ -53,6 +52,15 @@ PythonObjectType GetPythonObjectType(const py::handle & obj)
 
 	if (py::isinstance<py::float_>(obj))
 		return PythonObjectType::Float;
+
+	if (py::isinstance<py::str>(obj))
+		return PythonObjectType::String;
+
+	if (obj.is(import_cache.pandas.NaT()))
+		return PythonObjectType::None;
+
+	if (obj.is(import_cache.pandas.NA()))
+		return PythonObjectType::None;
 
 	if (py::isinstance(obj, import_cache.datetime.datetime()))
 		return PythonObjectType::Datetime;
@@ -74,9 +82,6 @@ PythonObjectType GetPythonObjectType(const py::handle & obj)
 
 	if (py::isinstance(obj, import_cache.decimal.Decimal()))
 		return PythonObjectType::Decimal;
-
-	if (py::isinstance<py::str>(obj))
-		return PythonObjectType::String;
 
 	if (py::isinstance<py::bytearray>(obj))
 		return PythonObjectType::ByteArray;
