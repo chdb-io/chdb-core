@@ -1,1 +1,3 @@
 _PyInit__chdb
+_chdb_adbc_init
+_AdbcDriverInit

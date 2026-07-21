@@ -29,6 +29,24 @@ chDB exposes four main capabilities through its C API ([`chdb.h`](programs/local
 | **PHP** | | | | | _Contributors Needed_ |
 | **R** | | | | | _Contributors Needed_ |
 
+### ADBC
+
+libchdb also exports an [ADBC](https://arrow.apache.org/adbc/) driver
+entrypoint (`chdb_adbc_init`), so any language with an ADBC driver manager
+(Python, Go, R, Ruby, Rust, C#, GLib) can use chDB through the standard ADBC
+API — streamed Arrow results, qmark parameters, bulk ingestion and catalog
+metadata — without a dedicated binding:
+
+```
+driver     = /path/to/libchdb.so
+entrypoint = chdb_adbc_init
+```
+
+For languages without a binding above, ADBC is the recommended path for
+standard database access; per-language bindings remain the home for
+chDB-specific features. See `examples/chdbAdbcTest.c` for the raw C-ABI
+contract and `tests/test_adbc_driver.py` for end-to-end usage.
+
 > **Legend:** ✅ Supported  |  Blank = not yet implemented
 
 ### chDB stable ABI
