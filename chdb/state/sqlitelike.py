@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Optional, Any
 import sys
 from decimal import Decimal
@@ -10,13 +12,20 @@ from chdb.progress_display import (
     create_auto_progress_callback as _create_auto_progress_callback,
 )
 
-# try import pyarrow if failed, raise ImportError with suggestion
+# pyarrow is optional: it is only needed for the Arrow-based APIs
+# (ArrowTable output, record_batch streaming). Everything else (CSV, JSON,
+# Parquet, dbapi, sessions, ...) must keep working without it.
 try:
     import pyarrow as pa  # noqa
-except ImportError as e:
-    print(f"ImportError: {e}")
-    print('Please install pyarrow via "pip install pyarrow"')
-    raise ImportError("Failed to import pyarrow") from None
+except ImportError:
+    pa = None
+
+
+def _require_pyarrow(feature):
+    if pa is None:
+        raise ImportError(
+            f'{feature} requires pyarrow. Install it via "pip install pyarrow".'
+        )
 
 
 _arrow_format = set({"arrowtable"})
@@ -269,6 +278,7 @@ class StreamingResult:
                 "record_batch() can only be used with arrow format. "
                 "Please use format='Arrow' when calling send_query."
             )
+        _require_pyarrow("record_batch()")
 
         chdb_reader = ChdbRecordBatchReader(self, rows_per_batch)
         return pa.RecordBatchReader.from_batches(chdb_reader.schema(), chdb_reader)
@@ -703,6 +713,7 @@ class Connection:
         lower_output_format = format.lower()
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
 
         progress_callback = self._setup_auto_progress_callback()
@@ -809,6 +820,9 @@ class Connection:
         supports_record_batch = lower_output_format == "arrow"
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
+            # Fail fast: otherwise the missing-pyarrow ImportError would only
+            # surface on the first fetch(), wrapped into a RuntimeError.
+            _require_pyarrow(f'output format "{format}"')
             format = "Arrow"
         if lower_output_format == "datastore":
             format = "DataFrame"
@@ -1413,8 +1427,10 @@ def connect(connection_string: str = ":memory:") -> Connection:
     """Create a connection to chDB background server.
 
     This function establishes a connection to the chDB (ClickHouse) database engine.
-    Only one open connection is allowed per process. Multiple calls with the same
-    connection string will return the same connection object.
+    Each call returns an independent connection object, and any number of connections
+    to the same database path may be open at the same time. Session state (such as
+    the current database selected with ``USE`` and settings applied with ``SET``)
+    is kept per connection and does not affect other connections.
 
     Args:
         connection_string (str, optional): Database connection string. Defaults to ":memory:".
@@ -1461,11 +1477,22 @@ def connect(connection_string: str = ":memory:") -> Connection:
         - Context manager protocol for automatic cleanup
 
     Raises:
-        RuntimeError: If connection to database fails
+        RuntimeError: If connection to database fails, or if a different database
+            path is requested while connections to another path are still open
+
+    .. note::
+        A process hosts a single embedded engine bound to a single database path.
+        Any number of connections to that path may coexist; ``close()`` releases
+        only its own connection, and the engine shuts down when the last open
+        connection is closed. To open a different database path, close all
+        existing connections first — otherwise ``connect()`` raises RuntimeError.
 
     .. warning::
-        Only one connection per process is supported. Creating a new connection
-        will close any existing connection.
+        Concurrent queries from different connections (or threads) are safe and
+        run in parallel. However, while a streaming query started with
+        :meth:`Connection.send_query` is still open on a connection, issuing
+        another query on that same connection returns an empty result. Serialize
+        queries per connection, or use separate connections.
 
     Examples:
         >>> # In-memory database

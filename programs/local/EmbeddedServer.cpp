@@ -126,6 +126,9 @@ extern const ServerSettingsUInt64 text_index_postings_cache_size;
 extern const ServerSettingsUInt64 text_index_postings_cache_max_entries;
 extern const ServerSettingsDouble text_index_postings_cache_size_ratio;
 extern const ServerSettingsUInt64 io_thread_pool_queue_size;
+extern const ServerSettingsUInt64 backups_io_thread_pool_queue_size;
+extern const ServerSettingsUInt64 max_backups_io_thread_pool_free_size;
+extern const ServerSettingsUInt64 max_backups_io_thread_pool_size;
 extern const ServerSettingsString mark_cache_policy;
 extern const ServerSettingsUInt64 mark_cache_size;
 extern const ServerSettingsDouble mark_cache_size_ratio;
@@ -263,6 +266,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_io_thread_pool_size],
         server_settings[ServerSetting::max_io_thread_pool_free_size],
         server_settings[ServerSetting::io_thread_pool_queue_size]);
+
+    getBackupsIOThreadPool().initialize(
+        server_settings[ServerSetting::max_backups_io_thread_pool_size],
+        server_settings[ServerSetting::max_backups_io_thread_pool_free_size],
+        server_settings[ServerSetting::backups_io_thread_pool_queue_size]);
 
     const size_t active_parts_loading_threads = server_settings[ServerSetting::max_active_parts_loading_thread_pool_size];
     getActivePartsLoadingThreadPool().initialize(

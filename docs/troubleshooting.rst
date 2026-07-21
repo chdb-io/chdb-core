@@ -196,23 +196,26 @@ If you encounter file access errors:
 Connection and Session Issues
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Session Already Exists Error**
+**Engine Already Initialized With a Different Path**
 
 .. code-block:: text
 
-   Session already exists
+   EmbeddedServer already initialized with path '...', cannot connect with different path '...'
 
-**Solution**: Only one session can be active at a time per process:
+**Solution**: A process hosts one embedded engine bound to one database path.
+Multiple sessions on the same path can be open at the same time, but opening a
+session on a different path requires closing all existing sessions and
+connections first:
 
 .. code-block:: python
 
    from chdb import session as chs
-   
-   # Close existing session before creating new one
+
+   # Close sessions on the old path before opening a different path
    if 'sess' in locals():
        sess.close()
-   
-   sess = chs.Session()
+
+   sess = chs.Session("/path/to/other.db")
 
 **DB-API Connection Issues**
 
@@ -490,8 +493,8 @@ When reporting errors, please include:
 Common Error Messages
 ---------------------
 
-**"Session already exists"**
-Only one session can be active per process. Close existing sessions before creating new ones.
+**"EmbeddedServer already initialized with path ..."**
+A process hosts one embedded engine bound to one database path. Sessions and connections on the same path can coexist; close all of them before opening a different path.
 
 **"Memory limit exceeded"**  
 Use streaming queries, file-based sessions, or process data in smaller batches.

@@ -30,8 +30,10 @@ int main(void) {
     //     - "mode=ro" would be "--readonly=1" for clickhouse (read-only mode)
 
     // Important:
-    //     - There can be only one session at a time. If you want to create a new session, you need to close the existing one.
-    //     - Creating a new session will close the existing one.
+    //     - A process hosts one embedded engine bound to one database path. Multiple connections
+    //       to that path can be open at the same time; each connection is independent.
+    //     - Connecting with a different path while other connections are open fails; close all
+    //       existing connections first.
     const char *argv[] = {
         "chdb_example",      // Program name
         // "--path=chdb_example"

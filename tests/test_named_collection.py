@@ -116,5 +116,88 @@ class TestNamedCollection(unittest.TestCase):
             second.close()
 
 
+class TestNamedCollectionReadonly(unittest.TestCase):
+    """Named-collection DDL must respect readonly and allow_ddl.
+
+    See https://github.com/chdb-io/chdb-core/issues/119
+
+    CREATE/ALTER/DROP NAMED COLLECTION used to bypass ``readonly=2`` (and
+    ``allow_ddl=0``) because the named-collection access types were missing
+    from the readonly/DDL masks in ContextAccess. In embedded chDB those
+    settings are the only guard between an untrusted SQL caller and session
+    state, so the DDL must be rejected like any other DDL.
+    """
+
+    test_dir = ".test_named_collection_readonly"
+
+    def setUp(self) -> None:
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        return super().setUp()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        return super().tearDown()
+
+    def _collection_names(self, sess):
+        return str(sess.query("SELECT name FROM system.named_collections ORDER BY name"))
+
+    def test_named_collection_ddl_rejected_in_readonly_2(self):
+        """The exact issue #119 repro: DDL must fail and change nothing."""
+        sess = session.Session(self.test_dir)
+        try:
+            sess.query("CREATE NAMED COLLECTION aws AS url='https://example.com/x.parquet', access_key_id='K'")
+            self.assertEqual(self._collection_names(sess), '"aws"\n')
+
+            sess.query("SET readonly=2")
+
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
+                sess.query("CREATE NAMED COLLECTION x AS a=1")
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
+                sess.query("ALTER NAMED COLLECTION aws SET url='https://evil.example.com/y.parquet'")
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
+                sess.query("DROP NAMED COLLECTION aws")
+
+            # The operator's collection is intact and no new one appeared.
+            self.assertEqual(self._collection_names(sess), '"aws"\n')
+            keys = sess.query(
+                "SELECT arraySort(mapKeys(collection)) FROM system.named_collections WHERE name = 'aws'"
+            )
+            self.assertEqual(str(keys), "\"['access_key_id','url']\"\n")
+        finally:
+            sess.close()
+
+    def test_named_collection_ddl_rejected_in_readonly_1(self):
+        sess = session.Session(self.test_dir)
+        try:
+            sess.query("SET readonly=1")
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
+                sess.query("CREATE NAMED COLLECTION x AS a=1")
+            self.assertEqual(self._collection_names(sess), "")
+        finally:
+            sess.close()
+
+    def test_named_collection_ddl_rejected_with_allow_ddl_0(self):
+        sess = session.Session(self.test_dir)
+        try:
+            sess.query("SET allow_ddl=0")
+            with self.assertRaisesRegex(RuntimeError, "DDL queries are prohibited"):
+                sess.query("CREATE NAMED COLLECTION x AS a=1")
+            self.assertEqual(self._collection_names(sess), "")
+        finally:
+            sess.close()
+
+    def test_named_collection_ddl_still_works_without_readonly(self):
+        """The gate must not break the normal (non-readonly) DDL path."""
+        sess = session.Session(self.test_dir)
+        try:
+            sess.query("CREATE NAMED COLLECTION nc AS a='1'")
+            sess.query("ALTER NAMED COLLECTION nc SET a='2'")
+            self.assertEqual(self._collection_names(sess), '"nc"\n')
+            sess.query("DROP NAMED COLLECTION nc")
+            self.assertEqual(self._collection_names(sess), "")
+        finally:
+            sess.close()
+
+
 if __name__ == "__main__":
     unittest.main()
