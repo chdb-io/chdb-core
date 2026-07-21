@@ -3,12 +3,14 @@
 #include "ChunkCollectorOutputFormat.h"
 #if USE_PYTHON
 #include "TableFunctionPython.h"
-#elif !defined(OS_WASM)
+#endif
+#if !defined(OS_WASM)
 #include "StorageArrowStream.h"
 #include "TableFunctionArrowStream.h"
 #endif
 #include <Formats/FormatFactory.h>
 #include <TableFunctions/TableFunctionFactory.h>
+#include <Storages/StorageFactory.h>
 
 #include <filesystem>
 #include <Access/AccessControl.h>
@@ -622,14 +624,16 @@ try
             auto & table_function_factory = TableFunctionFactory::instance();
 #if USE_PYTHON
             registerTableFunctionPython(table_function_factory);
-#elif !defined(OS_WASM)
+#endif
+#if !defined(OS_WASM)
+            /// Also in Python builds: the ADBC driver's ingest path uses it.
             registerTableFunctionArrowStream(table_function_factory);
 #endif
 
             registerDatabases();
             registerStorages();
             CHDB::registerDataFrameOutputFormat();
-#if !USE_PYTHON && !defined(OS_WASM)
+#if !defined(OS_WASM)
             auto & storage_factory = StorageFactory::instance();
             registerStorageArrowStream(storage_factory);
 #endif

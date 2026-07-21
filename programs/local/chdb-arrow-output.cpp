@@ -223,7 +223,7 @@ chdb_result * runMaterializedArrowQuery(
 
     auto * chunk_result = static_cast<CHDB::ChunkQueryResult *>(query_result.get());
     if (!chunk_result->header)
-        return makeErrorResult("Missing result header for Arrow output");
+        return makeErrorResult(CHDB::kErrorMissingResultHeader);
 
     const auto & header_columns = chunk_result->header->getColumnsWithTypeAndName();
 
@@ -354,7 +354,88 @@ chdb_result * chdb_stream_query_arrow_n(
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
         auto query_result = client->executeStreamingInit(
             query, query_len,
-            CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME));
+            CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME),
+            /*dataframe_over_chunks=*/false);
+        if (!query_result)
+            return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Streaming init failed"));
+
+        if (query_result->getType() != CHDB::QueryResultType::RESULT_TYPE_STREAMING)
+            return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected non-streaming result for Arrow streaming"));
+
+        auto state = std::make_shared<ArrowStreamingState>();
+        if (options)
+            state->options = *options;
+        else
+            state->options = chdb_arrow_options{0, 0, 1};
+
+        auto * stream_result = static_cast<CHDB::StreamQueryResult *>(query_result.get());
+        stream_result->private_data = std::static_pointer_cast<void>(state);
+
+        return reinterpret_cast<chdb_result *>(query_result.release());
+    }
+    catch (const Exception & e)
+    {
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(getExceptionMessage(e, false)));
+    }
+    catch (const std::exception & e)
+    {
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(e.what()));
+    }
+    catch (...)
+    {
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(DB::getCurrentExceptionMessage(true)));
+    }
+}
+
+chdb_result * chdb_stream_query_arrow_with_params(
+    chdb_connection conn, const char * query,
+    const chdb_arrow_options * options,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count)
+{
+    return chdb_stream_query_arrow_with_params_n(
+        conn,
+        query,
+        query ? std::strlen(query) : 0,
+        options,
+        param_names,
+        /*param_name_lens=*/nullptr,
+        param_values,
+        /*param_value_lens=*/nullptr,
+        param_count);
+}
+
+chdb_result * chdb_stream_query_arrow_with_params_n(
+    chdb_connection conn, const char * query, size_t query_len,
+    const chdb_arrow_options * options,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count)
+{
+    if (!conn)
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Invalid or closed connection"));
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        /// Parameters only need to be present while the statement is parsed
+        /// during init — the engine captures the values then (same contract
+        /// as chdb_stream_query_with_params).
+        const auto params
+            = CHDB::buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
+        CHDB::CApiQueryParameterGuard guard(client, params);
+
+        auto query_result = client->executeStreamingInit(
+            query, query_len,
+            CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME),
+            /*dataframe_over_chunks=*/false);
         if (!query_result)
             return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Streaming init failed"));
 
@@ -418,10 +499,17 @@ chdb_state chdb_stream_fetch_arrow(
 
         auto iter_result = client->executeStreamingIterate(stream, false);
         if (!iter_result)
+        {
+            stream->setError("Streaming iterate returned no result");
             return CHDBError;
+        }
 
         if (!iter_result->getError().empty())
+        {
+            /// Surface via chdb_result_error(stream_result).
+            stream->setError(iter_result->getError());
             return CHDBError;
+        }
 
         if (iter_result->getType() != CHDB::QueryResultType::RESULT_TYPE_CHUNK)
         {
@@ -437,6 +525,20 @@ chdb_state chdb_stream_fetch_arrow(
         auto * chunk_iter = static_cast<CHDB::ChunkQueryResult *>(iter_result.get());
         if (!chunk_iter->header || chunk_iter->chunks.empty())
         {
+            /// Zero-row results reach EOS before the converter initializes;
+            /// derive the schema from a zero-row probe chunk (mirrors the
+            /// materialized empty-result path) so column metadata survives.
+            if (chunk_iter->header && !state->header_initialized)
+            {
+                const auto & src_header = chunk_iter->header->getColumnsWithTypeAndName();
+                MutableColumns probe_cols;
+                probe_cols.reserve(src_header.size());
+                for (const auto & h : src_header)
+                    probe_cols.emplace_back(h.type->createColumn());
+                std::vector<Chunk> probe;
+                probe.emplace_back(std::move(probe_cols), 0);
+                ensureConverterInitialized(*state, src_header, &probe.front());
+            }
             auto priv = std::make_unique<OneBatchPrivate>();
             priv->schema = state->schema;
             initOneBatchStream(raw_out, std::move(priv));
