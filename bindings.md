@@ -29,7 +29,10 @@ chDB exposes four main capabilities through its C API ([`chdb.h`](programs/local
 | **PHP** | | | | | _Contributors Needed_ |
 | **R** | | | | | _Contributors Needed_ |
 
-### ADBC
+### ADBC (experimental)
+
+> **Experimental.** The ADBC driver is a preview feature: its behavior and
+> packaging may change before it is declared stable.
 
 libchdb also exports an [ADBC](https://arrow.apache.org/adbc/) driver
 entrypoint (`chdb_adbc_init`), so any language with an ADBC driver manager

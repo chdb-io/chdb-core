@@ -1,5 +1,9 @@
 # Vendored ADBC header
 
+> **Note.** The chDB ADBC driver (implemented in `../chdb-adbc.cpp`) is an
+> experimental/preview feature; its behavior and packaging may change before
+> it is declared stable.
+
 `adbc.h` is vendored verbatim from Apache Arrow ADBC:
 
 - Source: https://github.com/apache/arrow-adbc/blob/apache-arrow-adbc-23/c/include/arrow-adbc/adbc.h

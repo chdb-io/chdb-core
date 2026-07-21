@@ -6,11 +6,13 @@
 /// Results travel through the Arrow C Data Interface; bulk ingestion goes
 /// through chdb_arrow_scan + INSERT ... SELECT FROM arrowstream(...).
 ///
-/// Result streams: the engine runs one statement at a time per connection,
-/// so any new operation invalidates the connection's outstanding streamed
-/// result (the stale reader fails with a clear error). Independent
-/// concurrent readers work over separate connections; note that session
-/// state (SET, temporary tables) is per-connection.
+/// Result streams: the engine runs one statement at a time per connection.
+/// A statement's next Execute invalidates its own prior stream (spec-required);
+/// a different statement or a metadata call that hits a still-live stream is
+/// rejected with INVALID_STATE rather than silently invalidating it (see
+/// reclaimActiveStream). Independent concurrent readers work over separate
+/// connections; note that session state (SET, temporary tables) is
+/// per-connection.
 ///
 /// Tracking: chdb-io/chdb-core#122.
 
@@ -134,8 +136,9 @@ struct ConnectionImpl
     /// Serializes statement execution on this connection.
     std::mutex mutex;
     /// The connection's outstanding streamed result, if any. The engine runs
-    /// one statement at a time per connection, so any new operation must
-    /// invalidate this first (see invalidateActiveStream).
+    /// one statement at a time per connection; a new operation resolves this
+    /// via reclaimActiveStream (same statement re-execute invalidates it,
+    /// a different statement or metadata call is rejected while it is live).
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
 };
@@ -533,8 +536,9 @@ AdbcStatusCode clickhouseTypeFor(
         case arrow::Type::BINARY:
         case arrow::Type::LARGE_BINARY:
         case arrow::Type::FIXED_SIZE_BINARY: out = "String"; return ADBC_STATUS_OK;
-        /// All-null columns arrive as Arrow's null type; the values are
-        /// rewritten to literal NULLs, so the placeholder type is moot.
+        /// All-null columns arrive as Arrow's null type; Nullable(String) is a
+        /// safe placeholder type for the NULLs they carry (a literal NULL on
+        /// the single-row path, \N on the concatenated path).
         case arrow::Type::NA: out = "Nullable(String)"; return ADBC_STATUS_OK;
         case arrow::Type::DATE32: out = "Date32"; return ADBC_STATUS_OK;
         case arrow::Type::DATE64: out = "DateTime64(3)"; return ADBC_STATUS_OK;
@@ -1794,10 +1798,10 @@ AdbcStatusCode wireStreamingResult(
     ArrowArrayStream * out,
     AdbcError * error);
 
-/// Executes a query with qmark-style positional parameters bound as Arrow
-/// data. Each `?` is rewritten to a server-side {name:Type} placeholder
-/// (no string interpolation); NULL values become literal NULLs. Multi-row
-/// binds (executemany) run the statement once per row.
+/// executemany fast path for a plain INSERT ... VALUES (?, ...): registers all
+/// bound rows as an Arrow stream and inserts them with one INSERT ... SELECT
+/// (the bulk-ingestion channel), instead of one execute per row. Non-INSERT
+/// or non-plain shapes fall back to the per-row path in executeBoundQuery.
 AdbcStatusCode executeBoundInsertBatch(
     StatementImpl * impl, const std::string & insert_head, int64_t * rows_affected, AdbcError * error)
 {
