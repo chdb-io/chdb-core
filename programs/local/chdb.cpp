@@ -52,6 +52,10 @@ extern "C"
     extern chdb_result * chdb_stream_query_arrow(chdb_connection, const char *, const chdb_arrow_options *);
     extern chdb_result * chdb_stream_query_arrow_n(chdb_connection, const char *, size_t, const chdb_arrow_options *);
     extern chdb_state chdb_stream_fetch_arrow(chdb_connection, chdb_result *, chdb_arrow_stream);
+    /// ADBC entrypoint (chdb-adbc.cpp). Anchor declaration with erased pointer
+    /// types — C linkage, address-only use; real signature is in adbc/adbc.h.
+    /// Return type matches AdbcStatusCode (uint8_t) without pulling in adbc.h.
+    extern unsigned char chdb_adbc_init(int, void *, void *);
 }
 
 /// Force-link references: chdb-arrow.cpp.o and chdb-arrow-output.cpp.o each
@@ -65,7 +69,8 @@ extern "C"
     reinterpret_cast<void*>(chdb_query_arrow_n),
     reinterpret_cast<void*>(chdb_stream_query_arrow),
     reinterpret_cast<void*>(chdb_stream_query_arrow_n),
-    reinterpret_cast<void*>(chdb_stream_fetch_arrow)
+    reinterpret_cast<void*>(chdb_stream_fetch_arrow),
+    reinterpret_cast<void*>(chdb_adbc_init)
 };
 #endif
 
@@ -631,11 +636,10 @@ chdb_result * chdb_stream_query_n(chdb_connection conn, const char * query, size
     }
 }
 
-namespace
+namespace CHDB
 {
 
-/// Build a NameToNameMap from parallel C-ABI arrays of parameter names and values.
-/// On duplicate names the last value wins (NameToNameMap == std::unordered_map).
+/// See chdb-internal.h — shared by every *_with_params C entry point.
 DB::NameToNameMap buildParameterMap(
     const char * const * param_names,
     const size_t * param_name_lens,
@@ -666,37 +670,23 @@ DB::NameToNameMap buildParameterMap(
     return params;
 }
 
-/// RAII guard mirroring the Python binding's QueryParameterGuard (see LocalChdb.cpp): sets named
-/// parameters on the client for the duration of one query, then unconditionally clears them.
-/// This matches Python `chdb.query(..., params=...)` semantics — including for streaming, where
-/// parameters only need to be present during executeStreamingInit (the engine captures values then).
-class CApiQueryParameterGuard
+CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params)
+    : client(client_)
 {
-public:
-    CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params) : client(client_)
+    if (client && !params.empty())
     {
-        if (client && !params.empty())
-        {
-            client->setQueryParameters(params);
-            applied = true;
-        }
+        client->setQueryParameters(params);
+        applied = true;
     }
+}
 
-    ~CApiQueryParameterGuard()
-    {
-        if (client && applied)
-            client->clearQueryParameters();
-    }
+CApiQueryParameterGuard::~CApiQueryParameterGuard()
+{
+    if (client && applied)
+        client->clearQueryParameters();
+}
 
-    CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
-    CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
-
-private:
-    DB::ChdbClient * client = nullptr;
-    bool applied = false;
-};
-
-} // anonymous namespace
+} // namespace CHDB
 
 chdb_result * chdb_query_with_params(
     chdb_connection conn,
@@ -747,8 +737,8 @@ chdb_result * chdb_query_with_params_n(
     try
     {
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
-        const auto params = buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
-        CApiQueryParameterGuard guard(client, params);
+        const auto params = CHDB::buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
+        CHDB::CApiQueryParameterGuard guard(client, params);
 
         auto query_result = client->executeMaterializedQuery(query, query_len, format, format_len);
         return reinterpret_cast<chdb_result *>(query_result.release());
@@ -814,8 +804,8 @@ chdb_result * chdb_stream_query_with_params_n(
     try
     {
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
-        const auto params = buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
-        CApiQueryParameterGuard guard(client, params);
+        const auto params = CHDB::buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
+        CHDB::CApiQueryParameterGuard guard(client, params);
 
         auto query_result = client->executeStreamingInit(query, query_len, format, format_len);
         if (!query_result)

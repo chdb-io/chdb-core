@@ -56,6 +56,10 @@ public:
         return false;
     }
 
+    /// Records iterate-time failures (e.g. unknown table caught at
+    /// execution) so chdb_result_error() can surface the engine message.
+    void setError(String message) { error_message = std::move(message); }
+
     /// Opaque per-stream state slot used by streaming-output binding code
     /// (currently the Arrow C Data Interface output path) to persist a
     /// converter, schema, and dictionary cache across fetches. The shared

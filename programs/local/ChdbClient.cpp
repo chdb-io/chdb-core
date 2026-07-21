@@ -345,7 +345,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
 
 CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const char * query, size_t query_len,
-    const char * format, size_t format_len)
+    const char * format, size_t format_len, bool dataframe_over_chunks)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
 
@@ -367,6 +367,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
             return std::make_unique<CHDB::StreamQueryResult>(getErrorMsg());
         }
         streaming_query_context->thread_group = DB::CurrentThread::getGroup();
+        streaming_query_context->dataframe_over_chunks = dataframe_over_chunks;
         auto result = std::make_unique<CHDB::StreamQueryResult>();
         streaming_query_context->streaming_result = result.get();
         return result;
@@ -437,15 +438,20 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     bytes_written - old_bytes_written);
 
 #if USE_PYTHON
-                py::gil_scoped_acquire acquire;
-                CHDB::PandasDataFrameBuilder builder(*chunk_result);
-                py::handle df = builder.getDataFrame().release();
+                if (streaming_query_context->dataframe_over_chunks)
+                {
+                    py::gil_scoped_acquire acquire;
+                    CHDB::PandasDataFrameBuilder builder(*chunk_result);
+                    py::handle df = builder.getDataFrame().release();
 
-                res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
+                    res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
+                }
+                else
+                {
+                    /// Arrow C Data / ADBC consumers want raw chunks.
+                    res = std::move(chunk_result);
+                }
 #else
-                /// Non-Python build: hand raw chunks back so the Arrow C
-                /// Data Interface output path can export them without
-                /// IPC serialization.
                 res = std::move(chunk_result);
 #endif
             }

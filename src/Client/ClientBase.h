@@ -101,6 +101,10 @@ struct StreamingQueryContext
     void * streaming_result = nullptr;
     bool is_streaming_query = true;
     ThreadGroupPtr thread_group = nullptr;
+    /// What chunk-collect streaming iterate returns: a pandas DataFrame
+    /// (Python default) or raw chunks (the Arrow/ADBC path). Per-stream so
+    /// concurrent streams on one client can differ.
+    bool dataframe_over_chunks = true;
 
     StreamingQueryContext() = default;
 };

@@ -661,6 +661,31 @@ CHDB_EXPORT chdb_result * chdb_stream_query_arrow_n(
     const chdb_arrow_options * options);
 
 /**
+ * chdb_stream_query_arrow() with server-side {name:Type} parameter binding
+ * (chdb_query_with_params semantics, no SQL interpolation). Parameters are
+ * bound before streaming init and cleared once it returns; fetch, cancel
+ * and destroy work exactly like chdb_stream_query_arrow().
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_arrow_with_params(
+    chdb_connection conn, const char * query,
+    const chdb_arrow_options * options,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count);
+
+/**
+ * Binary-safe variant of chdb_stream_query_arrow_with_params.
+ */
+CHDB_EXPORT chdb_result * chdb_stream_query_arrow_with_params_n(
+    chdb_connection conn, const char * query, size_t query_len,
+    const chdb_arrow_options * options,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count);
+
+/**
  * Pulls the next record batch from a streaming Arrow query into the
  * caller-allocated out_batch (a single-batch ArrowArrayStream). When the
  * stream is exhausted out_batch->get_next() will return a released array
