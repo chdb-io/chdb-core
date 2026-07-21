@@ -91,6 +91,15 @@ def _bind(lib):
     lib.chdb_result_error.argtypes = [ctypes.c_void_p]
     lib.chdb_result_error.restype = ctypes.c_char_p
 
+    # Streaming parameter-binding variant; absent when running against an older lib.
+    if hasattr(lib, "chdb_stream_query_arrow_with_params"):
+        lib.chdb_stream_query_arrow_with_params.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_size_t,
+        ]
+        lib.chdb_stream_query_arrow_with_params.restype = ctypes.c_void_p
+
 
 LIBCHDB = None
 if _LIBCHDB_PATH is not None:
@@ -218,6 +227,60 @@ class TestArrowCDataOutput(unittest.TestCase):
             LIBCHDB.chdb_destroy_query_result(stream_result)
 
         self.assertEqual(total_rows, 1000)
+
+    def test_streaming_with_params_value_roundtrip(self):
+        if not hasattr(LIBCHDB, "chdb_stream_query_arrow_with_params"):
+            self.skipTest("libchdb lacks chdb_stream_query_arrow_with_params")
+        sql = "SELECT number + {off:Int64} AS v FROM numbers({n:UInt64})"
+        params = {"off": "100", "n": "1000"}
+        names = (ctypes.c_char_p * len(params))(*[k.encode() for k in params])
+        values = (ctypes.c_char_p * len(params))(*[v.encode() for v in params.values()])
+        stream_result = LIBCHDB.chdb_stream_query_arrow_with_params(
+            self.conn, sql.encode("utf-8"), None, names, values, len(params))
+        err = LIBCHDB.chdb_result_error(stream_result)
+        if err:
+            LIBCHDB.chdb_destroy_query_result(stream_result)
+            self.fail(err.decode())
+
+        try:
+            total_rows = 0
+            first_value = None
+            for _ in range(2048):
+                batch = ArrowArrayStream()
+                state = LIBCHDB.chdb_stream_fetch_arrow(
+                    self.conn, stream_result, ctypes.byref(batch))
+                if state != 0:
+                    break
+                reader = pa.RecordBatchReader._import_from_c(ctypes.addressof(batch))
+                tbl = reader.read_all()
+                if tbl.num_rows == 0:
+                    break
+                if first_value is None:
+                    first_value = tbl.column("v")[0].as_py()
+                total_rows += tbl.num_rows
+        finally:
+            LIBCHDB.chdb_destroy_query_result(stream_result)
+
+        self.assertEqual(total_rows, 1000)
+        self.assertEqual(first_value, 100)
+
+    def test_streaming_with_params_missing_substitution_errors(self):
+        if not hasattr(LIBCHDB, "chdb_stream_query_arrow_with_params"):
+            self.skipTest("libchdb lacks chdb_stream_query_arrow_with_params")
+        stream_result = LIBCHDB.chdb_stream_query_arrow_with_params(
+            self.conn, b"SELECT {x:Int64} AS v", None, None, None, 0)
+        try:
+            err = LIBCHDB.chdb_result_error(stream_result)
+            # Substitution errors may surface at init or on first fetch.
+            if not err:
+                batch = ArrowArrayStream()
+                state = LIBCHDB.chdb_stream_fetch_arrow(
+                    self.conn, stream_result, ctypes.byref(batch))
+                err = LIBCHDB.chdb_result_error(stream_result)
+                self.assertTrue(state != 0 or err)
+            self.assertIsNotNone(err)
+        finally:
+            LIBCHDB.chdb_destroy_query_result(stream_result)
 
 
 if __name__ == "__main__":

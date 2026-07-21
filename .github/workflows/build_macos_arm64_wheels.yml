@@ -392,6 +392,8 @@ jobs:
               echo "=============================================="
               pyenv shell $version
               python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" --force-reinstall --no-cache-dir
+              # ADBC driver tests (tests/test_adbc_driver.py) load libchdb via the standard driver manager
+              python -c "import adbc_driver_manager" 2>/dev/null || python -m pip install -q adbc-driver-manager==1.8.0
               echo "Installed pandas version:"
               python -c "import pandas; print(pandas.__version__)"
               python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"

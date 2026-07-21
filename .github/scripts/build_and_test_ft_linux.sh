@@ -54,7 +54,7 @@ for ft_version in $FT_VERSIONS; do
     if [ -n "$ft_full" ]; then
         echo "Installing deps for Python $ft_full"
         PYENV_VERSION=$ft_full python -m pip install --upgrade pip
-        PYENV_VERSION=$ft_full python -m pip install setuptools wheel tox pandas pyarrow psutil
+        PYENV_VERSION=$ft_full python -m pip install setuptools wheel tox pandas pyarrow psutil adbc-driver-manager==1.8.0
     fi
 done
 
