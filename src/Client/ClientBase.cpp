@@ -3276,6 +3276,17 @@ bool ClientBase::processStreamingQuery(void * streaming_result_, bool is_cancele
 
         resetOutputFormat();
 
+        /// The query-level SETTINGS clause (e.g. date_time_output_format = 'iso')
+        /// was applied to client_context in processParsedSingleQuery, but its
+        /// SCOPE_EXIT rolled the settings back before this deferred fetch runs.
+        /// Re-apply it from the stored AST so initOutputFormat() (which builds the
+        /// output format from getFormatSettings(client_context)) formats the result
+        /// as requested, then restore to avoid leaking into later statements on
+        /// this connection. Mirrors the streaming-insert path in ChdbClient.
+        Settings old_settings = client_context->getSettingsRef();
+        SCOPE_EXIT_SAFE({ client_context->setSettings(old_settings); });
+        InterpreterSetQuery::applySettingsFromQuery(streaming_query_context->parsed_query, client_context);
+
         receiveResult(streaming_query_context->parsed_query, is_canceled);
 
         resetOutputFormat();
