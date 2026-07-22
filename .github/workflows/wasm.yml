@@ -18,7 +18,11 @@ on:
         type: boolean
         default: false
       version:
-        description: 'npm version to publish (e.g. 0.3.1); required when publish is checked'
+        description: 'chdb-wasm version to publish (e.g. 0.3.1); required when publish is checked'
+        type: string
+        default: ''
+      lite_version:
+        description: 'chdb-wasm-lite version to publish (e.g. 0.1.0); leave empty to skip the lite publish'
         type: string
         default: ''
   push:
@@ -326,7 +330,7 @@ jobs:
         with:
           name: chdb-wasm-lite
           path: packages/chdb-wasm-lite/dist
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
       # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
@@ -370,13 +374,18 @@ jobs:
           # Hand the tarball path to the release-upload step below.
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
 
+      # chdb-wasm-lite is versioned independently of chdb-wasm: pass
+      # lite_version to publish it (empty skips it, so either package can be
+      # released on its own).
       - name: Publish chdb-wasm-lite to npm
-        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.lite_version != ''
         working-directory: packages/chdb-wasm-lite
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ inputs.lite_version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
+            || { echo "lite_version must be semver, got: '$VERSION'"; exit 1; }
           npm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"
           npm pkg set version="$VERSION"
           if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
