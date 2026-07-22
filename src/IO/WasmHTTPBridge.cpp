@@ -141,6 +141,87 @@ EM_JS(int, chdb_wasm_http_request_js, (
     }
 });
 
+#ifdef CHDB_WASM_JSPI
+/// Asynchronous flavor of the request above for JSPI builds (-sJSPI): fetch()
+/// replaces the synchronous transports, and the whole wasm stack SUSPENDS at
+/// this import until the promise settles (JavaScript Promise Integration).
+/// This is the only transport that can work on Cloudflare Workers, which has
+/// no synchronous XHR and no subprocesses — and it also covers browsers
+/// (Chrome 137+) and Node (--experimental-wasm-jspi) with one code path.
+/// Same argument/out-struct protocol as the sync version; the calling C API
+/// export must be listed in JSPI_EXPORTS or V8 refuses to suspend.
+EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
+    const char * method_ptr, const char * url_ptr, const char * headers_ptr,
+    const char * body_ptr, double body_len,
+    double range_offset, double range_length,
+    char * out_ptr), {
+    try {
+        var method = UTF8ToString(Number(method_ptr));
+        var url = UTF8ToString(Number(url_ptr));
+        var headersBlob = UTF8ToString(Number(headers_ptr));
+        var bodyLen = Number(body_len);
+        var reqBody = null;
+        if (bodyLen > 0) {
+            // Copy out of the (possibly shared) wasm heap: fetch rejects SAB views.
+            reqBody = new Uint8Array(bodyLen);
+            reqBody.set(HEAPU8.subarray(Number(body_ptr), Number(body_ptr) + bodyLen));
+        }
+        var rangeOff = range_offset;
+        var rangeLen = range_length;
+        var headers = {};
+        var lines = headersBlob ? headersBlob.split('\n') : [];
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line) continue;
+            var c = line.indexOf(': ');
+            if (c > 0) headers[line.substring(0, c)] = line.substring(c + 2);
+        }
+        if (rangeOff >= 0) headers['Range'] = 'bytes=' + rangeOff + '-' + (rangeOff + rangeLen - 1);
+        var resp;
+        try {
+            resp = await fetch(url, { method: method, headers: headers, body: reqBody, redirect: 'follow' });
+        } catch (e) {
+            if (typeof console !== 'undefined')
+                console.error('chdb wasm http bridge (jspi): fetch failed', method, url, String(e && e.message || e));
+            return -1;
+        }
+        var status = resp.status;
+        var respHeaders = "";
+        resp.headers.forEach(function(v, k) { respHeaders += k + ': ' + v + String.fromCharCode(10); });
+        var respBytes = new Uint8Array(await resp.arrayBuffer());
+        // A ranged request answered with 200 means the server ignored Range;
+        // slice the requested window so only those bytes enter wasm memory.
+        if (rangeOff >= 0 && status === 200)
+            respBytes = respBytes.subarray(rangeOff, rangeOff + rangeLen);
+        var hdrBytes = new TextEncoder().encode(respHeaders);
+        var hdrPtr = 0;
+        var bodyPtr = 0;
+        // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting.
+        if (hdrBytes.length) {
+            hdrPtr = _malloc(BigInt(hdrBytes.length));
+            if (!Number(hdrPtr)) throw new Error('bridge OOM allocating ' + hdrBytes.length + ' header bytes');
+            HEAPU8.set(hdrBytes, Number(hdrPtr));
+        }
+        if (respBytes.length) {
+            bodyPtr = _malloc(BigInt(respBytes.length));
+            if (!Number(bodyPtr)) { if (Number(hdrPtr)) _free(hdrPtr); throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes'); }
+            HEAPU8.set(respBytes, Number(bodyPtr));
+        }
+        var dv = new DataView(HEAPU8.buffer);
+        var out = Number(out_ptr);
+        dv.setBigInt64(out, BigInt(status), true);
+        dv.setBigInt64(out + 8, BigInt(hdrPtr), true);
+        dv.setBigInt64(out + 16, BigInt(hdrBytes.length), true);
+        dv.setBigInt64(out + 24, BigInt(bodyPtr), true);
+        dv.setBigInt64(out + 32, BigInt(respBytes.length), true);
+        return 0;
+    } catch (e) {
+        if (typeof console !== 'undefined') console.error('chdb wasm http bridge (jspi):', e);
+        return -1;
+    }
+});
+#endif
+
 WasmHTTPResult performWasmHTTPRequest(
     const std::string & method,
     const std::string & url,
@@ -150,11 +231,20 @@ WasmHTTPResult performWasmHTTPRequest(
     long long range_length)
 {
     int64_t out[5] = {};
+#ifdef CHDB_WASM_JSPI
+    /// JSPI build: the async transport suspends the wasm stack on await.
+    int rc = chdb_wasm_http_request_async_js(
+        method.c_str(), url.c_str(), headers_blob.c_str(),
+        body.data(), static_cast<double>(body.size()),
+        static_cast<double>(range_offset), static_cast<double>(range_length),
+        reinterpret_cast<char *>(out));
+#else
     int rc = chdb_wasm_http_request_js(
         method.c_str(), url.c_str(), headers_blob.c_str(),
         body.data(), static_cast<double>(body.size()),
         static_cast<double>(range_offset), static_cast<double>(range_length),
         reinterpret_cast<char *>(out));
+#endif
 
     WasmHTTPResult result;
     if (rc != 0)

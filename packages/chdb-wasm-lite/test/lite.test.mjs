@@ -36,6 +36,12 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'chdb-lite-test-'));
 process.on('exit', () => rmSync(tmpRoot, { recursive: true, force: true }));
 let tmpSeq = 0;
 
+// The lite bundle links with WASM_JSPI (its async-fetch HTTP bridge is what
+// makes url()/s3() work inside Workers); the glue's WebAssembly.Suspending
+// wrappers need the flag to instantiate under Node at all.
+const jspiFlags = readFileSync(join(dir, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+  ? ['--experimental-wasm-jspi'] : [];
+
 // Child-process probe through the lite package's OWN dist SDK.
 function probe(body, timeoutMs = 300000) {
   const script = `
@@ -48,7 +54,7 @@ function probe(body, timeoutMs = 300000) {
   `;
   const file = join(tmpRoot, `probe-${++tmpSeq}.mjs`);
   writeFileSync(file, script);
-  return spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: timeoutMs });
+  return spawnSync(process.execPath, [...jspiFlags, file], { encoding: 'utf8', timeout: timeoutMs });
 }
 
 // ---- the size gate: the whole point of lite --------------------------------
@@ -67,7 +73,9 @@ function probe(body, timeoutMs = 300000) {
   const glue = readFileSync(join(dir, 'chdb.mjs'), 'utf8');
   assert.ok(glue.includes('chdb-wasm-lite'), 'glue must carry the --lite patch');
   assert.ok(!glue.includes('chdbWriteProfile'), 'glue must not carry the profile-collect patch');
-  ok('artifact shape: primary-only, lite-patched glue');
+  assert.ok(glue.includes('WebAssembly.promising'),
+    'lite glue must be a JSPI build (WASM_JSPI=ON) — the async HTTP bridge is what lets url()/s3() run in Workers');
+  ok('artifact shape: primary-only, lite-patched, JSPI glue');
 }
 
 // ---- the common-SQL surface must be fully self-contained --------------------
@@ -115,20 +123,26 @@ function probe(body, timeoutMs = 300000) {
   ok('putFile + file(), session DDL/DML, streaming (50k rows)');
 }
 
-// ---- engine-initiated networking is EXCLUDED (pure-Workers build): url()/s3()
-// must hit the lite cold stub, proving their read paths are not shipped ------
+// ---- url()/s3() through the JSPI async HTTP bridge --------------------------
+// The fixture server lives in the SAME process as the query: only possible
+// because JSPI suspends the wasm stack at fetch() and frees the event loop —
+// this doubles as the regression test for that property.
 {
   const r = probe(`
-    for (const sql of ["SELECT * FROM url('http://127.0.0.1:1/x.csv', CSV) LIMIT 0",
-                       "SELECT * FROM s3('http://127.0.0.1:1/b/x.csv', NOSIGN, CSV) LIMIT 0"]) {
-      try { await q(sql); console.log('UNEXPECTED-OK'); }
-      catch (e) { console.log(e.message.includes('chdb-wasm-lite') ? 'LITE-COLD' : 'OTHER:' + e.message.slice(0, 60)); }
-    }
+    const { createServer } = await import('node:http');
+    const CSV = 'id,name,score\\n1,alice,9.5\\n2,bob,7.25\\n3,carol,8.0\\n';
+    const srv = createServer((req, res) => { res.setHeader('content-type', 'text/csv'); res.end(CSV); });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const base = 'http://127.0.0.1:' + srv.address().port;
+    console.log(await q("SELECT * FROM url('" + base + "/people_names.csv', CSVWithNames) ORDER BY id"));
+    console.log(await q("SELECT count(), max(score) FROM s3('" + base + "/s3bucket/people_names.csv', NOSIGN, CSVWithNames)"));
+    srv.close();
   `);
   assert.strictEqual(r.status, 0, `remote-read probe failed: ${r.stderr?.slice(-300)}`);
-  assert.strictEqual(r.stdout.trim().split('\n').join('|'), 'LITE-COLD|LITE-COLD',
-    'url()/s3() must hit the lite stub — their read paths are excluded on purpose');
-  ok('url()/s3() excluded: both throw the lite error (pure-Workers build)');
+  const lines = r.stdout.trim().split('\n');
+  assert.strictEqual(lines.slice(0, 3).join('|'), '1,"alice",9.5|2,"bob",7.25|3,"carol",8');
+  assert.strictEqual(lines[3], '3,9.5');
+  ok('url() and s3() read real HTTP data via the JSPI bridge — exact results');
 }
 
 // ---- everything else: immediate, self-explanatory error ---------------------

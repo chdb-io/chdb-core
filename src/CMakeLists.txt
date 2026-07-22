@@ -146,6 +146,11 @@ add_headers_and_sources(dbms Storages/ObjectStorage/Local)
 if (OS_WASM)
     # WASM web-fetch data plane.
     add_headers_and_sources(dbms Storages/ObjectStorage/WasmWeb)
+    if (WASM_JSPI)
+        # Only the bridge translation unit sees the flag — flipping WASM_JSPI
+        # relinks + recompiles one file instead of the world.
+        set_source_files_properties (IO/WasmHTTPBridge.cpp PROPERTIES COMPILE_DEFINITIONS CHDB_WASM_JSPI)
+    endif ()
 endif ()
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes/Common)

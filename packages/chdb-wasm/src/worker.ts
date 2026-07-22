@@ -80,8 +80,7 @@ function requireBindings(): ChdbBindings {
   return bindings;
 }
 
-listen((req: WorkerRequest) => {
-  void (async () => {
+async function handle(req: WorkerRequest): Promise<void> {
     try {
       let result: any;
       switch (req.type) {
@@ -100,7 +99,7 @@ listen((req: WorkerRequest) => {
           }
           break;
         case 'query':
-          result = requireBindings().query(req.payload.sql, req.payload.format);
+          result = await requireBindings().query(req.payload.sql, req.payload.format);
           break;
         case 'connect':
           result = { conn: requireBindings().connect(req.payload?.path) };
@@ -109,13 +108,13 @@ listen((req: WorkerRequest) => {
           requireBindings().closeConn(req.payload.conn);
           break;
         case 'queryConn':
-          result = requireBindings().queryConn(req.payload.conn, req.payload.sql, req.payload.format);
+          result = await requireBindings().queryConn(req.payload.conn, req.payload.sql, req.payload.format);
           break;
         case 'streamStart':
-          result = { stream: requireBindings().streamStart(req.payload.conn, req.payload.sql, req.payload.format) };
+          result = { stream: await requireBindings().streamStart(req.payload.conn, req.payload.sql, req.payload.format) };
           break;
         case 'streamFetch':
-          result = requireBindings().streamFetch(req.payload.conn, req.payload.stream);
+          result = await requireBindings().streamFetch(req.payload.conn, req.payload.stream);
           break;
         case 'streamCancel':
           requireBindings().streamCancel(req.payload.conn, req.payload.stream);
@@ -149,5 +148,15 @@ listen((req: WorkerRequest) => {
     } catch (e: any) {
       post({ id: req.id, ok: false, error: e && e.message ? e.message : String(e) });
     }
-  })();
+}
+
+// Strict FIFO. On a JSPI build a query suspends the wasm stack at an async
+// fetch and control returns to this event loop, so a second request could
+// otherwise re-enter the engine mid-query — the chdb C API is not reentrant.
+// handle() never throws (it posts errors), so the chain cannot break.
+// (Queries stay in-order on plain builds too, as before; cancel doesn't go
+// through this queue — the page writes the shared cancel flag directly.)
+let queue: Promise<void> = Promise.resolve();
+listen((req: WorkerRequest) => {
+  queue = queue.then(() => handle(req));
 });

@@ -5,6 +5,12 @@
 import { ChdbError } from './status.ts';
 import type { ConnHandle, WireResult, WireChunk } from './protocol.ts';
 
+// The four exports that can reach the HTTP bridge (url()/s3()/data lakes) are
+// called with {async: true}: on a JSPI build (-sJSPI, JSPI_EXPORTS) they return
+// a Promise that settles when the suspended wasm stack resumes after fetch();
+// on a plain build ccall ignores the option and returns the value synchronously
+// (awaiting a non-Promise is a no-op), so one code path serves both bundles.
+
 /** The Emscripten module instance (createChdbModule()'s resolved value). */
 export type ChdbModule = any;
 
@@ -34,8 +40,8 @@ export class ChdbBindings {
   }
 
   /** Query the implicit process-wide :memory: connection. */
-  query(sql: string, format = 'CSV'): WireResult {
-    const r = this.mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, format]);
+  async query(sql: string, format = 'CSV'): Promise<WireResult> {
+    const r = await this.mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, format], { async: true });
     return this.consume(r, sql);
   }
 
@@ -101,19 +107,19 @@ export class ChdbBindings {
   }
 
   /** Query a specific connection handle. */
-  queryConn(conn: ConnHandle, sql: string, format = 'CSV'): WireResult {
-    const r = this.mod.ccall('chdb_wasm_query_conn', 'number', ['number', 'string', 'string'], [conn, sql, format]);
+  async queryConn(conn: ConnHandle, sql: string, format = 'CSV'): Promise<WireResult> {
+    const r = await this.mod.ccall('chdb_wasm_query_conn', 'number', ['number', 'string', 'string'], [conn, sql, format], { async: true });
     return this.consume(r, sql);
   }
 
   /** Begin a streaming query on a connection; returns the opaque stream handle. */
-  streamStart(conn: ConnHandle, sql: string, format = 'CSV'): ConnHandle {
-    return this.mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, sql, format]);
+  async streamStart(conn: ConnHandle, sql: string, format = 'CSV'): Promise<ConnHandle> {
+    return await this.mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, sql, format], { async: true });
   }
 
   /** Fetch the next chunk of a stream. done=true at end-of-stream (empty chunk). */
-  streamFetch(conn: ConnHandle, stream: ConnHandle): WireChunk {
-    const chunk = this.mod.ccall('chdb_wasm_stream_fetch', 'number', ['number', 'number'], [conn, stream]);
+  async streamFetch(conn: ConnHandle, stream: ConnHandle): Promise<WireChunk> {
+    const chunk = await this.mod.ccall('chdb_wasm_stream_fetch', 'number', ['number', 'number'], [conn, stream], { async: true });
     if (!num(chunk)) return { done: true };
     try {
       const errPtr = this.mod.ccall('chdb_wasm_result_error', 'number', ['number'], [chunk]);

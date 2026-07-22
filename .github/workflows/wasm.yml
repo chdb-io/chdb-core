@@ -297,14 +297,20 @@ jobs:
       # ---- chdb-wasm-lite: a single-file bundle sized for Cloudflare Workers
       # (10 MiB gzipped Worker limit). The st tree is relinked once more with a
       # 64MB initial memory (a Workers isolate caps total memory at 128MB) and
-      # split against the LITE corpus (most-common SQL only); only the primary
-      # ships, with the --lite glue so out-of-corpus calls throw a clear error.
-      # Runs after the full-split steps because it reuses (and re-links) the
-      # buildwasm-st tree.
-      - name: Relink st with 64MB initial memory (lite)
+      # WASM_JSPI=ON (the async-fetch HTTP bridge — the only transport that
+      # works in workerd, so url()/s3() run inside Workers; requires a
+      # JSPI-capable engine: Chrome 137+, workerd, Node with
+      # --experimental-wasm-jspi, which the split tooling adds to child
+      # processes automatically). Split against the LITE corpus (most-common
+      # SQL only); only the primary ships, with the --lite glue so
+      # out-of-corpus calls throw a clear error. Runs after the full-split
+      # steps because it reuses (and re-links) the buildwasm-st tree; the full
+      # packages stay JSPI-free (their sync-XHR bridge needs no special engine
+      # support).
+      - name: Relink st with 64MB initial memory + JSPI (lite)
         run: |
           source "${EMSDK}/emsdk_env.sh"
-          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB buildwasm-st >/dev/null
+          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB -DWASM_JSPI=ON buildwasm-st >/dev/null
           ninja -C buildwasm-st chdb_wasm
 
       - name: Lite split pipeline (lite corpus, primary-only)

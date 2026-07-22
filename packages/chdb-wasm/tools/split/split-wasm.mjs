@@ -108,8 +108,12 @@ if (!argv.includes('--skip-profile-run')) {
   if (existsSync(profilesDir))
     for (const f of readdirSync(profilesDir)) if (f.endsWith('.data')) rmSync(join(profilesDir, f));
   const corpusEnv = opt('corpus') ? { CHDB_CORPUS: opt('corpus') } : {};
+  // A WASM_JSPI bundle's glue wraps imports in WebAssembly.Suspending — Node
+  // (V8 without the Chrome default-on) needs the flag to even instantiate it.
+  const jspiFlags = readFileSync(join(staging, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+    ? ['--experimental-wasm-jspi'] : [];
   for (const extraEnv of [{}, { CHDB_INIT_PROBE: 'global', CHDB_PROFILE_PREFIX: 'initprobe' }]) {
-    const r = spawnSync(process.execPath, [join(here, 'run-profile.mjs')], {
+    const r = spawnSync(process.execPath, [...jspiFlags, join(here, 'run-profile.mjs')], {
       stdio: 'inherit',
       env: { ...process.env, CHDB_BUNDLE_DIR: staging, CHDB_PROFILE_OUT: profilesDir, ...corpusEnv, ...extraEnv },
     });

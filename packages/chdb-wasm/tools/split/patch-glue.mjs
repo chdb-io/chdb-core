@@ -97,12 +97,21 @@ if (doLite) {
     // Cloudflare Workers) that would throw before our stub even runs.
     replaceCounted('lite(wasmBinaryFile)', 'wasmBinaryFile.slice(0,-5)', '(wasmBinaryFile??=findWasmBinary()).slice(0,-5)', 2);
     // Replace the whole lazy-load trampoline: no download, no re-dispatch —
-    // just a self-explanatory error.
-    replaceCounted(
-      'lite(trampoline)',
+    // just a self-explanatory error. A WASM_JSPI link emits an async
+    // trampoline (lazy loading itself suspends via JSPI); the surrounding
+    // `new WebAssembly.Suspending(ret)` wrapper is kept — it accepts a plain
+    // function, and a synchronous throw from a suspending import propagates
+    // to the wasm call site the same way a rejection would.
+    const stub =
+      'let ret=(...args)=>{throw new Error("chdb-wasm-lite: this SQL feature is not included in the size-optimized lite build; use the full chdb-wasm package")}';
+    const trampolines = [
       'let ret=(...args)=>{var imports={primary:wasmRawExports};loadSplitModule(secondaryFile,imports,base);return wasmTable.get(BigInt(base))(...args)}',
-      'let ret=(...args)=>{throw new Error("chdb-wasm-lite: this SQL feature is not included in the size-optimized lite build; use the full chdb-wasm package")}',
-      1);
+      'let ret=async(...args)=>{var imports={primary:wasmRawExports};await loadSplitModule(secondaryFile,imports,base);return wasmTable.get(BigInt(base))(...args)}',
+    ];
+    const present = trampolines.filter((t) => src.includes(t));
+    if (present.length !== 1)
+      throw new Error(`lite(trampoline): expected exactly one trampoline shape, found ${present.length} — emscripten glue changed, re-verify the patch`);
+    replaceCounted('lite(trampoline)', present[0], stub, 1);
     console.log('lite: patched (cold calls throw a clear error)');
   }
 }

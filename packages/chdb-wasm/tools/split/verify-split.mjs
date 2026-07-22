@@ -13,7 +13,7 @@
 // Usage: verify-split.mjs <dir with chdb.mjs + chdb.wasm + chdb.deferred.wasm>
 
 import { spawnSync } from 'node:child_process';
-import { renameSync, existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { renameSync, existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,11 @@ if (!dir || !existsSync(join(dir, 'chdb.deferred.wasm'))) {
   process.exit(2);
 }
 const pkgDir = join(dirname(fileURLToPath(import.meta.url)), '../..');
+
+// A WASM_JSPI bundle (glue wraps imports in WebAssembly.Suspending) can only
+// instantiate under Node with the JSPI flag; probe children inherit it.
+const jspiFlags = readFileSync(join(dir, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+  ? ['--experimental-wasm-jspi'] : [];
 
 // One temp root for all probe scripts, removed on exit (repeated runs would
 // otherwise accumulate chdb-verify-* dirs under the system temp dir).
@@ -47,7 +52,7 @@ const probe = (label, sql, expectOk) => {
   mkdirSync(join(tmpRoot, String(++tmpSeq)));
   const scriptFile = join(tmpRoot, String(tmpSeq), 'probe.mjs');
   writeFileSync(scriptFile, script);
-  const r = spawnSync(process.execPath, [scriptFile], { encoding: 'utf8', timeout: 300000 });
+  const r = spawnSync(process.execPath, [...jspiFlags, scriptFile], { encoding: 'utf8', timeout: 300000 });
   if (r.status === null) {
     // Timeout/kill is the historical hang mode of a broken lazy loader —
     // never an "expected failure", regardless of expectOk.

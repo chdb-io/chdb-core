@@ -22,15 +22,20 @@ SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
   `quantile*`/`topK`/`argMax`/`groupArray`, `-If`/`-Merge` combinators)
 - `file()` over the in-memory filesystem (CSV/TSV/JSONEachRow/Parquet/Arrow/
   Native, gzip), `putFile` ingestion
+- remote reads with `url()` and `s3()` (single-object, path-style) — see the
+  JSPI note below
 - Memory-engine tables, views, sessions, streaming queries, the common output
   formats (CSV/TSV/JSON*/Pretty*/Parquet/...)
 
-**Engine-initiated networking is excluded entirely** — `url()`, `s3()` and the
-data-lake stack. The engine needs synchronous HTTP, which Cloudflare's workerd
-cannot provide (async `fetch` only), so these could never run inside Workers;
-leaving them out keeps the bundle smaller. Fetch data with your Worker's own
-JS (async `fetch`, R2/KV bindings, request body) and hand it to chdb via
-`putFile` + `file()`.
+**Networking runs on JSPI.** The full package's HTTP bridge waits
+synchronously (sync XHR in browsers, a subprocess in Node), which Cloudflare's
+workerd cannot do. The lite bundle instead links with WebAssembly JavaScript
+Promise Integration: the wasm stack suspends at a plain async `fetch()` and
+resumes when it settles — zero size cost, and it is exactly what makes
+`url()`/`s3()` work *inside* Workers. The trade-off is that lite requires a
+JSPI-capable engine: **workerd (Cloudflare Workers), Chrome/Edge 137+, or
+Node 24+ with `--experimental-wasm-jspi`**. The data-lake stack
+(Iceberg/Delta/catalogs) stays excluded for size.
 
 Anything outside that set throws immediately with:
 
@@ -55,8 +60,29 @@ const result = await db.query('SELECT version()', 'CSV');
 console.log(result.text());
 ```
 
-Notes for Cloudflare Workers specifically: import the wasm module statically
-and hand it to Emscripten via `Module.instantiateWasm` (workerd forbids
-compiling wasm from bytes). The same lite surface works in browsers and Node;
-if you need engine-side remote reads (`url()`/`s3()`/Iceberg/Delta) there, use
-the full `chdb-wasm` package.
+Notes for Cloudflare Workers specifically: workerd has no `Worker` API, so
+drive the Emscripten module directly instead of through `AsyncChdb` — import
+the wasm module statically, hand it to Emscripten via `Module.instantiateWasm`
+(workerd forbids compiling wasm from bytes), and pass `locateFile` (workerd
+module names are not URLs). The suspendable exports return Promises, so call
+them with `ccall(..., {async: true})`:
+
+```js
+import createChdbModule from 'chdb-wasm-lite/chdb.mjs';
+import wasmModule from './chdb.wasm'; // static import -> compiled at deploy
+
+const mod = await createChdbModule({
+  locateFile: (path) => path,
+  instantiateWasm(imports, cb) {
+    const inst = new WebAssembly.Instance(wasmModule, imports);
+    cb(inst, wasmModule);
+    return inst.exports;
+  },
+});
+const r = await mod.ccall('chdb_wasm_query', 'number', ['string', 'string'],
+                          ["SELECT * FROM url('https://.../data.csv', CSVWithNames)", 'CSV'],
+                          { async: true });
+```
+
+If you need the data-lake stack (Iceberg/Delta/catalogs) or a non-JSPI
+runtime, use the full `chdb-wasm` package.
