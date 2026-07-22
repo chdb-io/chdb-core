@@ -32,11 +32,34 @@ set (WASM_PTHREAD_POOL_SIZE "16" CACHE STRING "chdb-wasm pre-spawned worker pool
 set (WASM_PTHREAD_STACK_SIZE "2MB" CACHE STRING "chdb-wasm per-worker stack size")
 set (WASM_INITIAL_MEMORY "128MB" CACHE STRING "chdb-wasm initial heap size")
 
+# WASM_SPLIT_MODULE: link with -sSPLIT_MODULE so the module can be split with
+# Binaryen's wasm-split into a small hot "primary" wasm (downloaded up front)
+# and a cold "deferred" wasm fetched lazily on the first call into a cold
+# function. The link then emits chdb.wasm (instrumented for profile collection)
+# plus chdb.wasm.orig (the real artifact that gets split), and the JS glue gains
+# the placeholder-import proxy + loadSplitModule. The split itself (profiling
+# run + wasm-split) happens post-build; see packages/chdb-wasm/tools/split/.
+option (WASM_SPLIT_MODULE "Link for wasm-split lazy code loading" OFF)
+
 # Emit an ES module loadable from Node / the browser: chdb.mjs (+ chdb.wasm).
 set_target_properties (chdb_wasm PROPERTIES
     OUTPUT_NAME chdb
     SUFFIX ".mjs"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+# HEAPU8 + FS are used by the npm package (putFile/registerFile, result copy-out);
+# registerFile's lazy reader (ReadBufferFromJSFile) needs no extra exports — it
+# reads via MAIN_THREAD_EM_ASM. The split pipeline additionally needs wasmExports
+# (to reach the instrumentation's __write_profile) and PThread (to collect the
+# per-worker profiles); emcc keeps only the LAST -sEXPORTED_RUNTIME_METHODS, so
+# the list is assembled here instead of repeating the flag.
+set (WASM_RUNTIME_METHODS "ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS")
+if (WASM_SPLIT_MODULE)
+    set (WASM_RUNTIME_METHODS "${WASM_RUNTIME_METHODS},wasmExports")
+    if (WASM_THREADS)
+        set (WASM_RUNTIME_METHODS "${WASM_RUNTIME_METHODS},PThread")
+    endif ()
+endif ()
 
 # Note: -sMEMORY64=1, -fwasm-exceptions and (when WASM_THREADS=ON) -pthread are
 # added globally in cmake/target.cmake's OS_WASM block.
@@ -55,13 +78,24 @@ target_link_options (chdb_wasm PRIVATE
     -sWASM_BIGINT
     -sFORCE_FILESYSTEM=1
     -sALLOW_TABLE_GROWTH=1
-    # HEAPU8 + FS are used by the npm package (putFile/registerFile, result copy-out);
-    # registerFile's lazy reader (ReadBufferFromJSFile) needs no extra exports — it
-    # reads via MAIN_THREAD_EM_ASM.
-    "SHELL:-s EXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,getValue,setValue,HEAPU8,FS"
+    "SHELL:-s EXPORTED_RUNTIME_METHODS=${WASM_RUNTIME_METHODS}"
     "SHELL:-s EXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exported_functions.txt"
     -sENVIRONMENT=node,web,worker
     )
+
+if (WASM_SPLIT_MODULE)
+    target_link_options (chdb_wasm PRIVATE
+        -sSPLIT_MODULE
+        # SPLIT_MODULE is marked experimental; the warning would otherwise fail
+        # the link under -Werror-style CI settings.
+        -Wno-experimental
+        # Keep the wasm name section: the split pipeline matches functions BY
+        # NAME (keep-lists, transferring the st bundle's hot set onto the mt
+        # split). Only chdb.wasm.orig / the instrumented module carry it —
+        # wasm-split strips names from the shipped primary/deferred outputs.
+        --profiling-funcs
+        )
+endif ()
 
 # Pthread pool options only apply to the threaded build (-pthread). In the
 # single-threaded build (WASM_THREADS=OFF) there is no pool, so omit them.
