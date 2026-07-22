@@ -65,10 +65,6 @@ const PEOPLE_JSONL =
 const staticDir = mkdtempSync(join(tmpdir(), 'chdb-profile-static-'));
 writeFileSync(join(staticDir, 'people_names.csv'), PEOPLE_NAMES_CSV);
 writeFileSync(join(staticDir, 'people.jsonl'), PEOPLE_JSONL);
-// s3() needs a bucket/key path shape (path-style URL); serve the same file
-// one directory deep for the corpus's single-object s3() reads.
-mkdirSync(join(staticDir, 's3bucket'));
-writeFileSync(join(staticDir, 's3bucket', 'people_names.csv'), PEOPLE_NAMES_CSV);
 
 // --- fixture services (all out-of-process) -----------------------------------
 const children = [];

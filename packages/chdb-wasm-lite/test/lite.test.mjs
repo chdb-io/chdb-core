@@ -115,22 +115,20 @@ function probe(body, timeoutMs = 300000) {
   ok('putFile + file(), session DDL/DML, streaming (50k rows)');
 }
 
-// ---- url()/s3() are IN the bundle (they fail on the network, not on lite) ---
+// ---- engine-initiated networking is EXCLUDED (pure-Workers build): url()/s3()
+// must hit the lite cold stub, proving their read paths are not shipped ------
 {
   const r = probe(`
     for (const sql of ["SELECT * FROM url('http://127.0.0.1:1/x.csv', CSV) LIMIT 0",
                        "SELECT * FROM s3('http://127.0.0.1:1/b/x.csv', NOSIGN, CSV) LIMIT 0"]) {
       try { await q(sql); console.log('UNEXPECTED-OK'); }
-      catch (e) {
-        const m = e.message;
-        console.log(m.includes('chdb-wasm-lite') ? 'COLD' : (/fetch|Failed|HTTP|Cannot/i.test(m) ? 'NETWORK-ERROR' : 'OTHER:' + m.slice(0, 50)));
-      }
+      catch (e) { console.log(e.message.includes('chdb-wasm-lite') ? 'LITE-COLD' : 'OTHER:' + e.message.slice(0, 60)); }
     }
   `);
   assert.strictEqual(r.status, 0, `remote-read probe failed: ${r.stderr?.slice(-300)}`);
-  assert.strictEqual(r.stdout.trim().split('\n').join('|'), 'NETWORK-ERROR|NETWORK-ERROR',
-    'url()/s3() must reach the HTTP layer (hot), not the lite cold stub');
-  ok('url() and s3() read paths are compiled in (fail on network, not on lite)');
+  assert.strictEqual(r.stdout.trim().split('\n').join('|'), 'LITE-COLD|LITE-COLD',
+    'url()/s3() must hit the lite stub — their read paths are excluded on purpose');
+  ok('url()/s3() excluded: both throw the lite error (pure-Workers build)');
 }
 
 // ---- everything else: immediate, self-explanatory error ---------------------

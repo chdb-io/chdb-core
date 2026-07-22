@@ -63,7 +63,9 @@ Workers (10 MiB gzipped Worker limit; workerd forbids runtime wasm
 compilation, so a deferred module could never load there). Differences from
 the full split: single-threaded tree relinked with `-DWASM_INITIAL_MEMORY=64MB`
 (a Workers isolate caps memory at 128MB), profiled against
-`profile-corpus-lite.sql` (most-common SQL incl. `file()`/`url()`/`s3()`),
+`profile-corpus-lite.sql` (most-common SQL incl. `file()`; ALL engine-side
+networking excluded — workerd has no synchronous HTTP, so url()/s3()/lake
+could never run there),
 `--extra-keep keep-lite.txt` (per-type specializations the corpus can't
 enumerate), and `--lite-glue` so out-of-corpus calls throw a clear
 "not in lite" error instead of attempting a lazy load:

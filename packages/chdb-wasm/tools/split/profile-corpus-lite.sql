@@ -8,11 +8,13 @@
 --
 -- In: core SQL operators (filters, aggregation, joins, windows, CTEs), the
 --     everyday scalar/aggregate functions, file() over MEMFS in the common
---     formats, remote reads via url() and s3() (single-object path-style),
---     default-database DDL on Memory tables, error reporting.
--- Out: data-lake catalogs/Iceberg/Delta (their sync-HTTP bridge cannot run in
---     Workers anyway), exotic function families, MergeTree internals (cannot
---     run on the single-threaded build this bundle is based on).
+--     formats, default-database DDL on Memory tables, error reporting.
+-- Out: ALL engine-initiated networking — url()/s3() as well as the data-lake
+--     stack (Iceberg/Delta/catalogs). The wasm HTTP bridge needs synchronous
+--     waiting, which workerd does not provide, so none of it can run inside
+--     Workers; data enters via putFile/file() instead. Also out: exotic
+--     function families, MergeTree internals (cannot run on the
+--     single-threaded build this bundle is based on).
 --
 -- Runner rules are identical to profile-corpus.sql (see run-profile.mjs);
 -- pass this file via CHDB_CORPUS. Statements with {HTTP} run against the
@@ -191,16 +193,7 @@ SELECT count() FROM lite_from_file;
 DROP TABLE lite_from_file;
 
 -- ============================================================================
--- 11. Remote reads: url() and s3() (single-object, path-style, NOSIGN)
--- ============================================================================
-SELECT * FROM url('{HTTP}/people_names.csv', CSVWithNames) ORDER BY id;
-SELECT count() FROM url('{HTTP}/people.jsonl', JSONEachRow);
-DESCRIBE url('{HTTP}/people_names.csv');
-SELECT * FROM s3('{HTTP}/s3bucket/people_names.csv', NOSIGN, CSVWithNames) ORDER BY id;
-SELECT count(), max(score) FROM s3('{HTTP}/s3bucket/people_names.csv', NOSIGN, CSVWithNames);
-
--- ============================================================================
--- 12. Output formats
+-- 11. Output formats
 -- ============================================================================
 SELECT number, toString(number) AS s FROM numbers(5) FORMAT CSVWithNames;
 SELECT number, toString(number) AS s FROM numbers(5) FORMAT TSV;
@@ -216,7 +209,7 @@ SELECT number FROM numbers(3) FORMAT Parquet;
 SELECT number FROM numbers(1000) FORMAT Null;
 
 -- ============================================================================
--- 13. Introspection + deliberate error paths (error reporting must be hot)
+-- 12. Introspection + deliberate error paths (error reporting must be hot)
 -- ============================================================================
 EXPLAIN PLAN SELECT number % 3 AS k, count() FROM numbers(100) GROUP BY k;
 SHOW DATABASES;

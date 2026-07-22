@@ -21,9 +21,16 @@ SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
   URL/hash) and aggregates (`count`/`sum`/`avg`/`min`/`max`/`uniq*`/
   `quantile*`/`topK`/`argMax`/`groupArray`, `-If`/`-Merge` combinators)
 - `file()` over the in-memory filesystem (CSV/TSV/JSONEachRow/Parquet/Arrow/
-  Native, gzip), `putFile` ingestion, `url()` and single-object `s3()` reads
+  Native, gzip), `putFile` ingestion
 - Memory-engine tables, views, sessions, streaming queries, the common output
   formats (CSV/TSV/JSON*/Pretty*/Parquet/...)
+
+**Engine-initiated networking is excluded entirely** — `url()`, `s3()` and the
+data-lake stack. The engine needs synchronous HTTP, which Cloudflare's workerd
+cannot provide (async `fetch` only), so these could never run inside Workers;
+leaving them out keeps the bundle smaller. Fetch data with your Worker's own
+JS (async `fetch`, R2/KV bindings, request body) and hand it to chdb via
+`putFile` + `file()`.
 
 Anything outside that set throws immediately with:
 
@@ -50,6 +57,6 @@ console.log(result.text());
 
 Notes for Cloudflare Workers specifically: import the wasm module statically
 and hand it to Emscripten via `Module.instantiateWasm` (workerd forbids
-compiling wasm from bytes), and note that `url()`/`s3()` require synchronous
-HTTP, which workerd does not provide — inside Workers, feed data through
-`putFile`/`file()` instead. In browsers and Node the full lite surface works.
+compiling wasm from bytes). The same lite surface works in browsers and Node;
+if you need engine-side remote reads (`url()`/`s3()`/Iceberg/Delta) there, use
+the full `chdb-wasm` package.
