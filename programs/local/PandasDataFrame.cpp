@@ -26,6 +26,7 @@ namespace ErrorCodes
 {
     extern const int BAD_ARGUMENTS;
     extern const int LOGICAL_ERROR;
+    extern const int NOT_IMPLEMENTED;
 }
 
 }
@@ -83,6 +84,21 @@ static DataTypePtr inferDataTypeFromPandasColumn(
     ContextPtr & context,
     DataSourceWrapper & wrapper)
 {
+    /// ArrowDtype columns (pandas dtype_backend="pyarrow") keep their values in
+    /// Arrow buffers, not in the numpy layout the scan expects, and are not
+    /// supported yet. They must fail here, per column: treating the whole
+    /// DataFrame as "not a DataFrame" instead dropped it into the legacy
+    /// regex-based schema path, which substring-matched e.g. "int64[pyarrow]"
+    /// as Int64 and returned garbage values without any error.
+    py::handle arrow_dtype = PythonImporter::ImportCache().pandas.ArrowDtype();
+    if (arrow_dtype && !arrow_dtype.is_none() && py::isinstance(col_type, arrow_dtype))
+        throw Exception(
+            ErrorCodes::NOT_IMPLEMENTED,
+            "Column '{}' has pandas ArrowDtype '{}', which is not supported by the Python() table engine. "
+            "Convert it to a NumPy-backed dtype first, e.g. with .astype(...), or pass the data as a pyarrow.Table.",
+            String(py::str(col_name)),
+            String(py::str(col_type)));
+
     auto numpy_type = ConvertNumpyType(col_type);
 
     if (numpy_type.type == NumpyNullableType::CATEGORY)
@@ -200,20 +216,7 @@ bool PandasDataFrame::isPandasDataframe(const py::object & object)
 		return false;
 
 	auto & importer_cache = PythonImporter::ImportCache();
-	bool is_df = py::isinstance(object, importer_cache.pandas.DataFrame());
-
-    if (!is_df)
-        return false;
-
-	auto arrow_dtype = importer_cache.pandas.ArrowDtype();
-	py::list dtypes = object.attr("dtypes");
-	for (auto & dtype : dtypes)
-    {
-		if (py::isinstance(dtype, arrow_dtype))
-			return false;
-	}
-
-	return true;
+	return py::isinstance(object, importer_cache.pandas.DataFrame());
 }
 
 bool PandasDataFrame::isPyArrowBacked(const py::handle & /*object*/)
