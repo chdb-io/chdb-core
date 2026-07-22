@@ -768,7 +768,7 @@ static void test_insert_with_params_file_target(chdb_connection conn)
     remove(path);
 
     const char * names[] = {"path", "format", "structure"};
-    const char * values[] = {"chdb_stream_c_params_out.csv", "CSV", "a UInt64, b String"};
+    const char * values[] = {path, "CSV", "a UInt64, b String"};
     chdb_insert_stream stream = chdb_stream_insert_with_params(
         conn,
         "INSERT INTO FUNCTION file({path:String}, {format:String}, {structure:String})",
@@ -783,6 +783,7 @@ static void test_insert_with_params_file_target(chdb_connection conn)
     CHECK(chdb_stream_append(stream, "2,two\n", 6) == CHDBSuccess, "append #2");
 
     chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
     if (result) {
         CHECK(chdb_result_error(result) == NULL, "done reports no error");
         CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
@@ -815,6 +816,7 @@ static void test_insert_with_params_identifier_target(chdb_connection conn)
 
     CHECK(chdb_stream_append(stream, "7,seven\n", 8) == CHDBSuccess, "append");
     chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
     if (result) {
         CHECK(chdb_result_error(result) == NULL, "done reports no error");
         CHECK(chdb_result_rows_written(result) == 1, "rows_written == 1");
@@ -834,6 +836,11 @@ static void test_insert_with_params_n_lengths(chdb_connection conn)
     const char * path = "chdb_stream_c_params_n_out.csv";
     remove(path);
 
+    /* Names and values carry deliberate trailing garbage so the *_lens arrays
+     * are what actually delimit them: "pathXX" -> "path" (4), the value
+     * "<path>TRAILING" -> the first 30 bytes (exactly `path`), etc. That
+     * trailing text is the point of this test, so it is intentionally not the
+     * bare `path` variable. */
     const char * names[] = {"pathXX", "formatYY", "structureZZ"};
     const size_t name_lens[] = {4, 6, 9};
     const char * values[] = {"chdb_stream_c_params_n_out.csvTRAILING", "CSVxx", "a UInt64??"};
@@ -850,6 +857,7 @@ static void test_insert_with_params_n_lengths(chdb_connection conn)
 
     CHECK(chdb_stream_append(stream, "5\n", 2) == CHDBSuccess, "append");
     chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
     if (result) {
         CHECK(chdb_result_error(result) == NULL, "done reports no error");
         CHECK(chdb_result_rows_written(result) == 1, "rows_written == 1");

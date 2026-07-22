@@ -154,6 +154,11 @@ static void test_mid_stream_error_not_idempotent(chdb_connection conn)
 
     int saw_data = 0;
     int saw_error = 0;
+    /* The error fires at row 200000; with the default max_block_size (~65k
+     * rows/fetch) it surfaces within ~4 fetches, so 64 is ample headroom.
+     * The cap is only a safety net — if a smaller block size ever made the
+     * loop exit without the error, saw_error stays 0 and the CHECK below
+     * flags it (and we cancel the still-active stream so none is left behind). */
     for (int i = 0; i < 64 && !saw_error; i++) {
         chdb_result * chunk = chdb_stream_fetch_result(conn, stream);
         CHECK(chunk != NULL, "fetch never returns NULL");
@@ -176,6 +181,14 @@ static void test_mid_stream_error_not_idempotent(chdb_connection conn)
     }
     CHECK(saw_data, "data flowed before the error");
     CHECK(saw_error, "mid-stream error surfaced on a fetch");
+
+    if (!saw_error) {
+        /* Loop escaped without the expected error: cancel so we don't leave an
+         * active streaming query behind on the connection. */
+        chdb_stream_cancel_query(conn, stream);
+        chdb_destroy_query_result(stream);
+        return;
+    }
 
     /* Only NATURAL end-of-stream is idempotent: after an error the stream is
      * gone and further fetches must keep reporting an error. */

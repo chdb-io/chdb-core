@@ -215,6 +215,10 @@ CHDB_EXPORT const char * chdb_streaming_result_error(chdb_streaming_result * res
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_streaming_cancel_query() or after a mid-stream error still
  *       returns an error result.
+ * @note Not thread-safe per connection: a connection runs one statement at a
+ *       time, so fetches (and cancel) on a streaming handle must be serialized
+ *       by the caller — do not fetch the same stream from multiple threads
+ *       concurrently.
  */
 CHDB_EXPORT struct local_result_v2 * chdb_streaming_fetch_result(struct chdb_conn * conn, chdb_streaming_result * result);
 
@@ -429,6 +433,10 @@ CHDB_EXPORT chdb_result * chdb_stream_query_with_params_n(
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_stream_cancel_query() or after a mid-stream error still
  *       returns an error result.
+ * @note Not thread-safe per connection: a connection runs one statement at a
+ *       time, so fetches (and cancel) on a streaming handle must be serialized
+ *       by the caller — do not fetch the same stream from multiple threads
+ *       concurrently.
  */
 CHDB_EXPORT chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * result);
 
