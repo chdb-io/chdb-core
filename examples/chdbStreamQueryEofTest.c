@@ -18,6 +18,8 @@
  *   5. A mid-stream execution error surfaces on a fetch as an error result;
  *      only NATURAL end-of-stream is idempotent — fetching again after an
  *      error still errors.
+ *   6. The legacy local_result_v2 streaming API (query_conn_streaming /
+ *      chdb_streaming_fetch_result) has the same idempotent-EOF behavior.
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbStreamQueryEofTest.c -I./programs/local \
@@ -199,6 +201,70 @@ static void test_mid_stream_error_not_idempotent(chdb_connection conn)
     chdb_destroy_query_result(stream);
 }
 
+/* The legacy local_result_v2 streaming API (query_conn_streaming /
+ * chdb_streaming_fetch_result) gets the same idempotent-EOF treatment, so
+ * cover it too — it uses a separate connection type (chdb_conn), so this test
+ * opens its own connection. */
+static void test_legacy_fetch_after_eof_is_idempotent_empty(void)
+{
+    printf("== test_legacy_fetch_after_eof_is_idempotent_empty ==\n");
+    char arg0[] = "clickhouse";
+    char arg1[] = "--multiquery";
+    char * args[] = {arg0, arg1};
+    struct chdb_conn ** conn = connect_chdb(2, args);
+    if (!conn) {
+        fprintf(stderr, "  connect_chdb failed\n");
+        g_failed_assertions += 1;
+        return;
+    }
+
+    chdb_streaming_result * stream =
+        query_conn_streaming(*conn, "SELECT number FROM numbers(100000)", "CSV");
+    CHECK(stream != NULL, "legacy stream init returns a handle");
+    CHECK(stream == NULL || chdb_streaming_result_error(stream) == NULL, "no init error");
+
+    uint64_t rows = 0;
+    for (;;) {
+        struct local_result_v2 * chunk = chdb_streaming_fetch_result(*conn, stream);
+        CHECK(chunk != NULL, "legacy fetch never returns NULL");
+        if (!chunk)
+            break;
+        if (chunk->error_message) {
+            fprintf(stderr, "  unexpected legacy fetch error: %s\n", chunk->error_message);
+            g_failed_assertions += 1;
+            free_result_v2(chunk);
+            break;
+        }
+        uint64_t got = chunk->rows_read;
+        int done = (got == 0);
+        if (done)
+            CHECK(chunk->len == 0, "legacy terminating chunk carries no data");
+        rows += got;
+        free_result_v2(chunk);
+        if (done)
+            break;
+    }
+    CHECK(rows == 100000, "legacy exact row count");
+
+    /* Over-fetch three times past EOF: each must be empty and error-free. */
+    for (int i = 0; i < 3; i++) {
+        struct local_result_v2 * extra = chdb_streaming_fetch_result(*conn, stream);
+        CHECK(extra != NULL, "legacy post-EOF fetch returns a result");
+        if (!extra)
+            continue;
+        if (extra->error_message) {
+            fprintf(stderr, "  legacy post-EOF fetch #%d error: %s\n", i + 1, extra->error_message);
+            g_failed_assertions += 1;
+        }
+        CHECK(extra->rows_read == 0, "legacy post-EOF fetch is empty (rows)");
+        CHECK(extra->len == 0, "legacy post-EOF fetch is empty (bytes)");
+        free_result_v2(extra);
+    }
+
+    chdb_streaming_cancel_query(*conn, stream);
+    close_conn(conn);
+}
+
 int main(void)
 {
     char arg0[] = "clickhouse";
@@ -216,6 +282,10 @@ int main(void)
     test_mid_stream_error_not_idempotent(*conn);
 
     chdb_close_conn(conn);
+
+    /* Legacy local_result_v2 streaming API — its own chdb_conn connection,
+     * run after the new-API connection is closed (one embedded server). */
+    test_legacy_fetch_after_eof_is_idempotent_empty();
 
     printf("\n== summary: %d failed assertions ==\n", g_failed_assertions);
     return g_failed_assertions == 0 ? 0 : 1;
