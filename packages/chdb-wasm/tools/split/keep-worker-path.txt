@@ -1,0 +1,8 @@
+# Worker-path functions that must stay in the split primary, found by probing
+# a deferred-less mt bundle to convergence (see README "Gotchas"). Escaped
+# wasm-name form, exactly as wasm-split prints them. Family-wide patterns
+# live in split-wasm.mjs (SAFETY/SAFETY_SUBSTR); this file holds the
+# leftovers that are single concrete functions.
+DB::HashTablesStatistics<DB::AggregationEntry>&\20DB::getHashTablesStatistics<DB::AggregationEntry>\28\29
+Poco::EventImpl::resetImpl\28\29
+Poco::EventImpl::setImpl\28\29

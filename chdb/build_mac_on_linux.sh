@@ -248,6 +248,9 @@ if [ "${CHDB_LITE}" != "1" ]; then
     # mutex. To expose a new C-ABI symbol, add it to libchdb_export_macos.txt
     # (never widen exports here).
     LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/libchdb_export_macos.txt"
+    # Relocatable install name — see chdb/build.sh for rationale. Consumers
+    # link with: -lchdb -L<dir> -Wl,-rpath,<dir>
+    LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-install_name,@rpath/libchdb.so"
 
     LIBCHDB_CMD=$(echo ${LIBCHDB_CMD} | sed 's/@CMakeFiles\/clickhouse.rsp/@CMakeFiles\/libchdb.rsp/g')
 

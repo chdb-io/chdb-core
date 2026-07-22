@@ -40,7 +40,11 @@ public:
     size_t getNumberOfArguments() const override { return num_args; }
     bool isSuitableForShortCircuitArgumentsExecution(const DB::DataTypesWithConstInfo &) const override { return false; }
     bool isDeterministic() const override { return false; }
-    bool useDefaultImplementationForNulls() const override { return null_handling == NullHandling::SKIP; }
+    /// NULL handling is done in executeImpl for both modes. The default implementation
+    /// for NULLs would still call the function on NULL rows with placeholder values
+    /// (discarding the results), which is observable for Python UDFs through side
+    /// effects and exceptions (with on_error=propagate).
+    bool useDefaultImplementationForNulls() const override { return false; }
 
     DB::DataTypePtr getReturnTypeImpl(const DB::DataTypes & arguments) const override;
 

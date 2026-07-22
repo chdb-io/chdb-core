@@ -330,8 +330,8 @@ Best Practices
 5. **Connection Strings**: Use connection string parameters for configuration
 
 .. note::
-   - Only one session can be active at a time per process
-   - Creating a new session will automatically close any existing session
+   - Multiple sessions on the same database path can be open at the same time; each session keeps its own state (current database, settings)
+   - A process hosts one embedded engine bound to one database path; opening a session on a different path requires closing all existing sessions first
    - Temporary sessions are automatically cleaned up when the session object is destroyed
    - File-based sessions persist data across Python interpreter restarts
 

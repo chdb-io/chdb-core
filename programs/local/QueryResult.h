@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <utility>
@@ -39,6 +40,14 @@ public:
     const String & getError() const { return error_message; }
     virtual bool isEmpty() const = 0;
 
+    /// Set by the C ABI on a streaming-query handle when the stream reaches
+    /// its natural end (the fetch that returned the final empty batch).
+    /// Further fetches on the handle then short-circuit to fresh empty
+    /// results instead of the "No active streaming query" error, so
+    /// pull-style consumers may safely over-fetch past EOF. Lives on the
+    /// base class so the C ABI can test any handle without downcasting.
+    std::atomic<bool> stream_exhausted{false};
+
 protected:
     QueryResultType result_type;
     String error_message;
@@ -55,6 +64,10 @@ public:
     {
         return false;
     }
+
+    /// Records iterate-time failures (e.g. unknown table caught at
+    /// execution) so chdb_result_error() can surface the engine message.
+    void setError(String message) { error_message = std::move(message); }
 
     /// Opaque per-stream state slot used by streaming-output binding code
     /// (currently the Arrow C Data Interface output path) to persist a

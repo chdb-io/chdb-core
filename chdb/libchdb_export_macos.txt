@@ -30,6 +30,8 @@ _chdb_destroy_query_result
 
 _chdb_stream_insert
 _chdb_stream_insert_n
+_chdb_stream_insert_with_params
+_chdb_stream_insert_with_params_n
 _chdb_stream_append
 _chdb_stream_done
 _chdb_stream_cancel_insert
@@ -54,7 +56,11 @@ _chdb_query_arrow
 _chdb_query_arrow_n
 _chdb_stream_query_arrow
 _chdb_stream_query_arrow_n
+_chdb_stream_query_arrow_with_params
+_chdb_stream_query_arrow_with_params_n
 _chdb_stream_fetch_arrow
+_chdb_adbc_init
+_AdbcDriverInit
 
 _chdb_set_signal_handlers_enabled
 _chdb_reset_signal_handlers

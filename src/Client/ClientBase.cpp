@@ -1225,6 +1225,8 @@ bool ClientBase::processTextAsSingleQuery(const String & full_query)
     else
     {
         streaming_query_context->is_streaming_query = false;
+        /// Prefix matched by chdb-adbc.cpp (kErrorStreamingNotSupportedPrefix
+        /// in chdb-internal.h) — keep in sync when rewording.
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Streaming query is not supported for query: {}", full_query);
     }
 

@@ -33,7 +33,11 @@ public:
 
     CHDB::QueryResultPtr executeMaterializedQuery(const char * query, size_t query_len, const char * format, size_t format_len);
 
-    CHDB::QueryResultPtr executeStreamingInit(const char * query, size_t query_len, const char * format, size_t format_len);
+    /// dataframe_over_chunks: what streaming iterate returns for chunk-collect
+    /// queries in Python builds — a pandas DataFrame (Python send_query) or
+    /// raw chunks (Arrow C Data / ADBC).
+    CHDB::QueryResultPtr executeStreamingInit(
+        const char * query, size_t query_len, const char * format, size_t format_len, bool dataframe_over_chunks = true);
 
     CHDB::QueryResultPtr executeStreamingIterate(void * streaming_result, bool is_canceled = false);
 

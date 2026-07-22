@@ -276,6 +276,8 @@ test_main
 /examples/:memory:
 /examples/chdbDlopen
 /examples/chdbStreamErrorTest
+/examples/chdbStreamInsertTest
+/examples/chdbStreamQueryEofTest
 libchdb.so
 *.gz
 *.bz2

@@ -3,12 +3,14 @@
 #include "ChunkCollectorOutputFormat.h"
 #if USE_PYTHON
 #include "TableFunctionPython.h"
-#elif !defined(OS_WASM)
+#endif
+#if !defined(OS_WASM)
 #include "StorageArrowStream.h"
 #include "TableFunctionArrowStream.h"
 #endif
 #include <Formats/FormatFactory.h>
 #include <TableFunctions/TableFunctionFactory.h>
+#include <Storages/StorageFactory.h>
 
 #include <filesystem>
 #include <Access/AccessControl.h>
@@ -126,6 +128,9 @@ extern const ServerSettingsUInt64 text_index_postings_cache_size;
 extern const ServerSettingsUInt64 text_index_postings_cache_max_entries;
 extern const ServerSettingsDouble text_index_postings_cache_size_ratio;
 extern const ServerSettingsUInt64 io_thread_pool_queue_size;
+extern const ServerSettingsUInt64 backups_io_thread_pool_queue_size;
+extern const ServerSettingsUInt64 max_backups_io_thread_pool_free_size;
+extern const ServerSettingsUInt64 max_backups_io_thread_pool_size;
 extern const ServerSettingsString mark_cache_policy;
 extern const ServerSettingsUInt64 mark_cache_size;
 extern const ServerSettingsDouble mark_cache_size_ratio;
@@ -263,6 +268,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_io_thread_pool_size],
         server_settings[ServerSetting::max_io_thread_pool_free_size],
         server_settings[ServerSetting::io_thread_pool_queue_size]);
+
+    getBackupsIOThreadPool().initialize(
+        server_settings[ServerSetting::max_backups_io_thread_pool_size],
+        server_settings[ServerSetting::max_backups_io_thread_pool_free_size],
+        server_settings[ServerSetting::backups_io_thread_pool_queue_size]);
 
     const size_t active_parts_loading_threads = server_settings[ServerSetting::max_active_parts_loading_thread_pool_size];
     getActivePartsLoadingThreadPool().initialize(
@@ -614,14 +624,16 @@ try
             auto & table_function_factory = TableFunctionFactory::instance();
 #if USE_PYTHON
             registerTableFunctionPython(table_function_factory);
-#elif !defined(OS_WASM)
+#endif
+#if !defined(OS_WASM)
+            /// Also in Python builds: the ADBC driver's ingest path uses it.
             registerTableFunctionArrowStream(table_function_factory);
 #endif
 
             registerDatabases();
             registerStorages();
             CHDB::registerDataFrameOutputFormat();
-#if !USE_PYTHON && !defined(OS_WASM)
+#if !defined(OS_WASM)
             auto & storage_factory = StorageFactory::instance();
             registerStorageArrowStream(storage_factory);
 #endif
