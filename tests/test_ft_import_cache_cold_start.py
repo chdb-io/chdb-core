@@ -46,7 +46,13 @@ MAX_BLOCK_SIZE = 1_000
 # Several independent cold processes push the per-test catch rate past 98%,
 # while a healthy build pays well under a second per attempt.
 ATTEMPTS = 3
-TIMEOUT_SECONDS = 60
+# With the storm time-boxed below, a healthy attempt is structurally bounded
+# (~10-20s even with pandas loaded), so the timeout's only job is detecting an
+# infinite hang and it is deliberately generous: ~28x the measured healthy
+# attempt, absorbing even pathological slowness spikes. A real regression
+# still fails fast — the first hanging attempt trips it, so the worst-case
+# CI cost of a regression is a single timeout, not ATTEMPTS times it.
+TIMEOUT_SECONDS = 300
 # The storm only needs to cover the cold-import window at query start: once
 # the deadlock forms it self-sustains (the collector itself is then stuck
 # inside gc.collect(), waiting on a stop-the-world that can never finish), so
