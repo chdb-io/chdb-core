@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <utility>
@@ -38,6 +39,14 @@ public:
     QueryResultType getType() const { return result_type; }
     const String & getError() const { return error_message; }
     virtual bool isEmpty() const = 0;
+
+    /// Set by the C ABI on a streaming-query handle when the stream reaches
+    /// its natural end (the fetch that returned the final empty batch).
+    /// Further fetches on the handle then short-circuit to fresh empty
+    /// results instead of the "No active streaming query" error, so
+    /// pull-style consumers may safely over-fetch past EOF. Lives on the
+    /// base class so the C ABI can test any handle without downcasting.
+    std::atomic<bool> stream_exhausted{false};
 
 protected:
     QueryResultType result_type;

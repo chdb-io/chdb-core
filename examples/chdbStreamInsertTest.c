@@ -39,6 +39,10 @@
  *   18. Persistent on-disk database target: rows survive close + reopen.
  *   19. Closing the connection with an open stream: safe teardown, the stale
  *       handle degrades to errors and destroy stays safe.
+ *   20. INSERT with named parameters (chdb_stream_insert_with_params):
+ *       file() target with {path}/{format}/{structure} bound by name;
+ *       {tbl:Identifier} target; length-bounded _n variant; missing/NULL
+ *       parameter error paths.
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbStreamInsertTest.c -I./programs/local \
@@ -754,6 +758,143 @@ static void test_parquet_buffered_input(chdb_connection conn)
     expect_query(conn, "SELECT b FROM st9 WHERE a = 42", "\"42\"\n");
 }
 
+/* chdb_stream_insert_with_params: {name:Type} placeholders in the INSERT
+ * target, bound from parallel name/value arrays — the file() shape users
+ * asked for. Full lifecycle plus exact read-back. */
+static void test_insert_with_params_file_target(chdb_connection conn)
+{
+    printf("== test_insert_with_params_file_target ==\n");
+    const char * path = "chdb_stream_c_params_out.csv";
+    remove(path);
+
+    const char * names[] = {"path", "format", "structure"};
+    const char * values[] = {path, "CSV", "a UInt64, b String"};
+    chdb_insert_stream stream = chdb_stream_insert_with_params(
+        conn,
+        "INSERT INTO FUNCTION file({path:String}, {format:String}, {structure:String})",
+        "CSV", names, values, 3);
+    CHECK(stream != NULL, "handle is never NULL");
+    const char * init_err = chdb_stream_insert_error(stream);
+    CHECK(init_err == NULL, "params init ok");
+    if (init_err)
+        fprintf(stderr, "  init error: %s\n", init_err);
+
+    CHECK(chdb_stream_append(stream, "1,one\n", 6) == CHDBSuccess, "append #1");
+    CHECK(chdb_stream_append(stream, "2,two\n", 6) == CHDBSuccess, "append #2");
+
+    chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 2, "rows_written == 2");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn,
+        "SELECT a, b FROM file('chdb_stream_c_params_out.csv', 'CSV', 'a UInt64, b String') ORDER BY a",
+        "1,\"one\"\n2,\"two\"\n");
+    remove(path);
+}
+
+/* Identifier parameter as the INSERT target table. */
+static void test_insert_with_params_identifier_target(chdb_connection conn)
+{
+    printf("== test_insert_with_params_identifier_target ==\n");
+    chdb_destroy_query_result(
+        run(conn, "CREATE TABLE st_params_ident (a UInt64, b String) ENGINE = Memory"));
+
+    const char * names[] = {"tbl"};
+    const char * values[] = {"st_params_ident"};
+    chdb_insert_stream stream = chdb_stream_insert_with_params(
+        conn, "INSERT INTO {tbl:Identifier} (a, b)", "CSV", names, values, 1);
+    CHECK(stream != NULL, "handle is never NULL");
+    const char * init_err = chdb_stream_insert_error(stream);
+    CHECK(init_err == NULL, "identifier init ok");
+    if (init_err)
+        fprintf(stderr, "  init error: %s\n", init_err);
+
+    CHECK(chdb_stream_append(stream, "7,seven\n", 8) == CHDBSuccess, "append");
+    chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 1, "rows_written == 1");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn, "SELECT a, b FROM st_params_ident", "7,\"seven\"\n");
+    chdb_destroy_query_result(run(conn, "DROP TABLE st_params_ident"));
+}
+
+/* _n variant: names/values are length-bounded slices of larger buffers, so
+ * only the first `len` bytes may be consumed. */
+static void test_insert_with_params_n_lengths(chdb_connection conn)
+{
+    printf("== test_insert_with_params_n_lengths ==\n");
+    const char * path = "chdb_stream_c_params_n_out.csv";
+    remove(path);
+
+    /* Names and values carry deliberate trailing garbage so the *_lens arrays
+     * are what actually delimit them: "pathXX" -> "path" (4), the value
+     * "<path>TRAILING" -> the first 30 bytes (exactly `path`), etc. That
+     * trailing text is the point of this test, so it is intentionally not the
+     * bare `path` variable. */
+    const char * names[] = {"pathXX", "formatYY", "structureZZ"};
+    const size_t name_lens[] = {4, 6, 9};
+    const char * values[] = {"chdb_stream_c_params_n_out.csvTRAILING", "CSVxx", "a UInt64??"};
+    const size_t value_lens[] = {30, 3, 8};
+    const char * query = "INSERT INTO FUNCTION file({path:String}, {format:String}, {structure:String})";
+
+    chdb_insert_stream stream = chdb_stream_insert_with_params_n(
+        conn, query, strlen(query), "CSV", 3, names, name_lens, values, value_lens, 3);
+    CHECK(stream != NULL, "handle is never NULL");
+    const char * init_err = chdb_stream_insert_error(stream);
+    CHECK(init_err == NULL, "length-bounded init ok");
+    if (init_err)
+        fprintf(stderr, "  init error: %s\n", init_err);
+
+    CHECK(chdb_stream_append(stream, "5\n", 2) == CHDBSuccess, "append");
+    chdb_result * result = chdb_stream_done(stream);
+    CHECK(result != NULL, "done returns a result");
+    if (result) {
+        CHECK(chdb_result_error(result) == NULL, "done reports no error");
+        CHECK(chdb_result_rows_written(result) == 1, "rows_written == 1");
+        chdb_destroy_query_result(result);
+    }
+    chdb_destroy_insert_stream(stream);
+
+    expect_query(conn,
+        "SELECT a FROM file('chdb_stream_c_params_n_out.csv', 'CSV', 'a UInt64')",
+        "5\n");
+    remove(path);
+}
+
+/* Parameter error paths: a missing binding surfaces on the handle at init,
+ * NULL arrays with count > 0 error instead of crashing, and the connection
+ * stays usable throughout. */
+static void test_insert_with_params_error_paths(chdb_connection conn)
+{
+    printf("== test_insert_with_params_error_paths ==\n");
+
+    chdb_insert_stream s1 = chdb_stream_insert_with_params(
+        conn, "INSERT INTO FUNCTION file({path:String}, 'CSV', 'a UInt64')", "CSV",
+        NULL, NULL, 0);
+    CHECK(s1 != NULL, "handle is never NULL");
+    CHECK(chdb_stream_insert_error(s1) != NULL, "missing parameter surfaces an init error");
+    chdb_destroy_insert_stream(s1);
+
+    chdb_insert_stream s2 = chdb_stream_insert_with_params(
+        conn, "INSERT INTO FUNCTION file({path:String}, 'CSV', 'a UInt64')", "CSV",
+        NULL, NULL, 2);
+    CHECK(s2 != NULL, "handle is never NULL");
+    CHECK(chdb_stream_insert_error(s2) != NULL, "NULL arrays with count > 0 error cleanly");
+    chdb_destroy_insert_stream(s2);
+
+    expect_query(conn, "SELECT 1", "1\n");
+}
+
 /* Streaming INSERT into an on-disk database (the C analog of the Python
  * Session test), made stronger: the connection is closed and REOPENED on the
  * same path to prove the streamed rows were durably persisted. Runs after the
@@ -879,6 +1020,10 @@ int main(int argc, char ** argv)
     test_null_argument_hardening();
     test_file_target_roundtrip(*conn);
     test_parquet_buffered_input(*conn);
+    test_insert_with_params_file_target(*conn);
+    test_insert_with_params_identifier_target(*conn);
+    test_insert_with_params_n_lengths(*conn);
+    test_insert_with_params_error_paths(*conn);
 
     chdb_close_conn(conn);
 

@@ -211,6 +211,14 @@ CHDB_EXPORT const char * chdb_streaming_result_error(chdb_streaming_result * res
  * @param result Streaming result handle from query_conn_streaming()
  * @return Materialized result chunk with data
  * @note Returns empty result when stream ends
+ * @note Fetching past the natural end of the stream is safe and idempotent:
+ *       every further call returns a fresh empty, non-error result. Fetching
+ *       after chdb_streaming_cancel_query() or after a mid-stream error still
+ *       returns an error result.
+ * @note Not thread-safe per connection: a connection runs one statement at a
+ *       time, so fetches (and cancel) on a streaming handle must be serialized
+ *       by the caller — do not fetch the same stream from multiple threads
+ *       concurrently.
  */
 CHDB_EXPORT struct local_result_v2 * chdb_streaming_fetch_result(struct chdb_conn * conn, chdb_streaming_result * result);
 
@@ -421,6 +429,14 @@ CHDB_EXPORT chdb_result * chdb_stream_query_with_params_n(
  * @param result Streaming result handle from query_conn_streaming()
  * @return Materialized result chunk with data
  * @note Returns empty result when stream ends
+ * @note Fetching past the natural end of the stream is safe and idempotent:
+ *       every further call returns a fresh empty, non-error result. Fetching
+ *       after chdb_stream_cancel_query() or after a mid-stream error still
+ *       returns an error result.
+ * @note Not thread-safe per connection: a connection runs one statement at a
+ *       time, so fetches (and cancel) on a streaming handle must be serialized
+ *       by the caller — do not fetch the same stream from multiple threads
+ *       concurrently.
  */
 CHDB_EXPORT chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * result);
 
@@ -465,6 +481,56 @@ CHDB_EXPORT chdb_insert_stream chdb_stream_insert(chdb_connection conn, const ch
  */
 CHDB_EXPORT chdb_insert_stream chdb_stream_insert_n(
     chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len);
+
+/**
+ * Begins a streaming INSERT with server-side named parameter binding.
+ * @brief Variant of chdb_stream_insert() for INSERT statements with {name:Type}
+ *        placeholders, e.g. "INSERT INTO FUNCTION file({path:String}, {format:String}, {structure:String})"
+ * @param conn Active connection handle
+ * @param query INSERT statement without FORMAT clause or inline data
+ * @param format Input format of the appended data (e.g., "CSV", "JSONEachRow", "Parquet")
+ * @param param_names Array of param_count NUL-terminated parameter names
+ * @param param_values Array of param_count NUL-terminated parameter values
+ * @param param_count Number of name/value pairs
+ * @return Insert stream handle, never NULL; check chdb_stream_insert_error() for init failure
+ * @note Parameters are bound on the connection for the duration of stream
+ *       initialization and cleared once it returns (the engine has already
+ *       captured the parameter values).
+ */
+CHDB_EXPORT chdb_insert_stream chdb_stream_insert_with_params(
+    chdb_connection conn,
+    const char * query,
+    const char * format,
+    const char * const * param_names,
+    const char * const * param_values,
+    size_t param_count);
+
+/**
+ * Begins a streaming INSERT with named parameter binding and explicit string lengths.
+ * @brief Binary-safe variant of chdb_stream_insert_with_params().
+ * @param conn Active connection handle
+ * @param query INSERT statement buffer (may contain NUL bytes)
+ * @param query_len Length of query buffer in bytes
+ * @param format Input format buffer
+ * @param format_len Length of format buffer in bytes
+ * @param param_names Array of param_count parameter names
+ * @param param_name_lens Array of param_count byte lengths for param_names
+ * @param param_values Array of param_count parameter value buffers
+ * @param param_value_lens Array of param_count byte lengths for param_values
+ * @param param_count Number of name/value pairs
+ * @return Insert stream handle, never NULL; check chdb_stream_insert_error() for init failure
+ */
+CHDB_EXPORT chdb_insert_stream chdb_stream_insert_with_params_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    const char * format,
+    size_t format_len,
+    const char * const * param_names,
+    const size_t * param_name_lens,
+    const char * const * param_values,
+    const size_t * param_value_lens,
+    size_t param_count);
 
 /**
  * Appends one chunk of raw format-encoded data to the insert stream.

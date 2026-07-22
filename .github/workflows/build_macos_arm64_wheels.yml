@@ -314,6 +314,7 @@ jobs:
           bash -x ./examples/runInsertProgressTest.sh
           bash -x ./examples/runStreamInsertTest.sh
           bash -x ./examples/runQueryParamsTest.sh
+          bash -x ./examples/runStreamQueryEofTest.sh
       - name: Build wheels
         run: |
           rm -rf chdb/build/
