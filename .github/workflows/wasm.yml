@@ -290,6 +290,45 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # ---- chdb-wasm-lite: a single-file bundle sized for Cloudflare Workers
+      # (10 MiB gzipped Worker limit). The st tree is relinked once more with a
+      # 64MB initial memory (a Workers isolate caps total memory at 128MB) and
+      # split against the LITE corpus (most-common SQL only); only the primary
+      # ships, with the --lite glue so out-of-corpus calls throw a clear error.
+      # Runs after the full-split steps because it reuses (and re-links) the
+      # buildwasm-st tree.
+      - name: Relink st with 64MB initial memory (lite)
+        run: |
+          source "${EMSDK}/emsdk_env.sh"
+          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB buildwasm-st >/dev/null
+          ninja -C buildwasm-st chdb_wasm
+
+      - name: Lite split pipeline (lite corpus, primary-only)
+        run: |
+          export WASM_SPLIT="${EMSDK}/upstream/bin/wasm-split"
+          # CHDB_SKIP_LAKE: the lite corpus has no data-lake statements; skip
+          # the moto/pyiceberg fixtures (the static HTTP server for url()/s3()
+          # still runs).
+          CHDB_SKIP_LAKE=1 node packages/chdb-wasm/tools/split/split-wasm.mjs \
+            --build buildwasm-st/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-lite" \
+            --corpus "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/profile-corpus-lite.sql" \
+            --extra-keep "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/keep-lite.txt" \
+            --lite-glue
+
+      - name: Build + test chdb-wasm-lite package (incl. size gate)
+        working-directory: packages/chdb-wasm-lite
+        run: |
+          node scripts/build-lite.mjs "${GITHUB_WORKSPACE}/split-out-lite"
+          node test/lite.test.mjs
+
+      - name: Upload lite artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chdb-wasm-lite
+          path: packages/chdb-wasm-lite/dist
+          retention-days: 7
+          if-no-files-found: error
+
       # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
       # and headless-Chrome tests) ran first, so a tag that fails tests never ships.
       # dist/ is already built by the npm step above; the version is taken from the tag. ----
@@ -330,6 +369,20 @@ jobs:
           npm publish "$TGZ" --tag "$TAG"
           # Hand the tarball path to the release-upload step below.
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
+
+      - name: Publish chdb-wasm-lite to npm
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        working-directory: packages/chdb-wasm-lite
+        env:
+          VERSION: ${{ inputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"
+          npm pkg set version="$VERSION"
+          if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
+          npm pack
+          echo "publishing chdb-wasm-lite-${VERSION}.tgz under dist-tag '$TAG'"
+          npm publish "chdb-wasm-lite-${VERSION}.tgz" --tag "$TAG"
 
       # Best-effort: attach the published npm tarball (chdb-wasm-<version>.tgz — it embeds
       # both wasm bundles) to the GitHub release, creating the release if the tag has none
