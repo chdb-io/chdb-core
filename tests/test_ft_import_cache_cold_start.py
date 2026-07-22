@@ -47,6 +47,14 @@ MAX_BLOCK_SIZE = 1_000
 # while a healthy build pays well under a second per attempt.
 ATTEMPTS = 3
 TIMEOUT_SECONDS = 60
+# The storm only needs to cover the cold-import window at query start: once
+# the deadlock forms it self-sustains (the collector itself is then stuck
+# inside gc.collect(), waiting on a stop-the-world that can never finish), so
+# bounding the storm loses no detection power. Left unbounded, it throttled
+# the whole healthy run instead: with pandas installed (as on CI) the lazy
+# import loads the real package, the heap grows, every gc.collect() costs
+# tens of milliseconds, and the run took >130s even on a 16-core box.
+STORM_SECONDS = 10
 
 CHILD_SCRIPT = textwrap.dedent(
     f"""
@@ -62,11 +70,13 @@ CHILD_SCRIPT = textwrap.dedent(
         return (a * 31 + b) % 97
 
     stop = threading.Event()
+    storm_deadline = time.monotonic() + {STORM_SECONDS}
 
     def collector():
         # Continuous stop-the-world requests, covering the cold lazy-import
-        # window of the first parallel query.
-        while not stop.is_set():
+        # window of the first parallel query; time-boxed so a healthy run is
+        # not throttled end-to-end (a formed deadlock self-sustains anyway).
+        while not stop.is_set() and time.monotonic() < storm_deadline:
             gc.collect()
 
     thread = threading.Thread(target=collector, daemon=True)
