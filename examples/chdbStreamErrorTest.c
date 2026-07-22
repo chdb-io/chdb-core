@@ -12,6 +12,7 @@
  * the test is fast and stable in CI:
  *   - a bad structure type -> UNKNOWN_TYPE (Code 50), names "Nonexistent"
  *   - an unknown input format -> UNKNOWN_FORMAT (Code 73), names "NoSuchFormat"
+ *   - an unwritable destination path -> a filesystem error (Code 1001)
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbStreamErrorTest.c -I./programs/local \
@@ -77,6 +78,23 @@ static void test_insert_init_error_carries_real_reason(chdb_connection conn)
     if (e2)
         fprintf(stderr, "  unknown-format reason: %s\n", e2);
     chdb_destroy_insert_stream(s2);
+
+    /* Unwritable destination directory -> a filesystem error (Code 1001), the
+     * third failure class from issue #612. The exact text is engine-defined
+     * (and the engine logs a stack trace to stderr for this class), so assert
+     * only that the generic message no longer masks the real reason. */
+    chdb_insert_stream s3 = chdb_stream_insert(
+        conn,
+        "INSERT INTO FUNCTION file('/proc/chdb_cannot/x.csv', 'CSV', 'id UInt64')",
+        "CSV");
+    CHECK(s3 != NULL, "handle is non-NULL");
+    const char * e3 = chdb_stream_insert_error(s3);
+    CHECK(e3 != NULL, "unwritable-path init error is set");
+    CHECK(e3 && strstr(e3, MASKED) == NULL,
+          "unwritable-path error is not masked by the generic message");
+    if (e3)
+        fprintf(stderr, "  unwritable-path reason: %s\n", e3);
+    chdb_destroy_insert_stream(s3);
 }
 
 /* Lock-in: the materialized query path surfaces the real reason. */
@@ -112,6 +130,7 @@ static void test_streaming_query_error_reason(chdb_connection conn)
         chdb_destroy_query_result(chunk);
     } else {
         CHECK(strstr(err, "Nonexistent") != NULL, "streaming query names the type at init");
+        CHECK(strstr(err, MASKED) == NULL, "not masked by the generic message at init");
     }
     chdb_destroy_query_result(stream);
 }

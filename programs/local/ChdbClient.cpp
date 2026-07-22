@@ -720,9 +720,16 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
             String reason = getErrorMsg();
             if (reason.empty())
             {
+                /// Mirror executeInsertStreamingInit's catch pattern: format a
+                /// known DB::Exception without a stack trace, and reserve the
+                /// stack-trace fallback for truly unknown exceptions.
                 try
                 {
                     processError("receiveSampleBlock");
+                }
+                catch (const Exception & e)
+                {
+                    reason = getExceptionMessage(e, false);
                 }
                 catch (...)
                 {
