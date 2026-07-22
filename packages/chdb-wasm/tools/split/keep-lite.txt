@@ -1,0 +1,37 @@
+# Functions the lite bundle must keep beyond what profile-corpus-lite.sql
+# reaches, found by probing the assembled lite package to convergence (see
+# tools/split/README.md). Mostly per-type specializations of aggregate
+# internals and generator/cache helpers whose exact instantiation depends on
+# expression shape. Escaped wasm-name form. Names synthesized by the linker
+# (bare indices, trampoline_*, *_NNNN) are excluded — the generic keep rule in
+# split-wasm.mjs already retains every cold one of those.
+DB::ConstChunkGenerator::generate\28\29
+DB::ConstChunkGenerator::getName\28\29\20const
+DB::Exception::getStackTraceString\28\29\20const
+DB::ExecutableFunctionToModifiedJulianDay<DB::NameToModifiedJulianDay\2c\20DB::DataTypeNumber<int>\2c\20false>::executeImpl\28std::__2::vector<DB::ColumnWithTypeAndName\2c\20AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>\20const&\2c\20std::__2::shared_ptr<DB::IDataType\20const>\20const&\2c\20unsigned\20long\29\20const
+DB::FunctionBaseFromModifiedJulianDay<DB::NameFromModifiedJulianDay\2c\20DB::DataTypeNumber<char8_t>\2c\20false>::getResultType\28\29\20const
+DB::FunctionBaseToModifiedJulianDay<DB::NameToModifiedJulianDay\2c\20DB::DataTypeNumber<int>\2c\20false>::prepare\28std::__2::vector<DB::ColumnWithTypeAndName\2c\20AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>\20const&\29\20const
+DB::FunctionBaseToModifiedJulianDay<DB::NameToModifiedJulianDay\2c\20DB::DataTypeNumber<int>\2c\20false>::~FunctionBaseToModifiedJulianDay\28\29
+DB::IAggregateFunctionHelper<DB::\28anonymous\20namespace\29::AggregateFunctionMinMax<DB::SingleValueDataString\2c\20false>>::addBatchSinglePlaceNotNull\28unsigned\20long\2c\20unsigned\20long\2c\20char*\2c\20DB::IColumn\20const**\2c\20char8_t\20const*\2c\20DB::Arena*\2c\20long\29\20const
+DB::ReadBuffer::cancel\28\29
+DB::ToModifiedJulianDayOverloadResolver<DB::NameToModifiedJulianDay\2c\20DB::DataTypeNumber<int>\2c\20false>::buildImpl\28std::__2::vector<DB::ColumnWithTypeAndName\2c\20AllocatorWithMemoryTracking<DB::ColumnWithTypeAndName>>\20const&\2c\20std::__2::shared_ptr<DB::IDataType\20const>\20const&\29\20const
+DB::ToModifiedJulianDayOverloadResolver<DB::NameToModifiedJulianDay\2c\20DB::DataTypeNumber<int>\2c\20false>::getReturnTypeImpl\28std::__2::vector<std::__2::shared_ptr<DB::IDataType\20const>\2c\20std::__2::allocator<std::__2::shared_ptr<DB::IDataType\20const>>>\20const&\29\20const
+DB::WebObjectStorage::getCommonKeyPrefix\28\29\20const
+DB::\28anonymous\20namespace\29::AggregateFunctionMinMax<DB::SingleValueDataString\2c\20false>::addBatchSinglePlaceNotNull\28unsigned\20long\2c\20unsigned\20long\2c\20char*\2c\20DB::IColumn\20const**\2c\20char8_t\20const*\2c\20DB::Arena*\2c\20long\29\20const
+DB::\28anonymous\20namespace\29::ReadBufferIterator::~ReadBufferIterator\28\29
+DB::tryLogCurrentException\28Poco::Logger*\2c\20std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\20const&\2c\20DB::LogsLevel\29
+DB::tryLogCurrentException\28std::__2::shared_ptr<Poco::Logger>\2c\20std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\20const&\2c\20DB::LogsLevel\29
+fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\200>\28fmt::v12::basic_appender<char>\2c\20fmt::v12::basic_string_view<char>\2c\20fmt::v12::format_specs\20const&\29::bounded_output_iterator\20fmt::v12::detail::write_codepoint<2ul\2c\20char\2c\20fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\200>\28fmt::v12::basic_appender<char>\2c\20fmt::v12::basic_string_view<char>\2c\20fmt::v12::format_specs\20const&\29::bounded_output_iterator>\28fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\200>\28fmt::v12::basic_appender<char>\2c\20fmt::v12::basic_string_view<char>\2c\20fmt::v12::format_specs\20const&\29::bounded_output_iterator\2c\20char\2c\20unsigned\20int\29
+fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\20__int128\2c\200>\28fmt::v12::basic_appender<char>\2c\20__int128\29
+fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\20int\2c\200>\28fmt::v12::basic_appender<char>\2c\20int\29
+fmt::v12::basic_appender<char>\20fmt::v12::detail::write<char\2c\20fmt::v12::basic_appender<char>\2c\20unsigned\20__int128\2c\200>\28fmt::v12::basic_appender<char>\2c\20unsigned\20__int128\29
+std::__2::__function::__func<DB::StorageFileSource::tryGetNumRowsFromCache\28std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\20const&\2c\20long\20long\29\20const::$_0\2c\20std::__2::optional<long\20long>\20\28\29>::operator\28\29\28\29
+std::__2::__optional_destruct_base<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20false>::~__optional_destruct_base\5babi:ne210108\5d\28\29
+std::__2::__optional_destruct_base<std::__2::pair<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20DB::DirectoryRemoteInfo>\2c\20false>::~__optional_destruct_base\5babi:ne210108\5d\28\29
+std::__2::__optional_destruct_base<std::__2::pair<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20DB::Field>\2c\20false>::~__optional_destruct_base\5babi:ne210108\5d\28\29
+std::__2::__optional_destruct_base<std::__2::pair<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20std::__2::variant<DB::Field\2c\20boost::intrusive_ptr<DB::IAST>>>\2c\20false>::~__optional_destruct_base\5babi:ne210108\5d\28\29
+std::__2::shared_ptr<DB::ConstChunkGenerator>\20std::__2::allocate_shared\5babi:ne210108\5d<DB::ConstChunkGenerator\2c\20std::__2::allocator<DB::ConstChunkGenerator>\2c\20std::__2::shared_ptr<DB::Block\20const>\2c\20unsigned\20long&\2c\20unsigned\20long&\2c\200>\28std::__2::allocator<DB::ConstChunkGenerator>\20const&\2c\20std::__2::shared_ptr<DB::Block\20const>&&\2c\20unsigned\20long&\2c\20unsigned\20long&\29
+void\20DB::tryLogCurrentExceptionImpl<Poco::Logger*>\28Poco::Logger*\2c\20std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\20const&\2c\20DB::LogsLevel\29
+void\20std::__2::__destroy_at\5babi:ne210108\5d<DB::Iceberg::PartitionSpecsEntry\2c\200>\28DB::Iceberg::PartitionSpecsEntry*\29
+void\20tryGetFormattedArgs<long\20long&\2c\20int\20const&>\28std::__2::vector<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20std::__2::allocator<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>>>&\2c\20long\20long&\2c\20int\20const&\29
+void\20tryGetFormattedArgs<unsigned\20long\20long\20const&\2c\20int\20const&>\28std::__2::vector<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>\2c\20std::__2::allocator<std::__2::basic_string<char\2c\20std::__2::char_traits<char>\2c\20std::__2::allocator<char>>>>&\2c\20unsigned\20long\20long\20const&\2c\20int\20const&\29

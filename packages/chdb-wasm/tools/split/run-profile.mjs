@@ -65,6 +65,10 @@ const PEOPLE_JSONL =
 const staticDir = mkdtempSync(join(tmpdir(), 'chdb-profile-static-'));
 writeFileSync(join(staticDir, 'people_names.csv'), PEOPLE_NAMES_CSV);
 writeFileSync(join(staticDir, 'people.jsonl'), PEOPLE_JSONL);
+// s3() needs a bucket/key path shape (path-style URL); serve the same file
+// one directory deep for the corpus's single-object s3() reads.
+mkdirSync(join(staticDir, 's3bucket'));
+writeFileSync(join(staticDir, 's3bucket', 'people_names.csv'), PEOPLE_NAMES_CSV);
 
 // --- fixture services (all out-of-process) -----------------------------------
 const children = [];
@@ -206,7 +210,9 @@ function runStatement(sql, format = 'CSV') {
 }
 
 // --- execute the corpus -------------------------------------------------------
-const corpus = readFileSync(join(here, 'profile-corpus.sql'), 'utf8');
+// CHDB_CORPUS selects the statement file (default: the full corpus); the lite
+// pipeline passes profile-corpus-lite.sql.
+const corpus = readFileSync(process.env.CHDB_CORPUS || join(here, 'profile-corpus.sql'), 'utf8');
 const statements = [];
 let buf = [];
 for (const line of corpus.split('\n')) {

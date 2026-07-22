@@ -56,6 +56,35 @@ venv at `ICEBERG_PY` (default `/tmp/iceberg-venv/bin/python`) with
 `pyiceberg[sql-sqlite] pyarrow moto[server] s3fs deltalake`; without it those
 statements are skipped (and their code ends up in the deferred module).
 
+## The lite pipeline (chdb-wasm-lite)
+
+`packages/chdb-wasm-lite` ships a PRIMARY-ONLY bundle sized for Cloudflare
+Workers (10 MiB gzipped Worker limit; workerd forbids runtime wasm
+compilation, so a deferred module could never load there). Differences from
+the full split: single-threaded tree relinked with `-DWASM_INITIAL_MEMORY=64MB`
+(a Workers isolate caps memory at 128MB), profiled against
+`profile-corpus-lite.sql` (most-common SQL incl. `file()`/`url()`/`s3()`),
+`--extra-keep keep-lite.txt` (per-type specializations the corpus can't
+enumerate), and `--lite-glue` so out-of-corpus calls throw a clear
+"not in lite" error instead of attempting a lazy load:
+
+```sh
+cd buildwasm-st && cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB . && ninja chdb_wasm
+CHDB_SKIP_LAKE=1 node tools/split/split-wasm.mjs \
+    --build ../../buildwasm-st/programs/wasm --out /tmp/chdb-split-lite \
+    --corpus tools/split/profile-corpus-lite.sql \
+    --extra-keep tools/split/keep-lite.txt --lite-glue
+cd ../chdb-wasm-lite && node scripts/build-lite.mjs /tmp/chdb-split-lite && node test/lite.test.mjs
+```
+
+Measured: 37.6MB raw / **8.0 MiB gzipped** (< the 9.5 MiB budget that leaves
+room for glue + SDK inside the Worker limit). When a probe hits a cold
+function on lite, extend the corpus (preferred: whole call chains go hot) or
+add the exact name to `keep-lite.txt`; the convergence workflow is the same
+ordinal→name mapping described under Gotchas. Aggregate internals specialize
+per input type (String/Nullable/Float min-max differ from UInt64), so the
+lite corpus exercises aggregates over several column types on purpose.
+
 ## Files
 
 | file | role |

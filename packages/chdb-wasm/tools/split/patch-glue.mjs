@@ -27,15 +27,26 @@
 //   profile per worker plus the main instance and wasm-split --merge-profiles
 //   unions them.
 //
-// Usage: patch-glue.mjs <chdb.mjs> [--lazy-load] [--profile-collect]
+// --lite (chdb-wasm-lite, primary-only bundle):
+//   The lite package ships NO deferred module (Cloudflare Workers forbids
+//   runtime wasm compilation, so lazy loading cannot exist there). A cold
+//   call must fail immediately with a message that explains itself instead
+//   of an ENOENT/fetch error for a file that is not supposed to exist.
+//
+// Usage: patch-glue.mjs <chdb.mjs> [--lazy-load] [--profile-collect] [--lite]
 
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const file = process.argv[2];
 const doLazy = process.argv.includes('--lazy-load');
 const doProfile = process.argv.includes('--profile-collect');
-if (!file || (!doLazy && !doProfile)) {
-  console.error('usage: patch-glue.mjs <chdb.mjs> [--lazy-load] [--profile-collect]');
+const doLite = process.argv.includes('--lite');
+if (!file || (!doLazy && !doProfile && !doLite)) {
+  console.error('usage: patch-glue.mjs <chdb.mjs> [--lazy-load] [--profile-collect] [--lite]');
+  process.exit(2);
+}
+if (doLite && doLazy) {
+  console.error('--lite replaces the lazy loader; do not combine it with --lazy-load');
   process.exit(2);
 }
 
@@ -73,6 +84,26 @@ if (doLazy) {
         + 'return pt__.get(typeof pt__.length==="bigint"?BigInt(base):Number(base))(...args)}',
       1);
     console.log('lazy-load: patched (2 sites + placeholder-table redispatch)');
+  }
+}
+
+if (doLite) {
+  if (src.includes('chdb-wasm-lite')) {
+    console.log('lite: already patched');
+  } else {
+    // The placeholder-import proxy still computes the (never fetched)
+    // secondary file name from wasmBinaryFile at instantiation time; on paths
+    // that never assign it (pthread workers, Module.instantiateWasm hosts like
+    // Cloudflare Workers) that would throw before our stub even runs.
+    replaceCounted('lite(wasmBinaryFile)', 'wasmBinaryFile.slice(0,-5)', '(wasmBinaryFile??=findWasmBinary()).slice(0,-5)', 2);
+    // Replace the whole lazy-load trampoline: no download, no re-dispatch —
+    // just a self-explanatory error.
+    replaceCounted(
+      'lite(trampoline)',
+      'let ret=(...args)=>{var imports={primary:wasmRawExports};loadSplitModule(secondaryFile,imports,base);return wasmTable.get(BigInt(base))(...args)}',
+      'let ret=(...args)=>{throw new Error("chdb-wasm-lite: this SQL feature is not included in the size-optimized lite build; use the full chdb-wasm package")}',
+      1);
+    console.log('lite: patched (cold calls throw a clear error)');
   }
 }
 
