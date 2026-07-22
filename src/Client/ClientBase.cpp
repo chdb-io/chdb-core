@@ -3284,12 +3284,29 @@ bool ClientBase::processStreamingQuery(void * streaming_result_, bool is_cancele
         /// as requested, then restore to avoid leaking into later statements on
         /// this connection. Mirrors the streaming-insert path in ChdbClient.
         Settings old_settings = client_context->getSettingsRef();
-        SCOPE_EXIT_SAFE({ client_context->setSettings(old_settings); });
+        SCOPE_EXIT_SAFE({
+            try
+            {
+                /// Park ParallelFormatting threads before restoring settings:
+                /// they can read settings from the context, which would race
+                /// with setSettings (mirrors processParsedSingleQuery). This
+                /// must run before setSettings even when receiveResult threw,
+                /// so it lives in the scope-exit rather than after receiveResult.
+                resetOutputFormat();
+            }
+            catch (...)
+            {
+                if (!have_error)
+                {
+                    client_exception = std::make_unique<Exception>(getCurrentExceptionMessageAndPattern(print_stack_trace), getCurrentExceptionCode());
+                    have_error = true;
+                }
+            }
+            client_context->setSettings(old_settings);
+        });
         InterpreterSetQuery::applySettingsFromQuery(streaming_query_context->parsed_query, client_context);
 
         receiveResult(streaming_query_context->parsed_query, is_canceled);
-
-        resetOutputFormat();
     }
     catch (...)
     {

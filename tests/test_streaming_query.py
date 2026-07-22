@@ -100,9 +100,10 @@ class TestStreamingQuery(unittest.TestCase):
         chunks = list(self.sess.send_query(iso_query, "CSVWITHNAMES"))
         self.assertEqual(len(chunks), 1)
         streaming = chunks[0].data()
-        self.assertEqual(streaming, expected_iso)
+        # Specific checks first for clearer failure diagnostics, then exact match.
         self.assertIn("2025-12-19T13:52:04.496187Z", streaming)
         self.assertNotIn("2025-12-19 13:52:04.496187", streaming)
+        self.assertEqual(streaming, expected_iso)
 
         # Parity: the streaming and materialized paths must agree exactly.
         self.assertEqual(streaming, materialized)
