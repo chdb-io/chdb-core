@@ -36,6 +36,15 @@ void PythonUDFRegistry::registerUDF(
 {
     py::gil_assert();
 
+    {
+        /// Fail fast on duplicate names before paying the Python signature
+        /// inspection below; the authoritative re-check still happens under
+        /// the unique lock. No Python runs while this lock is held.
+        std::shared_lock read_lock(mutex);
+        if (udfs.contains(name))
+            throw DB::Exception(DB::ErrorCodes::FUNCTION_ALREADY_EXISTS, "Python UDF '{}' is already registered", name);
+    }
+
     /// Build the UDF (initSignature runs Python: inspect.signature) BEFORE
     /// taking the registry lock. On free-threaded builds, running Python while
     /// holding a lock that other attached threads may block on is the same

@@ -137,8 +137,11 @@ py::handle PythonImportCacheItem::Load(PythonImportCache & cache, py::handle sou
 	// import finish, and everyone proceed.
 	//
 	// The initializer's write to `object` happens-before every passive
-	// call_once on the same flag; `loaded` (set after the flag completes)
-	// additionally publishes it to the lock-free fast paths.
+	// call_once on the same flag; `loaded`, released at the end of the
+	// initializer itself, additionally publishes it to the lock-free fast
+	// paths with no window between the load completing and the flag being
+	// visible (a throwing initializer leaves it false, so retry semantics
+	// are unchanged).
 	if (!load)
 		return loaded.load(std::memory_order_acquire) ? object : py::handle(nullptr);
 
@@ -151,8 +154,8 @@ py::handle PythonImportCacheItem::Load(PythonImportCache & cache, py::handle sou
 				LoadModule(cache);
 			else
 				LoadAttribute(cache, source);
+			loaded.store(true, std::memory_order_release);
 		});
-		loaded.store(true, std::memory_order_release);
 	}
 
 	return object;

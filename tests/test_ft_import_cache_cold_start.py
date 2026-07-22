@@ -28,13 +28,31 @@ import sys
 import textwrap
 import unittest
 
-ROWS = 4_000_000
-TIMEOUT_SECONDS = 180
+# The deadlock races the FIRST lazy import-cache load, in the first rows each
+# worker processes — total row volume adds nothing to the repro (a regressed
+# build hangs forever at any size and still trips the timeout). What DOES
+# matter is how many threads actually execute the UDF concurrently, and that
+# is the number of data blocks: with the default max_block_size (65409) a
+# small row count degenerates to a single block, i.e. a single racing thread
+# and no deadlock window at all. So the block size is pinned small to keep a
+# full 32-way race (100k rows / 1k = 100 blocks) while the total work stays
+# tiny — the original 4M rows were CPU-bound past the 180s budget on the FT
+# CI runner (per-row Python UDF × oversubscribed threads × collect storm),
+# misreporting plain slowness as the deadlock.
+ROWS = 100_000
+MAX_BLOCK_SIZE = 1_000
+# The race is probabilistic: on a pre-fix build one cold start hangs in ~3 of
+# 4 attempts (the import can win the race against the first stop-the-world).
+# Several independent cold processes push the per-test catch rate past 98%,
+# while a healthy build pays well under a second per attempt.
+ATTEMPTS = 3
+TIMEOUT_SECONDS = 60
 
 CHILD_SCRIPT = textwrap.dedent(
     f"""
     import gc
     import threading
+    import time
 
     import chdb
     from chdb.sqltypes import INT64
@@ -43,23 +61,29 @@ CHILD_SCRIPT = textwrap.dedent(
     def fadd(a, b):
         return (a * 31 + b) % 97
 
-    stop = False
+    stop = threading.Event()
 
     def collector():
         # Continuous stop-the-world requests, covering the cold lazy-import
         # window of the first parallel query.
-        while not stop:
+        while not stop.is_set():
             gc.collect()
 
     thread = threading.Thread(target=collector, daemon=True)
     thread.start()
+    time.sleep(0.05)  # make sure the storm is already running when the query starts
 
-    result = chdb.query(
-        "SELECT sum(fadd(toInt64(number), 1)) FROM numbers_mt({ROWS}) "
-        "SETTINGS max_threads=32"
-    )
-    stop = True
-    thread.join(timeout=5)
+    try:
+        result = chdb.query(
+            "SELECT sum(fadd(toInt64(number), 1)) FROM numbers_mt({ROWS}) "
+            "SETTINGS max_threads=32, max_block_size={MAX_BLOCK_SIZE}"
+        )
+    finally:
+        # Always stop the collector: a spinning gc.collect() thread during
+        # interpreter finalization can stall the child and turn an ordinary
+        # query error into a bogus deadlock timeout.
+        stop.set()
+        thread.join(timeout=5)
     print("RESULT:" + str(result).strip(), flush=True)
     """
 )
@@ -67,36 +91,38 @@ CHILD_SCRIPT = textwrap.dedent(
 
 class TestFTImportCacheColdStart(unittest.TestCase):
     def test_cold_parallel_udf_survives_gc_stop_the_world_storm(self):
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", CHILD_SCRIPT],
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as e:
-            stderr = (e.stderr or b"")
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", "replace")
-            self.fail(
-                "cold parallel UDF query did not finish within "
-                f"{TIMEOUT_SECONDS}s — the import-cache stop-the-world "
-                "deadlock (issue #131) is back. Child stderr:\n" + stderr[-2000:]
-            )
-
-        self.assertEqual(
-            proc.returncode,
-            0,
-            "child process failed:\n" + (proc.stderr or "")[-2000:],
-        )
-
         # fadd is deterministic: sum((i * 31 + 1) % 97 for i in range(ROWS)),
         # computed via the period-97 structure of the sequence.
         period = [(i * 31 + 1) % 97 for i in range(97)]
         full, rest = divmod(ROWS, 97)
         expected = sum(period) * full + sum(period[:rest])
 
-        self.assertIn(f"RESULT:{expected}", proc.stdout)
+        for attempt in range(ATTEMPTS):
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-c", CHILD_SCRIPT],
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as e:
+                stderr = (e.stderr or b"")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode("utf-8", "replace")
+                self.fail(
+                    f"cold parallel UDF query (attempt {attempt + 1}/{ATTEMPTS}) "
+                    f"did not finish within {TIMEOUT_SECONDS}s — the import-cache "
+                    "stop-the-world deadlock (issue #131) is back. "
+                    "Child stderr:\n" + stderr[-2000:]
+                )
+
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"child process failed (attempt {attempt + 1}):\n"
+                + (proc.stderr or "")[-2000:],
+            )
+            self.assertIn(f"RESULT:{expected}", proc.stdout)
 
 
 if __name__ == "__main__":
