@@ -31,12 +31,19 @@ except ImportError:
 class TestDataFrameArrowDtype(unittest.TestCase):
     """ArrowDtype columns fail loudly with an actionable message."""
 
-    def _assert_clear_error(self, df, col_name, dtype_str):
-        with self.assertRaises(Exception) as ctx:
+    def _assert_clear_error(self, df, col_name):  # noqa: F841 -- df referenced by Python(df)
+        # Engine query failures surface as RuntimeError on the connection path
+        # (which chdb.query uses) and as chdb.ChdbError on the stateless buffer
+        # path; anything else (TypeError, ...) would be a binding bug, so keep
+        # the assertion tight.
+        with self.assertRaises((chdb.ChdbError, RuntimeError)) as ctx:
             chdb.query("SELECT * FROM Python(df)", "CSV")
         msg = str(ctx.exception)
         self.assertIn("'%s'" % col_name, msg)
-        self.assertIn(dtype_str, msg)
+        # The C++ side formats the dtype with py::str(col_type), i.e. exactly
+        # str(df[col].dtype); derive the expectation so the test does not
+        # depend on per-version ArrowDtype reprs.
+        self.assertIn(str(df[col_name].dtype), msg)
         # The old whole-DataFrame rejection produced this misleading error.
         self.assertNotIn("not found in the Python environment", msg)
 
@@ -44,7 +51,7 @@ class TestDataFrameArrowDtype(unittest.TestCase):
         df = pd.DataFrame(
             {"a": pd.array([1, 2, None], dtype=pd.ArrowDtype(pa.int64()))}
         )
-        self._assert_clear_error(df, "a", "int64[pyarrow]")
+        self._assert_clear_error(df, "a")
 
     def test_int64_arrow_dtype_without_nulls(self):
         # Without nulls the buffers happened to be readable on old versions,
@@ -53,13 +60,13 @@ class TestDataFrameArrowDtype(unittest.TestCase):
         df = pd.DataFrame(
             {"a": pd.array([1, 2, 3], dtype=pd.ArrowDtype(pa.int64()))}
         )
-        self._assert_clear_error(df, "a", "int64[pyarrow]")
+        self._assert_clear_error(df, "a")
 
     def test_bool_arrow_dtype(self):
         df = pd.DataFrame(
             {"b": pd.array([True, False], dtype=pd.ArrowDtype(pa.bool_()))}
         )
-        self._assert_clear_error(df, "b", "bool[pyarrow]")
+        self._assert_clear_error(df, "b")
 
     def test_timestamp_arrow_dtype(self):
         df = pd.DataFrame(
@@ -70,7 +77,7 @@ class TestDataFrameArrowDtype(unittest.TestCase):
                 )
             }
         )
-        self._assert_clear_error(df, "t", "timestamp[us][pyarrow]")
+        self._assert_clear_error(df, "t")
 
     def test_string_arrow_dtype(self):
         df = pd.DataFrame(
@@ -80,7 +87,7 @@ class TestDataFrameArrowDtype(unittest.TestCase):
                 )
             }
         )
-        self._assert_clear_error(df, "s", "large_string[pyarrow]")
+        self._assert_clear_error(df, "s")
 
     def test_mixed_frame_names_offending_column(self):
         df = pd.DataFrame(
@@ -89,7 +96,7 @@ class TestDataFrameArrowDtype(unittest.TestCase):
                 "bad": pd.array([1, 2, None], dtype=pd.ArrowDtype(pa.int64())),
             }
         )
-        self._assert_clear_error(df, "bad", "int64[pyarrow]")
+        self._assert_clear_error(df, "bad")
 
     def test_astype_workaround(self):
         df = pd.DataFrame(
