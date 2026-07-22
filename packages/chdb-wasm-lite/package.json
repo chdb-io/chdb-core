@@ -1,7 +1,7 @@
 {
   "name": "chdb-wasm-lite",
   "version": "0.1.0",
-  "description": "Size-optimized chdb (ClickHouse) WebAssembly build \u2014 a single wasm under 10 MiB gzipped, sized for Cloudflare Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
+  "description": "Size-optimized chdb (ClickHouse) WebAssembly build — a single wasm under 10 MiB gzipped, sized for Cloudflare Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
