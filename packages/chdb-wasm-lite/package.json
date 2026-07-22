@@ -1,0 +1,44 @@
+{
+  "name": "chdb-wasm-lite",
+  "version": "0.0.0",
+  "description": "Size-optimized chdb (ClickHouse) WebAssembly build — a single wasm under 10 MiB gzipped, sized for Cloudflare Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./worker": "./dist/worker.js",
+    "./chdb.wasm": "./dist/chdb.wasm",
+    "./chdb.mjs": "./dist/chdb.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=23"
+  },
+  "scripts": {
+    "build": "node scripts/build-lite.mjs",
+    "test": "node test/lite.test.mjs"
+  },
+  "keywords": [
+    "clickhouse",
+    "chdb",
+    "wasm",
+    "webassembly",
+    "sql",
+    "olap",
+    "cloudflare-workers"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdb-io/chdb-core.git",
+    "directory": "packages/chdb-wasm-lite"
+  }
+}
