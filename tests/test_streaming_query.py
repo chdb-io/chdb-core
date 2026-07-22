@@ -76,6 +76,45 @@ class TestStreamingQuery(unittest.TestCase):
                 total_rows += chunk.rows_read()
         self.assertEqual(total_rows, 1073741824)
 
+    def test_streaming_query_applies_date_time_output_format_iso(self):
+        # chdb-core #143: a query-level `SETTINGS date_time_output_format = 'iso'`
+        # must be applied to the CLIENT-SIDE output format of a STREAMING query,
+        # exactly as it already is for a materialized query. Before the fix the
+        # streaming path rolled the query settings back to defaults before the
+        # output format was created at fetch time, so a DateTime64 was emitted in
+        # the default form ("2025-12-19 13:52:04.496187") instead of the ISO form
+        # with a `T` separator and trailing `Z` ("2025-12-19T13:52:04.496187Z").
+        iso_query = (
+            "SELECT toDateTime64('2025-12-19 13:52:04.496187', 6, 'UTC') AS ts "
+            "SETTINGS date_time_output_format = 'iso'"
+        )
+        # CSVWITHNAMES: quoted header line, then the quoted value + trailing newline.
+        expected_iso = '"ts"\n"2025-12-19T13:52:04.496187Z"\n'
+        expected_default = '"ts"\n"2025-12-19 13:52:04.496187"\n'
+
+        # Control: the materialized (non-streaming) path already honors the SETTINGS.
+        materialized = self.sess.query(iso_query, "CSVWITHNAMES").data()
+        self.assertEqual(materialized, expected_iso)
+
+        # The bug: the streaming path must produce the SAME ISO-formatted output.
+        chunks = list(self.sess.send_query(iso_query, "CSVWITHNAMES"))
+        self.assertEqual(len(chunks), 1)
+        streaming = chunks[0].data()
+        # Specific checks first for clearer failure diagnostics, then exact match.
+        self.assertIn("2025-12-19T13:52:04.496187Z", streaming)
+        self.assertNotIn("2025-12-19 13:52:04.496187", streaming)
+        self.assertEqual(streaming, expected_iso)
+
+        # Parity: the streaming and materialized paths must agree exactly.
+        self.assertEqual(streaming, materialized)
+
+        # Guard against setting leakage: a subsequent streaming query with no
+        # SETTINGS clause must fall back to the default (non-ISO) form.
+        default_query = "SELECT toDateTime64('2025-12-19 13:52:04.496187', 6, 'UTC') AS ts"
+        default_chunks = list(self.sess.send_query(default_query, "CSVWITHNAMES"))
+        self.assertEqual(len(default_chunks), 1)
+        self.assertEqual(default_chunks[0].data(), expected_default)
+
     def test_cancel_streaming_query(self):
         self.sess.query("CREATE DATABASE IF NOT EXISTS test")
         self.sess.query("USE test")
