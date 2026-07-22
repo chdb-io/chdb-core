@@ -181,6 +181,7 @@ public:
     bool has_error() { return result_wrapper->has_error(); }
     py::str error_message() { return result_wrapper->error_message(); }
     memoryview_wrapper * get_memview();
+    std::shared_ptr<local_result_wrapper> get_result_wrapper() { return result_wrapper; }
 };
 
 class streaming_query_result

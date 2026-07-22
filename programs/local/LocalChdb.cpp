@@ -2,6 +2,7 @@
 #include "chdb-internal.h"
 #include "DataFrameQueryResult.h"
 #include "PandasDataFrameBuilder.h"
+#include "PythonArrowStream.h"
 #include "PythonImporter.h"
 #include "ChdbPyType.h"
 #include "ChdbGlobalFunctions.h"
@@ -842,7 +843,22 @@ PYBIND11_MODULE(_chdb, m)
         .def("bytes_written", &query_result::bytes_written)
         .def("get_memview", &query_result::get_memview)
         .def("has_error", &query_result::has_error)
-        .def("error_message", &query_result::error_message);
+        .def("error_message", &query_result::error_message)
+        .def(
+            "__arrow_c_stream__",
+            [](query_result & self, py::object /*requested_schema*/)
+            {
+                if (self.has_error())
+                    throw py::value_error("query result carries an error: " + self.error_message().cast<std::string>());
+                return CHDB::exportArrowIPCAsCapsule(
+                    self.data(), self.size(), std::static_pointer_cast<void>(self.get_result_wrapper()));
+            },
+            py::arg("requested_schema") = py::none(),
+            "Arrow PyCapsule interface: export the result as an ArrowArrayStream capsule.\n"
+            "Requires the query to have produced Arrow IPC output, i.e. output format\n"
+            "\"Arrow\" or \"ArrowStream\". The exported record batches reference the\n"
+            "result buffer directly (no copy) and keep the result alive until released.\n"
+            "Can be called multiple times; each call yields an independent stream.");
 
     py::class_<streaming_query_result>(m, "streaming_query_result")
         .def(py::init<chdb_result *>(), py::return_value_policy::take_ownership)

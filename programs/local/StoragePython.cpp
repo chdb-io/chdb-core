@@ -2,6 +2,7 @@
 #include "NumpyType.h"
 #include "PandasDataFrame.h"
 #include "PybindWrapper.h"
+#include "PythonArrowStream.h"
 #include "PythonImporter.h"
 #include "PythonSource.h"
 #include "PyArrowTable.h"
@@ -285,6 +286,17 @@ Pipe StoragePython::readImpl(
         if (PyArrowTable::isPyArrowTable(data_source))
         {
             auto arrow_stream = PyArrowStreamFactory::createFromPyObject(data_source, sample_block.getNames());
+            arrow_table_reader = std::make_shared<ArrowTableReader>(
+                std::move(arrow_stream), sample_block,
+                format_settings, num_streams, max_block_size);
+        }
+        else if (!is_pandas_df && CHDB::hasArrowCStreamMethod(data_source))
+        {
+            /// Generic Arrow PyCapsule stream input. pandas DataFrames also
+            /// expose __arrow_c_stream__ (>= 2.2) but stay on the dedicated
+            /// column-cache scan above, which supports pushdowns this generic
+            /// stream path cannot (the protocol has no projection mechanism).
+            auto arrow_stream = CHDB::importArrowCStream(data_source);
             arrow_table_reader = std::make_shared<ArrowTableReader>(
                 std::move(arrow_stream), sample_block,
                 format_settings, num_streams, max_block_size);
