@@ -64,16 +64,28 @@ STORM_SECONDS = 10
 
 CHILD_SCRIPT = textwrap.dedent(
     f"""
+    import faulthandler
     import gc
+    import sys
     import threading
     import time
 
     import chdb
     from chdb.sqltypes import INT64
 
+    # Which chdb actually got imported — surfaces cwd/PYTHONPATH shadowing
+    # mixups in the failure diagnostics instead of leaving them to archaeology.
+    print("CHDB:" + chdb.__file__, file=sys.stderr, flush=True)
+
     @chdb.func([INT64, INT64], INT64)
     def fadd(a, b):
         return (a * 31 + b) % 97
+
+    # Black box for hang diagnosis: if this child ever wedges, dump every
+    # thread's stack to stderr periodically; the parent surfaces stderr in the
+    # timeout failure message, telling a stuck stop-the-world (collector still
+    # inside gc.collect) apart from mere slowness. No-op on healthy runs.
+    faulthandler.dump_traceback_later(45, repeat=True)
 
     stop = threading.Event()
     storm_deadline = time.monotonic() + {STORM_SECONDS}
@@ -100,6 +112,7 @@ CHILD_SCRIPT = textwrap.dedent(
         # query error into a bogus deadlock timeout.
         stop.set()
         thread.join(timeout=5)
+        faulthandler.cancel_dump_traceback_later()
     print("RESULT:" + str(result).strip(), flush=True)
     """
 )
@@ -129,7 +142,7 @@ class TestFTImportCacheColdStart(unittest.TestCase):
                     f"cold parallel UDF query (attempt {attempt + 1}/{ATTEMPTS}) "
                     f"did not finish within {TIMEOUT_SECONDS}s — the import-cache "
                     "stop-the-world deadlock (issue #131) is back. "
-                    "Child stderr:\n" + stderr[-2000:]
+                    "Child stderr:\n" + stderr[-6000:]
                 )
 
             self.assertEqual(
