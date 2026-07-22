@@ -34,7 +34,7 @@ py::handle PythonImportCacheItem::operator()(bool load) {
 	// initializer has published `object`, so an acquire read here makes the
 	// plain read of `object` well-defined and gives steady-state accesses a
 	// lock-free fast path that skips the hierarchy rebuild below.
-	if (loaded.load(std::memory_order_acquire))
+	if (IsPublished())
 		return object;
 #endif
 	std::stack<PythonImportCacheItem *> hierarchy;
@@ -143,9 +143,9 @@ py::handle PythonImportCacheItem::Load(PythonImportCache & cache, py::handle sou
 	// visible (a throwing initializer leaves it false, so retry semantics
 	// are unchanged).
 	if (!load)
-		return loaded.load(std::memory_order_acquire) ? object : py::handle(nullptr);
+		return IsPublished() ? object : py::handle(nullptr);
 
-	if (!loaded.load(std::memory_order_acquire))
+	if (!IsPublished())
 	{
 		py::gil_scoped_release detach_while_waiting;
 		std::call_once(load_flag, [&]() {

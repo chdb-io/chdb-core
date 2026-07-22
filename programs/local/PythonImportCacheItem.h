@@ -48,6 +48,15 @@ private:
 	void LoadAttribute(PythonImportCache & cache, py::handle source);
 	void LoadModule(PythonImportCache & cache);
 
+	/// Free-threaded builds: true once the call_once initializer has published
+	/// `object` (acquire; pairs with the release store at the end of the
+	/// initializer). The single fast-path predicate shared by operator() and
+	/// Load(), so the two cannot drift apart.
+	bool IsPublished() const
+	{
+		return loaded.load(std::memory_order_acquire);
+	}
+
 private:
 	String name;
 	bool is_module;
