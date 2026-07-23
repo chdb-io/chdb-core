@@ -78,7 +78,9 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref)
     is_interactive = false;
     ignore_error = false;
     echo_queries = false;
-    print_stack_trace = false;
+    /// Honor the `--stacktrace` connect flag (default off), like clickhouse-local:
+    /// error strings omit the stack trace unless the caller opts in.
+    print_stack_trace = server.config().getBool("stacktrace", false);
     initTTYBuffer(toProgressOption(getClientConfiguration().getString("progress", "default")),
         toProgressOption(getClientConfiguration().getString("progress-table", "default")));
     initKeystrokeInterceptor();
@@ -332,14 +334,14 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
 #if USE_PYTHON
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
 #if USE_PYTHON
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -375,12 +377,12 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     catch (const Exception & e)
     {
         streaming_query_context.reset();
-        return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         streaming_query_context.reset();
-        return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -507,7 +509,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         }
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
@@ -520,7 +522,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         }
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -654,13 +656,13 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
         /// for all subsequent statements.
         restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
-        return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
-        return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -729,11 +731,11 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
                 }
                 catch (const Exception & e)
                 {
-                    reason = getExceptionMessage(e, false);
+                    reason = getExceptionMessage(e, print_stack_trace);
                 }
                 catch (...)
                 {
-                    reason = getCurrentExceptionMessage(true);
+                    reason = getCurrentExceptionMessage(print_stack_trace);
                 }
             }
             signal_init(reason.empty()
@@ -799,7 +801,7 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         ctx->error = std::current_exception();
         try
         {
-            ctx->error_message = getCurrentExceptionMessage(true);
+            ctx->error_message = getCurrentExceptionMessage(print_stack_trace);
         }
         catch (...)
         {

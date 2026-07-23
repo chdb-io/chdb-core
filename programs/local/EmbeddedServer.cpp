@@ -1128,6 +1128,13 @@ void EmbeddedServer::initializeWithArgs(int argc, char ** argv)
             arg_vec.push_back(arg);
         }
         argsToConfig(arg_vec, config(), 100);
+        /// argsToConfig drops a value-less flag that appears last, so capture the
+        /// boolean `--stacktrace` flag explicitly to make it position-independent
+        /// (bare `--stacktrace` works like in clickhouse-local; `--stacktrace=0`
+        /// still parses through argsToConfig as usual).
+        for (const auto & arg : args)
+            if (arg == "--stacktrace")
+                config().setBool("stacktrace", true);
 
         initialize(*this);
         int ret = main(args);
