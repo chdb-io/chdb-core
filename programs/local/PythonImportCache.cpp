@@ -29,12 +29,14 @@ py::handle PythonImportCacheItem::operator()(bool load) {
 	// attribute access.
 	if (IsLoaded())
 		return object;
+#else
+	// Free-threaded: `loaded` is set (release) only after the call_once
+	// initializer has published `object`, so an acquire read here makes the
+	// plain read of `object` well-defined and gives steady-state accesses a
+	// lock-free fast path that skips the hierarchy rebuild below.
+	if (IsPublished())
+		return object;
 #endif
-	// Free-threaded: no unsynchronized pre-check on `object`. Reading `object`
-	// concurrently with the call_once initializer's write is a C++ data race.
-	// std::call_once already provides the necessary happens-before — every
-	// passive call_once on the same flag synchronizes with the completion of
-	// the initializer, so the post-call_once read of `object` is well-defined.
 	std::stack<PythonImportCacheItem *> hierarchy;
 
 	PythonImportCacheItem * item = this;
@@ -122,18 +124,39 @@ py::handle PythonImportCacheItem::Load(PythonImportCache & cache, py::handle sou
 		LoadAttribute(cache, source);
 	return object;
 #else
-	// Free-threaded: no GIL to serialize callers, so use std::call_once. The
-	// initializer's write to `object` happens-before every passive call_once on
-	// the same flag, so the post-call_once read below is well-defined.
+	// Free-threaded: no GIL to serialize callers, so use std::call_once for the
+	// one-shot initialization — but the wait must happen DETACHED. LoadModule()
+	// runs the import machinery (Python code: allocations, safepoints), and an
+	// allocation-triggered GC on any thread issues a stop-the-world that only
+	// completes once every attached thread parks at a safepoint. A thread
+	// blocked on the once_flag futex while attached never reaches a safepoint,
+	// so the stop-the-world never completes, the winner parks forever at the
+	// next safepoint inside the import, and the flag is never released — a
+	// process-wide deadlock (issue #131: cold process, first parallel UDF
+	// query). Detaching the waiters lets the stop-the-world drain, the winner's
+	// import finish, and everyone proceed.
+	//
+	// The initializer's write to `object` happens-before every passive
+	// call_once on the same flag; `loaded`, released at the end of the
+	// initializer itself, additionally publishes it to the lock-free fast
+	// paths with no window between the load completing and the flag being
+	// visible (a throwing initializer leaves it false, so retry semantics
+	// are unchanged).
 	if (!load)
-		return object;
+		return IsPublished() ? object : py::handle(nullptr);
 
-	std::call_once(load_flag, [&]() {
-		if (is_module)
-			LoadModule(cache);
-		else
-			LoadAttribute(cache, source);
-	});
+	if (!IsPublished())
+	{
+		py::gil_scoped_release detach_while_waiting;
+		std::call_once(load_flag, [&]() {
+			py::gil_scoped_acquire attach_for_import;
+			if (is_module)
+				LoadModule(cache);
+			else
+				LoadAttribute(cache, source);
+			loaded.store(true, std::memory_order_release);
+		});
+	}
 
 	return object;
 #endif

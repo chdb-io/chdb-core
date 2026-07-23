@@ -3,6 +3,7 @@
 #include "PybindWrapper.h"
 
 #include <base/types.h>
+#include <atomic>
 #include <mutex>
 
 namespace CHDB {
@@ -47,6 +48,15 @@ private:
 	void LoadAttribute(PythonImportCache & cache, py::handle source);
 	void LoadModule(PythonImportCache & cache);
 
+	/// Free-threaded builds: true once the call_once initializer has published
+	/// `object` (acquire; pairs with the release store at the end of the
+	/// initializer). The single fast-path predicate shared by operator() and
+	/// Load(), so the two cannot drift apart.
+	bool IsPublished() const
+	{
+		return loaded.load(std::memory_order_acquire);
+	}
+
 private:
 	String name;
 	bool is_module;
@@ -54,6 +64,10 @@ private:
 	PythonImportCacheItem * parent;
 	py::handle object;
 	std::once_flag load_flag;
+	/// Free-threaded builds only: set (release) after the call_once initializer
+	/// has published `object`, giving steady-state accesses a lock-free fast
+	/// path that skips the hierarchy rebuild and the call_once entirely.
+	std::atomic<bool> loaded{false};
 };
 
 } // namespace CHDB
