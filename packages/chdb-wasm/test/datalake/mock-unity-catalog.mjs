@@ -26,7 +26,6 @@ export function startMockUnityCatalog({ port, descriptor }) {
         'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
         'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || '*',
         'Access-Control-Expose-Headers': '*',
-        'Access-Control-Allow-Private-Network': 'true',
         'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       res.end(payload);
