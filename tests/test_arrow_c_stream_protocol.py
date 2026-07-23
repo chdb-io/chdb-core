@@ -12,7 +12,9 @@ with the Python() table engine, in addition to the dedicated pandas /
 pyarrow.Table paths.
 """
 
+import gc
 import unittest
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import chdb
@@ -183,6 +185,83 @@ class TestArrowCStreamOutput(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_stream_survives_result_garbage_collection(self):
+        # The exported stream references the result buffer directly; it must
+        # keep the result alive after the query_result object is collected
+        # (real consumers hold only the stream, not the chdb result).
+        res = chdb.query(
+            "SELECT number FROM numbers(300000) SETTINGS max_block_size = 65536", "Arrow"
+        )
+        reader = pa.RecordBatchReader.from_stream(res)
+        del res
+        gc.collect()
+        table = reader.read_all()
+        self.assertEqual(table.num_rows, 300000)
+        self.assertEqual(pc.sum(table.column("number")).as_py(), 300000 * 299999 // 2)
+
+    def test_requested_schema_accepted_and_ignored(self):
+        # The spec allows the producer to ignore requested_schema; the keyword
+        # must be accepted and the exported data stay unchanged.
+        res = chdb.query(SAMPLE_SQL, "Arrow")
+        requested = pa.schema([("id", pa.int64())]).__arrow_c_schema__()
+        capsule = res.__arrow_c_stream__(requested_schema=requested)
+        self.assertEqual(type(capsule).__name__, "PyCapsule")
+
+        class CapsuleHolder:
+            def __init__(self, cap):
+                self._cap = cap
+
+            def __arrow_c_stream__(self, requested_schema=None):
+                return self._cap
+
+        table = pa.table(CapsuleHolder(capsule))
+        self.assertEqual(table.to_pylist(), EXPECTED_ROWS)
+
+    def test_dictionary_and_nested_output_types(self):
+        sql = """
+            SELECT
+                toLowCardinality(toString(number % 3)) AS lc,
+                map('k', number) AS m,
+                tuple(number, toString(number)) AS t,
+                toFixedString('ab', 2) AS fs
+            FROM numbers(5)
+            SETTINGS output_format_arrow_low_cardinality_as_dictionary = 1
+        """
+        for fmt in ("Arrow", "ArrowStream"):
+            with self.subTest(fmt=fmt):
+                table = pa.table(chdb.query(sql, fmt))
+                self.assertTrue(pa.types.is_dictionary(table.schema.field("lc").type))
+                self.assertEqual(
+                    table.column("lc").to_pylist(), ["0", "1", "2", "0", "1"]
+                )
+                self.assertEqual(
+                    table.column("m").to_pylist(), [[("k", n)] for n in range(5)]
+                )
+                self.assertEqual(
+                    table.column("t").to_pylist()[3], {"1": 3, "2": "3"}
+                )
+                self.assertEqual(table.column("fs").to_pylist(), [b"ab"] * 5)
+
+    def test_file_magic_with_garbage_payload_raises(self):
+        # Buffer that starts with the IPC file magic but is not a valid file
+        # must surface as ValueError, not crash on ValueOrDie.
+        res = chdb.query("SELECT 'ARROW1' || repeat('x', 64)", "RawBLOB")
+        with self.assertRaisesRegex(ValueError, "Arrow IPC file"):
+            res.__arrow_c_stream__()
+
+    def test_streaming_result_second_export_yields_empty(self):
+        # Streams are single-use: pin the behavior of a second export after
+        # the first consumer drained the stream.
+        conn = chdb.connect(":memory:")
+        try:
+            stream = conn.send_query("SELECT number AS n FROM numbers(10)", "Arrow")
+            first = pa.table(stream)
+            self.assertEqual(first.num_rows, 10)
+            second = pa.table(stream)
+            self.assertEqual(second.num_rows, 0)
+        finally:
+            conn.close()
+
 
 class TestArrowCStreamInput(unittest.TestCase):
     @unittest.skipIf(pl is None, "polars not installed")
@@ -289,6 +368,159 @@ class TestArrowCStreamInput(unittest.TestCase):
         df = pd.DataFrame({"x": [1, 2, 3], "s": ["a", "b", "c"]})
         out = chdb.query("SELECT sum(x), max(s) FROM Python(df) WHERE x > 1", "CSV")
         self.assertEqual(str(out), '5,"c"\n')
+
+    @unittest.skipIf(pd is None, "pandas not installed")
+    def test_pandas_never_takes_generic_stream_path(self):
+        # Falsifiable version of the guard test: a pandas subclass whose
+        # __arrow_c_stream__ raises proves neither schema inference nor the
+        # scan touches the generic protocol path for pandas objects.
+        class GuardedDF(pd.DataFrame):
+            def __arrow_c_stream__(self, requested_schema=None):
+                raise AssertionError("generic stream path used for pandas")
+
+        df = GuardedDF({"x": [1, 2, 3], "s": ["a", "b", "c"]})
+        out = chdb.query("SELECT sum(x), max(s) FROM Python(df) WHERE x > 1", "CSV")
+        self.assertEqual(str(out), '5,"c"\n')
+
+    def test_large_batch_sliced_into_blocks(self):
+        # One batch far larger than max_block_size exercises the reader's
+        # offset/slice bookkeeping through the generic input path.
+        schema = pa.schema([("x", pa.int64())])
+        reader = pa.RecordBatchReader.from_batches(
+            schema, [pa.record_batch([pa.array(range(1_000_000))], schema=schema)]
+        )
+        out = chdb.query(
+            "SELECT count() AS c, sum(x) AS s, min(x) AS lo, max(x) AS hi"
+            " FROM Python(reader) SETTINGS max_block_size = 65536",
+            "CSV",
+        )
+        self.assertEqual(str(out), f"1000000,{1_000_000 * 999_999 // 2},0,999999\n")
+
+    def test_many_batches_with_parallel_scan(self):
+        # Multiple batches consumed under max_threads > 1: the scan states pull
+        # concurrently from the shared, mutex-guarded stream.
+        schema = pa.schema([("x", pa.int64())])
+        batches = [
+            pa.record_batch(
+                [pa.array(range(i * 100_000, (i + 1) * 100_000))], schema=schema
+            )
+            for i in range(10)
+        ]
+        reader = pa.RecordBatchReader.from_batches(schema, batches)
+        out = chdb.query(
+            "SELECT count() AS c, sum(x) AS s FROM Python(reader) SETTINGS max_threads = 8",
+            "CSV",
+        )
+        self.assertEqual(str(out), f"1000000,{1_000_000 * 999_999 // 2}\n")
+
+    def test_dictionary_encoded_input(self):
+        # Dictionary arrays must survive the C ABI hop and decode correctly.
+        arr = pa.array(["x", "y", "x", "z", "x"], pa.dictionary(pa.int32(), pa.string()))
+        batch = pa.record_batch([arr], names=["d"])
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+        out = chdb.query(
+            "SELECT d, count() AS c FROM Python(reader) GROUP BY d ORDER BY d", "CSV"
+        )
+        self.assertEqual(str(out), '"x",3\n"y",1\n"z",1\n')
+
+    @unittest.skipIf(pl is None, "polars not installed")
+    def test_polars_categorical_input(self):
+        df = pl.DataFrame({"c": pl.Series(["a", "b", "a", "c", "a"], dtype=pl.Categorical)})
+        out = chdb.query(
+            "SELECT c, count() AS n FROM Python(df) GROUP BY c ORDER BY c", "CSV"
+        )
+        self.assertEqual(str(out), '"a",3\n"b",1\n"c",1\n')
+
+    def test_timezone_timestamp_and_decimal_input(self):
+        ts = datetime(2026, 7, 22, 1, 2, 3, 456000, tzinfo=timezone.utc)
+        expected_micros = int(ts.timestamp()) * 10**6 + 456000
+        batch = pa.record_batch(
+            [
+                pa.array([ts], pa.timestamp("us", tz="Asia/Shanghai")),
+                pa.array([Decimal("123.4567")], pa.decimal128(18, 4)),
+            ],
+            names=["ts", "dec"],
+        )
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+        out = chdb.query(
+            "SELECT toUnixTimestamp64Micro(ts) AS micros, dec FROM Python(reader)", "CSV"
+        )
+        self.assertEqual(str(out), f"{expected_micros},123.4567\n")
+
+    def test_empty_batch_mid_stream_is_skipped(self):
+        # Zero-length batches are legal mid-stream and must not truncate the scan.
+        schema = pa.schema([("x", pa.int64())])
+        batches = [
+            pa.record_batch([pa.array([1, 2])], schema=schema),
+            pa.record_batch([pa.array([], pa.int64())], schema=schema),
+            pa.record_batch([pa.array([3, 4, 5])], schema=schema),
+        ]
+        reader = pa.RecordBatchReader.from_batches(schema, batches)
+        out = chdb.query("SELECT count() AS c, sum(x) AS s FROM Python(reader)", "CSV")
+        self.assertEqual(str(out), "5,15\n")
+
+    def test_producer_raising_on_export_fails_cleanly(self):
+        class Boom:
+            def __arrow_c_stream__(self, requested_schema=None):
+                raise RuntimeError("boom-marker")
+
+        src = Boom()
+        with self.assertRaisesRegex(Exception, "boom-marker"):
+            chdb.query("SELECT * FROM Python(src)", "CSV")
+        # Engine must stay usable after the failed producer.
+        self.assertEqual(str(chdb.query("SELECT 1", "CSV")), "1\n")
+
+    def test_producer_returning_non_capsule_fails_cleanly(self):
+        class Fake:
+            def __arrow_c_stream__(self, requested_schema=None):
+                return "not a capsule"
+
+        src = Fake()
+        with self.assertRaisesRegex(Exception, "PyCapsule"):
+            chdb.query("SELECT * FROM Python(src)", "CSV")
+
+    @unittest.skipIf(pl is None, "polars not installed")
+    def test_failed_query_releases_parked_stream(self):
+        # Schema inference parks the stream; if the query then fails in
+        # analysis, the parked stream is destroyed unconsumed and the object
+        # must remain queryable afterwards.
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        with self.assertRaises(Exception):
+            chdb.query("SELECT no_such_col FROM Python(df)", "CSV")
+        out = chdb.query("SELECT count() FROM Python(df)", "CSV")
+        self.assertEqual(str(out), "3\n")
+
+    def test_failed_query_consumes_single_export(self):
+        # Even when the query fails after schema inference, exactly one export
+        # must have happened (the parked stream, later released unconsumed).
+        table = pa.table({"x": [1, 2, 3]})
+
+        class OneShotSource:
+            def __init__(self, tbl):
+                self._tbl = tbl
+                self._exports = 0
+
+            def __arrow_c_stream__(self, requested_schema=None):
+                self._exports += 1
+                if self._exports > 1:
+                    raise RuntimeError("stream already consumed")
+                return self._tbl.__arrow_c_stream__(requested_schema)
+
+        src = OneShotSource(table)
+        with self.assertRaises(Exception):
+            chdb.query("SELECT no_such_col FROM Python(src)", "CSV")
+        self.assertEqual(src._exports, 1)
+
+    def test_streaming_result_as_python_table_input(self):
+        # Composition of both new features: a StreamingResult (Python-backed
+        # reader) consumed by the generic Python() scan of another query.
+        conn = chdb.connect(":memory:")
+        try:
+            stream = conn.send_query("SELECT number AS n FROM numbers(100000)", "Arrow")
+            out = chdb.query("SELECT count() AS c, sum(n) AS s FROM Python(stream)", "CSV")
+            self.assertEqual(str(out), f"100000,{100000 * 99999 // 2}\n")
+        finally:
+            conn.close()
 
     def test_one_shot_producer_single_export_per_query(self):
         # The protocol does not guarantee producers can export more than once.
