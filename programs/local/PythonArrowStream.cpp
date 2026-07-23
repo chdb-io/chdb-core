@@ -3,6 +3,7 @@
 #include "PybindWrapper.h"
 
 #include <cstring>
+#include <stdexcept>
 
 #include <Common/Exception.h>
 #include <arrow/buffer.h>
@@ -74,12 +75,10 @@ std::unique_ptr<ArrowArrayStreamWrapper> importArrowCStream(const py::object & o
     }
 }
 
-ColumnsDescription getTableStructureFromArrowCStream(const py::object & obj, ContextPtr & context)
+ColumnsDescription tableStructureFromArrowStream(ArrowArrayStreamWrapper & stream, ContextPtr & context)
 {
-    auto stream = importArrowCStream(obj);
-
     ArrowSchemaWrapper schema;
-    stream->getSchema(schema);
+    stream.getSchema(schema);
 
     NamesAndTypesList names_and_types;
     ArrowSchemaWrapper::convertArrowSchema(schema, names_and_types, context);
@@ -122,7 +121,7 @@ py::object exportArrowIPCAsCapsule(const char * data, size_t size, std::shared_p
     chassert(py::gil_check());
 
     if (!data || size == 0)
-        throw py::value_error(
+        throw std::invalid_argument(
             "result has no Arrow payload; run the query with output format \"Arrow\" (or \"ArrowStream\")");
 
     auto buffer = std::make_shared<KeepaliveBuffer>(
@@ -135,7 +134,7 @@ py::object exportArrowIPCAsCapsule(const char * data, size_t size, std::shared_p
         /// Arrow IPC file format (output format "Arrow").
         auto file_reader_result = arrow::ipc::RecordBatchFileReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
         if (!file_reader_result.ok())
-            throw py::value_error("failed to open Arrow IPC file from result buffer: " + file_reader_result.status().ToString());
+            throw std::invalid_argument("failed to open Arrow IPC file from result buffer: " + file_reader_result.status().ToString());
         auto file_reader = std::move(file_reader_result).ValueOrDie();
 
         std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
@@ -144,13 +143,13 @@ py::object exportArrowIPCAsCapsule(const char * data, size_t size, std::shared_p
         {
             auto batch_result = file_reader->ReadRecordBatch(i);
             if (!batch_result.ok())
-                throw py::value_error("failed to read Arrow record batch from result buffer: " + batch_result.status().ToString());
+                throw std::invalid_argument("failed to read Arrow record batch from result buffer: " + batch_result.status().ToString());
             batches.push_back(std::move(batch_result).ValueOrDie());
         }
 
         auto reader_result = arrow::RecordBatchReader::Make(std::move(batches), file_reader->schema());
         if (!reader_result.ok())
-            throw py::value_error("failed to create Arrow record batch reader: " + reader_result.status().ToString());
+            throw std::invalid_argument("failed to create Arrow record batch reader: " + reader_result.status().ToString());
         reader = std::move(reader_result).ValueOrDie();
     }
     else
@@ -158,7 +157,7 @@ py::object exportArrowIPCAsCapsule(const char * data, size_t size, std::shared_p
         /// Arrow IPC stream format (output format "ArrowStream").
         auto stream_reader_result = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
         if (!stream_reader_result.ok())
-            throw py::value_error(
+            throw std::invalid_argument(
                 "result buffer is not Arrow IPC data; run the query with output format \"Arrow\" (or \"ArrowStream\"): "
                 + stream_reader_result.status().ToString());
         reader = std::move(stream_reader_result).ValueOrDie();
@@ -167,7 +166,7 @@ py::object exportArrowIPCAsCapsule(const char * data, size_t size, std::shared_p
     auto stream = std::make_unique<ArrowArrayStream>();
     auto status = arrow::ExportRecordBatchReader(std::move(reader), stream.get());
     if (!status.ok())
-        throw py::value_error("failed to export Arrow record batch reader: " + status.ToString());
+        throw std::invalid_argument("failed to export Arrow record batch reader: " + status.ToString());
 
     PyObject * capsule = PyCapsule_New(stream.get(), kArrowStreamCapsuleName, arrowStreamCapsuleDestructor);
     if (!capsule)

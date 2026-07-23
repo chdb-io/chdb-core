@@ -30,6 +30,11 @@ try:
 except ImportError:
     duckdb = None
 
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
 
 EXPECTED_ROWS = [
     {"id": 1, "name": "Alice", "score": 9.5},
@@ -121,7 +126,11 @@ class TestArrowCStreamOutput(unittest.TestCase):
         self.assertEqual(row["arr"], [1, 2, 3])
 
     def test_large_result_multiple_batches(self):
-        res = chdb.query("SELECT number FROM numbers(300000)", "Arrow")
+        # Pin the block size so the multi-batch expectation does not depend on
+        # the engine's default block size or writer batching strategy.
+        res = chdb.query(
+            "SELECT number FROM numbers(300000) SETTINGS max_block_size = 65536", "Arrow"
+        )
         reader = pa.RecordBatchReader.from_stream(res)
         batches = list(reader)
         self.assertGreater(len(batches), 1, "expected multiple record batches")
@@ -272,14 +281,35 @@ class TestArrowCStreamInput(unittest.TestCase):
         out = chdb.query("SELECT sum(x), max(s) FROM Python(table)", "CSV")
         self.assertEqual(str(out), '6,"c"\n')
 
+    @unittest.skipIf(pd is None, "pandas not installed")
     def test_pandas_still_works(self):
         # pandas >= 2.2 exposes __arrow_c_stream__ too, but must stay on the
-        # dedicated pandas scan (is_pandas_df guard).
-        import pandas as pd
-
+        # dedicated pandas scan (is_pandas_df guard). With pandas < 2.2 this
+        # degenerates to a plain pandas-path regression check.
         df = pd.DataFrame({"x": [1, 2, 3], "s": ["a", "b", "c"]})
         out = chdb.query("SELECT sum(x), max(s) FROM Python(df) WHERE x > 1", "CSV")
         self.assertEqual(str(out), '5,"c"\n')
+
+    def test_one_shot_producer_single_export_per_query(self):
+        # The protocol does not guarantee producers can export more than once.
+        # Schema inference must park the imported stream for the scan instead
+        # of exporting a second one.
+        table = pa.table({"x": [1, 2, 3], "s": ["a", "b", "c"]})
+
+        class OneShotSource:
+            def __init__(self, tbl):
+                self._tbl = tbl
+                self._exported = False
+
+            def __arrow_c_stream__(self, requested_schema=None):
+                if self._exported:
+                    raise RuntimeError("stream already consumed")
+                self._exported = True
+                return self._tbl.__arrow_c_stream__(requested_schema)
+
+        src = OneShotSource(table)
+        out = chdb.query("SELECT sum(x) AS t, max(s) AS m FROM Python(src)", "CSV")
+        self.assertEqual(str(out), '6,"c"\n')
 
 
 if __name__ == "__main__":

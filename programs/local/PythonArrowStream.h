@@ -23,9 +23,10 @@ bool hasArrowCStreamMethod(const py::handle & obj);
 /// carried by the returned "arrow_array_stream" PyCapsule. GIL must be held.
 std::unique_ptr<ArrowArrayStreamWrapper> importArrowCStream(const py::object & obj);
 
-/// Derive the table structure from the stream schema. Calls __arrow_c_stream__
-/// once and reads only the schema (no batches are consumed). GIL must be held.
-DB::ColumnsDescription getTableStructureFromArrowCStream(const py::object & obj, DB::ContextPtr & context);
+/// Derive the table structure from the stream schema. get_schema is idempotent
+/// and consumes no batches, so this may be called repeatedly on a stream that
+/// is later handed to the scan.
+DB::ColumnsDescription tableStructureFromArrowStream(ArrowArrayStreamWrapper & stream, DB::ContextPtr & context);
 
 /// Export a buffer holding Arrow IPC data (file or stream format) as a
 /// PyCapsule("arrow_array_stream"). The record batches reference the buffer

@@ -849,7 +849,7 @@ PYBIND11_MODULE(_chdb, m)
             [](query_result & self, py::object /*requested_schema*/)
             {
                 if (self.has_error())
-                    throw py::value_error("query result carries an error: " + self.error_message().cast<std::string>());
+                    throw std::invalid_argument("query result carries an error: " + self.error_message().cast<std::string>());
                 return CHDB::exportArrowIPCAsCapsule(
                     self.data(), self.size(), std::static_pointer_cast<void>(self.get_result_wrapper()));
             },

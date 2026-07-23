@@ -296,7 +296,11 @@ Pipe StoragePython::readImpl(
             /// expose __arrow_c_stream__ (>= 2.2) but stay on the dedicated
             /// column-cache scan above, which supports pushdowns this generic
             /// stream path cannot (the protocol has no projection mechanism).
-            auto arrow_stream = CHDB::importArrowCStream(data_source);
+            /// Prefer the stream parked by schema inference; export a fresh
+            /// one only for additional scans (e.g. self-joins).
+            auto arrow_stream = data_source_wrapper->takeCachedArrowStream();
+            if (!arrow_stream)
+                arrow_stream = CHDB::importArrowCStream(data_source);
             arrow_table_reader = std::make_shared<ArrowTableReader>(
                 std::move(arrow_stream), sample_block,
                 format_settings, num_streams, max_block_size);
