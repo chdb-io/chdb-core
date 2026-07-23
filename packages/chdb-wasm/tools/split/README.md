@@ -56,9 +56,9 @@ venv at `ICEBERG_PY` (default `/tmp/iceberg-venv/bin/python`) with
 `pyiceberg[sql-sqlite] pyarrow moto[server] s3fs deltalake`; without it those
 statements are skipped (and their code ends up in the deferred module).
 
-## The lite pipeline (chdb-wasm-lite)
+## The lite pipeline (chdb-cloudflare)
 
-`packages/chdb-wasm-lite` ships a PRIMARY-ONLY bundle sized for Cloudflare
+`packages/chdb-cloudflare` ships a PRIMARY-ONLY bundle sized for Cloudflare
 Workers (10 MiB gzipped Worker limit; workerd forbids runtime wasm
 compilation, so a deferred module could never load there). Differences from
 the full split: single-threaded tree relinked with `-DWASM_INITIAL_MEMORY=64MB`
@@ -80,7 +80,7 @@ CHDB_SKIP_LAKE=1 node tools/split/split-wasm.mjs \
     --build ../../buildwasm-st/programs/wasm --out /tmp/chdb-split-lite \
     --corpus tools/split/profile-corpus-lite.sql \
     --extra-keep tools/split/keep-lite.txt --lite-glue
-cd ../chdb-wasm-lite && node scripts/build-lite.mjs /tmp/chdb-split-lite && node test/lite.test.mjs
+cd ../chdb-cloudflare && node scripts/build-lite.mjs /tmp/chdb-split-lite && node test/lite.test.mjs
 ```
 
 Measured: 38.0MB raw / **7.97 MiB gzipped** (< the 9.5 MiB budget that leaves

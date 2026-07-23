@@ -1,7 +1,7 @@
 {
-  "name": "chdb-wasm-lite",
+  "name": "chdb-cloudflare",
   "version": "0.1.0",
-  "description": "Size-optimized chdb (ClickHouse) WebAssembly build — a single wasm under 10 MiB gzipped, sized for Cloudflare Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
+  "description": "chdb (ClickHouse) for Cloudflare Workers — a single size-capped WebAssembly bundle with a JSPI async-fetch HTTP bridge, so url()/s3() work inside Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -39,6 +39,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chdb-io/chdb-core.git",
-    "directory": "packages/chdb-wasm-lite"
+    "directory": "packages/chdb-cloudflare"
   }
 }

@@ -22,7 +22,7 @@ on:
         type: string
         default: ''
       lite_version:
-        description: 'chdb-wasm-lite version to publish (e.g. 0.1.0); leave empty to skip the lite publish'
+        description: 'chdb-cloudflare version to publish (e.g. 0.1.0); leave empty to skip the lite publish'
         type: string
         default: ''
   push:
@@ -294,7 +294,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      # ---- chdb-wasm-lite: a single-file bundle sized for Cloudflare Workers
+      # ---- chdb-cloudflare: a single-file bundle sized for Cloudflare Workers
       # (10 MiB gzipped Worker limit). The st tree is relinked once more with a
       # 64MB initial memory (a Workers isolate caps total memory at 128MB) and
       # WASM_JSPI=ON (the async-fetch HTTP bridge — the only transport that
@@ -325,8 +325,8 @@ jobs:
             --extra-keep "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/keep-lite.txt" \
             --lite-glue
 
-      - name: Build + test chdb-wasm-lite package (incl. size gate)
-        working-directory: packages/chdb-wasm-lite
+      - name: Build + test chdb-cloudflare package (incl. size gate)
+        working-directory: packages/chdb-cloudflare
         run: |
           node scripts/build-lite.mjs "${GITHUB_WORKSPACE}/split-out-lite"
           node test/lite.test.mjs
@@ -334,8 +334,8 @@ jobs:
       - name: Upload lite artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chdb-wasm-lite
-          path: packages/chdb-wasm-lite/dist
+          name: chdb-cloudflare
+          path: packages/chdb-cloudflare/dist
           retention-days: 1
           if-no-files-found: error
 
@@ -347,7 +347,7 @@ jobs:
       # matrix, the split pipeline) must have passed to reach here. Tag-driven
       # publishing stays disabled (was: startsWith(github.ref, 'refs/tags/v')).
       # Each package publishes independently: fill `version` for chdb-wasm,
-      # `lite_version` for chdb-wasm-lite, either, or both. Checking `publish`
+      # `lite_version` for chdb-cloudflare, either, or both. Checking `publish`
       # with both empty fails loudly instead of silently doing nothing.
       - name: Validate publish inputs
         if: github.event_name == 'workflow_dispatch' && inputs.publish
@@ -394,12 +394,12 @@ jobs:
           # Hand the tarball path to the release-upload step below.
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
 
-      # chdb-wasm-lite is versioned independently of chdb-wasm: pass
+      # chdb-cloudflare is versioned independently of chdb-wasm: pass
       # lite_version to publish it (empty skips it, so either package can be
       # released on its own).
-      - name: Publish chdb-wasm-lite to npm
+      - name: Publish chdb-cloudflare to npm
         if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.lite_version != ''
-        working-directory: packages/chdb-wasm-lite
+        working-directory: packages/chdb-cloudflare
         env:
           VERSION: ${{ inputs.lite_version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -408,8 +408,8 @@ jobs:
           npm pkg set version="$VERSION"
           if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
           npm pack
-          echo "publishing chdb-wasm-lite-${VERSION}.tgz under dist-tag '$TAG'"
-          npm publish "chdb-wasm-lite-${VERSION}.tgz" --tag "$TAG"
+          echo "publishing chdb-cloudflare-${VERSION}.tgz under dist-tag '$TAG'"
+          npm publish "chdb-cloudflare-${VERSION}.tgz" --tag "$TAG"
 
       # Best-effort: attach the published npm tarball (chdb-wasm-<version>.tgz — it embeds
       # both wasm bundles) to the GitHub release, creating the release if the tag has none

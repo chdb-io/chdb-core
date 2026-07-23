@@ -1,17 +1,18 @@
-# chdb-wasm-lite
+# chdb-cloudflare
 
-Size-optimized [chdb](https://github.com/chdb-io/chdb) (ClickHouse) for
-WebAssembly: **one `chdb.wasm` under 10 MiB gzipped**, sized to fit the
-[Cloudflare Workers](https://developers.cloudflare.com/workers/platform/limits/)
-paid-plan bundle limit. Same SDK and API as
-[`chdb-wasm`](https://www.npmjs.com/package/chdb-wasm).
+[chdb](https://github.com/chdb-io/chdb) (ClickHouse) for
+[Cloudflare Workers](https://developers.cloudflare.com/workers/): **one
+`chdb.wasm` under 10 MiB gzipped**, sized to fit the Workers
+[paid-plan bundle limit](https://developers.cloudflare.com/workers/platform/limits/),
+with a JSPI async-fetch HTTP bridge so `url()`/`s3()` work inside Workers.
+Same SDK and API as [`chdb-wasm`](https://www.npmjs.com/package/chdb-wasm).
 
 ## How it differs from `chdb-wasm`
 
-The full package splits the engine into a hot primary plus a lazily-downloaded
+The full `chdb-wasm` package splits the engine into a hot primary plus a lazily-downloaded
 `chdb.deferred.wasm`, so every SQL feature works everywhere. Workers forbids
 runtime wasm compilation — a deferred module can never be loaded there — so
-**lite ships only the primary**, profiled against a corpus of the most common
+**chdb-cloudflare ships only the primary**, profiled against a corpus of the most common
 SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
 
 - core operators: filtering, aggregation (`GROUP BY`/`HAVING`/`ROLLUP`/`CUBE`/
@@ -38,10 +39,10 @@ SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
 
 **Networking runs on JSPI.** The full package's HTTP bridge waits
 synchronously (sync XHR in browsers, a subprocess in Node), which Cloudflare's
-workerd cannot do. The lite bundle instead links with WebAssembly JavaScript
+workerd cannot do. This package instead links with WebAssembly JavaScript
 Promise Integration: the wasm stack suspends at a plain async `fetch()` and
 resumes when it settles — zero size cost, and it is exactly what makes
-`url()`/`s3()` work *inside* Workers. The trade-off is that lite requires a
+`url()`/`s3()` work *inside* Workers. The trade-off is that this package requires a
 JSPI-capable engine: **workerd (Cloudflare Workers), Chrome/Edge 137+, or
 Node 24+ with `--experimental-wasm-jspi`**. The data-lake stack
 (Iceberg/Delta/catalogs) stays excluded for size.
@@ -49,7 +50,7 @@ Node 24+ with `--experimental-wasm-jspi`**. The data-lake stack
 Anything outside that set throws immediately with:
 
 ```
-chdb-wasm-lite: this SQL feature is not included in the size-optimized lite build; use the full chdb-wasm package
+chdb-cloudflare: this SQL feature is not included in this size-optimized Cloudflare Workers build; use the full chdb-wasm package
 ```
 
 The bundle is single-threaded (Workers has no threads) and links with a 64MB
@@ -60,10 +61,10 @@ initial memory (growable; a Workers isolate caps total memory at 128MB).
 Same API as `chdb-wasm`:
 
 ```js
-import { AsyncChdb } from 'chdb-wasm-lite';
+import { AsyncChdb } from 'chdb-cloudflare';
 
 const db = await AsyncChdb.create({
-  moduleUrl: new URL('chdb-wasm-lite/chdb.mjs', import.meta.url).href,
+  moduleUrl: new URL('chdb-cloudflare/chdb.mjs', import.meta.url).href,
 });
 const result = await db.query('SELECT version()', 'CSV');
 console.log(result.text());
@@ -77,7 +78,7 @@ module names are not URLs). The suspendable exports return Promises, so call
 them with `ccall(..., {async: true})`:
 
 ```js
-import createChdbModule from 'chdb-wasm-lite/chdb.mjs';
+import createChdbModule from 'chdb-cloudflare/chdb.mjs';
 import wasmModule from './chdb.wasm'; // static import -> compiled at deploy
 
 const mod = await createChdbModule({

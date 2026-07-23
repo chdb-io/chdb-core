@@ -1,4 +1,4 @@
-// Tests for the chdb-wasm-lite bundle: the size gate, the common-SQL surface
+// Tests for the chdb-cloudflare bundle: the size gate, the common-SQL surface
 // that must be fully self-contained, and the "not in lite" behavior of
 // everything else.
 //
@@ -82,7 +82,7 @@ function probe(body, timeoutMs = 300000) {
 {
   assert.ok(!existsSync(join(dir, 'chdb.deferred.wasm')), 'lite must not ship a deferred module');
   const glue = readFileSync(join(dir, 'chdb.mjs'), 'utf8');
-  assert.ok(glue.includes('chdb-wasm-lite'), 'glue must carry the --lite patch');
+  assert.ok(glue.includes('chdb-cloudflare: this SQL feature is not included'), 'glue must carry the --lite patch');
   assert.ok(!glue.includes('chdbWriteProfile'), 'glue must not carry the profile-collect patch');
   assert.ok(glue.includes('WebAssembly.promising'),
     'lite glue must be a JSPI build (WASM_JSPI=ON) — the async HTTP bridge is what lets url()/s3() run in Workers');
@@ -174,7 +174,7 @@ function probe(body, timeoutMs = 300000) {
 {
   const r = probe(`
     try { await q("SELECT toModifiedJulianDay('2024-03-15')"); console.log('UNEXPECTED-OK'); }
-    catch (e) { console.log(e.message.includes('chdb-wasm-lite') ? 'LITE-ERROR-OK' : 'BAD:' + e.message.slice(0, 80)); }
+    catch (e) { console.log(e.message.includes('chdb-cloudflare') ? 'LITE-ERROR-OK' : 'BAD:' + e.message.slice(0, 80)); }
     console.log(await q('SELECT 1 + 1'));
   `, 120000);
   assert.strictEqual(r.status, 0, `cold probe failed or hung: ${r.stderr?.slice(-300)}`);

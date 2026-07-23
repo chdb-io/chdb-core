@@ -1,4 +1,4 @@
-// Assemble the chdb-wasm-lite dist:
+// Assemble the chdb-cloudflare dist:
 //   * the SDK (compiled JS + typings) is copied verbatim from the sibling
 //     chdb-wasm package — same API, the bundle path is just a parameter there
 //   * chdb.mjs + chdb.wasm come from the LITE split output (single-threaded,
@@ -34,7 +34,7 @@ for (const f of ['chdb.mjs', 'chdb.wasm']) {
 // The lite glue must carry the --lite patch, not the lazy loader: shipping a
 // lazy-loading glue without a deferred module would fail with ENOENT instead
 // of a clear error.
-if (!readFileSync(join(liteOut, 'chdb.mjs'), 'utf8').includes('chdb-wasm-lite: this SQL feature is not included')) {
+if (!readFileSync(join(liteOut, 'chdb.mjs'), 'utf8').includes('chdb-cloudflare: this SQL feature is not included')) {
   console.error(`${join(liteOut, 'chdb.mjs')} lacks the --lite glue patch — run split-wasm.mjs with --lite-glue`);
   process.exit(1);
 }
@@ -54,4 +54,4 @@ copyFileSync(join(liteOut, 'chdb.mjs'), join(distDir, 'chdb.mjs'));
 copyFileSync(join(liteOut, 'chdb.wasm'), join(distDir, 'chdb.wasm'));
 
 const gz = gzipSync(readFileSync(join(distDir, 'chdb.wasm')), { level: 9 }).length;
-console.log(`chdb-wasm-lite dist assembled: chdb.wasm ${(gz / 1048576).toFixed(2)} MiB gzipped`);
+console.log(`chdb-cloudflare dist assembled: chdb.wasm ${(gz / 1048576).toFixed(2)} MiB gzipped`);

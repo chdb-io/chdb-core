@@ -27,7 +27,7 @@
 //   profile per worker plus the main instance and wasm-split --merge-profiles
 //   unions them.
 //
-// --lite (chdb-wasm-lite, primary-only bundle):
+// --lite (chdb-cloudflare, primary-only bundle):
 //   The lite package ships NO deferred module (Cloudflare Workers forbids
 //   runtime wasm compilation, so lazy loading cannot exist there). A cold
 //   call must fail immediately with a message that explains itself instead
@@ -88,7 +88,7 @@ if (doLazy) {
 }
 
 if (doLite) {
-  if (src.includes('chdb-wasm-lite: this SQL feature is not included')) {
+  if (src.includes('chdb-cloudflare: this SQL feature is not included')) {
     console.log('lite: already patched');
   } else if (src.includes('(wasmBinaryFile??=findWasmBinary()).slice(0,-5)')) {
     // Both patches rewrite the same anchors; running --lite over a glue that
@@ -110,7 +110,7 @@ if (doLite) {
     // function, and a synchronous throw from a suspending import propagates
     // to the wasm call site the same way a rejection would.
     const stub =
-      'let ret=(...args)=>{throw new Error("chdb-wasm-lite: this SQL feature is not included in the size-optimized lite build; use the full chdb-wasm package")}';
+      'let ret=(...args)=>{throw new Error("chdb-cloudflare: this SQL feature is not included in this size-optimized Cloudflare Workers build; use the full chdb-wasm package")}';
     const trampolines = [
       'let ret=(...args)=>{var imports={primary:wasmRawExports};loadSplitModule(secondaryFile,imports,base);return wasmTable.get(BigInt(base))(...args)}',
       'let ret=async(...args)=>{var imports={primary:wasmRawExports};await loadSplitModule(secondaryFile,imports,base);return wasmTable.get(BigInt(base))(...args)}',
