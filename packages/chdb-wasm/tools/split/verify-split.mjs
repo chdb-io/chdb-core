@@ -19,15 +19,18 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const dir = process.argv[2];
-if (!dir || !existsSync(join(dir, 'chdb.deferred.wasm'))) {
+// chdb.mjs is read eagerly below (JSPI probe), so guard it here too.
+if (!dir || !existsSync(join(dir, 'chdb.deferred.wasm')) || !existsSync(join(dir, 'chdb.mjs'))) {
   console.error('usage: verify-split.mjs <dir with chdb.mjs/chdb.wasm/chdb.deferred.wasm>');
   process.exit(2);
 }
 const pkgDir = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
-// A WASM_JSPI bundle (glue wraps imports in WebAssembly.Suspending) can only
-// instantiate under Node with the JSPI flag; probe children inherit it.
-const jspiFlags = readFileSync(join(dir, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+// A WASM_JSPI bundle (imports wrapped in WebAssembly.Suspending, exports in
+// WebAssembly.promising) can only instantiate under Node with the JSPI flag;
+// probe children inherit it. Probe for either wrapper.
+const glueSrc = readFileSync(join(dir, 'chdb.mjs'), 'utf8');
+const jspiFlags = glueSrc.includes('WebAssembly.promising') || glueSrc.includes('WebAssembly.Suspending')
   ? ['--experimental-wasm-jspi'] : [];
 
 // One temp root for all probe scripts, removed on exit (repeated runs would

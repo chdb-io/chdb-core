@@ -22,6 +22,8 @@ namespace DB
 ///   [0] status  [1] headers ptr  [2] headers len  [3] body ptr  [4] body len
 /// The C++ caller owns (frees) the two allocations. Returns 0 on success, -1
 /// when no transport is available or the request failed outright.
+/// KEEP IN SYNC with chdb_wasm_http_request_async_js below: both speak the
+/// same header-blob/Range/out-struct protocol and must not diverge.
 EM_JS(int, chdb_wasm_http_request_js, (
     const char * method_ptr, const char * url_ptr, const char * headers_ptr,
     const char * body_ptr, double body_len,
@@ -43,6 +45,8 @@ EM_JS(int, chdb_wasm_http_request_js, (
         var status = -1;
         var respHeaders = "";
         var respBytes = null;
+        var hdrPtr = 0;
+        var bodyPtr = 0;
         if (typeof XMLHttpRequest !== 'undefined') {
             var xhr = new XMLHttpRequest();
             xhr.open(method, url, false);  // synchronous; wasm pthreads run on worker threads where this is permitted
@@ -111,8 +115,6 @@ EM_JS(int, chdb_wasm_http_request_js, (
         if (rangeOff >= 0 && status === 200 && respBytes)
             respBytes = respBytes.subarray(rangeOff, rangeOff + rangeLen);
         var hdrBytes = new TextEncoder().encode(respHeaders);
-        var hdrPtr = 0;
-        var bodyPtr = 0;
         // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting;
         // writing at address 0 would smash static data and surface as silent EOF.
         if (hdrBytes.length) {
@@ -122,7 +124,7 @@ EM_JS(int, chdb_wasm_http_request_js, (
         }
         if (respBytes && respBytes.length) {
             bodyPtr = _malloc(BigInt(respBytes.length));
-            if (!Number(bodyPtr)) { if (Number(hdrPtr)) _free(hdrPtr); throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes'); }
+            if (!Number(bodyPtr)) throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes');
             HEAPU8.set(respBytes, Number(bodyPtr));
         }
         var dv = new DataView(HEAPU8.buffer);
@@ -134,6 +136,12 @@ EM_JS(int, chdb_wasm_http_request_js, (
         dv.setBigInt64(out + 32, BigInt(respBytes ? respBytes.length : 0), true);
         return 0;
     } catch (e) {
+        // Ownership of the allocations only transfers to C++ on the return-0
+        // path; anything thrown after a successful _malloc must free here.
+        // (var hoisting: before their declarations run these are undefined,
+        // and Number(undefined) is NaN -> falsy -> skipped.)
+        if (Number(hdrPtr)) _free(hdrPtr);
+        if (Number(bodyPtr)) _free(bodyPtr);
         // Surface the host-side cause (the C++ layer only sees "-1"): CORS
         // rejections, missing transports, heap-view surprises all land here.
         if (typeof console !== 'undefined') console.error('chdb wasm http bridge:', e);
@@ -150,6 +158,7 @@ EM_JS(int, chdb_wasm_http_request_js, (
 /// (Chrome 137+) and Node (--experimental-wasm-jspi) with one code path.
 /// Same argument/out-struct protocol as the sync version; the calling C API
 /// export must be listed in JSPI_EXPORTS or V8 refuses to suspend.
+/// KEEP IN SYNC with chdb_wasm_http_request_js above.
 EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
     const char * method_ptr, const char * url_ptr, const char * headers_ptr,
     const char * body_ptr, double body_len,
@@ -168,15 +177,19 @@ EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
         }
         var rangeOff = range_offset;
         var rangeLen = range_length;
-        var headers = {};
+        var hdrPtr = 0;
+        var bodyPtr = 0;
+        var headers = new Headers();
         var lines = headersBlob ? headersBlob.split('\n') : [];
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i];
             if (!line) continue;
             var c = line.indexOf(': ');
-            if (c > 0) headers[line.substring(0, c)] = line.substring(c + 2);
+            // Mirror the sync transport: a malformed header name/value makes
+            // Headers.append throw; skip it rather than failing the request.
+            if (c > 0) { try { headers.append(line.substring(0, c), line.substring(c + 2)); } catch (e) {} }
         }
-        if (rangeOff >= 0) headers['Range'] = 'bytes=' + rangeOff + '-' + (rangeOff + rangeLen - 1);
+        if (rangeOff >= 0) headers.set('Range', 'bytes=' + rangeOff + '-' + (rangeOff + rangeLen - 1));
         var resp;
         try {
             resp = await fetch(url, { method: method, headers: headers, body: reqBody, redirect: 'follow' });
@@ -194,8 +207,6 @@ EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
         if (rangeOff >= 0 && status === 200)
             respBytes = respBytes.subarray(rangeOff, rangeOff + rangeLen);
         var hdrBytes = new TextEncoder().encode(respHeaders);
-        var hdrPtr = 0;
-        var bodyPtr = 0;
         // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting.
         if (hdrBytes.length) {
             hdrPtr = _malloc(BigInt(hdrBytes.length));
@@ -204,7 +215,7 @@ EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
         }
         if (respBytes.length) {
             bodyPtr = _malloc(BigInt(respBytes.length));
-            if (!Number(bodyPtr)) { if (Number(hdrPtr)) _free(hdrPtr); throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes'); }
+            if (!Number(bodyPtr)) throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes');
             HEAPU8.set(respBytes, Number(bodyPtr));
         }
         var dv = new DataView(HEAPU8.buffer);
@@ -216,6 +227,10 @@ EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
         dv.setBigInt64(out + 32, BigInt(respBytes.length), true);
         return 0;
     } catch (e) {
+        // Ownership only transfers to C++ on the return-0 path — free anything
+        // allocated before the throw (see the sync catch above).
+        if (Number(hdrPtr)) _free(hdrPtr);
+        if (Number(bodyPtr)) _free(bodyPtr);
         if (typeof console !== 'undefined') console.error('chdb wasm http bridge (jspi):', e);
         return -1;
     }

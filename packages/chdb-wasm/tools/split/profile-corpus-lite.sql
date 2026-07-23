@@ -53,6 +53,7 @@ SELECT number % 5 AS k, count(), sum(number), avg(number), min(number), max(numb
 SELECT number % 5 AS k, count() AS c FROM numbers(10000) GROUP BY k HAVING c > 1500 ORDER BY c DESC, k;
 SELECT number % 3 AS a, count() FROM numbers(1000) GROUP BY a WITH TOTALS ORDER BY a;
 SELECT number % 3 AS a, number % 4 AS b, count() FROM numbers(1000) GROUP BY a, b WITH ROLLUP ORDER BY a, b;
+SELECT number % 2 AS a, number % 3 AS b, count() FROM numbers(1000) GROUP BY a, b WITH CUBE ORDER BY a, b;
 SELECT DISTINCT number % 4 FROM numbers(100) ORDER BY 1;
 SELECT number FROM numbers(100) ORDER BY number DESC LIMIT 5 OFFSET 10;
 SELECT number % 3 AS g, number FROM numbers(30) ORDER BY g, number LIMIT 2 BY g;
@@ -87,6 +88,7 @@ SELECT number % 3 AS g, number, rank() OVER (PARTITION BY number % 3 ORDER BY nu
 SELECT number, sum(number) OVER (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM numbers(10);
 SELECT number, avg(number) OVER (ORDER BY number ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM numbers(10);
 SELECT number, lagInFrame(number, 1) OVER w, leadInFrame(number, 1) OVER w FROM numbers(8) WINDOW w AS (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
+SELECT number, dense_rank() OVER (ORDER BY number % 3), first_value(number) OVER w, last_value(number) OVER w FROM numbers(6) WINDOW w AS (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);
 
 -- ============================================================================
 -- 6. Everyday aggregates
@@ -108,6 +110,13 @@ SELECT min(v), max(v), sum(v), avg(v) FROM (SELECT toNullable(number) AS v FROM 
 SELECT min(f), max(f), sum(f), avg(f), quantile(0.5)(f) FROM (SELECT number / 3 AS f FROM numbers(100));
 SELECT min(i), max(i), sum(i), avg(i) FROM (SELECT toInt32(number) AS i FROM numbers(100));
 SELECT sumIf(i, i % 2 = 0), minIf(s, n > 5), maxIf(s, n < 90), anyIf(s, n = 7) FROM (SELECT toInt32(number) AS i, toString(number) AS s, number AS n FROM numbers(100));
+SELECT min(a), max(a), sum(a), min(b), max(b), sum(b), min(c), max(c) FROM (SELECT toInt64(number) - 50 AS a, toUInt32(number) AS b, toUInt8(number % 250) AS c FROM numbers(100));
+SELECT sum(d), min(d), max(d), count(d) FROM (SELECT toDecimal64(number, 2) AS d FROM numbers(100));
+SELECT min(t), max(t), count(DISTINCT t) FROM (SELECT toDateTime64('2024-03-15 12:00:00.000', 3) + number AS t FROM numbers(100));
+SELECT lc, count() FROM (SELECT toLowCardinality(toString(number % 3)) AS lc FROM numbers(1000)) GROUP BY lc ORDER BY lc;
+SELECT stddevSamp(number), covarPop(toFloat64(number), toFloat64(number * 2)), sumMap(map(number % 3, 1)) FROM numbers(100);
+-- event/funnel analytics over timestamped conditions (log processing shape)
+SELECT windowFunnel(100)(toDateTime(number), number % 5 = 0, number % 5 = 1) FROM numbers(100);
 
 -- ============================================================================
 -- 7. Everyday scalar functions
@@ -117,24 +126,39 @@ SELECT substring('clickhouse', 1, 5), trim('  pad  '), leftPad('7', 4, '0'), con
 SELECT startsWith('clickhouse', 'click'), endsWith('clickhouse', 'house'), position('clickhouse', 'house');
 SELECT replaceOne('aaa', 'a', 'b'), replaceAll('aaa', 'a', 'b'), replaceRegexpAll('a1b2c3', '\d', '#');
 SELECT splitByChar(',', 'a,b,c'), arrayStringConcat(['x', 'y', 'z'], '|'), extract('key=val', 'key=(\w+)'), extractAll('a1b22c333', '\d+');
+SELECT splitByString(', ', 'a, b, c'), concatWithSeparator('-', 'x', 'y'), left('clickhouse', 5), right('clickhouse', 5), substringIndex('a.b.c', '.', 2);
+SELECT positionCaseInsensitive('Hello World', 'world'), countSubstrings('abcabc', 'bc'), multiSearchAny('error: disk full', ['error', 'warn']), lengthUTF8('中文'), toValidUTF8('ok');
+SELECT replaceRegexpOne('2024-03-15', '(\d+)-(\d+)-(\d+)', '\3/\2/\1'), countMatches('a1b2c3', '[0-9]'), empty(''), notEmpty([1]);
 SELECT formatReadableSize(123456789), hex('AB'), unhex('4142'), isValidUTF8('ok');
 SELECT now() > toDateTime('2020-01-01'), today() >= yesterday(), toYear(toDate('2024-03-15')), toMonth(toDate('2024-03-15')), toDayOfWeek(toDate('2024-03-15'));
 SELECT toStartOfMonth(toDate('2024-03-15')), toStartOfDay(toDateTime('2024-03-15 12:34:56')), toMonday(toDate('2024-03-15')), toYYYYMM(toDate('2024-03-15'));
 SELECT addDays(toDate('2024-03-15'), 4), subtractMonths(toDate('2024-03-15'), 1), dateDiff('day', toDate('2024-01-01'), toDate('2024-03-15'));
 SELECT formatDateTime(toDateTime('2024-03-15 12:34:56'), '%Y/%m/%d %H:%M:%S'), parseDateTimeBestEffort('15 Mar 2024 12:34:56'), toUnixTimestamp(toDateTime('2024-03-15 12:34:56'));
 SELECT toDate('2024-03-15') + INTERVAL 10 DAY, date_trunc('week', toDateTime('2024-03-15 12:34:56'));
+SELECT toHour(t), toMinute(t), toSecond(t), toStartOfHour(t), toStartOfFifteenMinutes(t) FROM (SELECT toDateTime('2024-03-15 12:34:56') AS t);
+-- time-bucketing, the dashboard workhorse
+SELECT toStartOfInterval(toDateTime('2024-03-15 12:34:56'), INTERVAL 15 MINUTE), toStartOfWeek(toDate('2024-03-15')), age('day', toDate('2024-01-01'), toDate('2024-03-15'));
+SELECT fromUnixTimestamp(1710500096), now64(3) >= toDateTime64('2020-01-01 00:00:00.000', 3), toTimeZone(toDateTime('2024-03-15 12:34:56', 'UTC'), 'America/New_York');
 SELECT abs(-3), round(2.567, 2), floor(2.9), ceil(2.1), sqrt(2), pow(2, 10), exp(1), log(e()), sin(pi() / 2);
 SELECT isFinite(1.0), isNaN(0 / 0.0), sign(-2.5), least(1.5, 2.5), pi();
 SELECT range(5), arrayMap(x -> x * 2, [1, 2, 3]), arrayFilter(x -> x % 2 = 0, range(10)), arraySum([1, 2, 3]), arraySort([3, 1, 2]);
 SELECT has([1, 2, 3], 2), indexOf([7, 8, 9], 9), arrayConcat([1, 2], [3]), arraySlice([1, 2, 3, 4, 5], 2, 3), arrayDistinct([1, 2, 2, 3]);
+SELECT arrayExists(x -> x > 2, [1, 2, 3]), arrayAll(x -> x > 0, [1, 2, 3]), arrayCount(x -> x % 2 = 0, range(10)), arrayFirst(x -> x > 1, [1, 2, 3]), arrayFirstIndex(x -> x > 1, [1, 2, 3]);
+SELECT arrayAvg([1, 2, 3]), arrayMin([3, 1, 2]), arrayMax([3, 1, 2]), arrayProduct([1.0, 2, 3]), arrayCompact([1, 1, 2, 2, 3]);
+SELECT arrayReverse([1, 2, 3]), arrayFlatten([[1, 2], [3]]), arrayZip(['a', 'b'], [1, 2]), arrayIntersect([1, 2, 3], [2, 3, 4]);
+SELECT arrayEnumerate([10, 20]), arrayPushBack([1, 2], 3), arrayPopFront([1, 2, 3]), arrayResize([1, 2], 4, 0);
 SELECT arrayJoin([1, 2, 3]) AS x, x * 10 FROM system.one;
 SELECT number, arr FROM numbers(3) ARRAY JOIN [10, 20] AS arr ORDER BY number, arr;
 SELECT mapKeys(map('a', 1, 'b', 2)), mapValues(map('a', 1)), tuple(1, 'a').1;
+SELECT mapContains(map('a', 1), 'a'), mapFromArrays(['k1', 'k2'], [1, 2]), tupleElement((1, 'a'), 2), untuple((1, 2));
 SELECT JSONExtractInt('{"a": 42}', 'a'), JSONExtractString('{"a": "hi"}', 'a'), JSONExtract('{"a": [1, 2]}', 'a', 'Array(Int64)'), JSONHas('{"a": 1}', 'a'), isValidJSON('{"ok": 1}');
 SELECT JSONExtractRaw('{"a": {"b": 1}}', 'a'), JSON_VALUE('{"a": {"b": "v"}}', '$.a.b'), toJSONString(map('a', [1, 2]));
+SELECT JSONExtractFloat('{"a": 1.5}', 'a'), JSONExtractBool('{"a": true}', 'a'), JSONLength('{"a": 1, "b": 2}'), JSONType('{"a": [1]}', 'a'), JSONExtractArrayRaw('{"a": [1, 2]}', 'a');
 SELECT cityHash64('chdb'), sipHash64('chdb'), xxHash64('chdb'), hex(MD5('chdb')), hex(SHA256('chdb'));
 SELECT rand() >= 0, randCanonical() BETWEEN 0 AND 1, length(randomString(16));
 SELECT domain('https://www.example.com/a/b?q=1'), path('https://example.com/a/b?q=1'), extractURLParameter('https://example.com/p?q=1&r=2', 'r'), encodeURLComponent('a b&c');
+SELECT protocol('https://example.com/a'), topLevelDomain('https://example.com/a'), queryString('https://example.com/p?q=1&r=2'), cutQueryString('https://example.com/p?q=1'), decodeURLComponent('a%20b');
+SELECT IPv4NumToString(toUInt32(3232235777)), IPv4StringToNum('192.168.1.1'), isIPAddressInRange('192.168.1.5', '192.168.1.0/24'), toIPv6('::1');
 SELECT transform(2, [1, 2, 3], ['one', 'two', 'three'], 'other'), bar(5, 0, 10, 10), version() != '', currentDatabase();
 
 -- ============================================================================
@@ -169,6 +193,9 @@ SELECT * FROM values('a Int32, b String', (1, 'x'), (2, 'y')) ORDER BY a;
 SELECT * FROM format(JSONEachRow, '{"n": 1, "s": "one"}\n{"n": 2, "s": "two"}') ORDER BY n;
 SELECT * FROM format(CSVWithNames, 'id,name\n1,alpha\n2,beta') ORDER BY id;
 SELECT count() FROM view(SELECT number FROM numbers(10) WHERE number > 4);
+SELECT line FROM format(LineAsString, 'first line\nsecond line') ORDER BY line;
+SELECT JSONExtractInt(json, 'any', 'shape') FROM format(JSONAsString, '{"any": {"shape": 1}}');
+SELECT name FROM format(CSVWithNames, 'id,name\n1,alice\n2,bob') WHERE name LIKE 'a%';
 SELECT count() FROM (SELECT * FROM generateRandom('i UInt64, s String', 42) LIMIT 100);
 
 -- ============================================================================
@@ -212,6 +239,11 @@ SELECT number, toString(number) AS s FROM numbers(5) FORMAT Pretty;
 SELECT number, toString(number) AS s FROM numbers(5) FORMAT PrettyCompact;
 SELECT number, toString(number) AS s FROM numbers(2) FORMAT Vertical;
 SELECT number FROM numbers(3) FORMAT Values;
+SELECT number, toString(number) AS s FROM numbers(3) FORMAT JSONCompact;
+SELECT number, toString(number) AS s FROM numbers(3) FORMAT JSONCompactEachRow;
+SELECT number, toString(number) AS s FROM numbers(3) FORMAT TSVWithNames;
+SELECT number, toString(number) AS s FROM numbers(3) FORMAT CSVWithNamesAndTypes;
+SELECT number FROM numbers(3) FORMAT JSONStrings;
 SELECT number FROM numbers(3) FORMAT Markdown;
 SELECT number FROM numbers(3) FORMAT RowBinary;
 SELECT number FROM numbers(3) FORMAT Parquet;
@@ -221,6 +253,7 @@ SELECT number FROM numbers(1000) FORMAT Null;
 -- 13. Introspection + deliberate error paths (error reporting must be hot)
 -- ============================================================================
 EXPLAIN PLAN SELECT number % 3 AS k, count() FROM numbers(100) GROUP BY k;
+SET max_block_size = 65409;
 SHOW DATABASES;
 SELECT name, engine FROM system.tables WHERE database = currentDatabase() ORDER BY name;
 SELECT count() FROM system.functions;

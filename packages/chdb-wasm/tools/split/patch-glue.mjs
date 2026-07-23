@@ -88,8 +88,15 @@ if (doLazy) {
 }
 
 if (doLite) {
-  if (src.includes('chdb-wasm-lite')) {
+  if (src.includes('chdb-wasm-lite: this SQL feature is not included')) {
     console.log('lite: already patched');
+  } else if (src.includes('(wasmBinaryFile??=findWasmBinary()).slice(0,-5)')) {
+    // Both patches rewrite the same anchors; running --lite over a glue that
+    // already took --lazy-load would fail with the generic "glue changed"
+    // message below — name the real cause instead. (Match the parenthesized
+    // USE-SITE form: bare `wasmBinaryFile??=findWasmBinary()` occurs natively
+    // in emscripten's createWasm.)
+    throw new Error('glue already patched with --lazy-load; re-copy the pristine chdb.mjs before applying --lite');
   } else {
     // The placeholder-import proxy still computes the (never fetched)
     // secondary file name from wasmBinaryFile at instantiation time; on paths

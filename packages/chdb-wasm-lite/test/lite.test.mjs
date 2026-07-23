@@ -14,15 +14,19 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const dir = process.env.CHDB_LITE_DIR || join(pkgDir, 'dist');
 
-if (!existsSync(join(dir, 'chdb.wasm'))) {
+// All three are read/imported below — gate them together so a partially
+// assembled dist (interrupted build-lite.mjs) fails with this clean message
+// instead of a raw ENOENT downstream.
+const missing = ['chdb.wasm', 'chdb.mjs', 'index.js'].filter((f) => !existsSync(join(dir, f)));
+if (missing.length) {
   if (process.env.CHDB_LITE_DIR) {
-    console.error(`FAIL lite.test: CHDB_LITE_DIR=${dir} is set but chdb.wasm is missing`);
+    console.error(`FAIL lite.test: CHDB_LITE_DIR=${dir} is set but ${missing.join(', ')} is missing`);
     process.exit(1);
   }
   console.log('SKIP lite.test: no dist/ — run npm run build (see scripts/build-lite.mjs)');
@@ -37,16 +41,19 @@ process.on('exit', () => rmSync(tmpRoot, { recursive: true, force: true }));
 let tmpSeq = 0;
 
 // The lite bundle links with WASM_JSPI (its async-fetch HTTP bridge is what
-// makes url()/s3() work inside Workers); the glue's WebAssembly.Suspending
-// wrappers need the flag to instantiate under Node at all.
-const jspiFlags = readFileSync(join(dir, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+// makes url()/s3() work inside Workers); the glue's WebAssembly.Suspending /
+// WebAssembly.promising wrappers need the flag to instantiate under Node at
+// all. Probe for either wrapper.
+const glueSrc = readFileSync(join(dir, 'chdb.mjs'), 'utf8');
+const jspiFlags = glueSrc.includes('WebAssembly.promising') || glueSrc.includes('WebAssembly.Suspending')
   ? ['--experimental-wasm-jspi'] : [];
 
 // Child-process probe through the lite package's OWN dist SDK.
 function probe(body, timeoutMs = 300000) {
+  // file:// URLs, not raw paths: absolute-path ESM specifiers are POSIX-only.
   const script = `
-    import { AsyncChdb } from ${JSON.stringify(join(dir, 'index.js'))};
-    const db = await AsyncChdb.create({ moduleUrl: ${JSON.stringify(join(dir, 'chdb.mjs'))} });
+    import { AsyncChdb } from ${JSON.stringify(pathToFileURL(join(dir, 'index.js')).href)};
+    const db = await AsyncChdb.create({ moduleUrl: ${JSON.stringify(pathToFileURL(join(dir, 'chdb.mjs')).href)} });
     const q = async (sql) => (await db.query(sql, 'CSV')).text().trim();
     ${body}
     await db.terminate();
@@ -54,7 +61,11 @@ function probe(body, timeoutMs = 300000) {
   `;
   const file = join(tmpRoot, `probe-${++tmpSeq}.mjs`);
   writeFileSync(file, script);
-  return spawnSync(process.execPath, [...jspiFlags, file], { encoding: 'utf8', timeout: timeoutMs });
+  const r = spawnSync(process.execPath, [...jspiFlags, file], { encoding: 'utf8', timeout: timeoutMs });
+  // A timeout/spawn failure leaves status=null and often an empty stderr;
+  // surface the real cause where every assertion below will print it.
+  if (r.error || r.signal) r.stderr = `spawn: ${r.error ?? ''} signal=${r.signal ?? ''}\n${r.stderr ?? ''}`;
+  return r;
 }
 
 // ---- the size gate: the whole point of lite --------------------------------
@@ -79,24 +90,38 @@ function probe(body, timeoutMs = 300000) {
 }
 
 // ---- the common-SQL surface must be fully self-contained --------------------
+// Every query prints one LABELED line (multi-row results joined with ' | '),
+// so a failure names its query and inserting/reordering probes cannot silently
+// shift later assertions.
 {
   const r = probe(`
-    console.log(await q('SELECT sum(number), count() FROM numbers(1000)'));
-    console.log(await q('SELECT number % 3 AS g, count() FROM numbers(9) GROUP BY g ORDER BY g'));
-    console.log(await q('SELECT a.number * 10 + b.number FROM numbers(2) a JOIN numbers(2) b ON a.number = b.number ORDER BY 1'));
-    console.log(await q('SELECT number, row_number() OVER (ORDER BY number DESC) FROM numbers(3) ORDER BY number LIMIT 1'));
-    console.log(await q("SELECT upper(concat('ch', 'db')), toYear(toDate('2024-03-15')), round(pi(), 2), JSONExtractInt(concat('{', char(34), 'a', char(34), ': 42}'), 'a')"));
-    console.log(await q('SELECT quantile(0.5)(number), uniqExact(number % 10), topK(1)(number % 3) FROM numbers(1000)'));
+    const row = (label, sql) => q(sql).then((t) => console.log(label + '=' + t.split(String.fromCharCode(10)).join(' | ')));
+    await row('agg', 'SELECT sum(number), count() FROM numbers(1000)');
+    await row('grp', 'SELECT number % 3 AS g, count() FROM numbers(9) GROUP BY g ORDER BY g');
+    await row('join', 'SELECT a.number * 10 + b.number FROM numbers(2) a JOIN numbers(2) b ON a.number = b.number ORDER BY 1');
+    await row('win', 'SELECT number, row_number() OVER (ORDER BY number DESC) FROM numbers(3) ORDER BY number LIMIT 1');
+    await row('fn', "SELECT upper(concat('ch', 'db')), toYear(toDate('2024-03-15')), round(pi(), 2), JSONExtractInt(concat('{', char(34), 'a', char(34), ': 42}'), 'a')");
+    await row('stat', 'SELECT quantile(0.5)(number), uniqExact(number % 10), topK(1)(number % 3) FROM numbers(1000)');
+    await row('date', "SELECT toStartOfInterval(toDateTime('2024-03-15 12:34:56'), INTERVAL 15 MINUTE), dateDiff('day', toDate('2024-01-01'), toDate('2024-03-15'))");
+    await row('arr', 'SELECT arrayFilter(x -> x % 2 = 0, range(6)), arraySum([1, 2, 3])');
+    await row('ip', "SELECT isIPAddressInRange('192.168.1.5', '192.168.1.0/24'), domain('https://www.example.com/a?q=1')");
+    await row('fmt', "SELECT n, s FROM format(JSONEachRow, concat('{', char(34), 'n', char(34), ': 1, ', char(34), 's', char(34), ': ', char(34), 'one', char(34), '}')) ORDER BY n");
+    await row('lc', 'SELECT lc, count() FROM (SELECT toLowCardinality(toString(number % 3)) AS lc FROM numbers(9)) GROUP BY lc ORDER BY lc');
   `);
   assert.strictEqual(r.status, 0, `common-SQL probe failed: ${r.stderr?.slice(-300)}`);
-  const lines = r.stdout.trim().split('\n');
-  assert.strictEqual(lines[0], '499500,1000');
-  assert.strictEqual(lines.slice(1, 4).join('|'), '0,3|1,3|2,3');
-  assert.strictEqual(lines.slice(4, 6).join('|'), '0|11'); // join outputs 2 rows
-  assert.strictEqual(lines[6], '0,3');
-  assert.strictEqual(lines[7], '"CHDB",2024,3.14,42');
-  assert.strictEqual(lines[8], '499.5,10,"[0]"');
-  ok('common SQL: aggregation, joins, windows, everyday functions — exact results');
+  const got = Object.fromEntries(r.stdout.trim().split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  assert.strictEqual(got.agg, '499500,1000');
+  assert.strictEqual(got.grp, '0,3 | 1,3 | 2,3');
+  assert.strictEqual(got.join, '0 | 11');
+  assert.strictEqual(got.win, '0,3');
+  assert.strictEqual(got.fn, '"CHDB",2024,3.14,42');
+  assert.strictEqual(got.stat, '499.5,10,"[0]"');
+  assert.strictEqual(got.date, '"2024-03-15 12:30:00",74');
+  assert.strictEqual(got.arr, '"[0,2,4]",6');
+  assert.strictEqual(got.ip, '1,"www.example.com"');
+  assert.strictEqual(got.fmt, '1,"one"');
+  assert.strictEqual(got.lc, '"0",3 | "1",3 | "2",3');
+  ok('common SQL: aggregation, joins, windows, dates, arrays, IP/URL, format(), LowCardinality — exact labeled results');
 }
 
 // ---- files, sessions, streaming ---------------------------------------------

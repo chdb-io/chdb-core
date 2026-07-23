@@ -14,18 +14,27 @@ runtime wasm compilation — a deferred module can never be loaded there — so
 **lite ships only the primary**, profiled against a corpus of the most common
 SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
 
-- core operators: filtering, aggregation (`GROUP BY`/`HAVING`/`ROLLUP`), joins
-  (INNER/LEFT/FULL/CROSS/USING), window functions, CTEs, set operations,
-  `ORDER BY`/`LIMIT BY`/`DISTINCT`
-- the everyday scalar functions (string/date/math/conditional/array/map/JSON/
-  URL/hash) and aggregates (`count`/`sum`/`avg`/`min`/`max`/`uniq*`/
-  `quantile*`/`topK`/`argMax`/`groupArray`, `-If`/`-Merge` combinators)
-- `file()` over the in-memory filesystem (CSV/TSV/JSONEachRow/Parquet/Arrow/
-  Native, gzip), `putFile` ingestion
+- core operators: filtering, aggregation (`GROUP BY`/`HAVING`/`ROLLUP`/`CUBE`/
+  `WITH TOTALS`), joins (INNER/LEFT/FULL/CROSS/USING), window functions
+  (`row_number`/`rank`/`dense_rank`/`first_value`/`last_value`/`lagInFrame`/
+  frames), CTEs, set operations, `ORDER BY`/`LIMIT BY`/`DISTINCT`, `ARRAY JOIN`
+- the everyday scalar functions — string/search/regex, date-time (incl.
+  `toStartOfInterval` bucketing, `formatDateTime`, `parseDateTimeBestEffort`,
+  time zones), math, conditional, arrays (incl. lambdas), maps/tuples, JSON
+  extraction, URL parsing, IPv4/IPv6 helpers, hashes — and aggregates
+  (`count`/`sum`/`avg`/`min`/`max`/`uniq*`/`quantile*`/`topK`/`argMin`/
+  `argMax`/`groupArray`/`sumMap`/`windowFunnel`/stddev-variance, `-If`/`-Merge`
+  combinators, over the common column types incl. Nullable/LowCardinality/
+  Decimal/DateTime64)
+- table functions over local data: `file()` on the in-memory filesystem
+  (CSV/TSV/JSONEachRow/Parquet/Native, gzip; `putFile` ingestion), `format()`
+  for inline strings (incl. `LineAsString`/`JSONAsString`), `values()`,
+  `numbers()`, `generateRandom()`, `view()`
 - remote reads with `url()` and `s3()` (single-object, path-style) — see the
   JSPI note below
-- Memory-engine tables, views, sessions, streaming queries, the common output
-  formats (CSV/TSV/JSON*/Pretty*/Parquet/...)
+- Memory-engine tables, temporary tables, views, sessions, streaming queries,
+  the common output formats (CSV*/TSV*/JSON/JSONEachRow/JSONCompact*/Pretty*/
+  Vertical/Markdown/Values/RowBinary/Parquet/...)
 
 **Networking runs on JSPI.** The full package's HTTP bridge waits
 synchronously (sync XHR in browsers, a subprocess in Node), which Cloudflare's

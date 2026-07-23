@@ -108,9 +108,11 @@ if (!argv.includes('--skip-profile-run')) {
   if (existsSync(profilesDir))
     for (const f of readdirSync(profilesDir)) if (f.endsWith('.data')) rmSync(join(profilesDir, f));
   const corpusEnv = opt('corpus') ? { CHDB_CORPUS: opt('corpus') } : {};
-  // A WASM_JSPI bundle's glue wraps imports in WebAssembly.Suspending — Node
-  // (V8 without the Chrome default-on) needs the flag to even instantiate it.
-  const jspiFlags = readFileSync(join(staging, 'chdb.mjs'), 'utf8').includes('WebAssembly.promising')
+  // A WASM_JSPI bundle's glue wraps imports in WebAssembly.Suspending and
+  // exports in WebAssembly.promising — Node (V8 without the Chrome default-on)
+  // needs the flag to even instantiate it. Probe for either wrapper.
+  const glueSrc = readFileSync(join(staging, 'chdb.mjs'), 'utf8');
+  const jspiFlags = glueSrc.includes('WebAssembly.promising') || glueSrc.includes('WebAssembly.Suspending')
     ? ['--experimental-wasm-jspi'] : [];
   for (const extraEnv of [{}, { CHDB_INIT_PROBE: 'global', CHDB_PROFILE_PREFIX: 'initprobe' }]) {
     const r = spawnSync(process.execPath, [...jspiFlags, join(here, 'run-profile.mjs')], {
@@ -156,11 +158,20 @@ const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack
 // (the st build takes the synchronous variants, so its hot set can't supply
 // them): LazyOutputFormat + PullingAsyncPipelineExecutor feed results across
 // threads, ParallelFormattingOutputFormat renders them.
-// findExtreme* (SIMD min/max kernels) and WriteBufferFromVector (the C-API
-// result buffer) are template families specialized PER INPUT SHAPE — the
-// corpus inevitably exercises only some instantiations, and on a lite bundle
-// a cold sibling is a hard error rather than a lazy load. Keep whole families.
-const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo|LazyOutputFormat|ParallelFormattingOutputFormat|PullingAsyncPipelineExecutor|ThreadFramePointers|BufferWithOutsideMemory|findExtreme|WriteBufferFromVector|FunctionBinaryArithmetic|FunctionComparison|FunctionFactory/;
+const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo|LazyOutputFormat|ParallelFormattingOutputFormat|PullingAsyncPipelineExecutor|ThreadFramePointers|BufferWithOutsideMemory/;
+// Template families specialized PER INPUT SHAPE, force-kept whole on the LITE
+// split only: the corpus inevitably exercises some instantiations of each and
+// a cold sibling there is a hard error, not a lazy load. findExtreme* are the
+// SIMD min/max kernels (per element type), WriteBufferFromVector is the C-API
+// result buffer (per output container), FunctionBinaryArithmetic /
+// FunctionComparison are the arithmetic/comparison executors (per type pair
+// and const/vector shape), and FunctionFactory carries one registration/
+// creation thunk per function — the corpus only constructs the functions it
+// happens to call. The FULL bundles keep a working lazy loader, so these stay
+// deferred there and the shipped primary stays lean.
+const LITE_SUBSTR = argv.includes('--lite-glue')
+  ? /findExtreme|WriteBufferFromVector|FunctionBinaryArithmetic|FunctionComparison|FunctionFactory/
+  : null;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
 // Checked-in list of single worker-path functions (see keep-worker-path.txt).
@@ -208,7 +219,7 @@ const keepStream = createWriteStream(keepFile);
         if (/^\d+$/.test(name)) numericNames++;
         keepStream.write(name + '\n');
         keptNameless++;
-      } else if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
+      } else if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || LITE_SUBSTR?.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }

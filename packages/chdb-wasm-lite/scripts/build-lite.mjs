@@ -34,7 +34,7 @@ for (const f of ['chdb.mjs', 'chdb.wasm']) {
 // The lite glue must carry the --lite patch, not the lazy loader: shipping a
 // lazy-loading glue without a deferred module would fail with ENOENT instead
 // of a clear error.
-if (!readFileSync(join(liteOut, 'chdb.mjs'), 'utf8').includes('chdb-wasm-lite')) {
+if (!readFileSync(join(liteOut, 'chdb.mjs'), 'utf8').includes('chdb-wasm-lite: this SQL feature is not included')) {
   console.error(`${join(liteOut, 'chdb.mjs')} lacks the --lite glue patch — run split-wasm.mjs with --lite-glue`);
   process.exit(1);
 }
@@ -42,10 +42,13 @@ if (!readFileSync(join(liteOut, 'chdb.mjs'), 'utf8').includes('chdb-wasm-lite'))
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
-// SDK files (skip wasm artifacts and the st/ subdir — lite ships its own bundle).
-for (const f of readdirSync(sdkDist)) {
-  if (f === 'chdb.mjs' || f === 'chdb.wasm' || f === 'chdb.deferred.wasm' || f === 'st') continue;
-  copyFileSync(join(sdkDist, f), join(distDir, f));
+// SDK files. Skipped: wasm artifacts (lite ships its own bundle), any subdir
+// (st/ today), and source maps — their sources point at ../src/*.ts, which the
+// lite package does not ship, so they would be dangling in the tarball.
+for (const e of readdirSync(sdkDist, { withFileTypes: true })) {
+  if (!e.isFile() || e.name.endsWith('.map')) continue;
+  if (e.name === 'chdb.mjs' || e.name === 'chdb.wasm' || e.name === 'chdb.deferred.wasm') continue;
+  copyFileSync(join(sdkDist, e.name), join(distDir, e.name));
 }
 copyFileSync(join(liteOut, 'chdb.mjs'), join(distDir, 'chdb.mjs'));
 copyFileSync(join(liteOut, 'chdb.wasm'), join(distDir, 'chdb.wasm'));

@@ -83,7 +83,7 @@ CHDB_SKIP_LAKE=1 node tools/split/split-wasm.mjs \
 cd ../chdb-wasm-lite && node scripts/build-lite.mjs /tmp/chdb-split-lite && node test/lite.test.mjs
 ```
 
-Measured: 37.6MB raw / **8.0 MiB gzipped** (< the 9.5 MiB budget that leaves
+Measured: 38.0MB raw / **7.97 MiB gzipped** (< the 9.5 MiB budget that leaves
 room for glue + SDK inside the Worker limit). When a probe hits a cold
 function on lite, extend the corpus (preferred: whole call chains go hot) or
 add the exact name to `keep-lite.txt`; the convergence workflow is the same
