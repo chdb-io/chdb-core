@@ -407,6 +407,14 @@ class TestAdbcParameters(unittest.TestCase):
                 cur.execute("SELECT ? AS s", (v,))
                 self.assertEqual(cur.fetchone()[0], v)
 
+    def test_single_null_parameter_selects_null(self):
+        # A lone NULL parameter in a SELECT binds as Nullable(String) with \N,
+        # not a bare literal NULL (which types the column as Nothing and has
+        # no Arrow output — the stream would fail to fetch).
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT ? AS x", (None,))
+            self.assertEqual(cur.fetchone(), (None,))
+
     def test_multi_row_bind_null_and_backslash_n_distinct(self):
         # In concatenated executions a real NULL and the literal string
         # backslash-N must stay distinguishable.
@@ -725,6 +733,24 @@ class TestAdbcMetadata(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 conn.adbc_get_table_schema("definitely_missing_table")
         self.assertEqual(ctx.exception.status_code, AdbcStatusCode.NOT_FOUND)
+
+    def test_streaming_query_error_maps_status_code(self):
+        # Errors on the streaming SELECT path get the same ADBC status codes as
+        # the non-streaming paths (was a blind INTERNAL before): a missing table
+        # is NOT_FOUND, a syntax/parse error is INVALID_ARGUMENT.
+        from adbc_driver_manager import AdbcStatusCode
+
+        with _connect() as conn:
+            for sql, want in [
+                ("SELECT * FROM definitely_missing_table", AdbcStatusCode.NOT_FOUND),
+                ("SELEC 1", AdbcStatusCode.INVALID_ARGUMENT),
+                ("SELECT cast('abc' AS Int64)", AdbcStatusCode.INVALID_ARGUMENT),
+            ]:
+                with conn.cursor() as cur:
+                    with self.assertRaises(Exception) as ctx:
+                        cur.execute(sql)
+                        cur.fetchall()
+                    self.assertEqual(ctx.exception.status_code, want, sql)
 
     def test_get_table_schema(self):
         with _connect() as conn, conn.cursor() as cur:

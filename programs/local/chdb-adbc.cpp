@@ -536,10 +536,10 @@ AdbcStatusCode clickhouseTypeFor(
         case arrow::Type::BINARY:
         case arrow::Type::LARGE_BINARY:
         case arrow::Type::FIXED_SIZE_BINARY: out = "String"; return ADBC_STATUS_OK;
-        /// All-null columns arrive as Arrow's null type; Nullable(String) is a
-        /// safe placeholder type for the NULLs they carry (a literal NULL on
-        /// the single-row path, \N on the concatenated path).
-        case arrow::Type::NA: out = "Nullable(String)"; return ADBC_STATUS_OK;
+        /// All-null columns arrive as Arrow's null type; String is the base
+        /// placeholder — the null_count>0 rule wraps it in Nullable (avoiding
+        /// a double Nullable(Nullable(...))) and the values bind as \N.
+        case arrow::Type::NA: out = "String"; return ADBC_STATUS_OK;
         case arrow::Type::DATE32: out = "Date32"; return ADBC_STATUS_OK;
         case arrow::Type::DATE64: out = "DateTime64(3)"; return ADBC_STATUS_OK;
         case arrow::Type::TIMESTAMP:
@@ -1897,11 +1897,11 @@ AdbcStatusCode executeBoundQuery(
         AdbcStatusCode status = clickhouseTypeFor(table->field(col)->type(), ch_types[static_cast<size_t>(col)], error);
         if (status != ADBC_STATUS_OK)
             return status;
-        /// When executions are concatenated, a column with NULLs binds as
-        /// Nullable with the engine's \N value on the null rows — a literal
-        /// NULL would type that execution's column as Nothing and break the
+        /// A column carrying NULLs binds as Nullable with the engine's \N
+        /// value, never a bare literal NULL: a literal NULL types the column
+        /// as Nothing, which has no Arrow output (SELECT) and breaks a
         /// concatenated stream's schema.
-        if (concat_rows && table->column(col)->null_count() > 0)
+        if (table->column(col)->null_count() > 0)
             ch_types[static_cast<size_t>(col)] = "Nullable(" + ch_types[static_cast<size_t>(col)] + ")";
     }
 
@@ -1925,11 +1925,6 @@ AdbcStatusCode executeBoundQuery(
             auto scalar = table->column(static_cast<int>(p))->chunk(0)->GetScalar(row);
             if (!scalar.ok())
                 return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + scalar.status().ToString());
-            if (!scalar.ValueUnsafe()->is_valid && !concat_rows)
-            {
-                rewritten += "NULL";
-                continue;
-            }
             const std::string name = "__adbc_p" + std::to_string(p);
             rewritten += "{" + name + ":" + ch_types[p] + "}";
             names.push_back(name);
@@ -2140,8 +2135,8 @@ AdbcStatusCode wireStreamingResult(
         != CHDBSuccess)
     {
         const char * err = chdb_result_error(stream_result);
-        return setError(
-            error, ADBC_STATUS_INTERNAL, std::string("[chdb] ") + (err ? err : "first fetch failed"));
+        const std::string message = err ? err : "first fetch failed";
+        return setError(error, err ? statusForEngineError(message) : ADBC_STATUS_INTERNAL, "[chdb] " + message);
     }
 
     ArrowSchema schema_c;
@@ -2248,7 +2243,9 @@ AdbcStatusCode executeStreamingSelect(
         /// before executing them, so falling back re-executes nothing.
         if (message.find(CHDB::kErrorStreamingNotSupportedPrefix) != std::string::npos)
             return executeMaterializedSelect(impl, out, rows_affected, error);
-        return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + message);
+        /// Map the engine error class (UNKNOWN_TABLE, SYNTAX_ERROR, …) to the
+        /// ADBC status code, same as the non-streaming paths.
+        return setError(error, statusForEngineError(message), "[chdb] " + message);
     }
     return wireStreamingResult(impl->connection, /*owner_statement=*/impl->id, stream_result, out, error);
 }
