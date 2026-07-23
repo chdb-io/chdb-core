@@ -12,6 +12,7 @@
 #include <TableFunctions/TableFunctionFactory.h>
 #include <Storages/StorageFactory.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
@@ -1130,11 +1131,12 @@ void EmbeddedServer::initializeWithArgs(int argc, char ** argv)
         argsToConfig(arg_vec, config(), 100);
         /// argsToConfig drops a value-less flag that appears last, so capture the
         /// boolean `--stacktrace` flag explicitly to make it position-independent
-        /// (bare `--stacktrace` works like in clickhouse-local; `--stacktrace=0`
-        /// still parses through argsToConfig as usual).
-        for (const auto & arg : args)
-            if (arg == "--stacktrace")
-                config().setBool("stacktrace", true);
+        /// (bare `--stacktrace` works like in clickhouse-local). Only fall back
+        /// when argsToConfig did not capture a usable value, so explicit forms
+        /// like `--stacktrace=0` or `--stacktrace 0` keep the user's value.
+        if (config().getString("stacktrace", "").empty()
+            && std::ranges::any_of(args, [](const auto & arg) { return arg == "--stacktrace"; }))
+            config().setBool("stacktrace", true);
 
         initialize(*this);
         int ret = main(args);

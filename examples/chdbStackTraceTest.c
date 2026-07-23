@@ -88,6 +88,17 @@ int main(void)
         chdb_close_conn(conn);
     }
 
+    /* Explicit opt-out in the space-separated form: the user's value wins
+     * over the bare-flag fallback. */
+    {
+        char a0[] = "chdb", a1[] = "--stacktrace", a2[] = "0";
+        char * argv[] = {a0, a1, a2};
+        chdb_connection * conn = chdb_connect(3, argv);
+        if (!conn) { fprintf(stderr, "connect with --stacktrace 0 failed\n"); return 1; }
+        check_conn("--stacktrace 0 (space form)", conn, /*want_trace=*/0);
+        chdb_close_conn(conn);
+    }
+
     printf("\n== summary: %d failed ==\n", g_failed);
     return g_failed ? 1 : 0;
 }
