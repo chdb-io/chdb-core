@@ -25,10 +25,15 @@ public:
     ArrowSchemaWrapper(ArrowSchemaWrapper && other) noexcept;
     ArrowSchemaWrapper & operator=(ArrowSchemaWrapper && other) noexcept;
 
+	/// drop_illegal_nullables strips Nullable layers that cannot be used in a
+	/// CREATE TABLE column (Nullable over Tuple/Array/Map). Table-creating
+	/// consumers (arrowstream ingest) must pass true; pure query consumers
+	/// (the Python() table function) keep the historical schema as-is.
 	static void convertArrowSchema(
 		ArrowSchemaWrapper & schema,
 		DB::NamesAndTypesList & names_and_types,
-		DB::ContextPtr & context);
+		DB::ContextPtr & context,
+		bool drop_illegal_nullables = false);
 };
 
 } // namespace CHDB

@@ -91,7 +91,8 @@ static DataTypePtr dropIllegalNullables(const DataTypePtr & type)
 void ArrowSchemaWrapper::convertArrowSchema(
     ArrowSchemaWrapper & schema,
     NamesAndTypesList & names_and_types,
-    ContextPtr & context)
+    ContextPtr & context,
+    bool drop_illegal_nullables)
 {
     if (!schema.arrow_schema.release)
     {
@@ -123,7 +124,8 @@ void ArrowSchemaWrapper::convertArrowSchema(
 
     for (const auto & column : block)
     {
-        names_and_types.emplace_back(column.name, dropIllegalNullables(column.type));
+        names_and_types.emplace_back(
+            column.name, drop_illegal_nullables ? dropIllegalNullables(column.type) : column.type);
     }
 }
 
