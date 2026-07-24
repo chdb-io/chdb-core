@@ -283,7 +283,9 @@ std::string percentDecode(const std::string & in)
     out.reserve(in.size());
     for (size_t i = 0; i < in.size(); ++i)
     {
-        if (in[i] == '%' && i + 2 < in.size() && std::isxdigit(in[i + 1]) && std::isxdigit(in[i + 2]))
+        if (in[i] == '%' && i + 2 < in.size()
+            && std::isxdigit(static_cast<unsigned char>(in[i + 1]))
+            && std::isxdigit(static_cast<unsigned char>(in[i + 2])))
         {
             out += static_cast<char>(std::stoi(in.substr(i + 1, 2), nullptr, 16));
             i += 2;
@@ -292,6 +294,30 @@ std::string percentDecode(const std::string & in)
             out += in[i];
     }
     return out;
+}
+
+/// Parses a file:/chdb:-style URI tail (everything after "<scheme>:") per
+/// RFC 8089: <scheme>:name, <scheme>:/abs, <scheme>:///abs and
+/// <scheme>://localhost/abs, with %XX percent-decoding. Only an empty or
+/// "localhost" authority is accepted. Writes the decoded path into `out`;
+/// on a bad authority fills `error` and returns a non-OK status.
+AdbcStatusCode parseFileLikeUri(
+    const char * scheme, const std::string & after_scheme, std::string & out, AdbcError * error)
+{
+    std::string rest = after_scheme;
+    if (rest.rfind("//", 0) == 0)
+    {
+        rest = rest.substr(2);
+        const auto slash = rest.find('/');
+        const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+        if (!authority.empty() && authority != "localhost")
+            return setError(
+                error, ADBC_STATUS_INVALID_ARGUMENT,
+                std::string("[chdb] unsupported ") + scheme + " URI authority '" + authority + "'");
+        rest = slash == std::string::npos ? "" : rest.substr(slash);
+    }
+    out = percentDecode(rest);
+    return ADBC_STATUS_OK;
 }
 
 /// Quotes an identifier with backticks, ClickHouse-style.
@@ -821,26 +847,54 @@ AdbcStatusCode chdbDatabaseSetOption(
     /// "path" and "uri" are aliases; the last one set wins. The uri form
     /// accepts the file scheme per RFC 8089: file:name, file:/abs,
     /// file:///abs and file://localhost/abs, with %XX percent-decoding.
+    /// chDB's own "chdb:" scheme mirrors file: for paths but additionally
+    /// recognizes in-memory sentinels (chdb:, chdb:memory, chdb::memory:,
+    /// chdb://:memory:, chdb://memory) that all resolve to ":memory:".
     if (option == "path" || option == "uri")
     {
         if (option_value.rfind("file:", 0) == 0)
         {
-            std::string rest = option_value.substr(5);
-            if (rest.rfind("//", 0) == 0)
+            std::string parsed;
+            if (AdbcStatusCode s = parseFileLikeUri("file", option_value.substr(5), parsed, error);
+                s != ADBC_STATUS_OK)
+                return s;
+            option_value = parsed;
+        }
+        else if (option_value.rfind("chdb:", 0) == 0)
+        {
+            const std::string after = option_value.substr(5);
+
+            /// Sentinel in the authority position: chdb://:memory: / chdb://memory.
+            /// Only in-memory when no /path follows the authority.
+            if (after.rfind("//", 0) == 0)
             {
-                rest = rest.substr(2);
-                const auto slash = rest.find('/');
-                const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
-                if (!authority.empty() && authority != "localhost")
-                    return setError(
-                        error, ADBC_STATUS_INVALID_ARGUMENT,
-                        "[chdb] unsupported file URI authority '" + authority + "'");
-                rest = slash == std::string::npos ? "" : rest.substr(slash);
+                const std::string auth_rest = after.substr(2);
+                if (auth_rest.find('/') == std::string::npos
+                    && (auth_rest == ":memory:" || auth_rest == "memory"))
+                {
+                    impl->path = ":memory:";
+                    return ADBC_STATUS_OK;
+                }
             }
-            option_value = percentDecode(rest);
+
+            /// Sentinel in the path position: chdb: / chdb:memory / chdb::memory:.
+            /// Decode first so a percent-encoded ":memory:" still matches.
+            const std::string tail = percentDecode(after);
+            if (tail.empty() || tail == "memory" || tail == ":memory:")
+            {
+                impl->path = ":memory:";
+                return ADBC_STATUS_OK;
+            }
+
+            /// Otherwise a real path, parsed with the shared file: logic.
+            std::string parsed;
+            if (AdbcStatusCode s = parseFileLikeUri("chdb", after, parsed, error);
+                s != ADBC_STATUS_OK)
+                return s;
+            option_value = parsed;
         }
         else if (option == "uri" && option_value.find("://") != std::string::npos)
-            return notImplemented(error, "URI scheme other than file");
+            return notImplemented(error, "URI scheme other than file/chdb");
         impl->path = option_value.empty() ? ":memory:" : option_value;
         return ADBC_STATUS_OK;
     }

@@ -806,6 +806,77 @@ class TestAdbcUri(unittest.TestCase):
             self._connect_uri("http://example.com/db")
         self.assertIn("scheme", str(ctx.exception).lower())
 
+    # --- chdb:// scheme (chDB's own scheme) -------------------------------
+
+    def test_chdb_uri_path_forms(self):
+        # Path handling mirrors file: (relative/absolute/authority/percent).
+        base = tempfile.mkdtemp(prefix="chdb_scheme_")
+        try:
+            self._roundtrip(f"chdb:{base}/c1", f"{base}/c1")
+            self._roundtrip(f"chdb://{base}/c2", f"{base}/c2")  # //empty-authority -> abs
+            self._roundtrip(f"chdb://localhost{base}/c3", f"{base}/c3")
+            self._roundtrip(f"chdb:{base}/my%20db", f"{base}/my db")  # percent decode
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_chdb_relative_path(self):
+        # A bare relative name must become a real on-disk dir, not memory.
+        prev = os.getcwd()
+        base = tempfile.mkdtemp(prefix="chdb_rel_")
+        try:
+            os.chdir(base)
+            with self._connect_uri("chdb:reldb") as conn, conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                self.assertEqual(cur.fetchone()[0], 1)
+            self.assertTrue(os.path.isdir(os.path.join(base, "reldb")))
+        finally:
+            os.chdir(prev)
+            shutil.rmtree(base, ignore_errors=True)
+
+    def _assert_in_memory(self, uri, forbidden_dirname):
+        # In-memory must work AND must not create a dir named after the token.
+        prev = os.getcwd()
+        base = tempfile.mkdtemp(prefix="chdb_mem_")
+        try:
+            os.chdir(base)
+            with self._connect_uri(uri) as conn, conn.cursor() as cur:
+                cur.execute("SELECT 42")
+                self.assertEqual(cur.fetchone()[0], 42)
+            self.assertFalse(
+                os.path.isdir(os.path.join(base, forbidden_dirname)),
+                f"{uri} unexpectedly created dir {forbidden_dirname!r}",
+            )
+        finally:
+            os.chdir(prev)
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_chdb_memory_forms(self):
+        # canonical chdb::memory: plus accepted aliases all resolve to :memory:
+        self._assert_in_memory("chdb:", ":memory:")
+        self._assert_in_memory("chdb:memory", "memory")
+        self._assert_in_memory("chdb::memory:", ":memory:")
+        self._assert_in_memory("chdb://:memory:", ":memory:")
+        self._assert_in_memory("chdb://memory", "memory")
+
+    def test_chdb_relative_named_memory_escape_hatch(self):
+        # './memory' must be a real dir: the sentinel only fires on bare token.
+        prev = os.getcwd()
+        base = tempfile.mkdtemp(prefix="chdb_escape_")
+        try:
+            os.chdir(base)
+            with self._connect_uri("chdb:./memory") as conn, conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            self.assertTrue(os.path.isdir(os.path.join(base, "memory")))
+        finally:
+            os.chdir(prev)
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_chdb_bad_authority_rejected(self):
+        with self.assertRaises(Exception) as ctx:
+            self._connect_uri("chdb://evilhost/some/db")
+        self.assertIn("authority", str(ctx.exception).lower())
+
 
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
 class TestAdbcPersistence(unittest.TestCase):
