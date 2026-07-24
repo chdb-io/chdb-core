@@ -340,6 +340,39 @@ class TestAdbcIngest(unittest.TestCase):
             got.column("name").to_pylist(), table.column("name").to_pylist()
         )
 
+    def test_ingest_struct_column(self):
+        # Arrow fields are nullable by default; the schema conversion must not
+        # produce the illegal Nullable(Tuple(...)) for a struct column.
+        table = pa.table(
+            {
+                "v": pa.array(
+                    [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}],
+                    pa.struct([("a", pa.int64()), ("b", pa.string())]),
+                )
+            }
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_ingest("ing_struct", table, mode="create")
+            cur.execute("SELECT v FROM ing_struct ORDER BY v.a")
+            got = cur.fetch_arrow_table()
+        self.assertEqual(got.column("v").to_pylist(), table.column("v").to_pylist())
+
+    def test_ingest_list_of_struct_column(self):
+        # Nested case: list<struct> must not become Array(Nullable(Tuple(...))).
+        table = pa.table(
+            {
+                "v": pa.array(
+                    [[{"a": 1, "b": "x"}, {"a": 2, "b": "y"}], [{"a": 3, "b": "z"}]],
+                    pa.list_(pa.struct([("a", pa.int64()), ("b", pa.string())])),
+                )
+            }
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_ingest("ing_lstruct", table, mode="create")
+            cur.execute("SELECT v FROM ing_lstruct ORDER BY length(v) DESC")
+            got = cur.fetch_arrow_table()
+        self.assertEqual(got.column("v").to_pylist(), table.column("v").to_pylist())
+
 
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
 class TestAdbcParameters(unittest.TestCase):

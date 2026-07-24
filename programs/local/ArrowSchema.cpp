@@ -1,7 +1,12 @@
 #include "ArrowSchema.h"
 
+#include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeMap.h>
+#include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypeTuple.h>
 #include <Processors/Formats/Impl/ArrowColumnToCHColumn.h>
 #include <Formats/FormatFactory.h>
+#include <Common/typeid_cast.h>
 #include <arrow/c/bridge.h>
 
 namespace DB
@@ -48,6 +53,41 @@ ArrowSchemaWrapper & ArrowSchemaWrapper::operator=(ArrowSchemaWrapper && other) 
     return *this;
 }
 
+/// ClickHouse forbids Nullable over composite types (Tuple/Array/Map). The
+/// Arrow-to-CH schema conversion wraps any nullable Arrow field in Nullable,
+/// and its composite-type exemption list covers list/map but not struct, so a
+/// nullable Arrow struct arrives as the illegal Nullable(Tuple(...)) — also
+/// nested, e.g. list<struct> becomes Array(Nullable(Tuple(...))). Strip the
+/// illegal Nullable layers recursively; scalar fields keep theirs.
+static DataTypePtr dropIllegalNullables(const DataTypePtr & type)
+{
+    if (const auto * nullable = typeid_cast<const DataTypeNullable *>(type.get()))
+    {
+        auto nested = dropIllegalNullables(nullable->getNestedType());
+        /// Nullable(Tuple) is only creatable behind the experimental
+        /// allow_experimental_nullable_tuple_type setting (its
+        /// canBeInsideNullable() is already true), so never emit it here.
+        if (isTuple(nested) || !nested->canBeInsideNullable())
+            return nested;
+        return makeNullable(nested);
+    }
+    if (const auto * array = typeid_cast<const DataTypeArray *>(type.get()))
+        return std::make_shared<DataTypeArray>(dropIllegalNullables(array->getNestedType()));
+    if (const auto * map = typeid_cast<const DataTypeMap *>(type.get()))
+        return std::make_shared<DataTypeMap>(
+            dropIllegalNullables(map->getKeyType()), dropIllegalNullables(map->getValueType()));
+    if (const auto * tuple = typeid_cast<const DataTypeTuple *>(type.get()))
+    {
+        DataTypes elements;
+        elements.reserve(tuple->getElements().size());
+        for (const auto & element : tuple->getElements())
+            elements.push_back(dropIllegalNullables(element));
+        return tuple->hasExplicitNames() ? std::make_shared<DataTypeTuple>(elements, tuple->getElementNames())
+                                         : std::make_shared<DataTypeTuple>(elements);
+    }
+    return type;
+}
+
 void ArrowSchemaWrapper::convertArrowSchema(
     ArrowSchemaWrapper & schema,
     NamesAndTypesList & names_and_types,
@@ -83,7 +123,7 @@ void ArrowSchemaWrapper::convertArrowSchema(
 
     for (const auto & column : block)
     {
-        names_and_types.emplace_back(column.name, column.type);
+        names_and_types.emplace_back(column.name, dropIllegalNullables(column.type));
     }
 }
 
