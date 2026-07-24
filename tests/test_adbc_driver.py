@@ -4,6 +4,7 @@
 consumer uses. Works against libchdb.so or the Python module's _chdb.abi3.so;
 CHDB_LIB_PATH overrides discovery. Skips when dependencies are missing."""
 
+import contextlib
 import os
 import shutil
 import tempfile
@@ -15,6 +16,19 @@ try:
 except ImportError:  # pragma: no cover - optional test dependency
     pa = None
     adbc_dbapi = None
+
+
+@contextlib.contextmanager
+def _pushd_tmpdir(prefix):
+    """chdir into a fresh temp dir, restoring cwd and removing it afterwards."""
+    prev = os.getcwd()
+    base = tempfile.mkdtemp(prefix=prefix)
+    try:
+        os.chdir(base)
+        yield base
+    finally:
+        os.chdir(prev)
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def _candidate_libchdb_paths():
@@ -356,6 +370,27 @@ class TestAdbcIngest(unittest.TestCase):
             cur.execute("SELECT v FROM ing_struct ORDER BY v.a")
             got = cur.fetch_arrow_table()
         self.assertEqual(got.column("v").to_pylist(), table.column("v").to_pylist())
+
+    def test_ingest_struct_with_null_value(self):
+        # A genuinely NULL struct value: ClickHouse cannot represent a NULL
+        # Tuple, so the outer validity maps to all-NULL nullable fields. Pin
+        # that down explicitly (neither an error nor default-value coercion).
+        table = pa.table(
+            {
+                "v": pa.array(
+                    [{"a": 1, "b": "x"}, None],
+                    pa.struct([("a", pa.int64()), ("b", pa.string())]),
+                )
+            }
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_ingest("ing_null_struct", table, mode="create")
+            cur.execute("SELECT v FROM ing_null_struct ORDER BY v.a")
+            got = cur.fetch_arrow_table()
+        self.assertEqual(
+            got.column("v").to_pylist(),
+            [{"a": 1, "b": "x"}, {"a": None, "b": None}],
+        )
 
     def test_ingest_list_of_struct_column(self):
         # Nested case: list<struct> must not become Array(Nullable(Tuple(...))).
@@ -780,7 +815,7 @@ class TestAdbcMetadata(unittest.TestCase):
                 ("SELECT cast('abc' AS Int64)", AdbcStatusCode.INVALID_ARGUMENT),
             ]:
                 with conn.cursor() as cur:
-                    with self.assertRaises(Exception) as ctx:
+                    with self.assertRaises(adbc_dbapi.Error) as ctx:
                         cur.execute(sql)
                         cur.fetchall()
                     self.assertEqual(ctx.exception.status_code, want, sql)
@@ -854,24 +889,15 @@ class TestAdbcUri(unittest.TestCase):
 
     def test_chdb_relative_path(self):
         # A bare relative name must become a real on-disk dir, not memory.
-        prev = os.getcwd()
-        base = tempfile.mkdtemp(prefix="chdb_rel_")
-        try:
-            os.chdir(base)
+        with _pushd_tmpdir("chdb_rel_") as base:
             with self._connect_uri("chdb:reldb") as conn, conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 self.assertEqual(cur.fetchone()[0], 1)
             self.assertTrue(os.path.isdir(os.path.join(base, "reldb")))
-        finally:
-            os.chdir(prev)
-            shutil.rmtree(base, ignore_errors=True)
 
     def _assert_in_memory(self, uri, forbidden_dirname):
         # In-memory must work AND must not create a dir named after the token.
-        prev = os.getcwd()
-        base = tempfile.mkdtemp(prefix="chdb_mem_")
-        try:
-            os.chdir(base)
+        with _pushd_tmpdir("chdb_mem_") as base:
             with self._connect_uri(uri) as conn, conn.cursor() as cur:
                 cur.execute("SELECT 42")
                 self.assertEqual(cur.fetchone()[0], 42)
@@ -879,9 +905,6 @@ class TestAdbcUri(unittest.TestCase):
                 os.path.isdir(os.path.join(base, forbidden_dirname)),
                 f"{uri} unexpectedly created dir {forbidden_dirname!r}",
             )
-        finally:
-            os.chdir(prev)
-            shutil.rmtree(base, ignore_errors=True)
 
     def test_chdb_memory_forms(self):
         # canonical chdb::memory: plus accepted aliases all resolve to :memory:
@@ -890,20 +913,16 @@ class TestAdbcUri(unittest.TestCase):
         self._assert_in_memory("chdb::memory:", ":memory:")
         self._assert_in_memory("chdb://:memory:", ":memory:")
         self._assert_in_memory("chdb://memory", "memory")
+        # percent-encoded sentinel in the authority position decodes first
+        self._assert_in_memory("chdb://%3Amemory%3A", ":memory:")
 
     def test_chdb_relative_named_memory_escape_hatch(self):
         # './memory' must be a real dir: the sentinel only fires on bare token.
-        prev = os.getcwd()
-        base = tempfile.mkdtemp(prefix="chdb_escape_")
-        try:
-            os.chdir(base)
+        with _pushd_tmpdir("chdb_escape_") as base:
             with self._connect_uri("chdb:./memory") as conn, conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
             self.assertTrue(os.path.isdir(os.path.join(base, "memory")))
-        finally:
-            os.chdir(prev)
-            shutil.rmtree(base, ignore_errors=True)
 
     def test_chdb_bad_authority_rejected(self):
         with self.assertRaises(Exception) as ctx:

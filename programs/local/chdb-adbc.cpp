@@ -865,10 +865,11 @@ AdbcStatusCode chdbDatabaseSetOption(
             const std::string after = option_value.substr(5);
 
             /// Sentinel in the authority position: chdb://:memory: / chdb://memory.
-            /// Only in-memory when no /path follows the authority.
+            /// Only in-memory when no /path follows the authority. Decode first
+            /// so a percent-encoded sentinel matches, same as the path position.
             if (after.rfind("//", 0) == 0)
             {
-                const std::string auth_rest = after.substr(2);
+                const std::string auth_rest = percentDecode(after.substr(2));
                 if (auth_rest.find('/') == std::string::npos
                     && (auth_rest == ":memory:" || auth_rest == "memory"))
                 {
@@ -2038,7 +2039,7 @@ AdbcStatusCode executeBoundQuery(
                 std::string message(err);
                 chdb_destroy_query_result(stream_result);
                 if (message.find(CHDB::kErrorStreamingNotSupportedPrefix) == std::string::npos)
-                    return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + message);
+                    return setError(error, statusForEngineError(message), "[chdb] " + message);
                 /// Statement the engine refuses to stream (rejected before
                 /// executing): run it materialized over the IPC format.
                 chdb_result * result = chdb_query_with_params_n(
