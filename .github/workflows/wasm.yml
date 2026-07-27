@@ -21,8 +21,8 @@ on:
         description: 'chdb-wasm version to publish (e.g. 0.3.1); leave empty to skip publishing chdb-wasm'
         type: string
         default: ''
-      lite_version:
-        description: 'chdb-cloudflare version to publish (e.g. 0.1.0); leave empty to skip the lite publish'
+      cloudflare_version:
+        description: 'chdb-cloudflare version to publish (e.g. 0.1.0); leave empty to skip publishing chdb-cloudflare'
         type: string
         default: ''
   push:
@@ -347,20 +347,20 @@ jobs:
       # matrix, the split pipeline) must have passed to reach here. Tag-driven
       # publishing stays disabled (was: startsWith(github.ref, 'refs/tags/v')).
       # Each package publishes independently: fill `version` for chdb-wasm,
-      # `lite_version` for chdb-cloudflare, either, or both. Checking `publish`
+      # `cloudflare_version` for chdb-cloudflare, either, or both. Checking `publish`
       # with both empty fails loudly instead of silently doing nothing.
       - name: Validate publish inputs
         if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
           VERSION: ${{ inputs.version }}
-          LITE_VERSION: ${{ inputs.lite_version }}
+          LITE_VERSION: ${{ inputs.cloudflare_version }}
         run: |
           [[ -n "$VERSION" || -n "$LITE_VERSION" ]] \
-            || { echo "publish is checked but both 'version' and 'lite_version' are empty — nothing to publish"; exit 1; }
+            || { echo "publish is checked but both 'version' and 'cloudflare_version' are empty — nothing to publish"; exit 1; }
           [[ -z "$VERSION" || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
             || { echo "'version' must be semver, got: '$VERSION'"; exit 1; }
           [[ -z "$LITE_VERSION" || "$LITE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
-            || { echo "'lite_version' must be semver, got: '$LITE_VERSION'"; exit 1; }
+            || { echo "'cloudflare_version' must be semver, got: '$LITE_VERSION'"; exit 1; }
 
       - name: Set npm version (manual publish)
         if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.version != ''
@@ -395,13 +395,13 @@ jobs:
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
 
       # chdb-cloudflare is versioned independently of chdb-wasm: pass
-      # lite_version to publish it (empty skips it, so either package can be
+      # cloudflare_version to publish it (empty skips it, so either package can be
       # released on its own).
       - name: Publish chdb-cloudflare to npm
-        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.lite_version != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.cloudflare_version != ''
         working-directory: packages/chdb-cloudflare
         env:
-          VERSION: ${{ inputs.lite_version }}
+          VERSION: ${{ inputs.cloudflare_version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"

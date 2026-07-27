@@ -32,15 +32,24 @@
     "test": "node test/lite.test.mjs"
   },
   "keywords": [
-    "clickhouse",
     "chdb",
-    "wasm",
-    "webassembly",
+    "clickhouse",
     "sql",
     "olap",
-    "cloudflare-workers"
+    "analytics",
+    "database",
+    "wasm",
+    "webassembly",
+    "cloudflare",
+    "cloudflare-workers",
+    "workers",
+    "serverless"
   ],
   "license": "Apache-2.0",
+  "homepage": "https://github.com/chdb-io/chdb-core/tree/main/packages/chdb-cloudflare#readme",
+  "bugs": {
+    "url": "https://github.com/chdb-io/chdb-core/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chdb-io/chdb-core.git",
