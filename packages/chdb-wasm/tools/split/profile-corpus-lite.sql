@@ -448,6 +448,22 @@ SELECT line FROM format(LineAsString, 'first line\nsecond line') ORDER BY line;
 SELECT JSONExtractInt(json, 'any', 'shape') FROM format(JSONAsString, '{"any": {"shape": 1}}');
 SELECT name FROM format(CSVWithNames, 'id,name\n1,alice\n2,bob') WHERE name LIKE 'a%';
 SELECT count() FROM (SELECT * FROM generateRandom('i UInt64, s String', 42) LIMIT 100);
+-- the small generator family + numbers() stepped form
+SELECT count() FROM generateSeries(1, 100);
+SELECT count() FROM generate_series(0, 99, 3);
+SELECT count() FROM zeros(1000);
+SELECT count() FROM numbers(0, 100, 7);
+INSERT INTO FUNCTION null('x UInt64') SELECT number FROM numbers(100);
+-- merge() unions Memory tables by name regex
+CREATE TABLE lite_m1 (x Int64) ENGINE = Memory;
+CREATE TABLE lite_m2 (x Int64) ENGINE = Memory;
+INSERT INTO lite_m1 VALUES (1), (2);
+INSERT INTO lite_m2 VALUES (3);
+SELECT count(), sum(x) FROM merge(currentDatabase(), '^lite_m');
+DROP TABLE lite_m1;
+DROP TABLE lite_m2;
+-- glob reads over MEMFS (brace form; both files carry headers)
+SELECT count() FROM file('/corpus/{people_names,people2}.csv', CSVWithNames);
 
 -- ============================================================================
 -- 10. file() over MEMFS — the main data path in Workers (putFile + query)
@@ -478,6 +494,12 @@ SELECT count() FROM url('{HTTP}/people.jsonl', JSONEachRow);
 DESCRIBE url('{HTTP}/people_names.csv');
 SELECT * FROM s3('{HTTP}/s3bucket/people_names.csv', NOSIGN, CSVWithNames) ORDER BY id;
 SELECT count(), max(score) FROM s3('{HTTP}/s3bucket/people_names.csv', NOSIGN, CSVWithNames);
+-- SIGNED s3 (SigV4 request signing — how a Worker reads a private R2/S3
+-- bucket; the static fixture ignores the Authorization header, which is fine:
+-- the point is that the signing code path executes)
+SELECT count(), max(score) FROM s3('{HTTP}/s3bucket/people_names.csv', 'corpuskey', 'corpussecret', CSVWithNames);
+-- url() with a headers() clause (bearer-token APIs)
+SELECT count() FROM url('{HTTP}/people_names.csv', CSVWithNames, headers('X-Probe' = 'corpus'));
 
 -- ============================================================================
 -- 12. Output formats

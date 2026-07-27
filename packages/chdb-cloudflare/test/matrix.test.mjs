@@ -198,6 +198,16 @@ const CASES = [
   ['I native typed read', "SELECT count(), max(t64), max(u) FROM file('/audit_typed.native', Native)"],
   ['audit cleanup view', 'DROP VIEW audit_rich_v'],
   ['audit cleanup table', 'DROP TABLE audit_rich'],
+  // --- table functions beyond the defaults --------------------------------------
+  ['tf generateSeries', 'SELECT count() FROM generateSeries(1, 100)'],
+  ['tf generate_series step', 'SELECT count() FROM generate_series(0, 99, 3)'],
+  ['tf zeros', 'SELECT count() FROM zeros(1000)'],
+  ['tf numbers stepped', 'SELECT count() FROM numbers(0, 100, 7)'],
+  ['tf null sink', "INSERT INTO FUNCTION null('x UInt64') SELECT number FROM numbers(100)"],
+  ['tf merge', "SELECT count(), sum(x) FROM merge(currentDatabase(), '^matrix_m')"],
+  ['tf file glob', "SELECT count() FROM file('/mx/{a,b}.csv', CSVWithNames)"],
+  ['tf url headers()', 'URLHDR'],
+  ['tf s3 signed (SigV4)', 'S3SIGNED'],
 ];
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'chdb-matrix-'));
@@ -215,13 +225,29 @@ const script = `
     mod.ccall('chdb_wasm_free_result', null, ['number'], [r]);
     return err;
   }
+  // fixtures: MEMFS files for the glob case, Memory tables for merge(), and a
+  // same-process HTTP server (JSPI frees the event loop) for url()/s3().
+  mod.FS.mkdir('/mx');
+  mod.FS.writeFile('/mx/a.csv', 'id,name' + String.fromCharCode(10) + '1,x' + String.fromCharCode(10));
+  mod.FS.writeFile('/mx/b.csv', 'id,name' + String.fromCharCode(10) + '2,y' + String.fromCharCode(10));
+  await q('CREATE TABLE matrix_m1 (x Int64) ENGINE = Memory');
+  await q('INSERT INTO matrix_m1 VALUES (1), (2)');
+  const { createServer } = await import('node:http');
+  const CSVBODY = 'id,name,score' + String.fromCharCode(10) + '1,alice,9.5' + String.fromCharCode(10);
+  const srv = createServer((req, res) => { res.setHeader('content-type', 'text/csv'); res.end(CSVBODY); });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + srv.address().port;
+
   const cases = JSON.parse(${JSON.stringify(JSON.stringify(CASES))});
-  for (const [label, sql] of cases) {
+  for (let [label, sql] of cases) {
+    if (sql === 'URLHDR') sql = "SELECT count() FROM url('" + base + "/p.csv', CSVWithNames, headers('X-Probe' = 'matrix'))";
+    if (sql === 'S3SIGNED') sql = "SELECT count(), max(score) FROM s3('" + base + "/bucket/p.csv', 'matrixkey', 'matrixsecret', CSVWithNames)";
     let err = null;
     try { err = await q(sql); } catch (e) { err = e.message; }
     const cold = err && err.includes('chdb-cloudflare');
     console.log((cold ? 'COLD' : err ? 'ERR' : 'PASS') + '\\t' + label + (err ? '\\t' + err.split(String.fromCharCode(10))[0].slice(0, 100) : ''));
   }
+  srv.close();
   // control: the lite boundary must still exist
   let ctl = 'MISSING';
   try { const e = await q("SELECT toModifiedJulianDay('2024-03-15')"); ctl = e ? 'OK' : 'MISSING'; }
