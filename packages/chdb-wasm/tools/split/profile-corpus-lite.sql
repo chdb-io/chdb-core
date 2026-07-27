@@ -464,6 +464,7 @@ DROP TABLE lite_m1;
 DROP TABLE lite_m2;
 -- glob reads over MEMFS (brace form; both files carry headers)
 SELECT count() FROM file('/corpus/{people_names,people2}.csv', CSVWithNames);
+SELECT count(), max(d), sum(dec) FROM file('/corpus/rich{1,2}.csv', CSVWithNames, 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)');
 
 -- ============================================================================
 -- 10. file() over MEMFS — the main data path in Workers (putFile + query)
@@ -500,6 +501,11 @@ SELECT count(), max(score) FROM s3('{HTTP}/s3bucket/people_names.csv', NOSIGN, C
 SELECT count(), max(score) FROM s3('{HTTP}/s3bucket/people_names.csv', 'corpuskey', 'corpussecret', CSVWithNames);
 -- url() with a headers() clause (bearer-token APIs)
 SELECT count() FROM url('{HTTP}/people_names.csv', CSVWithNames, headers('X-Probe' = 'corpus'));
+-- EXPLICIT-structure forms (a different argument path than inference), with
+-- rich types through the HTTP source
+SELECT max(d), sum(dec), count(ns), max(t) FROM url('{HTTP}/rich.csv', CSVWithNames, 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)');
+SELECT max(d), sum(dec) FROM url('{HTTP}/rich.csv', CSVWithNames, 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)', headers('X-Probe' = 'corpus'));
+SELECT max(d), sum(dec), max(t) FROM s3('{HTTP}/s3bucket/rich.csv', 'corpuskey', 'corpussecret', 'CSVWithNames', 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)');
 
 -- ============================================================================
 -- 12. Output formats

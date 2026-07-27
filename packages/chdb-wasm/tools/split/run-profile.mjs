@@ -70,6 +70,12 @@ writeFileSync(join(staticDir, 'people.jsonl'), PEOPLE_JSONL);
 // one directory deep for the corpus's single-object s3() reads.
 mkdirSync(join(staticDir, 's3bucket'));
 writeFileSync(join(staticDir, 's3bucket', 'people_names.csv'), PEOPLE_NAMES_CSV);
+// rich-typed remote fixture: url()/s3() with an EXPLICIT structure argument
+// take a different argument-handling path than schema inference, and the
+// per-type parsing must be exercised through the HTTP source too.
+const RICH_CSV = 'd,dec,ns,t\n2024-03-15,12.34,,2024-03-15 12:00:00.123\n2024-03-16,5.60,x,2024-03-16 08:30:00.001\n';
+writeFileSync(join(staticDir, 'rich.csv'), RICH_CSV);
+writeFileSync(join(staticDir, 's3bucket', 'rich.csv'), RICH_CSV);
 
 // --- fixture services (all out-of-process) -----------------------------------
 const children = [];
@@ -151,6 +157,8 @@ mod.FS.writeFile('/corpus/people2.csv', PEOPLE_NAMES_CSV); // glob partner
 mod.FS.writeFile('/corpus/people_names.csv', PEOPLE_NAMES_CSV);
 mod.FS.writeFile('/corpus/people.tsv', PEOPLE_TSV);
 mod.FS.writeFile('/corpus/people.jsonl', PEOPLE_JSONL);
+mod.FS.writeFile('/corpus/rich1.csv', RICH_CSV);
+mod.FS.writeFile('/corpus/rich2.csv', RICH_CSV);
 
 // The SDK calls these during init (worker.ts shares the cancel/progress
 // offsets with the page) — they must be hot or a split bundle can't even

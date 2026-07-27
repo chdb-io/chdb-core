@@ -208,6 +208,11 @@ const CASES = [
   ['tf file glob', "SELECT count() FROM file('/mx/{a,b}.csv', CSVWithNames)"],
   ['tf url headers()', 'URLHDR'],
   ['tf s3 signed (SigV4)', 'S3SIGNED'],
+  ['tf url typed structure', 'URLTYPED'],
+  ['tf url headers+structure', 'URLHDRTYPED'],
+  ['tf s3 signed typed', 'S3TYPED'],
+  ['tf glob typed structure', "SELECT count(), max(d), sum(dec) FROM file('/mx/rich{1,2}.csv', CSVWithNames, 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)')"],
+  ['tf null sink rich', "INSERT INTO FUNCTION null('d Date, dec Decimal64(2), a Array(String)') SELECT toDate('2024-01-01') + number, toDecimal64(number, 2), [toString(number)] FROM numbers(20)"],
 ];
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'chdb-matrix-'));
@@ -230,11 +235,14 @@ const script = `
   mod.FS.mkdir('/mx');
   mod.FS.writeFile('/mx/a.csv', 'id,name' + String.fromCharCode(10) + '1,x' + String.fromCharCode(10));
   mod.FS.writeFile('/mx/b.csv', 'id,name' + String.fromCharCode(10) + '2,y' + String.fromCharCode(10));
+  const RICHCSV = 'd,dec,ns,t' + String.fromCharCode(10) + '2024-03-15,12.34,,2024-03-15 12:00:00.123' + String.fromCharCode(10);
+  mod.FS.writeFile('/mx/rich1.csv', RICHCSV);
+  mod.FS.writeFile('/mx/rich2.csv', RICHCSV);
   await q('CREATE TABLE matrix_m1 (x Int64) ENGINE = Memory');
   await q('INSERT INTO matrix_m1 VALUES (1), (2)');
   const { createServer } = await import('node:http');
   const CSVBODY = 'id,name,score' + String.fromCharCode(10) + '1,alice,9.5' + String.fromCharCode(10);
-  const srv = createServer((req, res) => { res.setHeader('content-type', 'text/csv'); res.end(CSVBODY); });
+  const srv = createServer((req, res) => { res.setHeader('content-type', 'text/csv'); res.end(req.url.includes('rich') ? RICHCSV : CSVBODY); });
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
   const base = 'http://127.0.0.1:' + srv.address().port;
 
@@ -242,6 +250,10 @@ const script = `
   for (let [label, sql] of cases) {
     if (sql === 'URLHDR') sql = "SELECT count() FROM url('" + base + "/p.csv', CSVWithNames, headers('X-Probe' = 'matrix'))";
     if (sql === 'S3SIGNED') sql = "SELECT count(), max(score) FROM s3('" + base + "/bucket/p.csv', 'matrixkey', 'matrixsecret', CSVWithNames)";
+    const RSTRUCT = String.fromCharCode(39) + 'd Date, dec Decimal64(2), ns Nullable(String), t DateTime64(3)' + String.fromCharCode(39);
+    if (sql === 'URLTYPED') sql = "SELECT max(d), sum(dec), count(ns), max(t) FROM url('" + base + "/rich.csv', CSVWithNames, " + RSTRUCT + ')';
+    if (sql === 'URLHDRTYPED') sql = "SELECT max(d), sum(dec) FROM url('" + base + "/rich.csv', CSVWithNames, " + RSTRUCT + ", headers('X-T' = 'v'))";
+    if (sql === 'S3TYPED') sql = "SELECT max(d), sum(dec), max(t) FROM s3('" + base + "/bkt/rich.csv', 'k', 's', 'CSVWithNames', " + RSTRUCT + ')';
     let err = null;
     try { err = await q(sql); } catch (e) { err = e.message; }
     const cold = err && err.includes('chdb-cloudflare');
