@@ -25,6 +25,7 @@
 // --experimental-wasm-jspi — which is how CI covers it.
 
 import { ChdbBindings } from './bindings.ts';
+import { ChdbError } from './status.ts';
 import type { ChdbResult } from './async.ts';
 import type { ConnHandle, WireResult } from './protocol.ts';
 
@@ -98,23 +99,61 @@ export async function createChdb(
     return p;
   };
 
-  const makeSession = (conn: ConnHandle): ChdbWorkersSession => ({
-    query: (sql, format = 'CSV') => locked(async () => wrap(await bindings.queryConn(conn, sql, format))),
-    async *queryStream(sql, format = 'CSV') {
-      const stream = await locked(() => bindings.streamStart(conn, sql, format));
-      try {
-        for (;;) {
-          const chunk = await locked(() => bindings.streamFetch(conn, stream));
-          if (chunk.done || !chunk.result) return;
-          yield wrap(chunk.result);
+  const makeSession = (conn: ConnHandle): ChdbWorkersSession => {
+    // close() frees the engine-side connection; a queryStream() generator can
+    // be paused at yield across it, and resuming (or abandoning) it must NOT
+    // call streamFetch/streamCancel on the freed handle — that is a wasm
+    // use-after-free. So the session tracks its live streams: close() cancels
+    // them first (under the lock), and every later engine call fails with a
+    // clear error instead. All checks run INSIDE locked ops, so they are
+    // serialized with close() itself.
+    let closed = false;
+    const activeStreams = new Set<ConnHandle>();
+    const ensureOpen = () => {
+      if (closed) throw new ChdbError('session is closed');
+    };
+    return {
+      query: (sql, format = 'CSV') =>
+        locked(async () => {
+          ensureOpen();
+          return wrap(await bindings.queryConn(conn, sql, format));
+        }),
+      async *queryStream(sql, format = 'CSV') {
+        const stream = await locked(async () => {
+          ensureOpen();
+          const s = await bindings.streamStart(conn, sql, format);
+          activeStreams.add(s);
+          return s;
+        });
+        try {
+          for (;;) {
+            const chunk = await locked(() => {
+              // close() ran while we were paused at yield: the stream (and the
+              // connection) are already freed engine-side.
+              if (!activeStreams.has(stream)) throw new ChdbError('session was closed while streaming');
+              return bindings.streamFetch(conn, stream);
+            });
+            if (chunk.done || !chunk.result) return;
+            yield wrap(chunk.result);
+          }
+        } finally {
+          // Early break/throw: cancel + free the engine-side stream state —
+          // unless close() already did (delete() returns false then).
+          await locked(() => {
+            if (activeStreams.delete(stream)) bindings.streamCancel(conn, stream);
+          });
         }
-      } finally {
-        // Early break/throw: cancel + free the engine-side stream state.
-        await locked(() => bindings.streamCancel(conn, stream));
-      }
-    },
-    close: () => locked(() => bindings.closeConn(conn)),
-  });
+      },
+      close: () =>
+        locked(() => {
+          if (closed) return;
+          closed = true;
+          for (const s of activeStreams) bindings.streamCancel(conn, s);
+          activeStreams.clear();
+          bindings.closeConn(conn);
+        }),
+    };
+  };
 
   return {
     query: (sql, format = 'CSV') => locked(async () => wrap(await bindings.query(sql, format))),

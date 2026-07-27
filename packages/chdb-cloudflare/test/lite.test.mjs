@@ -208,6 +208,17 @@ function probe(body, timeoutMs = 300000) {
       db.query('SELECT max(number) FROM numbers(100)'),
     ]);
     console.log('concurrent=' + u.text().trim() + ';' + p.text().trim());
+    // close() while a stream generator is paused at yield: resuming must throw
+    // the clear session-closed error (NOT touch the freed handles), and the
+    // instance must stay usable afterwards.
+    const conn2 = await db.connect();
+    const gen = conn2.queryStream('SELECT number FROM numbers(1000000)', 'CSV');
+    const first = await gen.next();
+    if (first.done) throw new Error('stream ended in one chunk; test needs a paused generator');
+    await conn2.close();
+    let after = 'NO-ERROR';
+    try { await gen.next(); } catch (e) { after = e.message.includes('closed') ? 'CLOSED-ERROR-OK' : 'OTHER:' + e.message.slice(0, 60); }
+    console.log('closeDuringStream=' + after + ';' + (await db.query('SELECT 41 + 1')).text().trim());
     srv.close();
     process.exit(0);
   `;
@@ -222,7 +233,9 @@ function probe(body, timeoutMs = 300000) {
   assert.strictEqual(got.session, '6');
   assert.strictEqual(got.stream, '30000');
   assert.strictEqual(got.concurrent, '3,9.5;99', 'concurrent url()+plain must BOTH be correct (FIFO mutex across the JSPI suspension)');
-  ok('workers entry (createChdb): query/putFile/session/stream + concurrent queries stay serialized across a JSPI suspension');
+  assert.strictEqual(got.closeDuringStream, 'CLOSED-ERROR-OK;42',
+    'resuming a stream after close() must throw the session-closed error, and the instance must stay usable');
+  ok('workers entry (createChdb): query/putFile/session/stream, concurrency serialized across JSPI suspension, close-during-stream is safe');
 }
 
 // ---- everything else: immediate, self-explanatory error ---------------------
