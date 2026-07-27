@@ -10,11 +10,11 @@ Same SDK and API as [`chdb-wasm`](https://www.npmjs.com/package/chdb-wasm).
 
 ## How it differs from `chdb-wasm`
 
-The full `chdb-wasm` package splits the engine into a hot primary plus a
-lazily-downloaded `chdb.deferred.wasm`, so every SQL feature works everywhere.
-Workers forbids runtime wasm compilation — a deferred module can never load
-there — so **chdb-cloudflare ships only the primary**, built from a profile of
-the most common SQL. Everyday analytics is covered: filters, aggregation,
+The full `chdb-wasm` package ships the complete engine — every SQL feature
+works, but its wasm is ~100 MB (~21 MiB gzipped), far over the Workers bundle
+limit. **chdb-cloudflare is a size-capped subset**: the engine is profiled
+against the most common SQL and only that hot set ships, as one `chdb.wasm`
+under 8 MiB gzipped. Everyday analytics is covered: filters, aggregation,
 joins, window functions, CTEs, the common scalar and aggregate functions,
 `file()`/`format()`/`values()` over local data, remote reads with `url()` and
 `s3()`, Memory-engine tables, sessions, streaming, and the common input/output
@@ -41,28 +41,13 @@ Node 24+ with `--experimental-wasm-jspi`**.
 The bundle is single-threaded (Workers has no threads) and links with a 64MB
 initial memory (growable; a Workers isolate caps total memory at 128MB).
 
-## Usage
+## Usage (Cloudflare Workers)
 
-Same API as `chdb-wasm`. Under Node, run with `node --experimental-wasm-jspi`
-(the bundle needs a JSPI engine, see above):
-
-```js
-import { AsyncChdb } from 'chdb-cloudflare';
-
-const db = await AsyncChdb.create({
-  moduleUrl: import.meta.resolve('chdb-cloudflare/chdb.mjs'),
-});
-const result = await db.query('SELECT version()', 'CSV');
-console.log(result.text());
-```
-
-### Cloudflare Workers
-
-workerd has no `Worker` API, so `AsyncChdb` cannot run there. Use the
-dedicated Workers entry instead — it wraps the module wiring (deploy-time
-compiled wasm via `instantiateWasm`, `locateFile`) and, importantly,
-serializes engine calls: one isolate serves concurrent requests, and a query
-suspended at `fetch()` (JSPI) must not be re-entered by another request.
+workerd has no `Worker` API, so use the dedicated Workers entry — it wraps the
+module wiring (deploy-time compiled wasm via `instantiateWasm`, `locateFile`)
+and, importantly, serializes engine calls: one isolate serves concurrent
+requests, and a query suspended at `fetch()` (JSPI) must not be re-entered by
+another request.
 
 ```js
 import createChdbModule from 'chdb-cloudflare/chdb.mjs';
@@ -85,5 +70,20 @@ as-is; the build prints a warning that `node:module` (imported by the
 Emscripten glue) is Node-only — it is harmless, that import never executes in
 workerd, and no `nodejs_compat` flag is needed.
 
-If you need the data-lake stack (Iceberg/Delta/catalogs) or a non-JSPI
-runtime, use the full `chdb-wasm` package.
+## Other runtimes
+
+The package also runs outside Workers on any JSPI engine (Chrome/Edge 137+,
+Node 24+ with `--experimental-wasm-jspi`), with the same `AsyncChdb` API as
+`chdb-wasm` — handy for testing the exact bundle you deploy:
+
+```js
+import { AsyncChdb } from 'chdb-cloudflare';
+
+const db = await AsyncChdb.create({
+  moduleUrl: import.meta.resolve('chdb-cloudflare/chdb.mjs'),
+});
+console.log((await db.query('SELECT version()', 'CSV')).text());
+```
+
+If you need the data-lake stack (Iceberg/Delta/catalogs), MergeTree, or a
+non-JSPI runtime, use the full `chdb-wasm` package.
