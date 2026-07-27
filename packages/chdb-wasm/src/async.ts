@@ -270,11 +270,24 @@ export class AsyncChdb {
 export class AsyncChdbConnection {
   private readonly db: AsyncChdb;
   private readonly conn: ConnHandle;
+  // close() frees the engine-side connection, but a queryStream() generator
+  // can be paused at yield across it (and a caller can query() after close) —
+  // any later engine call on the freed handle is a wasm use-after-free. Track
+  // liveness and the active streams so those paths fail with a clear error
+  // instead. Engine-side ordering is safe by construction: the worker executes
+  // requests FIFO, so an in-flight fetch that was sent before close() runs on
+  // a still-valid connection.
+  private closed = false;
+  private readonly activeStreams = new Set<ConnHandle>();
   constructor(db: AsyncChdb, conn: ConnHandle) {
     this.db = db;
     this.conn = conn;
   }
+  private ensureOpen(): void {
+    if (this.closed) throw new ChdbError('session is closed');
+  }
   async query(sql: string, format = 'CSV', opts?: QueryOptions): Promise<ChdbResult> {
+    this.ensureOpen();
     const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
     try {
       return wrap(await this.db._queryConn(this.conn, sql, format));
@@ -290,21 +303,37 @@ export class AsyncChdbConnection {
 
   /** Stream a query's results chunk-by-chunk (yields the worker between chunks). */
   async *queryStream(sql: string, format = 'CSV', opts?: QueryOptions): AsyncGenerator<ChdbResult> {
+    this.ensureOpen();
     const { stream } = await this.db._streamStart(this.conn, sql, format);
+    if (this.closed) {
+      // close() ran while streamStart was in flight: the connection is already
+      // freed engine-side (the orphan stream handle is unreachable — accept
+      // the leak rather than touch the freed connection).
+      throw new ChdbError('session was closed while streaming');
+    }
+    this.activeStreams.add(stream);
     const stop = opts?.onProgress ? this.db._startProgressPoll(opts.onProgress) : () => {};
     try {
       for (;;) {
+        // close() ran while we were paused at yield: stream + connection are
+        // already freed engine-side.
+        if (!this.activeStreams.has(stream)) throw new ChdbError('session was closed while streaming');
         const { done, result } = await this.db._streamFetch(this.conn, stream);
         if (done || !result) break;
         yield wrap(result);
       }
     } finally {
       stop();
-      await this.db._streamCancel(this.conn, stream);
+      // Skip the cancel close() already performed (double free otherwise).
+      if (this.activeStreams.delete(stream)) await this.db._streamCancel(this.conn, stream);
     }
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    for (const stream of this.activeStreams) await this.db._streamCancel(this.conn, stream);
+    this.activeStreams.clear();
     await this.db._closeConn(this.conn);
   }
 }
