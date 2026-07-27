@@ -145,7 +145,7 @@ jobs:
             pyenv shell $version
             python -m pip install --upgrade pip
             # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
-            python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert
+            python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert "fastjsonschema<2.22"
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain

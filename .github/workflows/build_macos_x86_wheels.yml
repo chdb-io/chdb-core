@@ -229,7 +229,7 @@ jobs:
             echo "Installing dependencies for Python $version"
             pyenv shell $version
             python -m pip install --upgrade pip
-            python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel>=0.40.0 jupyter nbconvert
+            python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel>=0.40.0 jupyter nbconvert "fastjsonschema<2.22"
             # numba (via llvmlite) bundles its own libc++; tests/test_numba_compatibility.py uses it to
             # guard against the macOS weak-symbol coalescing crash. Tolerate Python versions that have no
             # numba wheel yet -- the test auto-skips when numba is unavailable.
