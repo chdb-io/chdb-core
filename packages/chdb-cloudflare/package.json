@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build": "node scripts/build-lite.mjs",
-    "test": "node test/lite.test.mjs"
+    "test": "node test/lite.test.mjs && node test/matrix.test.mjs"
   },
   "keywords": [
     "chdb",

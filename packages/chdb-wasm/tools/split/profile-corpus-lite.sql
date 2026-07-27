@@ -165,6 +165,125 @@ SELECT stddevSamp(number), covarPop(toFloat64(number), toFloat64(number * 2)), s
 SELECT windowFunnel(100)(toDateTime(number), number % 5 = 0, number % 5 = 1) FROM numbers(100);
 
 -- ============================================================================
+-- 6b. TYPE MATRIX (generated systematically; see the key-type note in §3).
+--     Aggregates, GROUP BY keys, JOIN keys, IN-sets and DISTINCT all
+--     specialize per column type: cross the common operations with the
+--     common types so swapping a column type never goes lite-cold.
+-- ============================================================================
+-- universal aggregates x each type:
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toInt8(number % 100 - 50) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toInt16(number % 1000 - 500) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toInt32(number % 1000) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toInt64(number) - 500 AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toUInt16(number % 60000) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toFloat32(number / 7) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT number / 7 AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT concat('v', toString(number % 50)) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toFixedString(toString(number % 10), 4) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toDate('2024-01-01') + number % 300 AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toDateTime64('2024-01-01 00:00:00.000', 3) + number AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toDecimal64(number % 100, 2) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) % 250), '.', toString(number % 250))) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT if(number % 7 = 0, NULL, number / 3) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT if(number % 7 = 0, NULL, toInt64(number)) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT if(number % 7 = 0, NULL, toDateTime('2024-01-01 00:00:00') + number) AS v, number AS n FROM numbers(300));
+SELECT min(v), max(v), any(v), anyLast(v), uniq(v), uniqExact(v), topK(2)(v), argMax(v, n), argMin(v, n), length(groupArray(v)) FROM (SELECT toLowCardinality(toString(number % 10)) AS v, number AS n FROM numbers(300));
+SELECT argMax(v, d), argMin(v, d) FROM (SELECT toString(number % 5) AS v, toDate('2024-01-01') + number AS d FROM numbers(100));
+SELECT argMax(n, t), argMin(n, t) FROM (SELECT number AS n, toDateTime('2024-01-01 00:00:00') + number AS t FROM numbers(100));
+-- numeric aggregates x each numeric type (Decimal: no avg/quantile):
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toInt8(number % 100 - 50) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toInt16(number % 1000 - 500) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toInt64(number) - 500 AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toInt32(number % 1000) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toUInt32(number) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toUInt16(number % 60000) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT toFloat32(number / 7) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT number / 7 AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT if(number % 7 = 0, NULL, number / 3) AS v FROM numbers(300));
+SELECT sum(v), avg(v), quantile(0.5)(v), median(v) FROM (SELECT if(number % 7 = 0, NULL, toInt64(number)) AS v FROM numbers(300));
+SELECT sum(v), min(v), max(v) FROM (SELECT toDecimal64(number % 100, 2) AS v FROM numbers(300));
+-- GROUP BY keys not already covered in section 3. Plain ORDER BY on purpose:
+-- with a LIMIT the sort takes the partial-sort path and the full pdqsort
+-- permutation (also instantiated per column type) would stay cold.
+--
+SELECT v, count() FROM (SELECT toInt8(number % 100 - 50) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toInt16(number % 1000 - 500) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toInt64(number) - 500 AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toUInt16(number % 60000) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toFloat32(number / 7) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toDateTime64('2024-01-01 00:00:00.000', 3) + number AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) % 250), '.', toString(number % 250))) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, number / 3) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, toDateTime('2024-01-01 00:00:00') + number) AS v FROM numbers(300)) GROUP BY v ORDER BY v;
+-- low-row-count variants: sorting the grouped output takes the pdqsort
+-- path below ~256 rows and radix sort above — different per-type code.
+SELECT v, count() FROM (SELECT toInt8(number % 100 - 50) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toInt16(number % 1000 - 500) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toInt64(number) - 500 AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toUInt16(number % 60000) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toFloat32(number / 7) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toDateTime64('2024-01-01 00:00:00.000', 3) + number AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) % 250), '.', toString(number % 250))) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, number / 3) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+SELECT v, count() FROM (SELECT if(number % 7 = 0, NULL, toDateTime('2024-01-01 00:00:00') + number) AS v FROM numbers(300) WHERE number < 30) GROUP BY v ORDER BY v;
+-- DESC sorts: an ascending sort of already-ascending data yields an identity
+-- permutation and IColumn::permute is skipped — descending guarantees the
+-- per-type permute instantiation actually runs.
+SELECT fs FROM (SELECT toFixedString(toString(number % 30), 4) AS fs FROM numbers(30)) ORDER BY fs DESC;
+SELECT fs FROM (SELECT toFixedString(toString(number), 8) AS fs FROM numbers(300)) ORDER BY fs DESC LIMIT 5;
+SELECT v FROM (SELECT toDateTime64('2024-01-01 00:00:00.000', 3) + number AS v FROM numbers(30)) ORDER BY v DESC;
+SELECT v FROM (SELECT toFloat32(number) AS v FROM numbers(30)) ORDER BY v DESC;
+SELECT v FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS v FROM numbers(30)) ORDER BY v DESC;
+SELECT v FROM (SELECT toIPv4(concat('10.0.0.', toString(number % 30))) AS v FROM numbers(30)) ORDER BY v DESC;
+
+-- Adaptive method variants: the aggregator picks Cache-vs-NoCache AND
+-- single-vs-TWO-LEVEL hash methods from process-history statistics and
+-- cardinality, not from the query alone. 150k distinct keys crosses the
+-- two-level threshold mid-query; the repeats let the statistics choose the
+-- other variants on later runs — all combinations must profile hot.
+SELECT count() FROM (SELECT fs, count() FROM (SELECT toFixedString(toString(number), 8) AS fs FROM numbers(150000)) GROUP BY fs);
+SELECT count() FROM (SELECT fs, count() FROM (SELECT toFixedString(toString(number), 8) AS fs FROM numbers(150000)) GROUP BY fs);
+SELECT count() FROM (SELECT fs, count() FROM (SELECT toFixedString(toString(number), 8) AS fs FROM numbers(150000)) GROUP BY fs);
+SELECT count() FROM (SELECT s, count() FROM (SELECT toString(number) AS s FROM numbers(150000)) GROUP BY s);
+SELECT count() FROM (SELECT s, count() FROM (SELECT toString(number) AS s FROM numbers(150000)) GROUP BY s);
+SELECT count() FROM (SELECT s, count() FROM (SELECT toString(number) AS s FROM numbers(150000)) GROUP BY s);
+SELECT count() FROM (SELECT k, count() FROM (SELECT toUInt32(number) AS k FROM numbers(150000)) GROUP BY k);
+SELECT count() FROM (SELECT k, count() FROM (SELECT toUInt32(number) AS k FROM numbers(150000)) GROUP BY k);
+SELECT count() FROM (SELECT k, count() FROM (SELECT toUInt32(number) AS k FROM numbers(150000)) GROUP BY k);
+SELECT count() FROM (SELECT s, n, count() FROM (SELECT toString(number) AS s, number AS n FROM numbers(150000)) GROUP BY s, n);
+SELECT count() FROM (SELECT s, n, count() FROM (SELECT toString(number) AS s, number AS n FROM numbers(150000)) GROUP BY s, n);
+SELECT count() FROM (SELECT s, n, count() FROM (SELECT toString(number) AS s, number AS n FROM numbers(150000)) GROUP BY s, n);
+
+-- JOIN keys not already covered in section 4:
+SELECT count() FROM (SELECT toInt32(number % 1000) AS k FROM numbers(300)) AS a JOIN (SELECT toInt32(number % 1000) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toInt64(number) - 500 AS k FROM numbers(300)) AS a JOIN (SELECT toInt64(number) - 500 AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 AS k FROM numbers(300)) AS a JOIN (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS k FROM numbers(300)) AS a JOIN (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) % 250), '.', toString(number % 250))) AS k FROM numbers(300)) AS a JOIN (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) % 250), '.', toString(number % 250))) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS k FROM numbers(300)) AS a JOIN (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS k FROM numbers(300)) AS a JOIN (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT concat('v', toString(number % 50)) AS s, number % 2 AS n FROM numbers(100)) AS a JOIN (SELECT concat('v', toString(number % 50)) AS s, number % 2 AS n FROM numbers(20)) AS b ON a.s = b.s AND a.n = b.n;
+-- IN-set membership and DISTINCT specialize per type too:
+SELECT count() FROM (SELECT toDate('2024-01-01') + number % 300 AS v FROM numbers(300)) WHERE v IN (SELECT toDate('2024-01-01') + number % 300 FROM numbers(20));
+SELECT count() FROM (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 AS v FROM numbers(300)) WHERE v IN (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 FROM numbers(20));
+SELECT count() FROM (SELECT toInt32(number % 1000) AS v FROM numbers(300)) WHERE v IN (SELECT toInt32(number % 1000) FROM numbers(20));
+SELECT count() FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS v FROM numbers(300)) WHERE v IN (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) FROM numbers(20));
+SELECT count() FROM (SELECT DISTINCT toDate('2024-01-01') + number % 300 AS v FROM numbers(300));
+SELECT count() FROM (SELECT DISTINCT toDateTime('2024-01-01 00:00:00') + number * 7 AS v FROM numbers(300));
+SELECT count() FROM (SELECT DISTINCT number / 7 AS v FROM numbers(300));
+SELECT count() FROM (SELECT DISTINCT toInt32(number % 1000) AS v FROM numbers(300));
+
+-- ============================================================================
 -- 7. Everyday scalar functions
 -- ============================================================================
 SELECT length('hello'), lower('MiXeD'), upper('MiXeD'), reverse('abc'), repeat('ab', 3), char(72, 105);

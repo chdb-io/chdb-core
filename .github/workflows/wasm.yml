@@ -332,6 +332,7 @@ jobs:
         run: |
           node scripts/build-lite.mjs "${GITHUB_WORKSPACE}/split-out-lite"
           node test/lite.test.mjs
+          node test/matrix.test.mjs
 
       - name: Upload lite artifact
         uses: actions/upload-artifact@v4

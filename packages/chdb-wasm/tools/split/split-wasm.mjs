@@ -169,8 +169,16 @@ const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thr
 // creation thunk per function — the corpus only constructs the functions it
 // happens to call. The FULL bundles keep a working lazy loader, so these stay
 // deferred there and the shipped primary stays lean.
+// AggregationMethod is included WHOLE-FAMILY (it appears in the template
+// arguments of every keyed-aggregation executor, converter lambda and method
+// helper) for a subtler reason: the aggregator picks between Cache/NoCache
+// and single/two-level hash-method variants ADAPTIVELY, from process-history
+// statistics and observed cardinality — which instantiation a query hits is
+// NOT a function of the query alone, so profiling can exercise one variant
+// while a user process picks another (found via GROUP BY FixedString landing
+// in the TwoLevel+NoCache convertToBlock lambda).
 const LITE_SUBSTR = argv.includes('--lite-glue')
-  ? /findExtreme|WriteBufferFromVector|FunctionBinaryArithmetic|FunctionComparison|FunctionFactory/
+  ? /findExtreme|WriteBufferFromVector|FunctionBinaryArithmetic|FunctionComparison|FunctionFactory|AggregationMethod/
   : null;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
