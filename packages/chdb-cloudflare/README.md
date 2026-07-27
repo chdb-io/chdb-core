@@ -10,62 +10,47 @@ Same SDK and API as [`chdb-wasm`](https://www.npmjs.com/package/chdb-wasm).
 
 ## How it differs from `chdb-wasm`
 
-The full `chdb-wasm` package splits the engine into a hot primary plus a lazily-downloaded
-`chdb.deferred.wasm`, so every SQL feature works everywhere. Workers forbids
-runtime wasm compilation — a deferred module can never be loaded there — so
-**chdb-cloudflare ships only the primary**, profiled against a corpus of the most common
-SQL (see `tools/split/profile-corpus-lite.sql` in the repo):
+The full `chdb-wasm` package splits the engine into a hot primary plus a
+lazily-downloaded `chdb.deferred.wasm`, so every SQL feature works everywhere.
+Workers forbids runtime wasm compilation — a deferred module can never load
+there — so **chdb-cloudflare ships only the primary**, built from a profile of
+the most common SQL. Everyday analytics is covered: filters, aggregation,
+joins, window functions, CTEs, the common scalar and aggregate functions,
+`file()`/`format()`/`values()` over local data, remote reads with `url()` and
+`s3()`, Memory-engine tables, sessions, streaming, and the common input/output
+formats (CSV/TSV/JSON*/Parquet/Pretty*/...).
 
-- core operators: filtering, aggregation (`GROUP BY`/`HAVING`/`ROLLUP`/`CUBE`/
-  `WITH TOTALS`), joins (INNER/LEFT/FULL/CROSS/USING), window functions
-  (`row_number`/`rank`/`dense_rank`/`first_value`/`last_value`/`lagInFrame`/
-  frames), CTEs, set operations, `ORDER BY`/`LIMIT BY`/`DISTINCT`, `ARRAY JOIN`
-- the everyday scalar functions — string/search/regex, date-time (incl.
-  `toStartOfInterval` bucketing, `formatDateTime`, `parseDateTimeBestEffort`,
-  time zones), math, conditional, arrays (incl. lambdas), maps/tuples, JSON
-  extraction, URL parsing, IPv4/IPv6 helpers, hashes — and aggregates
-  (`count`/`sum`/`avg`/`min`/`max`/`uniq*`/`quantile*`/`topK`/`argMin`/
-  `argMax`/`groupArray`/`sumMap`/`windowFunnel`/stddev-variance, `-If`/`-Merge`
-  combinators, over the common column types incl. Nullable/LowCardinality/
-  Decimal/DateTime64)
-- table functions over local data: `file()` on the in-memory filesystem
-  (CSV/TSV/JSONEachRow/Parquet/Native, gzip; `putFile` ingestion), `format()`
-  for inline strings (incl. `LineAsString`/`JSONAsString`), `values()`,
-  `numbers()`, `generateRandom()`, `view()`
-- remote reads with `url()` and `s3()` (single-object, path-style) — see the
-  JSPI note below
-- Memory-engine tables, temporary tables, views, sessions, streaming queries,
-  the common output formats (CSV*/TSV*/JSON/JSONEachRow/JSONCompact*/Pretty*/
-  Vertical/Markdown/Values/RowBinary/Parquet/...)
+To stay under the size limit, everything else is left out — notably MergeTree
+tables and the data-lake stack (Iceberg/Delta/catalogs). Calling an
+unsupported feature fails immediately with a clear error (the instance stays
+usable):
+
+```
+chdb-cloudflare: this SQL feature is not included in this size-optimized Cloudflare Workers build; use the full chdb-wasm package
+```
 
 **Networking runs on JSPI.** The full package's HTTP bridge waits
 synchronously (sync XHR in browsers, a subprocess in Node), which Cloudflare's
 workerd cannot do. This package instead links with WebAssembly JavaScript
 Promise Integration: the wasm stack suspends at a plain async `fetch()` and
 resumes when it settles — zero size cost, and it is exactly what makes
-`url()`/`s3()` work *inside* Workers. The trade-off is that this package requires a
-JSPI-capable engine: **workerd (Cloudflare Workers), Chrome/Edge 137+, or
-Node 24+ with `--experimental-wasm-jspi`**. The data-lake stack
-(Iceberg/Delta/catalogs) stays excluded for size.
-
-Anything outside that set throws immediately with:
-
-```
-chdb-cloudflare: this SQL feature is not included in this size-optimized Cloudflare Workers build; use the full chdb-wasm package
-```
+`url()`/`s3()` work *inside* Workers. The trade-off: it requires a
+JSPI-capable engine — **workerd (Cloudflare Workers), Chrome/Edge 137+, or
+Node 24+ with `--experimental-wasm-jspi`**.
 
 The bundle is single-threaded (Workers has no threads) and links with a 64MB
 initial memory (growable; a Workers isolate caps total memory at 128MB).
 
 ## Usage
 
-Same API as `chdb-wasm`:
+Same API as `chdb-wasm`. Under Node, run with `node --experimental-wasm-jspi`
+(the bundle needs a JSPI engine, see above):
 
 ```js
 import { AsyncChdb } from 'chdb-cloudflare';
 
 const db = await AsyncChdb.create({
-  moduleUrl: new URL('chdb-cloudflare/chdb.mjs', import.meta.url).href,
+  moduleUrl: import.meta.resolve('chdb-cloudflare/chdb.mjs'),
 });
 const result = await db.query('SELECT version()', 'CSV');
 console.log(result.text());
