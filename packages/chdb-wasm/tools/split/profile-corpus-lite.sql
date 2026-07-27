@@ -284,6 +284,82 @@ SELECT count() FROM (SELECT DISTINCT number / 7 AS v FROM numbers(300));
 SELECT count() FROM (SELECT DISTINCT toInt32(number % 1000) AS v FROM numbers(300));
 
 -- ============================================================================
+-- 6c. RICH-TYPE surface (generated from the promise audit): every promised
+--     feature class exercised over the full common-type set — format PARSERS
+--     and SERIALIZERS, Memory-table lifecycle, ARRAY JOIN/lambdas, scalar
+--     functions over typed COLUMNS, windows/ROLLUP/set-ops/CTE over typed
+--     columns, combinators/state-merge, and typed file()/gzip/Parquet/Native
+--     roundtrips. All of this was cold when the corpus leaned on
+--     UInt64/String/Float64 defaults (61/63 audit probes failed).
+-- ============================================================================
+SELECT d, t FROM format(CSV, 'd Date, t DateTime', '2024-03-15,2024-03-15 12:00:00');
+SELECT dec, n FROM format(CSV, 'dec Decimal64(2), n Nullable(Int64)', concat('12.34,', char(92), 'N'));
+SELECT u, ip FROM format(CSV, 'u UUID, ip IPv4', '61f0c404-5cb3-11e7-907b-a6006ad3dba0,10.0.0.1');
+SELECT f, t FROM format(CSV, 'f Float32, t DateTime64(3)', '1.5,2024-03-15 12:00:00.123');
+SELECT a, b FROM format(CSV, 'a Array(Int64), b Bool', concat(char(34), '[1,2]', char(34), ',true'));
+SELECT e, b FROM format(CSV, 'e Enum(\'a\' = 1, \'b\' = 2), b Bool', 'a,true');
+SELECT d, a FROM format(JSONEachRow, 'd Date, a Array(Int64)', concat('{', char(34), 'd', char(34), ': ', char(34), '2024-03-15', char(34), ', ', char(34), 'a', char(34), ': [1, 2]}'));
+SELECT s, a FROM format(JSONEachRow, 's Nullable(String), a Array(String)', concat('{', char(34), 's', char(34), ': null, ', char(34), 'a', char(34), ': [', char(34), 'x', char(34), ']}'));
+SELECT m, f FROM format(JSONEachRow, 'm Map(String, Int64), f Float32', concat('{', char(34), 'm', char(34), ': {', char(34), 'k', char(34), ': 1}, ', char(34), 'f', char(34), ': 1.5}'));
+SELECT d, t FROM format(TSV, 'd Date, t DateTime', concat('2024-03-15', char(9), '2024-03-15 12:00:00'));
+DESCRIBE format(CSVWithNames, concat('d,t', char(10), '2024-03-15,2024-03-15 12:00:00'));
+DESCRIBE format(JSONEachRow, concat('{', char(34), 'd', char(34), ': ', char(34), '2024-03-15', char(34), ', ', char(34), 'a', char(34), ': [1.5], ', char(34), 's', char(34), ': ', char(34), 'x', char(34), '}'));
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT CSV;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT TSV;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT JSONEachRow;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT JSON;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT JSONCompact;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT PrettyCompact;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT Vertical;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT Markdown;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT Values;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT RowBinary;
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30) FORMAT Parquet;
+CREATE TABLE lite_rich (d Date, t DateTime, t64 DateTime64(3), dec Decimal64(2), f32 Float32, ns Nullable(String), arr Array(Int64), sarr Array(String), m Map(String, Int64), lc LowCardinality(String), u UUID, ip IPv4, e Enum('a' = 1, 'b' = 2), b Bool) ENGINE = Memory;
+INSERT INTO lite_rich VALUES ('2024-03-15', '2024-03-15 12:00:00', '2024-03-15 12:00:00.123', 12.34, 1.5, NULL, [1, 2], ['x'], {'k': 1}, 'tag', '61f0c404-5cb3-11e7-907b-a6006ad3dba0', '10.0.0.1', 'a', true);
+INSERT INTO lite_rich SELECT toDate('2024-01-01') + number, toDateTime('2024-01-01 00:00:00') + number, toDateTime64('2024-01-01 00:00:00.000', 3) + number, toDecimal64(number, 2), toFloat32(number), if(number % 2 = 0, NULL, toString(number)), [number], [toString(number)], map('k', number), toLowCardinality(toString(number % 3)), toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))), toIPv4(concat('10.0.0.', toString(number % 5))), CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)), number % 2 = 0 FROM numbers(20);
+SELECT count(), max(d), max(dec), uniqExact(lc), max(u), max(ip) FROM lite_rich;
+SELECT count() FROM lite_rich WHERE d >= '2024-01-01' AND ip = toIPv4('10.0.0.1') AND e = 'a';
+CREATE VIEW lite_rich_v AS SELECT d, dec, lc FROM lite_rich;
+SELECT count(), max(dec) FROM lite_rich_v;
+DROP TABLE lite_rich_v;
+DROP TABLE lite_rich;
+SELECT s FROM (SELECT ['x', 'y'] AS a) ARRAY JOIN a AS s;
+SELECT d FROM (SELECT [toDate('2024-01-01'), toDate('2024-01-02')] AS a) ARRAY JOIN a AS d;
+SELECT arrayMap(x -> upper(x), ['a', 'b']), arrayMap(x -> x + 0.5, [1.0, 2.0]);
+SELECT arraySort(['c', 'a']), arraySort([toDate('2024-01-02'), toDate('2024-01-01')]);
+SELECT arrayFilter(x -> x > toDate('2024-01-01'), [toDate('2024-01-01'), toDate('2024-01-02')]);
+SELECT arrayJoin(groupArray(d)) FROM (SELECT toDate('2024-01-01') + number AS d FROM numbers(3));
+SELECT count() FROM (SELECT upper(ns) AS x FROM (SELECT if(number % 2 = 0, NULL, toString(number)) AS ns FROM numbers(50))) WHERE x != '';
+SELECT max(upper(lc)), max(length(lc)) FROM (SELECT toLowCardinality(toString(number % 3)) AS lc FROM numbers(50));
+SELECT max(length(fs)), max(substring(fs, 1, 2)) FROM (SELECT toFixedString(toString(number % 3), 4) AS fs FROM numbers(50));
+SELECT max(toHour(t)), max(toDate(t)) FROM (SELECT toDateTime64('2024-01-01 06:00:00.000', 3) + number AS t FROM numbers(50));
+SELECT max(formatDateTime(d, '%Y-%m')) FROM (SELECT toDate('2024-01-01') + number AS d FROM numbers(50));
+SELECT sum(dec + dec), max(dec * 2) FROM (SELECT toDecimal64(number, 2) AS dec FROM numbers(50));
+SELECT max(if(number % 2 = 0, d, d + 1)) FROM (SELECT number, toDate('2024-01-01') + number % 5 AS d FROM numbers(50));
+SELECT max(concat(toString(d), '-', lc)) FROM (SELECT toDate('2024-01-01') + number % 3 AS d, toLowCardinality(toString(number % 2)) AS lc FROM numbers(50));
+SELECT d, lagInFrame(d, 1) OVER (ORDER BY d ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM (SELECT toDate('2024-01-01') + number AS d FROM numbers(5));
+SELECT first_value(s) OVER (ORDER BY s ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM (SELECT toString(number % 5) AS s FROM numbers(10));
+SELECT s, count() FROM (SELECT toString(number % 3) AS s FROM numbers(30)) GROUP BY s WITH ROLLUP ORDER BY s;
+SELECT s, count() AS c FROM (SELECT toString(number % 3) AS s FROM numbers(30)) GROUP BY s HAVING c > 5 ORDER BY s;
+SELECT s, number FROM (SELECT toString(number % 3) AS s, number FROM numbers(30)) ORDER BY s, number LIMIT 2 BY s;
+SELECT d FROM (SELECT toDate('2024-01-01') + number AS d FROM numbers(3) UNION ALL SELECT toDate('2024-02-01') + number FROM numbers(3)) ORDER BY d;
+SELECT s FROM (SELECT toString(number % 10) AS s FROM numbers(20) INTERSECT SELECT toString(number) FROM numbers(5)) ORDER BY s;
+WITH x AS (SELECT toDate('2024-01-01') + number % 3 AS d, toDecimal64(number, 2) AS dec FROM numbers(30)) SELECT d, sum(dec) FROM x GROUP BY d ORDER BY d;
+SELECT sumIf(dec, number % 2 = 0), avgIf(f, number > 5) FROM (SELECT toDecimal64(number, 2) AS dec, number / 2 AS f, number FROM numbers(50));
+SELECT minIf(d, number > 5), maxIf(t, number < 40) FROM (SELECT toDate('2024-01-01') + number % 7 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, number FROM numbers(50));
+SELECT maxMerge(s1), uniqMerge(s2) FROM (SELECT maxState(toDate('2024-01-01') + number % 5) AS s1, uniqState(toString(number % 7)) AS s2 FROM numbers(50));
+SELECT quantile(0.5)(t) FROM (SELECT toDateTime('2024-01-01 00:00:00') + number AS t FROM numbers(100));
+SELECT sumMap(map(toString(number % 3), number)) FROM numbers(30);
+SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(100000) FORMAT Null;
+INSERT INTO FUNCTION file('/corpus/rich.csv.gz', CSV) SELECT toDate('2024-01-01') + number % 3 AS d, toDecimal64(number, 2) AS dec, if(number % 2 = 0, NULL, toString(number)) AS ns FROM numbers(50);
+SELECT count(), max(d), max(dec) FROM file('/corpus/rich.csv.gz', CSV, 'd Date, dec Decimal64(2), ns Nullable(String)');
+INSERT INTO FUNCTION file('/corpus/rich.parquet', Parquet) SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30);
+SELECT count(), max(d), max(dec), uniqExact(lc) FROM file('/corpus/rich.parquet', Parquet);
+INSERT INTO FUNCTION file('/corpus/rich.native', Native) SELECT toDate('2024-01-01') + number % 3 AS d, toDateTime('2024-01-01 00:00:00') + number AS t, toDateTime64('2024-01-01 00:00:00.000', 3) + number AS t64, toDecimal64(number, 2) AS dec, toFloat32(number / 2) AS f32, if(number % 2 = 0, NULL, toString(number)) AS ns, [number, number + 1] AS arr, ['a', 'b'] AS sarr, map('k', number) AS m, toLowCardinality(toString(number % 3)) AS lc, toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 10))) AS u, toIPv4(concat('10.0.0.', toString(number % 5))) AS ip FROM numbers(30);
+SELECT count(), max(t64), max(u) FROM file('/corpus/rich.native', Native);
+
+-- ============================================================================
 -- 7. Everyday scalar functions
 -- ============================================================================
 SELECT length('hello'), lower('MiXeD'), upper('MiXeD'), reverse('abc'), repeat('ab', 3), char(72, 105);
