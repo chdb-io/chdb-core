@@ -15,10 +15,10 @@ works, but its wasm is ~100 MB (~21 MiB gzipped), far over the Workers bundle
 limit. **chdb-cloudflare is a size-capped subset**: the engine is profiled
 against the most common SQL and only that hot set ships, as one `chdb.wasm`
 of ~8.4 MiB gzipped. Everyday analytics is covered: the common operators,
-functions and aggregates over the common column types; local data via
-`file()`/`format()`/`values()`; remote reads with `url()` and `s3()`
-(incl. signed access to private R2/S3 buckets); Memory tables, sessions,
-streaming, and the common input/output formats.
+functions and aggregates over the common column types; querying data you load
+into the Worker (`putFile` + `file()`, or inline via `format()`/`values()`);
+remote reads with `url()` and `s3()`; Memory tables, sessions, streaming, and
+the common input/output formats.
 
 To stay under the size limit, everything else is left out — notably MergeTree
 tables and the data-lake stack (Iceberg/Delta/catalogs). Calling an
