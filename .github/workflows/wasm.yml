@@ -7,7 +7,9 @@
 # Runs on every push to main, pull request, manual dispatch, and v* tags. One
 # Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
 # Requires repo secrets: NPM_TOKEN (npm automation token that can publish
-# chdb-wasm) and GH_TOKEN (to attach the published npm tarball to the GitHub release).
+# chdb-wasm AND chdb-cloudflare — the first chdb-cloudflare release CREATES the
+# package, so a granular token must allow creating new packages) and GH_TOKEN
+# (to attach the published npm tarball to the GitHub release).
 name: wasm
 
 on:
