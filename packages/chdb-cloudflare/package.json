@@ -12,6 +12,11 @@
       "default": "./dist/index.js"
     },
     "./worker": "./dist/worker.js",
+    "./workers": {
+      "types": "./dist/workers.d.ts",
+      "import": "./dist/workers.js",
+      "default": "./dist/workers.js"
+    },
     "./chdb.wasm": "./dist/chdb.wasm",
     "./chdb.mjs": "./dist/chdb.mjs"
   },

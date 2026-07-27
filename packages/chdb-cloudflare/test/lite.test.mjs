@@ -170,6 +170,61 @@ function probe(body, timeoutMs = 300000) {
   ok('url() and s3() read real HTTP data via the JSPI bridge — exact results');
 }
 
+// ---- the Workers entry (createChdb): the API Cloudflare users actually call --
+// Driven exactly as a Worker would (pre-compiled WebAssembly.Module +
+// instantiateWasm), minus workerd itself. The concurrent pair at the end is
+// the mutex regression test: url() SUSPENDS the wasm stack at fetch() while a
+// second query is issued concurrently — without the entry's FIFO lock that
+// second call would re-enter the non-reentrant engine mid-query.
+{
+  const script = `
+    import { readFileSync } from 'node:fs';
+    import { createServer } from 'node:http';
+    import { pathToFileURL } from 'node:url';
+    const dir = ${JSON.stringify(dir)};
+    const CSV = 'id,name,score\\n1,alice,9.5\\n2,bob,7.25\\n3,carol,8.0\\n';
+    const srv = createServer((req, res) => { res.setHeader('content-type', 'text/csv'); res.end(CSV); });
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    const base = 'http://127.0.0.1:' + srv.address().port;
+
+    const factory = (await import(pathToFileURL(dir + '/chdb.mjs').href)).default;
+    const wasmModule = new WebAssembly.Module(readFileSync(dir + '/chdb.wasm'));
+    const { createChdb } = await import(pathToFileURL(dir + '/workers.js').href);
+    const db = await createChdb(factory, wasmModule);
+
+    console.log('plain=' + (await db.query('SELECT sum(number) FROM numbers(1000)')).text().trim());
+    await db.putFile('/w.csv', new TextEncoder().encode('5,x' + String.fromCharCode(10) + '6,y' + String.fromCharCode(10)));
+    console.log('file=' + (await db.query("SELECT sum(c1), max(c2) FROM file('/w.csv', CSV)")).text().trim());
+    const conn = await db.connect();
+    await conn.query('CREATE TABLE wt (x Int32) ENGINE = Memory');
+    await conn.query('INSERT INTO wt VALUES (1), (2), (3)');
+    console.log('session=' + (await conn.query('SELECT sum(x) FROM wt')).text().trim());
+    let rows = 0;
+    for await (const c of conn.queryStream('SELECT number FROM numbers(30000)', 'CSV')) rows += c.text().split(String.fromCharCode(10)).filter(Boolean).length;
+    console.log('stream=' + rows);
+    await conn.close();
+    const [u, p] = await Promise.all([
+      db.query("SELECT count(), max(score) FROM url('" + base + "/people_names.csv', CSVWithNames)"),
+      db.query('SELECT max(number) FROM numbers(100)'),
+    ]);
+    console.log('concurrent=' + u.text().trim() + ';' + p.text().trim());
+    srv.close();
+    process.exit(0);
+  `;
+  const file = join(tmpRoot, 'probe-workers.mjs');
+  writeFileSync(file, script);
+  const r = spawnSync(process.execPath, [...jspiFlags, file], { encoding: 'utf8', timeout: 300000 });
+  if (r.error || r.signal) r.stderr = `spawn: ${r.error ?? ''} signal=${r.signal ?? ''}\n${r.stderr ?? ''}`;
+  assert.strictEqual(r.status, 0, `workers-entry probe failed: ${r.stderr?.slice(-400)}`);
+  const got = Object.fromEntries(r.stdout.trim().split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  assert.strictEqual(got.plain, '499500');
+  assert.strictEqual(got.file, '11,"y"');
+  assert.strictEqual(got.session, '6');
+  assert.strictEqual(got.stream, '30000');
+  assert.strictEqual(got.concurrent, '3,9.5;99', 'concurrent url()+plain must BOTH be correct (FIFO mutex across the JSPI suspension)');
+  ok('workers entry (createChdb): query/putFile/session/stream + concurrent queries stay serialized across a JSPI suspension');
+}
+
 // ---- everything else: immediate, self-explanatory error ---------------------
 {
   const r = probe(`

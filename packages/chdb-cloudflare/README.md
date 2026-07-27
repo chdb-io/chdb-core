@@ -70,29 +70,34 @@ const result = await db.query('SELECT version()', 'CSV');
 console.log(result.text());
 ```
 
-Notes for Cloudflare Workers specifically: workerd has no `Worker` API, so
-drive the Emscripten module directly instead of through `AsyncChdb` — import
-the wasm module statically, hand it to Emscripten via `Module.instantiateWasm`
-(workerd forbids compiling wasm from bytes), and pass `locateFile` (workerd
-module names are not URLs). The suspendable exports return Promises, so call
-them with `ccall(..., {async: true})`:
+### Cloudflare Workers
+
+workerd has no `Worker` API, so `AsyncChdb` cannot run there. Use the
+dedicated Workers entry instead — it wraps the module wiring (deploy-time
+compiled wasm via `instantiateWasm`, `locateFile`) and, importantly,
+serializes engine calls: one isolate serves concurrent requests, and a query
+suspended at `fetch()` (JSPI) must not be re-entered by another request.
 
 ```js
 import createChdbModule from 'chdb-cloudflare/chdb.mjs';
-import wasmModule from './chdb.wasm'; // static import -> compiled at deploy
+import wasmModule from 'chdb-cloudflare/chdb.wasm';
+import { createChdb } from 'chdb-cloudflare/workers';
 
-const mod = await createChdbModule({
-  locateFile: (path) => path,
-  instantiateWasm(imports, cb) {
-    const inst = new WebAssembly.Instance(wasmModule, imports);
-    cb(inst, wasmModule);
-    return inst.exports;
+let dbPromise = null;
+export default {
+  async fetch(request) {
+    const db = await (dbPromise ??= createChdb(createChdbModule, wasmModule));
+    const r = await db.query("SELECT count() FROM url('https://…/data.csv', CSVWithNames)");
+    return new Response(r.text());
   },
-});
-const r = await mod.ccall('chdb_wasm_query', 'number', ['string', 'string'],
-                          ["SELECT * FROM url('https://.../data.csv', CSVWithNames)", 'CSV'],
-                          { async: true });
+};
 ```
+
+`db.putFile(path, bytes)` feeds data to `file()`, and `db.connect()` opens a
+session (`query`, `queryStream`, `close`). Default `wrangler` bundling works
+as-is; the build prints a warning that `node:module` (imported by the
+Emscripten glue) is Node-only — it is harmless, that import never executes in
+workerd, and no `nodejs_compat` flag is needed.
 
 If you need the data-lake stack (Iceberg/Delta/catalogs) or a non-JSPI
 runtime, use the full `chdb-wasm` package.
