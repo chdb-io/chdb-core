@@ -1,7 +1,7 @@
 {
   "name": "chdb-cloudflare",
   "version": "0.1.0",
-  "description": "chdb (ClickHouse) for Cloudflare Workers — a single size-capped WebAssembly bundle with a JSPI async-fetch HTTP bridge, so url()/s3() work inside Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
+  "description": "chdb (ClickHouse) for Cloudflare Workers — a single size-capped WebAssembly bundle with a JSPI async-fetch HTTP bridge, so ClickHouse's url() and s3() table functions work inside Workers. Covers the most common SQL surface; for full SQL coverage use the chdb-wasm package.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

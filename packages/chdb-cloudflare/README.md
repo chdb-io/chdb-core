@@ -4,7 +4,8 @@
 [Cloudflare Workers](https://developers.cloudflare.com/workers/): **one
 `chdb.wasm` under 10 MiB gzipped**, sized to fit the Workers
 [paid-plan bundle limit](https://developers.cloudflare.com/workers/platform/limits/),
-with a JSPI async-fetch HTTP bridge so `url()`/`s3()` work inside Workers.
+with a JSPI async-fetch HTTP bridge so ClickHouse's `url()` and `s3()`
+table functions work inside Workers.
 Same SDK and API as [`chdb-wasm`](https://www.npmjs.com/package/chdb-wasm).
 
 ## How it differs from `chdb-wasm`
