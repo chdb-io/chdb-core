@@ -148,7 +148,16 @@ export async function createChdb(
         locked(() => {
           if (closed) return;
           closed = true;
-          for (const s of activeStreams) bindings.streamCancel(conn, s);
+          // (Atomic w.r.t. the generators — this whole op holds the lock and
+          // never awaits — so no snapshot dance is needed here, unlike the
+          // dispatcher-based AsyncChdbConnection.)
+          for (const s of activeStreams) {
+            try {
+              bindings.streamCancel(conn, s);
+            } catch {
+              // Best effort: a failed stream cancel must not leak the connection.
+            }
+          }
           activeStreams.clear();
           bindings.closeConn(conn);
         }),

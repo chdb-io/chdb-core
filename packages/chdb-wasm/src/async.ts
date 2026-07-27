@@ -331,9 +331,24 @@ export class AsyncChdbConnection {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    // closed-first is deliberate (fail closed): once close() is attempted, no
+    // later call may touch a handle whose cleanup partially ran. The requests
+    // below only reject when the instance is already broken — a retryable
+    // close() could not help there, but a use-after-free would.
     this.closed = true;
-    for (const stream of this.activeStreams) await this.db._streamCancel(this.conn, stream);
+    // Snapshot + clear BEFORE the first await: while a cancel is in flight, a
+    // concurrent gen.return()'s finally (delete -> second cancel = engine-side
+    // double free) and a resumed generator's has() check (-> fetch after the
+    // cancel) must already see the streams as gone.
+    const streams = [...this.activeStreams];
     this.activeStreams.clear();
+    for (const stream of streams) {
+      try {
+        await this.db._streamCancel(this.conn, stream);
+      } catch {
+        // Best effort: a failed stream cancel must not leak the connection.
+      }
+    }
     await this.db._closeConn(this.conn);
   }
 }
