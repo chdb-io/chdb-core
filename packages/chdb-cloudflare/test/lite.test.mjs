@@ -107,6 +107,9 @@ function probe(body, timeoutMs = 300000) {
     await row('ip', "SELECT isIPAddressInRange('192.168.1.5', '192.168.1.0/24'), domain('https://www.example.com/a?q=1')");
     await row('fmt', "SELECT n, s FROM format(JSONEachRow, concat('{', char(34), 'n', char(34), ': 1, ', char(34), 's', char(34), ': ', char(34), 'one', char(34), '}')) ORDER BY n");
     await row('lc', 'SELECT lc, count() FROM (SELECT toLowCardinality(toString(number % 3)) AS lc FROM numbers(9)) GROUP BY lc ORDER BY lc');
+    await row('grpStr', 'SELECT s, count() FROM (SELECT toString(number % 3) AS s FROM numbers(9)) GROUP BY s ORDER BY s');
+    await row('bucket', "SELECT toStartOfInterval(toDateTime('2024-03-15 12:00:00') + number * 600, INTERVAL 15 MINUTE) AS b, count() FROM numbers(6) GROUP BY b ORDER BY b");
+    await row('joinStr', 'SELECT b.v, count() FROM (SELECT toString(number % 3) AS k FROM numbers(9)) a JOIN (SELECT toString(number) AS k, number * 100 AS v FROM numbers(3)) b ON a.k = b.k GROUP BY b.v ORDER BY b.v');
   `);
   assert.strictEqual(r.status, 0, `common-SQL probe failed: ${r.stderr?.slice(-300)}`);
   const got = Object.fromEntries(r.stdout.trim().split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
@@ -121,7 +124,13 @@ function probe(body, timeoutMs = 300000) {
   assert.strictEqual(got.ip, '1,"www.example.com"');
   assert.strictEqual(got.fmt, '1,"one"');
   assert.strictEqual(got.lc, '"0",3 | "1",3 | "2",3');
-  ok('common SQL: aggregation, joins, windows, dates, arrays, IP/URL, format(), LowCardinality — exact labeled results');
+  // key-type matrix: hash tables/join maps specialize per key type — these
+  // three are the everyday shapes (GROUP BY name, time-bucket dashboards,
+  // string-keyed joins) that a numbers()-only corpus would leave cold.
+  assert.strictEqual(got.grpStr, '"0",3 | "1",3 | "2",3');
+  assert.strictEqual(got.bucket, '"2024-03-15 12:00:00",2 | "2024-03-15 12:15:00",1 | "2024-03-15 12:30:00",2 | "2024-03-15 12:45:00",1');
+  assert.strictEqual(got.joinStr, '0,3 | 100,3 | 200,3');
+  ok('common SQL incl. String/DateTime keyed GROUP BY and String-keyed JOIN — exact labeled results');
 }
 
 // ---- files, sessions, streaming ---------------------------------------------

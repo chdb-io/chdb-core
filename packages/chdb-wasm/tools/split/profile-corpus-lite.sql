@@ -59,6 +59,36 @@ SELECT number FROM numbers(100) ORDER BY number DESC LIMIT 5 OFFSET 10;
 SELECT number % 3 AS g, number FROM numbers(30) ORDER BY g, number LIMIT 2 BY g;
 SELECT toNullable(if(number % 3 = 0, NULL, number)) AS v FROM numbers(9) ORDER BY v ASC NULLS FIRST;
 SELECT intDiv(number, 100) AS bucket, count() FROM numbers(100000) GROUP BY bucket ORDER BY bucket LIMIT 10;
+-- Aggregation hash tables, join maps and sorters specialize PER KEY TYPE
+-- (String keys, fixed-width keys by size, nullable, multi-key): cover the
+-- common key types or `GROUP BY name` / time-bucket dashboards go cold.
+-- NB: keys must be MATERIALIZED via a subquery — the optimizer rewrites
+-- GROUP BY toString(x) to GROUP BY x (injective-function elimination), so a
+-- direct computed key never exercises the String hash method at all.
+SELECT s, count(), sum(n) FROM (SELECT toString(number % 5) AS s, number AS n FROM numbers(1000)) GROUP BY s ORDER BY s;
+SELECT s, count() FROM (SELECT toString(number % 3) AS s FROM numbers(100)) GROUP BY s ORDER BY s;
+SELECT toStartOfInterval(toDateTime('2024-03-15 12:00:00') + number, INTERVAL 15 MINUTE) AS bucket, count() FROM numbers(3600) GROUP BY bucket ORDER BY bucket;
+SELECT toDate('2024-01-01') + number % 7 AS d, count(), sum(number) FROM numbers(1000) GROUP BY d ORDER BY d;
+SELECT toUInt32(number % 7) AS k, count() FROM numbers(1000) GROUP BY k ORDER BY k;
+SELECT toInt32(number % 7) - 3 AS k, count() FROM numbers(1000) GROUP BY k ORDER BY k;
+SELECT toInt16(number % 5) AS k, count() FROM numbers(100) GROUP BY k ORDER BY k;
+SELECT round(number / 7) AS f, count() FROM numbers(100) GROUP BY f ORDER BY f;
+SELECT s, n, count() FROM (SELECT toString(number % 3) AS s, number % 2 AS n FROM numbers(1000)) GROUP BY s, n ORDER BY s, n;
+SELECT s1, s2, count() FROM (SELECT toString(number % 3) AS s1, toString(number % 2) AS s2 FROM numbers(100)) GROUP BY s1, s2 ORDER BY s1, s2;
+-- multi-key aggregation packs fixed-width keys by TOTAL byte width
+-- (keys16/32/64/128): cover the common width combinations
+SELECT k, j, count() FROM (SELECT toInt16(number % 5) AS k, toUInt8(number % 3) AS j FROM numbers(1000)) GROUP BY k, j ORDER BY k, j;
+SELECT k, j, count() FROM (SELECT toUInt32(number % 5) AS k, toUInt16(number % 3) AS j FROM numbers(1000)) GROUP BY k, j ORDER BY k, j;
+SELECT k, j, count() FROM (SELECT number % 5 AS k, toUInt32(number % 3) AS j FROM numbers(1000)) GROUP BY k, j ORDER BY k, j;
+SELECT d, s, count() FROM (SELECT toDate('2024-01-01') + number % 5 AS d, toString(number % 3) AS s FROM numbers(1000)) GROUP BY d, s ORDER BY d, s;
+SELECT d, j, count() FROM (SELECT toDate('2024-01-01') + number % 5 AS d, toUInt8(number % 3) AS j FROM numbers(1000)) GROUP BY d, j ORDER BY d, j;
+SELECT toFixedString(toString(number % 3), 4) AS fs, count() FROM numbers(100) GROUP BY fs ORDER BY fs;
+SELECT toNullable(number % 4) AS k, count() FROM numbers(100) GROUP BY k ORDER BY k;
+SELECT toDecimal64(number % 5, 2) AS d, count() FROM numbers(100) GROUP BY d ORDER BY d;
+SELECT toDateTime('2024-03-15 12:00:00') + number AS t FROM numbers(100) ORDER BY t DESC LIMIT 5;
+SELECT toDate('2024-01-01') + number % 10 AS d FROM numbers(100) ORDER BY d LIMIT 3;
+SELECT toString(number % 10) AS s, number / 3 AS f FROM numbers(100) ORDER BY s, f DESC LIMIT 5;
+SELECT DISTINCT toString(number % 5) FROM numbers(100) ORDER BY 1;
 
 -- ============================================================================
 -- 4. Subqueries, CTEs, set operations, JOINs
@@ -74,6 +104,12 @@ SELECT a.number, b.number FROM (SELECT number FROM numbers(4)) AS a FULL OUTER J
 SELECT count() FROM numbers(10) AS a CROSS JOIN numbers(10) AS b;
 SELECT x.number FROM numbers(4) AS x JOIN numbers(4) AS y USING (number) ORDER BY x.number;
 SELECT count() FROM numbers(1000) AS a JOIN numbers(1000) AS b ON a.number = b.number;
+-- join maps per key type: String / UInt32 / Date keys + a String LEFT JOIN
+SELECT count() FROM (SELECT toString(number % 10) AS k FROM numbers(1000)) AS a JOIN (SELECT toString(number) AS k FROM numbers(10)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toString(number % 10) AS k FROM numbers(100)) AS a LEFT JOIN (SELECT toString(number) AS k, number AS v FROM numbers(5)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toUInt32(number) AS k FROM numbers(100)) AS a JOIN (SELECT toUInt32(number * 2) AS k FROM numbers(50)) AS b ON a.k = b.k;
+SELECT count() FROM (SELECT toDate('2024-01-01') + number % 10 AS d FROM numbers(100)) AS a JOIN (SELECT toDate('2024-01-01') + number AS d FROM numbers(10)) AS b ON a.d = b.d;
+SELECT count() FROM (SELECT toString(number % 10) AS s FROM numbers(100)) WHERE s IN (SELECT toString(number) FROM numbers(5));
 -- arithmetic over join output and windowed/limited shapes: expression
 -- specializations differ from the bare-column forms above, keep both hot
 SELECT a.number * 10 + b.number FROM numbers(2) a JOIN numbers(2) b ON a.number = b.number ORDER BY 1;
@@ -89,6 +125,7 @@ SELECT number, sum(number) OVER (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDIN
 SELECT number, avg(number) OVER (ORDER BY number ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM numbers(10);
 SELECT number, lagInFrame(number, 1) OVER w, leadInFrame(number, 1) OVER w FROM numbers(8) WINDOW w AS (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
 SELECT number, dense_rank() OVER (ORDER BY number % 3), first_value(number) OVER w, last_value(number) OVER w FROM numbers(6) WINDOW w AS (ORDER BY number ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);
+SELECT s, sum(f) OVER (PARTITION BY s ORDER BY f) FROM (SELECT toString(number % 3) AS s, number / 2 AS f FROM numbers(12)) ORDER BY s, f;
 
 -- ============================================================================
 -- 6. Everyday aggregates
@@ -101,6 +138,15 @@ SELECT quantile(0.5)(number), quantiles(0.25, 0.5, 0.75)(number), quantileExact(
 SELECT topK(3)(number % 10), groupArray(number), groupUniqArray(number % 3) FROM numbers(10);
 SELECT corr(toFloat64(number), number * 2.0), stddevPop(number), varSamp(number) FROM numbers(1000);
 SELECT countMerge(s) FROM (SELECT countState() AS s FROM numbers(100));
+-- Analyzer REWRITE passes execute their rewrite bodies only when the pattern
+-- matches; these are everyday shapes (sum(x*c) -> sum(x)*c and friends —
+-- AggregateFunctionsArithmeticOperationsPass helpers were cold without them).
+SELECT sum(number * 10), sum(2 * number), max(number * 600), min(number * 3), avg(number * 100) FROM numbers(1000);
+SELECT sum(number / 4), min(number + 7), max(number - 2), sum(number * 1.5) FROM numbers(1000);
+SELECT max(toInt64(number) * -2), min(toInt64(number) * -2) FROM numbers(100);
+SELECT count(*), count(1) FROM numbers(100);
+SELECT sum(if(number % 2 = 0, 1, 0)), sum(if(number % 2 = 0, number, 0)) FROM numbers(100);
+SELECT arrayExists(x -> x = 2, [1, 2, 3]);
 SELECT sumArray([number, number + 1]) FROM numbers(100);
 -- aggregates specialize per input type: cover the common non-UInt64 shapes
 -- (String/Date/Nullable/Float/Int32) or their instantiations stay cold
@@ -160,6 +206,16 @@ SELECT domain('https://www.example.com/a/b?q=1'), path('https://example.com/a/b?
 SELECT protocol('https://example.com/a'), topLevelDomain('https://example.com/a'), queryString('https://example.com/p?q=1&r=2'), cutQueryString('https://example.com/p?q=1'), decodeURLComponent('a%20b');
 SELECT IPv4NumToString(toUInt32(3232235777)), IPv4StringToNum('192.168.1.1'), isIPAddressInRange('192.168.1.5', '192.168.1.0/24'), toIPv6('::1');
 SELECT transform(2, [1, 2, 3], ['one', 'two', 'three'], 'other'), bar(5, 0, 10, 10), version() != '', currentDatabase();
+-- the everyday scalar families applied to COLUMNS, not just constants —
+-- per-row vector execution can be a different instantiation from const-fold
+SELECT count() FROM (SELECT upper(concat('u', toString(number))) AS s FROM numbers(100)) WHERE s LIKE 'U1%';
+SELECT max(lower(s)), min(upper(s)) FROM (SELECT concat('User', toString(number % 10)) AS s FROM numbers(100));
+SELECT max(formatDateTime(toDateTime('2024-03-15 12:00:00') + number, '%Y-%m-%d %H:%M')) FROM numbers(100);
+SELECT sum(toHour(t)), max(toStartOfHour(t)) FROM (SELECT toDateTime('2024-03-15 00:00:00') + number * 137 AS t FROM numbers(500));
+SELECT count() FROM (SELECT replaceAll(toString(number), '1', 'x') AS s FROM numbers(100)) WHERE s != '';
+SELECT sum(length(splitByChar(',', concat(toString(number), ',x')))) FROM numbers(100);
+SELECT sum(JSONExtractInt(j, 'v')) FROM (SELECT concat('{"v": ', toString(number), '}') AS j FROM numbers(100));
+SELECT max(domain(u)) FROM (SELECT concat('https://ex', toString(number % 3), '.com/p') AS u FROM numbers(100));
 
 -- ============================================================================
 -- 8. DDL/DML: default database (Workers users type unqualified names) + views
