@@ -308,6 +308,13 @@ PYCHDB_CMD=$(grep -m 1 'clang++.*-o programs/clickhouse .*' build.log \
 # For macOS, set rpath
 PYCHDB_CMD=$(echo ${PYCHDB_CMD} | sed 's|-Wl,-rpath,/[^[:space:]]*/pybind11-cmake|-Wl,-rpath,@loader_path|g')
 
+# Restrict the Python module exports to the allow-list, same as the native
+# build (chdb/build.sh) and the libchdb.so link above. Without it the
+# cross-compiled module exports only _PyInit_* and silently loses the ADBC
+# entrypoints (chdb_adbc_init / AdbcDriverInit); the linker unions this with
+# PYINIT_ENTRY, so keeping both flags is safe.
+PYCHDB_CMD="${PYCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/pychdb_export_macos.txt"
+
 # Save the command to a file for debug
 echo ${PYCHDB_CMD} > pychdb_cmd.sh
 
