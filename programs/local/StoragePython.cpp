@@ -296,8 +296,18 @@ Pipe StoragePython::readImpl(
             /// expose __arrow_c_stream__ (>= 2.2) but stay on the dedicated
             /// column-cache scan above, which supports pushdowns this generic
             /// stream path cannot (the protocol has no projection mechanism).
-            /// Prefer the stream parked by schema inference; export a fresh
-            /// one only for additional scans (e.g. self-joins).
+            ///
+            /// Prefer the stream parked by schema inference so a single scan
+            /// exports from the producer only once. The fresh-export fallback
+            /// covers a re-scan of this same storage; it re-invokes
+            /// __arrow_c_stream__, which yields fresh data for re-exportable
+            /// producers (polars, pyarrow.Table) but an exhausted (empty)
+            /// stream for genuinely single-use producers (a bare
+            /// pyarrow.RecordBatchReader, a generator-backed stream). This is
+            /// inherent to single-use Arrow streams: such a producer likewise
+            /// yields empty on the second reference of e.g. a self-join
+            /// (each reference is a distinct storage that exports once).
+            /// Materialize upfront (pa.table(reader)) to scan more than once.
             auto arrow_stream = data_source_wrapper->takeCachedArrowStream();
             if (!arrow_stream)
                 arrow_stream = CHDB::importArrowCStream(data_source);

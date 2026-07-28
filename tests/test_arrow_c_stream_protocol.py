@@ -188,16 +188,23 @@ class TestArrowCStreamOutput(unittest.TestCase):
     def test_stream_survives_result_garbage_collection(self):
         # The exported stream references the result buffer directly; it must
         # keep the result alive after the query_result object is collected
-        # (real consumers hold only the stream, not the chdb result).
-        res = chdb.query(
-            "SELECT number FROM numbers(300000) SETTINGS max_block_size = 65536", "Arrow"
-        )
-        reader = pa.RecordBatchReader.from_stream(res)
-        del res
-        gc.collect()
-        table = reader.read_all()
-        self.assertEqual(table.num_rows, 300000)
-        self.assertEqual(pc.sum(table.column("number")).as_py(), 300000 * 299999 // 2)
+        # (real consumers hold only the stream, not the chdb result). Exercise
+        # both IPC framings: "Arrow" (file, eager reader) and "ArrowStream"
+        # (stream, lazy RecordBatchStreamReader) -- both must retain the buffer.
+        for fmt in ("Arrow", "ArrowStream"):
+            with self.subTest(fmt=fmt):
+                res = chdb.query(
+                    "SELECT number FROM numbers(300000) SETTINGS max_block_size = 65536",
+                    fmt,
+                )
+                reader = pa.RecordBatchReader.from_stream(res)
+                del res
+                gc.collect()
+                table = reader.read_all()
+                self.assertEqual(table.num_rows, 300000)
+                self.assertEqual(
+                    pc.sum(table.column("number")).as_py(), 300000 * 299999 // 2
+                )
 
     def test_requested_schema_accepted_and_ignored(self):
         # The spec allows the producer to ignore requested_schema; the keyword
@@ -249,16 +256,49 @@ class TestArrowCStreamOutput(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Arrow IPC file"):
             res.__arrow_c_stream__()
 
-    def test_streaming_result_second_export_yields_empty(self):
-        # Streams are single-use: pin the behavior of a second export after
-        # the first consumer drained the stream.
+    def test_streaming_result_second_export_raises(self):
+        # Streams are single-use. A second export must fail loudly rather than
+        # silently hand back a zero-column, zero-row stream (schema loss).
         conn = chdb.connect(":memory:")
         try:
             stream = conn.send_query("SELECT number AS n FROM numbers(10)", "Arrow")
             first = pa.table(stream)
             self.assertEqual(first.num_rows, 10)
-            second = pa.table(stream)
-            self.assertEqual(second.num_rows, 0)
+            self.assertEqual(first.column_names, ["n"])
+            with self.assertRaisesRegex(RuntimeError, "already consumed"):
+                stream.__arrow_c_stream__()
+        finally:
+            conn.close()
+
+    def test_streaming_result_export_after_cancel_raises(self):
+        conn = chdb.connect(":memory:")
+        try:
+            stream = conn.send_query("SELECT number FROM numbers(10)", "Arrow")
+            stream.cancel()
+            with self.assertRaisesRegex(RuntimeError, "already consumed"):
+                stream.__arrow_c_stream__()
+        finally:
+            conn.close()
+
+    def test_streaming_result_requested_schema_forwarded(self):
+        # StreamingResult forwards requested_schema to pyarrow's reader, which
+        # honors a compatible cast; verify the request reaches it end-to-end.
+        conn = chdb.connect(":memory:")
+        try:
+            stream = conn.send_query("SELECT number AS n FROM numbers(5)", "Arrow")
+            requested = pa.schema([("n", pa.int32())]).__arrow_c_schema__()
+            capsule = stream.__arrow_c_stream__(requested_schema=requested)
+
+            class CapsuleHolder:
+                def __init__(self, cap):
+                    self._cap = cap
+
+                def __arrow_c_stream__(self, requested_schema=None):
+                    return self._cap
+
+            table = pa.table(CapsuleHolder(capsule))
+            self.assertEqual(table.schema.field("n").type, pa.int32())
+            self.assertEqual(table.column("n").to_pylist(), [0, 1, 2, 3, 4])
         finally:
             conn.close()
 
