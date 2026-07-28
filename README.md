@@ -32,7 +32,7 @@
 
 ## Packages & Distributions
 
-**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is an optional pandas-compatible DataStore layer built on top of it (see the diagram below). The engine itself ships as five distribution artifacts — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages:
+**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine itself ships as five distribution artifacts — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages:
 
 | Artifact | How to get it | Target / runtime | Best for |
 |---|---|---|---|
@@ -40,7 +40,7 @@
 | **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
 | **chdb-core (free-threaded)** | GitHub release assets | Free-threaded Python 3.14t (no GIL) | Running chDB without the GIL |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
-| **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers / edge | A slimmer build for the edge |
+| **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | A slimmer build for Cloudflare Workers |
 
 <div align="center">
 <pre>
