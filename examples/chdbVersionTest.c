@@ -41,8 +41,8 @@ static int has_digit(const char * s, size_t n)
 }
 
 /* Runs `sql` (TabSeparated so a single string value comes back unquoted),
- * asserts it succeeded, and returns whether the trimmed output looks like a
- * version (non-empty, not "None", contains a digit). */
+ * asserts it succeeded and that the trimmed output looks like a version
+ * (non-empty, not "None", contains a digit); failures increment g_failed. */
 static void check_version(chdb_connection conn, const char * label, const char * sql)
 {
     chdb_result * r = chdb_query(conn, sql, "TabSeparated");

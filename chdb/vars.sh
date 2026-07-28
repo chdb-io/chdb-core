@@ -26,7 +26,10 @@ pushd ${PROJ_DIR} > /dev/null
 # below never fire and CHDB_VERSION becomes the literal "None" — which is what
 # `SELECT chdb()` then returns. Capture the value and explicitly reject an
 # empty/"None" result before falling back to the raw tag, then "0.0.0".
-CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null)
+# On a raise the helper prints its error to stdout before exiting non-zero, so
+# reset to empty on failure (|| ...) to keep that text out of CHDB_VERSION and
+# let the fallbacks fire.
+CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null) || CHDB_VERSION=""
 if [ -z "${CHDB_VERSION}" ] || [ "${CHDB_VERSION}" = "None" ]; then
     CHDB_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 fi
