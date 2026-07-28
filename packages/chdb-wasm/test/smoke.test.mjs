@@ -68,6 +68,34 @@ assert.strictEqual(streamRows, 50000, `streamed rows=${streamRows}`);
 console.log(`streamed ${streamRows} rows in ${streamChunks} chunk(s)`);
 await conn.close();
 
+// 4b. close() with a stream paused at yield: resuming (or using the session
+// again) must fail with the clear session-closed error, never touch the freed
+// engine-side handles, and the instance must stay usable afterwards.
+{
+  const conn2 = await db.connect();
+  const gen = conn2.queryStream('SELECT number FROM numbers(1000000)', 'CSV');
+  const first = await gen.next();
+  assert.ok(!first.done, 'close-during-stream check needs a paused generator (stream ended in one chunk)');
+  await conn2.close();
+  await assert.rejects(() => gen.next(), /closed/, 'resuming a stream after close() must throw the session-closed error');
+  await assert.rejects(() => conn2.query('SELECT 1'), /closed/, 'query() after close() must throw the session-closed error');
+  assert.strictEqual((await db.query('SELECT 41 + 1')).text().trim(), '42', 'instance must stay usable after close-during-stream');
+  console.log('close-during-stream: clean error, instance intact');
+}
+
+// 4c. close() racing gen.return(): close snapshots+clears its stream set
+// before awaiting the cancel, so the generator's concurrent finally must skip
+// its own cancel (a second cancel would be an engine-side double free).
+{
+  const conn3 = await db.connect();
+  const gen = conn3.queryStream('SELECT number FROM numbers(1000000)', 'CSV');
+  const first = await gen.next();
+  assert.ok(!first.done, 'close-vs-return race check needs a paused generator');
+  await Promise.all([conn3.close(), gen.return()]);
+  assert.strictEqual((await db.query('SELECT 6 * 7')).text().trim(), '42', 'instance must survive close() racing gen.return()');
+  console.log('close vs gen.return() race: single cancel, instance intact');
+}
+
 // 5. errors surface as ChdbError (rejected promise), don't crash the worker
 let threw = false;
 try {

@@ -6,8 +6,9 @@
 // own instrumentation globals; see patch-glue.mjs --profile-collect). The
 // profiles are unioned later by `wasm-split --merge-profiles`.
 //
-// Queries run synchronously on THIS thread, so every HTTP fixture lives in
-// another process: moto (python S3) is spawned directly, the Node mocks run in
+// Queries block THIS thread on a plain bundle (a JSPI bundle suspends
+// instead), so every HTTP fixture lives in another process — which works for
+// both: moto (python S3) is spawned directly, the Node mocks run in
 // fixture-host.mjs. Data-lake statements are skipped when the pyiceberg venv
 // (ICEBERG_PY, default /tmp/iceberg-venv/bin/python) is missing.
 //
@@ -65,6 +66,16 @@ const PEOPLE_JSONL =
 const staticDir = mkdtempSync(join(tmpdir(), 'chdb-profile-static-'));
 writeFileSync(join(staticDir, 'people_names.csv'), PEOPLE_NAMES_CSV);
 writeFileSync(join(staticDir, 'people.jsonl'), PEOPLE_JSONL);
+// s3() needs a bucket/key path shape (path-style URL); serve the same file
+// one directory deep for the corpus's single-object s3() reads.
+mkdirSync(join(staticDir, 's3bucket'));
+writeFileSync(join(staticDir, 's3bucket', 'people_names.csv'), PEOPLE_NAMES_CSV);
+// rich-typed remote fixture: url()/s3() with an EXPLICIT structure argument
+// take a different argument-handling path than schema inference, and the
+// per-type parsing must be exercised through the HTTP source too.
+const RICH_CSV = 'd,dec,ns,t\n2024-03-15,12.34,,2024-03-15 12:00:00.123\n2024-03-16,5.60,x,2024-03-16 08:30:00.001\n';
+writeFileSync(join(staticDir, 'rich.csv'), RICH_CSV);
+writeFileSync(join(staticDir, 's3bucket', 'rich.csv'), RICH_CSV);
 
 // --- fixture services (all out-of-process) -----------------------------------
 const children = [];
@@ -146,6 +157,8 @@ mod.FS.writeFile('/corpus/people2.csv', PEOPLE_NAMES_CSV); // glob partner
 mod.FS.writeFile('/corpus/people_names.csv', PEOPLE_NAMES_CSV);
 mod.FS.writeFile('/corpus/people.tsv', PEOPLE_TSV);
 mod.FS.writeFile('/corpus/people.jsonl', PEOPLE_JSONL);
+mod.FS.writeFile('/corpus/rich1.csv', RICH_CSV);
+mod.FS.writeFile('/corpus/rich2.csv', RICH_CSV);
 
 // The SDK calls these during init (worker.ts shares the cancel/progress
 // offsets with the page) — they must be hot or a split bundle can't even
@@ -155,13 +168,13 @@ mod.ccall('chdb_wasm_progress_addr', 'number', [], []);
 
 // Connectionless queries: AsyncChdb.query goes through chdb_wasm_query, whose
 // FIRST call cold-starts the process-global connection.
-function globalQueries() {
+async function globalQueries() {
   for (const [sql, fmt] of [
     ['SELECT number, toString(number) FROM numbers(100)', 'CSV'],
     ['SELECT 1 AS one FORMAT JSON', 'CSV'],
     ['SELECT broken syntax here', 'CSV'],
   ]) {
-    const r = mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, fmt]);
+    const r = await mod.ccall('chdb_wasm_query', 'number', ['string', 'string'], [sql, fmt], { async: true });
     if (num(r)) {
       mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]);
       mod.ccall('chdb_wasm_result_buffer', 'number', ['number'], [r]);
@@ -174,7 +187,7 @@ function globalQueries() {
 // The init-probe pass makes the GLOBAL connection the process's cold start;
 // the main pass gives that honor to chdb_wasm_connect below.
 if (INIT_PROBE) {
-  globalQueries();
+  await globalQueries();
   console.log('init-probe: global-connection cold start exercised');
 }
 
@@ -185,9 +198,12 @@ const conn = mod.ccall('chdb_wasm_connect', 'number', ['string'], ['']);
 if (!num(conn)) throw new Error('chdb_wasm_connect failed');
 
 // Consume results the way src/bindings.ts does — buffer/length/stats getters
-// are on every user's path and must land in the primary module.
-function runStatement(sql, format = 'CSV') {
-  const r = mod.ccall('chdb_wasm_query_conn', 'number', ['number', 'string', 'string'], [conn, sql, format]);
+// are on every user's path and must land in the primary module. The four
+// bridge-reaching exports are ccall'd with {async: true}: on a JSPI bundle
+// they return a Promise (the wasm stack suspends across async fetch); on a
+// plain bundle ccall ignores the option and awaiting the value is a no-op.
+async function runStatement(sql, format = 'CSV') {
+  const r = await mod.ccall('chdb_wasm_query_conn', 'number', ['number', 'string', 'string'], [conn, sql, format], { async: true });
   if (!num(r)) return 'null result';
   const errPtr = num(mod.ccall('chdb_wasm_result_error', 'number', ['number'], [r]));
   const err = errPtr ? mod.UTF8ToString(errPtr) : null;
@@ -206,7 +222,9 @@ function runStatement(sql, format = 'CSV') {
 }
 
 // --- execute the corpus -------------------------------------------------------
-const corpus = readFileSync(join(here, 'profile-corpus.sql'), 'utf8');
+// CHDB_CORPUS selects the statement file (default: the full corpus); the lite
+// pipeline passes profile-corpus-lite.sql.
+const corpus = readFileSync(process.env.CHDB_CORPUS || join(here, 'profile-corpus.sql'), 'utf8');
 const statements = [];
 let buf = [];
 for (const line of corpus.split('\n')) {
@@ -225,7 +243,7 @@ for (let sql of statements) {
   if (!isMt && sql.includes('/*mt-only*/')) { skipped++; continue; }
   if (process.env.CHDB_TRACE === '1') console.log(`>>> ${sql.replace(/\n/g, ' ').slice(0, 100)}`);
   try {
-    const err = runStatement(sql);
+    const err = await runStatement(sql);
     if (err) failures.push({ sql: sql.slice(0, 120), error: err.slice(0, 200) });
     else ok++;
   } catch (e) {
@@ -237,14 +255,14 @@ for (let sql of statements) {
 }
 console.log(`corpus: ${ok} ok, ${failures.length} failed, ${skipped} skipped, ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-if (!INIT_PROBE) globalQueries();
+if (!INIT_PROBE) await globalQueries();
 
 // --- streaming C-API surface ----------------------------------------------------
 {
-  const s = mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number, toString(number) FROM numbers(100000)', 'CSV']);
+  const s = await mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number, toString(number) FROM numbers(100000)', 'CSV'], { async: true });
   let chunks = 0;
   for (;;) {
-    const c = mod.ccall('chdb_wasm_stream_fetch', 'number', ['number', 'number'], [conn, s]);
+    const c = await mod.ccall('chdb_wasm_stream_fetch', 'number', ['number', 'number'], [conn, s], { async: true });
     if (!num(c)) break;
     const len = num(mod.ccall('chdb_wasm_result_length', 'number', ['number'], [c]));
     mod.ccall('chdb_wasm_free_result', null, ['number'], [c]);
@@ -252,7 +270,7 @@ if (!INIT_PROBE) globalQueries();
     if (!len) break;
   }
   mod.ccall('chdb_wasm_free_result', null, ['number'], [s]);
-  const s2 = mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number FROM numbers(1000000)', 'CSV']);
+  const s2 = await mod.ccall('chdb_wasm_stream_start', 'number', ['number', 'string', 'string'], [conn, 'SELECT number FROM numbers(1000000)', 'CSV'], { async: true });
   mod.ccall('chdb_wasm_stream_cancel', null, ['number', 'number'], [conn, s2]);
   mod.ccall('chdb_wasm_free_result', null, ['number'], [s2]);
   console.log(`streaming: ${chunks} chunks + cancel`);

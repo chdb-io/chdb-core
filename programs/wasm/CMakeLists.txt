@@ -83,6 +83,18 @@ target_link_options (chdb_wasm PRIVATE
     -sENVIRONMENT=node,web,worker
     )
 
+# JSPI (see cmake/target.cmake for the option): every C API export that can
+# reach the HTTP bridge must be listed in JSPI_EXPORTS — V8 only lets a wasm
+# stack suspend when entered through a promising-wrapped export. These exports
+# then RETURN PROMISES to JS (the SDK ccalls them with {async: true}).
+if (WASM_JSPI)
+    target_link_options (chdb_wasm PRIVATE
+        -sJSPI
+        -Wno-experimental
+        "SHELL:-s JSPI_EXPORTS=chdb_wasm_query,chdb_wasm_query_conn,chdb_wasm_stream_start,chdb_wasm_stream_fetch"
+        )
+endif ()
+
 if (WASM_SPLIT_MODULE)
     target_link_options (chdb_wasm PRIVATE
         -sSPLIT_MODULE

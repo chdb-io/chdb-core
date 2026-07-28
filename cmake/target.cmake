@@ -58,6 +58,13 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     #   the global thread pool degrades to running jobs inline and the optional
     #   background pools are not started (gated on CHDB_WASM_SINGLE_THREADED).
     option (WASM_THREADS "Build the WASM target with pthreads (requires cross-origin isolation)" ON)
+    # WASM_JSPI: use JavaScript Promise Integration for the HTTP bridge — the
+    # wasm stack suspends on an async fetch() instead of requiring synchronous
+    # XHR / a subprocess. The only transport that works on Cloudflare Workers;
+    # requires a JSPI-enabled engine (Chrome 137+, workerd, Node with
+    # --experimental-wasm-jspi). Adds -sJSPI at link (programs/wasm) and
+    # switches WasmHTTPBridge.cpp to the async transport.
+    option (WASM_JSPI "Use JSPI (async fetch) for the WASM HTTP bridge" OFF)
     if (WASM_THREADS)
         add_compile_options(-pthread)
         add_link_options(-pthread)

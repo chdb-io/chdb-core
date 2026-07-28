@@ -7,7 +7,9 @@
 # Runs on every push to main, pull request, manual dispatch, and v* tags. One
 # Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
 # Requires repo secrets: NPM_TOKEN (npm automation token that can publish
-# chdb-wasm) and GH_TOKEN (to attach the published npm tarball to the GitHub release).
+# chdb-wasm AND chdb-cloudflare — the first chdb-cloudflare release CREATES the
+# package, so a granular token must allow creating new packages) and GH_TOKEN
+# (to attach the published npm tarball to the GitHub release).
 name: wasm
 
 on:
@@ -18,7 +20,11 @@ on:
         type: boolean
         default: false
       version:
-        description: 'npm version to publish (e.g. 0.3.1); required when publish is checked'
+        description: 'chdb-wasm version to publish (e.g. 0.3.1); leave empty to skip publishing chdb-wasm'
+        type: string
+        default: ''
+      cloudflare_version:
+        description: 'chdb-cloudflare version to publish (e.g. 0.1.0); leave empty to skip publishing chdb-cloudflare'
         type: string
         default: ''
   push:
@@ -65,8 +71,8 @@ jobs:
 
       - name: Install build deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends lld ninja-build ccache
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends lld ninja-build ccache
 
       # emcmake needs a recent cmake on PATH; the self-hosted runner does not provide
       # one for this job, so install a pinned cmake (+ninja) ourselves.
@@ -135,7 +141,7 @@ jobs:
       - name: Set up data-lake test venv (pyiceberg + moto)
         run: |
           # The self-hosted image lacks ensurepip (Debian splits it out).
-          sudo apt-get install -y --no-install-recommends python3-venv
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends python3-venv
           python3 -m venv "${GITHUB_WORKSPACE}/.iceberg-venv"
           "${GITHUB_WORKSPACE}/.iceberg-venv/bin/pip" install -q "pyiceberg[sql-sqlite]" pyarrow "moto[server]" s3fs deltalake
 
@@ -194,7 +200,7 @@ jobs:
       # (libasound2 -> libasound2t64, etc.) don't abort the whole batch.
       - name: Install headless-Chrome runtime libraries
         run: |
-          sudo apt-get update
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
           for p in \
             libnss3 libnspr4 libdbus-1-3 libxkbcommon0 libdrm2 libgbm1 \
             libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxext6 \
@@ -207,7 +213,7 @@ jobs:
             libasound2 libasound2t64 \
             libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
             libgtk-3-0 libgtk-3-0t64; do
-            sudo apt-get install -y --no-install-recommends "$p" || true
+            sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "$p" || true
           done
 
       # Build the npm dist (both bundles -> dist/ + dist/st/) and run the headless
@@ -290,6 +296,52 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # ---- chdb-cloudflare: a single-file bundle sized for Cloudflare Workers
+      # (10 MiB gzipped Worker limit). The st tree is relinked once more with a
+      # 64MB initial memory (a Workers isolate caps total memory at 128MB) and
+      # WASM_JSPI=ON (the async-fetch HTTP bridge — the only transport that
+      # works in workerd, so url()/s3() run inside Workers; requires a
+      # JSPI-capable engine: Chrome 137+, workerd, Node with
+      # --experimental-wasm-jspi, which the split tooling adds to child
+      # processes automatically). Split against the LITE corpus (most-common
+      # SQL only); only the primary ships, with the --lite glue so
+      # out-of-corpus calls throw a clear error. Runs after the full-split
+      # steps because it reuses (and re-links) the buildwasm-st tree; the full
+      # packages stay JSPI-free (their sync-XHR bridge needs no special engine
+      # support).
+      - name: Relink st with 64MB initial memory + JSPI (lite)
+        run: |
+          source "${EMSDK}/emsdk_env.sh"
+          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB -DWASM_JSPI=ON buildwasm-st >/dev/null
+          ninja -C buildwasm-st chdb_wasm
+
+      - name: Lite split pipeline (lite corpus, primary-only)
+        run: |
+          export WASM_SPLIT="${EMSDK}/upstream/bin/wasm-split"
+          # CHDB_SKIP_LAKE: the lite corpus has no data-lake statements; skip
+          # the moto/pyiceberg fixtures (the static HTTP server for url()/s3()
+          # still runs).
+          CHDB_SKIP_LAKE=1 node packages/chdb-wasm/tools/split/split-wasm.mjs \
+            --build buildwasm-st/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-lite" \
+            --corpus "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/profile-corpus-lite.sql" \
+            --extra-keep "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/keep-lite.txt" \
+            --lite-glue
+
+      - name: Build + test chdb-cloudflare package (incl. size gate)
+        working-directory: packages/chdb-cloudflare
+        run: |
+          node scripts/build-lite.mjs "${GITHUB_WORKSPACE}/split-out-lite"
+          node test/lite.test.mjs
+          node test/matrix.test.mjs
+
+      - name: Upload lite artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chdb-cloudflare
+          path: packages/chdb-cloudflare/dist
+          retention-days: 1
+          if-no-files-found: error
+
       # ---- Publish to npm, only on a v* tag. Everything above (build + all Node
       # and headless-Chrome tests) ran first, so a tag that fails tests never ships.
       # dist/ is already built by the npm step above; the version is taken from the tag. ----
@@ -297,19 +349,33 @@ jobs:
       # `publish` checked and a `version`; everything above (build, the full test
       # matrix, the split pipeline) must have passed to reach here. Tag-driven
       # publishing stays disabled (was: startsWith(github.ref, 'refs/tags/v')).
-      - name: Set npm version (manual publish)
+      # Each package publishes independently: fill `version` for chdb-wasm,
+      # `cloudflare_version` for chdb-cloudflare, either, or both. Checking `publish`
+      # with both empty fails loudly instead of silently doing nothing.
+      - name: Validate publish inputs
         if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          VERSION: ${{ inputs.version }}
+          LITE_VERSION: ${{ inputs.cloudflare_version }}
+        run: |
+          [[ -n "$VERSION" || -n "$LITE_VERSION" ]] \
+            || { echo "publish is checked but both 'version' and 'cloudflare_version' are empty — nothing to publish"; exit 1; }
+          [[ -z "$VERSION" || "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
+            || { echo "'version' must be semver, got: '$VERSION'"; exit 1; }
+          [[ -z "$LITE_VERSION" || "$LITE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
+            || { echo "'cloudflare_version' must be semver, got: '$LITE_VERSION'"; exit 1; }
+
+      - name: Set npm version (manual publish)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.version != ''
         working-directory: packages/chdb-wasm
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]] \
-            || { echo "publish requires a semver 'version' input, got: '$VERSION'"; exit 1; }
           echo "Publishing chdb-wasm@$VERSION"
           npm pkg set version="$VERSION"
 
       - name: Publish to npm
-        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.version != ''
         working-directory: packages/chdb-wasm
         env:
           VERSION: ${{ inputs.version }}
@@ -330,6 +396,23 @@ jobs:
           npm publish "$TGZ" --tag "$TAG"
           # Hand the tarball path to the release-upload step below.
           echo "CHDB_TGZ=${GITHUB_WORKSPACE}/packages/chdb-wasm/${TGZ}" >> "$GITHUB_ENV"
+
+      # chdb-cloudflare is versioned independently of chdb-wasm: pass
+      # cloudflare_version to publish it (empty skips it, so either package can be
+      # released on its own).
+      - name: Publish chdb-cloudflare to npm
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.cloudflare_version != ''
+        working-directory: packages/chdb-cloudflare
+        env:
+          VERSION: ${{ inputs.cloudflare_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm config set //registry.npmjs.org/:_authToken "${NODE_AUTH_TOKEN}"
+          npm pkg set version="$VERSION"
+          if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
+          npm pack
+          echo "publishing chdb-cloudflare-${VERSION}.tgz under dist-tag '$TAG'"
+          npm publish "chdb-cloudflare-${VERSION}.tgz" --tag "$TAG"
 
       # Best-effort: attach the published npm tarball (chdb-wasm-<version>.tgz — it embeds
       # both wasm bundles) to the GitHub release, creating the release if the tag has none

@@ -22,6 +22,8 @@ namespace DB
 ///   [0] status  [1] headers ptr  [2] headers len  [3] body ptr  [4] body len
 /// The C++ caller owns (frees) the two allocations. Returns 0 on success, -1
 /// when no transport is available or the request failed outright.
+/// KEEP IN SYNC with chdb_wasm_http_request_async_js below: both speak the
+/// same header-blob/Range/out-struct protocol and must not diverge.
 EM_JS(int, chdb_wasm_http_request_js, (
     const char * method_ptr, const char * url_ptr, const char * headers_ptr,
     const char * body_ptr, double body_len,
@@ -43,6 +45,8 @@ EM_JS(int, chdb_wasm_http_request_js, (
         var status = -1;
         var respHeaders = "";
         var respBytes = null;
+        var hdrPtr = 0;
+        var bodyPtr = 0;
         if (typeof XMLHttpRequest !== 'undefined') {
             var xhr = new XMLHttpRequest();
             xhr.open(method, url, false);  // synchronous; wasm pthreads run on worker threads where this is permitted
@@ -111,8 +115,6 @@ EM_JS(int, chdb_wasm_http_request_js, (
         if (rangeOff >= 0 && status === 200 && respBytes)
             respBytes = respBytes.subarray(rangeOff, rangeOff + rangeLen);
         var hdrBytes = new TextEncoder().encode(respHeaders);
-        var hdrPtr = 0;
-        var bodyPtr = 0;
         // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting;
         // writing at address 0 would smash static data and surface as silent EOF.
         if (hdrBytes.length) {
@@ -122,7 +124,7 @@ EM_JS(int, chdb_wasm_http_request_js, (
         }
         if (respBytes && respBytes.length) {
             bodyPtr = _malloc(BigInt(respBytes.length));
-            if (!Number(bodyPtr)) { if (Number(hdrPtr)) _free(hdrPtr); throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes'); }
+            if (!Number(bodyPtr)) throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes');
             HEAPU8.set(respBytes, Number(bodyPtr));
         }
         var dv = new DataView(HEAPU8.buffer);
@@ -134,12 +136,106 @@ EM_JS(int, chdb_wasm_http_request_js, (
         dv.setBigInt64(out + 32, BigInt(respBytes ? respBytes.length : 0), true);
         return 0;
     } catch (e) {
+        // Ownership of the allocations only transfers to C++ on the return-0
+        // path; anything thrown after a successful _malloc must free here.
+        // (var hoisting: before their declarations run these are undefined,
+        // and Number(undefined) is NaN -> falsy -> skipped.)
+        if (Number(hdrPtr)) _free(hdrPtr);
+        if (Number(bodyPtr)) _free(bodyPtr);
         // Surface the host-side cause (the C++ layer only sees "-1"): CORS
         // rejections, missing transports, heap-view surprises all land here.
         if (typeof console !== 'undefined') console.error('chdb wasm http bridge:', e);
         return -1;
     }
 });
+
+#ifdef CHDB_WASM_JSPI
+/// Asynchronous flavor of the request above for JSPI builds (-sJSPI): fetch()
+/// replaces the synchronous transports, and the whole wasm stack SUSPENDS at
+/// this import until the promise settles (JavaScript Promise Integration).
+/// This is the only transport that can work on Cloudflare Workers, which has
+/// no synchronous XHR and no subprocesses — and it also covers browsers
+/// (Chrome 137+) and Node (--experimental-wasm-jspi) with one code path.
+/// Same argument/out-struct protocol as the sync version; the calling C API
+/// export must be listed in JSPI_EXPORTS or V8 refuses to suspend.
+/// KEEP IN SYNC with chdb_wasm_http_request_js above.
+EM_ASYNC_JS(int, chdb_wasm_http_request_async_js, (
+    const char * method_ptr, const char * url_ptr, const char * headers_ptr,
+    const char * body_ptr, double body_len,
+    double range_offset, double range_length,
+    char * out_ptr), {
+    try {
+        var method = UTF8ToString(Number(method_ptr));
+        var url = UTF8ToString(Number(url_ptr));
+        var headersBlob = UTF8ToString(Number(headers_ptr));
+        var bodyLen = Number(body_len);
+        var reqBody = null;
+        if (bodyLen > 0) {
+            // Copy out of the (possibly shared) wasm heap: fetch rejects SAB views.
+            reqBody = new Uint8Array(bodyLen);
+            reqBody.set(HEAPU8.subarray(Number(body_ptr), Number(body_ptr) + bodyLen));
+        }
+        var rangeOff = range_offset;
+        var rangeLen = range_length;
+        var hdrPtr = 0;
+        var bodyPtr = 0;
+        var headers = new Headers();
+        var lines = headersBlob ? headersBlob.split('\n') : [];
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!line) continue;
+            var c = line.indexOf(': ');
+            // Mirror the sync transport: a malformed header name/value makes
+            // Headers.append throw; skip it rather than failing the request.
+            if (c > 0) { try { headers.append(line.substring(0, c), line.substring(c + 2)); } catch (e) {} }
+        }
+        if (rangeOff >= 0) headers.set('Range', 'bytes=' + rangeOff + '-' + (rangeOff + rangeLen - 1));
+        var resp;
+        try {
+            resp = await fetch(url, { method: method, headers: headers, body: reqBody, redirect: 'follow' });
+        } catch (e) {
+            if (typeof console !== 'undefined')
+                console.error('chdb wasm http bridge (jspi): fetch failed', method, url, String(e && e.message || e));
+            return -1;
+        }
+        var status = resp.status;
+        var respHeaders = "";
+        resp.headers.forEach(function(v, k) { respHeaders += k + ': ' + v + String.fromCharCode(10); });
+        var respBytes = new Uint8Array(await resp.arrayBuffer());
+        // A ranged request answered with 200 means the server ignored Range;
+        // slice the requested window so only those bytes enter wasm memory.
+        if (rangeOff >= 0 && status === 200)
+            respBytes = respBytes.subarray(rangeOff, rangeOff + rangeLen);
+        var hdrBytes = new TextEncoder().encode(respHeaders);
+        // With ALLOW_MEMORY_GROWTH malloc returns 0 on OOM instead of aborting.
+        if (hdrBytes.length) {
+            hdrPtr = _malloc(BigInt(hdrBytes.length));
+            if (!Number(hdrPtr)) throw new Error('bridge OOM allocating ' + hdrBytes.length + ' header bytes');
+            HEAPU8.set(hdrBytes, Number(hdrPtr));
+        }
+        if (respBytes.length) {
+            bodyPtr = _malloc(BigInt(respBytes.length));
+            if (!Number(bodyPtr)) throw new Error('bridge OOM allocating ' + respBytes.length + ' body bytes');
+            HEAPU8.set(respBytes, Number(bodyPtr));
+        }
+        var dv = new DataView(HEAPU8.buffer);
+        var out = Number(out_ptr);
+        dv.setBigInt64(out, BigInt(status), true);
+        dv.setBigInt64(out + 8, BigInt(hdrPtr), true);
+        dv.setBigInt64(out + 16, BigInt(hdrBytes.length), true);
+        dv.setBigInt64(out + 24, BigInt(bodyPtr), true);
+        dv.setBigInt64(out + 32, BigInt(respBytes.length), true);
+        return 0;
+    } catch (e) {
+        // Ownership only transfers to C++ on the return-0 path — free anything
+        // allocated before the throw (see the sync catch above).
+        if (Number(hdrPtr)) _free(hdrPtr);
+        if (Number(bodyPtr)) _free(bodyPtr);
+        if (typeof console !== 'undefined') console.error('chdb wasm http bridge (jspi):', e);
+        return -1;
+    }
+});
+#endif
 
 WasmHTTPResult performWasmHTTPRequest(
     const std::string & method,
@@ -150,11 +246,20 @@ WasmHTTPResult performWasmHTTPRequest(
     long long range_length)
 {
     int64_t out[5] = {};
+#ifdef CHDB_WASM_JSPI
+    /// JSPI build: the async transport suspends the wasm stack on await.
+    int rc = chdb_wasm_http_request_async_js(
+        method.c_str(), url.c_str(), headers_blob.c_str(),
+        body.data(), static_cast<double>(body.size()),
+        static_cast<double>(range_offset), static_cast<double>(range_length),
+        reinterpret_cast<char *>(out));
+#else
     int rc = chdb_wasm_http_request_js(
         method.c_str(), url.c_str(), headers_blob.c_str(),
         body.data(), static_cast<double>(body.size()),
         static_cast<double>(range_offset), static_cast<double>(range_length),
         reinterpret_cast<char *>(out));
+#endif
 
     WasmHTTPResult result;
     if (rc != 0)

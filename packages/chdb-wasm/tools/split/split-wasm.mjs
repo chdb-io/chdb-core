@@ -23,6 +23,14 @@
 //                     line). Run the SINGLE-THREADED bundle with this: its one
 //                     instance sees the whole pipeline execute inline, so its
 //                     hot set is the complete corpus coverage.
+//   --corpus F        statement file for the profiling runs (default:
+//                     profile-corpus.sql; the lite build passes
+//                     profile-corpus-lite.sql)
+//   --lite-glue       install the glue with the --lite patch (cold calls throw
+//                     a clear "not in lite" error) instead of --lazy-load
+//   --extra-keep F    force-keep these exact function names (escaped form)
+//                     when they appear in the cold set — the lite pipeline
+//                     passes keep-lite.txt
 //   --extra-hot F     force-keep these function names too (F from a prior
 //                     --emit-hot-names run). Needed for the THREADED bundle:
 //                     its pool workers park in Atomics.wait and cannot answer
@@ -99,10 +107,17 @@ if (!argv.includes('--skip-profile-run')) {
   // leftovers (possibly from a DIFFERENT build) would be merged in below.
   if (existsSync(profilesDir))
     for (const f of readdirSync(profilesDir)) if (f.endsWith('.data')) rmSync(join(profilesDir, f));
+  const corpusEnv = opt('corpus') ? { CHDB_CORPUS: opt('corpus') } : {};
+  // A WASM_JSPI bundle's glue wraps imports in WebAssembly.Suspending and
+  // exports in WebAssembly.promising — Node (V8 without the Chrome default-on)
+  // needs the flag to even instantiate it. Probe for either wrapper.
+  const glueSrc = readFileSync(join(staging, 'chdb.mjs'), 'utf8');
+  const jspiFlags = glueSrc.includes('WebAssembly.promising') || glueSrc.includes('WebAssembly.Suspending')
+    ? ['--experimental-wasm-jspi'] : [];
   for (const extraEnv of [{}, { CHDB_INIT_PROBE: 'global', CHDB_PROFILE_PREFIX: 'initprobe' }]) {
-    const r = spawnSync(process.execPath, [join(here, 'run-profile.mjs')], {
+    const r = spawnSync(process.execPath, [...jspiFlags, join(here, 'run-profile.mjs')], {
       stdio: 'inherit',
-      env: { ...process.env, CHDB_BUNDLE_DIR: staging, CHDB_PROFILE_OUT: profilesDir, ...extraEnv },
+      env: { ...process.env, CHDB_BUNDLE_DIR: staging, CHDB_PROFILE_OUT: profilesDir, ...corpusEnv, ...extraEnv },
     });
     if (r.status !== 0) throw new Error(`run-profile.mjs exited with ${r.status}`);
   }
@@ -144,11 +159,37 @@ const SAFETY = /^(_*pthread_|__futex|futex_|emscripten_futex_|_*emscripten_stack
 // them): LazyOutputFormat + PullingAsyncPipelineExecutor feed results across
 // threads, ParallelFormattingOutputFormat renders them.
 const SAFETY_SUBSTR = /ThreadFromGlobalPool|ThreadPoolImpl<|__thread_proxy|__thread_struct|__thread_local_data|JobWithPriority|thread-local\\20initialization|runnableEntry|OwnRunnableForChannel|OwnAsyncSplitChannel|AsyncLogMessageQueue|demangling_terminate|std::terminate|std::__terminate|GrantedAllocation|TracingContextHolder|arrow::Unreachable|DiskEncryptedTransaction::undo|LazyOutputFormat|ParallelFormattingOutputFormat|PullingAsyncPipelineExecutor|ThreadFramePointers|BufferWithOutsideMemory/;
+// Template families specialized PER INPUT SHAPE, force-kept whole on the LITE
+// split only: the corpus inevitably exercises some instantiations of each and
+// a cold sibling there is a hard error, not a lazy load. findExtreme* are the
+// SIMD min/max kernels (per element type), WriteBufferFromVector is the C-API
+// result buffer (per output container), FunctionBinaryArithmetic /
+// FunctionComparison are the arithmetic/comparison executors (per type pair
+// and const/vector shape), and FunctionFactory carries one registration/
+// creation thunk per function — the corpus only constructs the functions it
+// happens to call. The FULL bundles keep a working lazy loader, so these stay
+// deferred there and the shipped primary stays lean.
+// AggregationMethod is included WHOLE-FAMILY (it appears in the template
+// arguments of every keyed-aggregation executor, converter lambda and method
+// helper) for a subtler reason: the aggregator picks between Cache/NoCache
+// and single/two-level hash-method variants ADAPTIVELY, from process-history
+// statistics and observed cardinality — which instantiation a query hits is
+// NOT a function of the query alone, so profiling can exercise one variant
+// while a user process picks another (found via GROUP BY FixedString landing
+// in the TwoLevel+NoCache convertToBlock lambda).
+const LITE_SUBSTR = argv.includes('--lite-glue')
+  ? /findExtreme|WriteBufferFromVector|FunctionBinaryArithmetic|FunctionComparison|FunctionFactory|AggregationMethod/
+  : null;
 const extraHotFile = opt('extra-hot');
 const extraHot = extraHotFile ? new Set(readFileSync(extraHotFile, 'utf8').split('\n').filter(Boolean)) : null;
 // Checked-in list of single worker-path functions (see keep-worker-path.txt).
 const workerPath = new Set(
   readFileSync(join(here, 'keep-worker-path.txt'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#')));
+// Optional additional exact-name keeps (e.g. keep-lite.txt for the lite build).
+const extraKeepFile = opt('extra-keep');
+if (extraKeepFile)
+  for (const l of readFileSync(extraKeepFile, 'utf8').split('\n'))
+    if (l && !l.startsWith('#')) workerPath.add(l);
 const emitHotFile = opt('emit-hot-names');
 const emitHot = emitHotFile ? createWriteStream(emitHotFile) : null;
 
@@ -186,7 +227,7 @@ const keepStream = createWriteStream(keepFile);
         if (/^\d+$/.test(name)) numericNames++;
         keepStream.write(name + '\n');
         keptNameless++;
-      } else if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
+      } else if (SAFETY.test(name) || SAFETY_SUBSTR.test(name) || LITE_SUBSTR?.test(name) || workerPath.has(name)) { keepStream.write(name + '\n'); keptSafety++; }
       else if (extraHot?.has(name)) { keepStream.write(name + '\n'); keptExtra++; }
     }
   }
@@ -213,7 +254,7 @@ run(wasmSplit, [
 // --- 6. install glue ----------------------------------------------------------------
 const glue = join(outDir, 'chdb.mjs');
 copyFileSync(join(buildDir, 'chdb.mjs'), glue);
-run(process.execPath, [join(here, 'patch-glue.mjs'), glue, '--lazy-load']);
+run(process.execPath, [join(here, 'patch-glue.mjs'), glue, argv.includes('--lite-glue') ? '--lite' : '--lazy-load']);
 
 // Sanity: the primary must import its stubs from `placeholder*` modules — that's
 // what the glue's proxy intercepts.
