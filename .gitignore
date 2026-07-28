@@ -275,6 +275,7 @@ test_main
 /examples/chdbCppStreaming
 /examples/:memory:
 /examples/chdbDlopen
+/examples/chdbVersionTest
 /examples/chdbStackTraceTest
 /examples/chdbStreamErrorTest
 /examples/chdbStreamInsertTest
