@@ -13,8 +13,6 @@
 /// reclaimActiveStream). Independent concurrent readers work over separate
 /// connections; note that session state (SET, temporary tables) is
 /// per-connection.
-///
-/// Tracking: chdb-io/chdb-core#122.
 
 #include "chdb.h"
 #include "chdb-internal.h"
@@ -89,11 +87,27 @@ AdbcStatusCode notImplemented(AdbcError * error, const std::string & what)
 /// the status code; everything else stays INTERNAL.
 AdbcStatusCode statusForEngineError(const std::string & message)
 {
-    /// ClickHouse names its error class in the message, e.g. "... (UNKNOWN_TABLE)".
-    /// The names are stable enum identifiers, so match them (a substring test
-    /// also tolerates the "(NAME)" wrapping). Classes with a direct ADBC
-    /// counterpart map to it; the rest stay INTERNAL.
-    auto has = [&](const char * name) { return message.find(name) != std::string::npos; };
+    /// ClickHouse appends its error class as a trailing "(CLASS_NAME)" token,
+    /// e.g. "... (UNKNOWN_TABLE)", optionally followed by " (version ...)".
+    /// Match only that terminal token so a class name echoed earlier in the
+    /// message (e.g. inside reflected SQL) can't be mistaken for the class.
+    /// The names are stable enum identifiers; matching a substring of the
+    /// token still lets a family prefix (e.g. CANNOT_PARSE*) map together.
+    std::string cls;
+    for (size_t close = message.find_last_of(')'); close != std::string::npos;)
+    {
+        size_t open = message.rfind('(', close);
+        if (open == std::string::npos)
+            break;
+        std::string tok = message.substr(open + 1, close - open - 1);
+        if (tok.compare(0, 8, "version ") != 0) // skip a trailing "(version ...)"
+        {
+            cls = tok;
+            break;
+        }
+        close = open == 0 ? std::string::npos : message.rfind(')', open - 1);
+    }
+    auto has = [&](const char * name) { return cls.find(name) != std::string::npos; };
 
     if (has("UNKNOWN_TABLE") || has("UNKNOWN_DATABASE") || has("UNKNOWN_IDENTIFIER")
         || has("UNKNOWN_FUNCTION") || has("UNKNOWN_SETTING") || has("FILE_DOESNT_EXIST"))
