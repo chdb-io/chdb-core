@@ -6,13 +6,13 @@
 /// Results travel through the Arrow C Data Interface; bulk ingestion goes
 /// through chdb_arrow_scan + INSERT ... SELECT FROM arrowstream(...).
 ///
-/// Result streams: the engine runs one statement at a time per connection,
-/// so any new operation invalidates the connection's outstanding streamed
-/// result (the stale reader fails with a clear error). Independent
-/// concurrent readers work over separate connections; note that session
-/// state (SET, temporary tables) is per-connection.
-///
-/// Tracking: chdb-io/chdb-core#122.
+/// Result streams: the engine runs one statement at a time per connection.
+/// A statement's next Execute invalidates its own prior stream (spec-required);
+/// a different statement or a metadata call that hits a still-live stream is
+/// rejected with INVALID_STATE rather than silently invalidating it (see
+/// reclaimActiveStream). Independent concurrent readers work over separate
+/// connections; note that session state (SET, temporary tables) is
+/// per-connection.
 
 #include "chdb.h"
 #include "chdb-internal.h"
@@ -87,11 +87,27 @@ AdbcStatusCode notImplemented(AdbcError * error, const std::string & what)
 /// the status code; everything else stays INTERNAL.
 AdbcStatusCode statusForEngineError(const std::string & message)
 {
-    /// ClickHouse names its error class in the message, e.g. "... (UNKNOWN_TABLE)".
-    /// The names are stable enum identifiers, so match them (a substring test
-    /// also tolerates the "(NAME)" wrapping). Classes with a direct ADBC
-    /// counterpart map to it; the rest stay INTERNAL.
-    auto has = [&](const char * name) { return message.find(name) != std::string::npos; };
+    /// ClickHouse appends its error class as a trailing "(CLASS_NAME)" token,
+    /// e.g. "... (UNKNOWN_TABLE)", optionally followed by " (version ...)".
+    /// Match only that terminal token so a class name echoed earlier in the
+    /// message (e.g. inside reflected SQL) can't be mistaken for the class.
+    /// The names are stable enum identifiers; matching a substring of the
+    /// token still lets a family prefix (e.g. CANNOT_PARSE*) map together.
+    std::string cls;
+    for (size_t close = message.find_last_of(')'); close != std::string::npos;)
+    {
+        size_t open = message.rfind('(', close);
+        if (open == std::string::npos)
+            break;
+        std::string tok = message.substr(open + 1, close - open - 1);
+        if (tok.compare(0, 8, "version ") != 0) // skip a trailing "(version ...)"
+        {
+            cls = tok;
+            break;
+        }
+        close = open == 0 ? std::string::npos : message.rfind(')', open - 1);
+    }
+    auto has = [&](const char * name) { return cls.find(name) != std::string::npos; };
 
     if (has("UNKNOWN_TABLE") || has("UNKNOWN_DATABASE") || has("UNKNOWN_IDENTIFIER")
         || has("UNKNOWN_FUNCTION") || has("UNKNOWN_SETTING") || has("FILE_DOESNT_EXIST"))
@@ -134,8 +150,9 @@ struct ConnectionImpl
     /// Serializes statement execution on this connection.
     std::mutex mutex;
     /// The connection's outstanding streamed result, if any. The engine runs
-    /// one statement at a time per connection, so any new operation must
-    /// invalidate this first (see invalidateActiveStream).
+    /// one statement at a time per connection; a new operation resolves this
+    /// via reclaimActiveStream (same statement re-execute invalidates it,
+    /// a different statement or metadata call is rejected while it is live).
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
 };
@@ -280,7 +297,9 @@ std::string percentDecode(const std::string & in)
     out.reserve(in.size());
     for (size_t i = 0; i < in.size(); ++i)
     {
-        if (in[i] == '%' && i + 2 < in.size() && std::isxdigit(in[i + 1]) && std::isxdigit(in[i + 2]))
+        if (in[i] == '%' && i + 2 < in.size()
+            && std::isxdigit(static_cast<unsigned char>(in[i + 1]))
+            && std::isxdigit(static_cast<unsigned char>(in[i + 2])))
         {
             out += static_cast<char>(std::stoi(in.substr(i + 1, 2), nullptr, 16));
             i += 2;
@@ -289,6 +308,30 @@ std::string percentDecode(const std::string & in)
             out += in[i];
     }
     return out;
+}
+
+/// Parses a file:/chdb:-style URI tail (everything after "<scheme>:") per
+/// RFC 8089: <scheme>:name, <scheme>:/abs, <scheme>:///abs and
+/// <scheme>://localhost/abs, with %XX percent-decoding. Only an empty or
+/// "localhost" authority is accepted. Writes the decoded path into `out`;
+/// on a bad authority fills `error` and returns a non-OK status.
+AdbcStatusCode parseFileLikeUri(
+    const char * scheme, const std::string & after_scheme, std::string & out, AdbcError * error)
+{
+    std::string rest = after_scheme;
+    if (rest.rfind("//", 0) == 0)
+    {
+        rest = rest.substr(2);
+        const auto slash = rest.find('/');
+        const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+        if (!authority.empty() && authority != "localhost")
+            return setError(
+                error, ADBC_STATUS_INVALID_ARGUMENT,
+                std::string("[chdb] unsupported ") + scheme + " URI authority '" + authority + "'");
+        rest = slash == std::string::npos ? "" : rest.substr(slash);
+    }
+    out = percentDecode(rest);
+    return ADBC_STATUS_OK;
 }
 
 /// Quotes an identifier with backticks, ClickHouse-style.
@@ -533,9 +576,10 @@ AdbcStatusCode clickhouseTypeFor(
         case arrow::Type::BINARY:
         case arrow::Type::LARGE_BINARY:
         case arrow::Type::FIXED_SIZE_BINARY: out = "String"; return ADBC_STATUS_OK;
-        /// All-null columns arrive as Arrow's null type; the values are
-        /// rewritten to literal NULLs, so the placeholder type is moot.
-        case arrow::Type::NA: out = "Nullable(String)"; return ADBC_STATUS_OK;
+        /// All-null columns arrive as Arrow's null type; String is the base
+        /// placeholder — the null_count>0 rule wraps it in Nullable (avoiding
+        /// a double Nullable(Nullable(...))) and the values bind as \N.
+        case arrow::Type::NA: out = "String"; return ADBC_STATUS_OK;
         case arrow::Type::DATE32: out = "Date32"; return ADBC_STATUS_OK;
         case arrow::Type::DATE64: out = "DateTime64(3)"; return ADBC_STATUS_OK;
         case arrow::Type::TIMESTAMP:
@@ -817,26 +861,55 @@ AdbcStatusCode chdbDatabaseSetOption(
     /// "path" and "uri" are aliases; the last one set wins. The uri form
     /// accepts the file scheme per RFC 8089: file:name, file:/abs,
     /// file:///abs and file://localhost/abs, with %XX percent-decoding.
+    /// chDB's own "chdb:" scheme mirrors file: for paths but additionally
+    /// recognizes in-memory sentinels (chdb:, chdb:memory, chdb::memory:,
+    /// chdb://:memory:, chdb://memory) that all resolve to ":memory:".
     if (option == "path" || option == "uri")
     {
         if (option_value.rfind("file:", 0) == 0)
         {
-            std::string rest = option_value.substr(5);
-            if (rest.rfind("//", 0) == 0)
+            std::string parsed;
+            if (AdbcStatusCode s = parseFileLikeUri("file", option_value.substr(5), parsed, error);
+                s != ADBC_STATUS_OK)
+                return s;
+            option_value = parsed;
+        }
+        else if (option_value.rfind("chdb:", 0) == 0)
+        {
+            const std::string after = option_value.substr(5);
+
+            /// Sentinel in the authority position: chdb://:memory: / chdb://memory.
+            /// Only in-memory when no /path follows the authority. Decode first
+            /// so a percent-encoded sentinel matches, same as the path position.
+            if (after.rfind("//", 0) == 0)
             {
-                rest = rest.substr(2);
-                const auto slash = rest.find('/');
-                const std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
-                if (!authority.empty() && authority != "localhost")
-                    return setError(
-                        error, ADBC_STATUS_INVALID_ARGUMENT,
-                        "[chdb] unsupported file URI authority '" + authority + "'");
-                rest = slash == std::string::npos ? "" : rest.substr(slash);
+                const std::string auth_rest = percentDecode(after.substr(2));
+                if (auth_rest.find('/') == std::string::npos
+                    && (auth_rest == ":memory:" || auth_rest == "memory"))
+                {
+                    impl->path = ":memory:";
+                    return ADBC_STATUS_OK;
+                }
             }
-            option_value = percentDecode(rest);
+
+            /// Sentinel in the path position: chdb: / chdb:memory / chdb::memory:.
+            /// Decode first so a percent-encoded ":memory:" still matches.
+            const std::string tail = percentDecode(after);
+            if (tail.empty() || tail == "memory" || tail == ":memory:")
+            {
+                impl->path = ":memory:";
+                return ADBC_STATUS_OK;
+            }
+
+            /// Otherwise a real path, parsed with the shared file: logic.
+            std::string parsed;
+            if (AdbcStatusCode s = parseFileLikeUri("chdb", after, parsed, error);
+                s != ADBC_STATUS_OK)
+                return s;
+            option_value = parsed;
         }
         else if (option == "uri" && option_value.find("://") != std::string::npos)
-            return notImplemented(error, "URI scheme other than file");
+            return notImplemented(error, "URI scheme other than file/chdb");
         impl->path = option_value.empty() ? ":memory:" : option_value;
         return ADBC_STATUS_OK;
     }
@@ -1794,10 +1867,10 @@ AdbcStatusCode wireStreamingResult(
     ArrowArrayStream * out,
     AdbcError * error);
 
-/// Executes a query with qmark-style positional parameters bound as Arrow
-/// data. Each `?` is rewritten to a server-side {name:Type} placeholder
-/// (no string interpolation); NULL values become literal NULLs. Multi-row
-/// binds (executemany) run the statement once per row.
+/// executemany fast path for a plain INSERT ... VALUES (?, ...): registers all
+/// bound rows as an Arrow stream and inserts them with one INSERT ... SELECT
+/// (the bulk-ingestion channel), instead of one execute per row. Non-INSERT
+/// or non-plain shapes fall back to the per-row path in executeBoundQuery.
 AdbcStatusCode executeBoundInsertBatch(
     StatementImpl * impl, const std::string & insert_head, int64_t * rows_affected, AdbcError * error)
 {
@@ -1893,11 +1966,11 @@ AdbcStatusCode executeBoundQuery(
         AdbcStatusCode status = clickhouseTypeFor(table->field(col)->type(), ch_types[static_cast<size_t>(col)], error);
         if (status != ADBC_STATUS_OK)
             return status;
-        /// When executions are concatenated, a column with NULLs binds as
-        /// Nullable with the engine's \N value on the null rows — a literal
-        /// NULL would type that execution's column as Nothing and break the
+        /// A column carrying NULLs binds as Nullable with the engine's \N
+        /// value, never a bare literal NULL: a literal NULL types the column
+        /// as Nothing, which has no Arrow output (SELECT) and breaks a
         /// concatenated stream's schema.
-        if (concat_rows && table->column(col)->null_count() > 0)
+        if (table->column(col)->null_count() > 0)
             ch_types[static_cast<size_t>(col)] = "Nullable(" + ch_types[static_cast<size_t>(col)] + ")";
     }
 
@@ -1921,11 +1994,6 @@ AdbcStatusCode executeBoundQuery(
             auto scalar = table->column(static_cast<int>(p))->chunk(0)->GetScalar(row);
             if (!scalar.ok())
                 return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + scalar.status().ToString());
-            if (!scalar.ValueUnsafe()->is_valid && !concat_rows)
-            {
-                rewritten += "NULL";
-                continue;
-            }
             const std::string name = "__adbc_p" + std::to_string(p);
             rewritten += "{" + name + ":" + ch_types[p] + "}";
             names.push_back(name);
@@ -1985,7 +2053,7 @@ AdbcStatusCode executeBoundQuery(
                 std::string message(err);
                 chdb_destroy_query_result(stream_result);
                 if (message.find(CHDB::kErrorStreamingNotSupportedPrefix) == std::string::npos)
-                    return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + message);
+                    return setError(error, statusForEngineError(message), "[chdb] " + message);
                 /// Statement the engine refuses to stream (rejected before
                 /// executing): run it materialized over the IPC format.
                 chdb_result * result = chdb_query_with_params_n(
@@ -2136,8 +2204,8 @@ AdbcStatusCode wireStreamingResult(
         != CHDBSuccess)
     {
         const char * err = chdb_result_error(stream_result);
-        return setError(
-            error, ADBC_STATUS_INTERNAL, std::string("[chdb] ") + (err ? err : "first fetch failed"));
+        const std::string message = err ? err : "first fetch failed";
+        return setError(error, err ? statusForEngineError(message) : ADBC_STATUS_INTERNAL, "[chdb] " + message);
     }
 
     ArrowSchema schema_c;
@@ -2244,7 +2312,9 @@ AdbcStatusCode executeStreamingSelect(
         /// before executing them, so falling back re-executes nothing.
         if (message.find(CHDB::kErrorStreamingNotSupportedPrefix) != std::string::npos)
             return executeMaterializedSelect(impl, out, rows_affected, error);
-        return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + message);
+        /// Map the engine error class (UNKNOWN_TABLE, SYNTAX_ERROR, …) to the
+        /// ADBC status code, same as the non-streaming paths.
+        return setError(error, statusForEngineError(message), "[chdb] " + message);
     }
     return wireStreamingResult(impl->connection, /*owner_statement=*/impl->id, stream_result, out, error);
 }

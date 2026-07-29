@@ -10,13 +10,15 @@ import urllib.request
 
 from timeout_decorator import timeout
 
+from hits_dataset import download
+
 csv_url = "https://github.com/chdb-io/chdb/files/14662379/organizations-500000.zip"
 
 
 # download csv file, and unzip it
 def download_and_extract(url, save_path):
     print("\nDownloading file...")
-    urllib.request.urlretrieve(url, save_path)
+    download(url, save_path)
 
     print("Extracting file...")
     with zipfile.ZipFile(save_path, "r") as zip_ref:

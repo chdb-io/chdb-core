@@ -124,8 +124,9 @@ CHDB_EXPORT void free_result_v2(struct local_result_v2 * result);
 
 /**
  * Creates a new chDB connection.
- * Only one active connection is allowed per process.
- * Creating a new connection with different path requires closing existing connection.
+ * The engine uses one storage path per process: multiple connections to that
+ * same path may be open at once. Connecting with a different path requires
+ * closing all existing connections first.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)
@@ -242,8 +243,9 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
 
 /**
  * Creates a new chDB connection.
- * Only one active connection is allowed per process.
- * Creating a new connection with different path requires closing existing connection.
+ * The engine uses one storage path per process: multiple connections to that
+ * same path may be open at once. Connecting with a different path requires
+ * closing all existing connections first.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)

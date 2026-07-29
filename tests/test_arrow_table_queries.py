@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import chdb
 from chdb import session
-from urllib.request import urlretrieve
+from hits_dataset import ensure_hits_parquet
 
 # Clean up and create session in the test methods instead of globally
 
@@ -16,12 +16,7 @@ class TestChDBArrowTable(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Download parquet file if it doesn't exist
-        cls.parquet_file = "hits_0.parquet"
-        if not os.path.exists(cls.parquet_file):
-            print(f"Downloading {cls.parquet_file}...")
-            url = "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet"
-            urlretrieve(url, cls.parquet_file)
-            print("Download complete!")
+        cls.parquet_file = ensure_hits_parquet()
 
         # Load parquet as PyArrow table
         cls.arrow_table = pq.read_table(cls.parquet_file)

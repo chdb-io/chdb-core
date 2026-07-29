@@ -3,6 +3,8 @@
 import os
 import unittest
 import zipfile
+
+from hits_dataset import download
 import urllib.request
 
 import pandas as pd
@@ -21,7 +23,7 @@ class TestIssue251(unittest.TestCase):
 
             url = "https://github.com/user-attachments/files/16361689/parquet-test-data.zip"
             os.makedirs("/tmp/issue251/", exist_ok=True)
-            urllib.request.urlretrieve(url, "/tmp/issue251/parquet-test-data.zip")
+            download(url, "/tmp/issue251/parquet-test-data.zip")
             with zipfile.ZipFile("/tmp/issue251/parquet-test-data.zip", "r") as zip_ref:
                 zip_ref.extractall("/tmp/issue251/")
 
