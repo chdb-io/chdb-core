@@ -19,38 +19,43 @@ except ImportError:  # pragma: no cover - optional test dependency
 
 
 @contextlib.contextmanager
-def _pushd_tmpdir(prefix):
-    """chdir into a fresh temp dir, restoring cwd and removing it afterwards."""
-    prev = os.getcwd()
-    base = tempfile.mkdtemp(prefix=prefix)
+def _cwd_scratch(*relnames):
+    """Yield the cwd for relative-path assertions, removing the given relative
+    entries afterwards. Does not chdir, so tests can't corrupt each other's cwd
+    under parallel execution."""
+    cwd = os.getcwd()
     try:
-        os.chdir(base)
-        yield base
+        yield cwd
     finally:
-        os.chdir(prev)
-        shutil.rmtree(base, ignore_errors=True)
+        for name in relnames:
+            shutil.rmtree(os.path.join(cwd, name), ignore_errors=True)
 
 
 def _candidate_libchdb_paths():
+    # The ADBC driver is the chdb package's own _chdb module. Pointing the
+    # driver manager at chdb._chdb.__file__ makes its dlopen reuse the image a
+    # normal `import chdb` already loaded, so the process holds a single chDB
+    # engine. Fall back to a standalone libchdb.so only when no chdb package is
+    # importable.
     if os.environ.get("CHDB_LIB_PATH"):
         yield os.environ["CHDB_LIB_PATH"]
+    try:
+        import chdb as _chdb_pkg
+
+        _so = getattr(getattr(_chdb_pkg, "_chdb", None), "__file__", None)
+        if _so:
+            yield _so
+            return
+    except Exception:  # noqa: BLE001 - no usable chdb package; try libchdb.so
+        pass
     here = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(here)
-    names = ["libchdb.so", "libchdb.dylib"]
-    yield from (os.path.join(project_root, n) for n in names)
-    yield from (os.path.join(project_root, "buildlib", n) for n in names)
+    for n in ("libchdb.so", "libchdb.dylib"):
+        yield os.path.join(project_root, n)
+        yield os.path.join(project_root, "buildlib", n)
     on_path = shutil.which("libchdb.so")
     if on_path:
         yield on_path
-    # Installed chdb package (wheel CI): the module doubles as the driver.
-    try:
-        import importlib.util as _ilu
-
-        _spec = _ilu.find_spec("chdb")
-        if _spec and _spec.origin:
-            yield os.path.join(os.path.dirname(_spec.origin), "_chdb.abi3.so")
-    except (ImportError, ValueError):
-        pass
 
 
 def _find_libchdb_path():
@@ -62,27 +67,88 @@ def _find_libchdb_path():
 
 _LIBCHDB_PATH = _find_libchdb_path()
 
-# The Python module doubles as the driver, but its pybind runtime must be
-# initialized by a normal import before the ADBC entrypoint is used — the
-# same order the locator package uses (import _chdb, then _chdb.__file__).
+# Initialize the driver's pybind runtime once, before the ADBC entrypoint is
+# used. When the driver is the chdb package's own _chdb, `import chdb` does it
+# (idempotent — the driver manager's later dlopen reuses this single image). A
+# standalone abi3 supplied via CHDB_LIB_PATH is spec-loaded once instead.
 if _LIBCHDB_PATH and _LIBCHDB_PATH.endswith(".abi3.so"):
-    import importlib.util
+    import sys
 
-    _spec = importlib.util.spec_from_file_location("_chdb", _LIBCHDB_PATH)
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
+    _pkg_so = None
+    try:
+        import chdb  # noqa: F401
+
+        _pkg_so = getattr(getattr(chdb, "_chdb", None), "__file__", None)
+    except Exception:  # noqa: BLE001 - engine unavailable -> tests skip
+        _pkg_so = _LIBCHDB_PATH  # treat as initialized; don't spec-load
+    is_pkg = _pkg_so and os.path.realpath(_pkg_so) == os.path.realpath(_LIBCHDB_PATH)
+    if not is_pkg and "_chdb" not in sys.modules:
+        import importlib.util
+
+        _spec = importlib.util.spec_from_file_location("_chdb", _LIBCHDB_PATH)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        sys.modules["_chdb"] = _mod
 
 
-def _has_adbc_entrypoint(path):
+def _raw_connect(db_kwargs):
+    # autocommit=True matches the driver's transaction model (autocommit-only)
+    # and avoids the DB-API compliance warning from the default connect path.
+    return adbc_dbapi.connect(
+        driver=_LIBCHDB_PATH,
+        entrypoint="chdb_adbc_init",
+        db_kwargs=dict(db_kwargs),
+        autocommit=True,
+    )
+
+
+# Keep the in-memory engine alive for the tests that use it.
+#
+# The engine is a refcounted process-wide singleton bound to one storage path:
+# the first open() starts it and the last close() tears it down. Opening and
+# closing a connection per test would rebuild it every time, which is slow. One
+# spare connection to ":memory:" keeps the refcount above zero so those tests
+# share a single engine.
+#
+# Only ":memory:" is pinned, and the spare is dropped before opening any other
+# path — the engine serves one path at a time, so it has to shut down first.
+# The spare is deliberately NOT closed at exit: the last close() shuts the
+# engine down, which is slow enough on macOS to look like a hang, and letting
+# the process exit reclaims everything anyway.
+_memory_keepalive = []
+
+
+def _pin_memory_engine():
+    if _memory_keepalive:
+        return
+    try:
+        _memory_keepalive.append(_raw_connect({"path": ":memory:"}))
+    except Exception:  # noqa: BLE001 - engine unavailable; the caller's own
+        pass  # connect reports it
+
+
+def _release_memory_keepalive():
+    while _memory_keepalive:
+        try:
+            _memory_keepalive.pop().close()
+        except Exception:  # noqa: BLE001 - best-effort release
+            pass
+
+
+def _probe_adbc_entrypoint(path):
+    """Report whether the driver exposes the ADBC entrypoint. The probe
+    connection becomes the in-memory spare instead of being closed: closing it
+    would shut the engine down right after starting it, and every test process
+    that imports this module would pay for that."""
     if path is None or adbc_dbapi is None:
         return False
     try:
-        conn = adbc_dbapi.connect(
-            driver=path, entrypoint="chdb_adbc_init", autocommit=True
+        _memory_keepalive.append(
+            adbc_dbapi.connect(driver=path, entrypoint="chdb_adbc_init",
+                               autocommit=True)
         )
-        conn.close()
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - no usable driver -> tests skip
         return False
 
 
@@ -91,18 +157,15 @@ _SKIP_REASON = (
     if adbc_dbapi is None
     else "libchdb with chdb_adbc_init not found"
 )
-_ENABLED = _has_adbc_entrypoint(_LIBCHDB_PATH)
+_ENABLED = _probe_adbc_entrypoint(_LIBCHDB_PATH)
 
 
 def _connect(path=":memory:"):
-    # autocommit=True matches the driver's transaction model (autocommit-only)
-    # and avoids the DB-API compliance warning from the default connect path.
-    return adbc_dbapi.connect(
-        driver=_LIBCHDB_PATH,
-        entrypoint="chdb_adbc_init",
-        db_kwargs={"path": path},
-        autocommit=True,
-    )
+    if path == ":memory:":
+        _pin_memory_engine()
+    else:
+        _release_memory_keepalive()
+    return _raw_connect({"path": path})
 
 
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
@@ -846,12 +909,10 @@ class TestAdbcMetadata(unittest.TestCase):
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
 class TestAdbcUri(unittest.TestCase):
     def _connect_uri(self, uri):
-        return adbc_dbapi.connect(
-            driver=_LIBCHDB_PATH,
-            entrypoint="chdb_adbc_init",
-            db_kwargs={"uri": uri},
-            autocommit=True,
-        )
+        # Opens whatever path the URI resolves to, so any ":memory:" spare has
+        # to go first: one engine, one path.
+        _release_memory_keepalive()
+        return _raw_connect({"uri": uri})
 
     def _roundtrip(self, uri, expect_dir):
         with self._connect_uri(uri) as conn, conn.cursor() as cur:
@@ -889,36 +950,42 @@ class TestAdbcUri(unittest.TestCase):
 
     def test_chdb_relative_path(self):
         # A bare relative name must become a real on-disk dir, not memory.
-        with _pushd_tmpdir("chdb_rel_") as base:
-            with self._connect_uri("chdb:reldb") as conn, conn.cursor() as cur:
+        relname = f"chdb_reldb_{os.getpid()}"
+        with _cwd_scratch(relname) as base:
+            with self._connect_uri(f"chdb:{relname}") as conn, conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 self.assertEqual(cur.fetchone()[0], 1)
-            self.assertTrue(os.path.isdir(os.path.join(base, "reldb")))
+            self.assertTrue(os.path.isdir(os.path.join(base, relname)))
 
     def _assert_in_memory(self, uri, forbidden_dirname):
         # In-memory must work AND must not create a dir named after the token.
-        with _pushd_tmpdir("chdb_mem_") as base:
+        with _cwd_scratch(forbidden_dirname) as base:
+            target = os.path.join(base, forbidden_dirname)
+            self.assertFalse(os.path.isdir(target), f"stale {forbidden_dirname!r}")
             with self._connect_uri(uri) as conn, conn.cursor() as cur:
                 cur.execute("SELECT 42")
                 self.assertEqual(cur.fetchone()[0], 42)
             self.assertFalse(
-                os.path.isdir(os.path.join(base, forbidden_dirname)),
+                os.path.isdir(target),
                 f"{uri} unexpectedly created dir {forbidden_dirname!r}",
             )
 
     def test_chdb_memory_forms(self):
         # canonical chdb::memory: plus accepted aliases all resolve to :memory:
-        self._assert_in_memory("chdb:", ":memory:")
-        self._assert_in_memory("chdb:memory", "memory")
-        self._assert_in_memory("chdb::memory:", ":memory:")
-        self._assert_in_memory("chdb://:memory:", ":memory:")
-        self._assert_in_memory("chdb://memory", "memory")
-        # percent-encoded sentinel in the authority position decodes first
-        self._assert_in_memory("chdb://%3Amemory%3A", ":memory:")
+        # (the last is a percent-encoded sentinel in the authority position).
+        for uri, forbidden in [
+            ("chdb:", ":memory:"),
+            ("chdb:memory", "memory"),
+            ("chdb::memory:", ":memory:"),
+            ("chdb://:memory:", ":memory:"),
+            ("chdb://memory", "memory"),
+            ("chdb://%3Amemory%3A", ":memory:"),
+        ]:
+            self._assert_in_memory(uri, forbidden)
 
     def test_chdb_relative_named_memory_escape_hatch(self):
         # './memory' must be a real dir: the sentinel only fires on bare token.
-        with _pushd_tmpdir("chdb_escape_") as base:
+        with _cwd_scratch("memory") as base:
             with self._connect_uri("chdb:./memory") as conn, conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
