@@ -2,6 +2,7 @@
 #include "StoragePython.h"
 #include "PandasDataFrame.h"
 #include "PyArrowTable.h"
+#include "PythonArrowStream.h"
 #include "PythonDict.h"
 #include "PythonReader.h"
 #include "PythonTableCache.h"
@@ -151,6 +152,20 @@ ColumnsDescription TableFunctionPython::getActualTableStructure(ContextPtr conte
 
     if (PythonReader::isPythonReader(reader))
         return PythonReader::getActualTableStructure(reader, context);
+
+    /// Generic Arrow PyCapsule stream protocol (polars DataFrame,
+    /// pyarrow.RecordBatchReader, chdb/duckdb results, ...). Checked after the
+    /// specialized paths above so pandas / pyarrow.Table keep their optimized
+    /// scans (projection & predicate pushdown). The imported stream is parked
+    /// on the wrapper and reused by the scan, so the producer's
+    /// __arrow_c_stream__ is called only once per query lifecycle -- one-shot
+    /// producers cannot export a second stream.
+    if (hasArrowCStreamMethod(reader))
+    {
+        if (!data_source_wrapper->peekCachedArrowStream())
+            data_source_wrapper->cacheArrowStream(importArrowCStream(reader));
+        return tableStructureFromArrowStream(*data_source_wrapper->peekCachedArrowStream(), context);
+    }
 
     auto schema = PyReader::getSchemaFromPyObj(reader);
     return StoragePython::getTableStructureFromData(schema, context);
