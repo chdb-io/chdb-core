@@ -908,10 +908,12 @@ class TestAdbcMetadata(unittest.TestCase):
 
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
 class TestAdbcUri(unittest.TestCase):
-    def _connect_uri(self, uri):
-        # Opens whatever path the URI resolves to, so any ":memory:" spare has
-        # to go first: one engine, one path.
-        _release_memory_keepalive()
+    def _connect_uri(self, uri, opens_path=True):
+        # A URI that resolves to a path needs the ":memory:" spare released
+        # first: one engine, one path. A URI expected to be rejected never gets
+        # that far, so leave the spare — and the engine — alone.
+        if opens_path:
+            _release_memory_keepalive()
         return _raw_connect({"uri": uri})
 
     def _roundtrip(self, uri, expect_dir):
@@ -932,7 +934,7 @@ class TestAdbcUri(unittest.TestCase):
 
     def test_non_file_scheme_rejected(self):
         with self.assertRaises(Exception) as ctx:
-            self._connect_uri("http://example.com/db")
+            self._connect_uri("http://example.com/db", opens_path=False)
         self.assertIn("scheme", str(ctx.exception).lower())
 
     # --- chdb:// scheme (chDB's own scheme) -------------------------------
@@ -993,7 +995,7 @@ class TestAdbcUri(unittest.TestCase):
 
     def test_chdb_bad_authority_rejected(self):
         with self.assertRaises(Exception) as ctx:
-            self._connect_uri("chdb://evilhost/some/db")
+            self._connect_uri("chdb://evilhost/some/db", opens_path=False)
         self.assertIn("authority", str(ctx.exception).lower())
 
 

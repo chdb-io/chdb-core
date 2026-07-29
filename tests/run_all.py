@@ -81,9 +81,18 @@ def _run_modules(mods):
 
 
 # Worker mode: run exactly the modules listed after --only, in this process.
+#
+# Exit via os._exit once the result is known. A worker that started the engine
+# would otherwise run its shutdown (a global thread-pool teardown registered
+# with atexit) on the way out, which on macOS occasionally takes minutes. The
+# process is about to be replaced anyway, so skip the teardown and let the OS
+# reclaim it — after flushing, since os._exit doesn't.
 if "--only" in sys.argv:
     _mods = sys.argv[sys.argv.index("--only") + 1:]
-    sys.exit(0 if _run_modules(_mods) else 1)
+    _ok = _run_modules(_mods)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0 if _ok else 1)
 
 
 # Orchestrator: shard the main modules into NGROUPS subprocesses, then run each
