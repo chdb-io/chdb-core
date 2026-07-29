@@ -4,7 +4,6 @@ import os
 import shutil
 import unittest
 import time
-from urllib.request import urlretrieve
 import pandas as pd
 import chdb
 import json

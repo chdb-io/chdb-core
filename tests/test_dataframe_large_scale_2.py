@@ -4,7 +4,7 @@ import os
 import shutil
 import unittest
 import time
-from urllib.request import urlretrieve
+from hits_dataset import ensure_hits_parquet
 import pandas as pd
 import chdb
 import json
@@ -20,12 +20,7 @@ class TestDataFrameLargeScale(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.parquet_file = "hits_0.parquet"
-        if not os.path.exists(cls.parquet_file):
-            print(f"Downloading {cls.parquet_file}...")
-            url = "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet"
-            urlretrieve(url, cls.parquet_file)
-            print("Download complete!")
+        cls.parquet_file = ensure_hits_parquet()
 
     @classmethod
     def tearDownClass(cls):
