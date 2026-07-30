@@ -12,6 +12,12 @@ extern "C" {
 
 #define CHDB_EXPORT __attribute__((visibility("default")))
 
+/* chDB version as a compile-time string constant, so it can be read straight
+ * from the header without opening a connection or running SELECT chdb().
+ * Tracks the release tag and is bumped per release (see VERSION-GUIDE.md); the
+ * exact version of the loaded library is available at runtime via SELECT chdb(). */
+#define CHDB_VERSION "26.5.1-rc.3"
+
 #ifndef CHDB_NO_DEPRECATED
 // WARNING: The following structs are deprecated and will be removed in a future version.
 struct local_result

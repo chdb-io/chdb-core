@@ -81,4 +81,11 @@ pip install chdb==2.2.0b0
 ### Production Environment Recommendations
 - Use stable versions (no beta suffix)
 - Upgrade to latest bugfix version first(eg. v3.1.0 -> v3.1.2)
+
+## Releasing
+
+- When cutting a release tag, bump `CHDB_VERSION` in `programs/local/chdb.h`
+  to match the tag (without the leading `v`). It is the compile-time version
+  constant exposed to C API users; the running library also reports its build
+  version at runtime via `SELECT chdb()`.
 - Verify compatibility in testing environment before upgrading
