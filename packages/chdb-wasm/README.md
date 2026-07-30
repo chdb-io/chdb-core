@@ -78,6 +78,50 @@ node packages/chdb-wasm/test/smoke.test.mjs
 node packages/chdb-wasm/test/browser-run.mjs
 ```
 
+### Full (untrimmed) engine
+
+Both published bundles are compiled with chdb-core's `CHDB_LITE` trim set, which drops
+~70 niche aggregate functions to shrink the download — among them
+`quantileExactInclusive`/`quantilesExactInclusive` and `largestTriangleThreeBuckets`/`lttb`.
+`CHDB_WASM_FULL=1` builds the same engine with the **complete** registry instead:
+
+```bash
+CHDB_WASM_FULL=1 chdb/build-wasm.sh build      # -> buildwasm-full/
+
+# Assert the registry matches the variant (Node >= 23; exits non-zero on mismatch):
+node programs/wasm/chdb.lite-vs-full.test.mjs buildwasm-full/programs/wasm/chdb.mjs full
+node programs/wasm/chdb.lite-vs-full.test.mjs buildwasm/programs/wasm/chdb.mjs      lite
+```
+
+It is opt-in because of what it costs (measured, ClickHouse 26.5.1.1 / Emscripten 5.0.7,
+MinSizeRel, threads on):
+
+| variant | `chdb.wasm` raw | `gzip -6` |
+| --- | --- | --- |
+| lite (default, what npm ships) | 104,140,148 B (99.3 MiB) | 21.3 MiB |
+| full (`CHDB_WASM_FULL=1`) | 158,176,747 B (150.8 MiB) | 27.4 MiB |
+
+`CHDB_WASM_FULL=1` defaults `BUILD_DIR` to `buildwasm-full/` so it never clobbers the lite
+build, and selects the flags the untrimmed configure needs (`CHDB_LITE=OFF`, explicit
+`MinSizeRel`, `WERROR=0`, and the four `ENABLE_*` libraries the `CHDB_LITE` block otherwise
+opts back in over `ENABLE_LIBRARIES=0`) — see the comments in `chdb/build-wasm.sh`.
+
+To ship it, build the single-threaded bundle full as well and point `copy-artifacts.mjs` at
+both — passing only the mt dir leaves the st slot on its default `buildwasm-st/`, so a lite
+st build still sitting there would be packaged next to a full mt one:
+
+```bash
+CHDB_WASM_FULL=1 WASM_THREADS=OFF BUILD_DIR=buildwasm-full-st chdb/build-wasm.sh build
+node packages/chdb-wasm/scripts/copy-artifacts.mjs \
+    buildwasm-full/programs/wasm buildwasm-full-st/programs/wasm
+```
+
+Restoring only these two aggregate families rather than all ~70 would cost well under
+1 MiB compressed instead of ~6 MiB; the drop machinery in
+`src/AggregateFunctions/CMakeLists.txt` already stubs per-function register calls, so a
+`CHDB_LITE_KEEP_AGGREGATES` keep-list hook there is a small change and the better
+long-term fix if size matters more than completeness.
+
 ## Build knobs (CMake)
 
 Two bundles are built — **mt** (threaded) and **st** (single-threaded) — both Memory64 +

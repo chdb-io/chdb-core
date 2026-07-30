@@ -391,10 +391,13 @@ void FailPointInjection::enableFailPoint(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
-// chdb-core-lite drops these: they're orphan stubs (no matching declaration in
-// FailPoint.h), so compiling them under USE_LIBFIU=0 fails. Wrap so the
-// upstream-style source survives rebases; the dead methods never link anywhere.
+#if 0
+// Orphan stubs (no matching declaration in FailPoint.h), so compiling them
+// under USE_LIBFIU=0 fails; builds with libfiu enabled take the USE_LIBFIU
+// branch above and never reach them. Previously guarded on !CHDB_LITE, which
+// assumed non-lite implies USE_LIBFIU=1 — untrue for the full (CHDB_LITE=OFF)
+// WASM engine, where libfiu is off. Kept under #if 0 so the upstream-style
+// source survives rebases; the dead methods never link anywhere.
 void FailPointInjection::enablePauseFailPoint(const String &, UInt64)
 {
 }
@@ -408,7 +411,7 @@ void FailPointInjection::notifyFailPoint(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
+#if 0 /// Orphan stub, see enablePauseFailPoint above.
 void FailPointInjection::wait(const String &)
 {
 }
@@ -422,7 +425,7 @@ void FailPointInjection::waitForResume(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
+#if 0 /// Orphan stub, see enablePauseFailPoint above.
 void FailPointInjection::enableFromGlobalConfig(const Poco::Util::AbstractConfiguration & config)
 {
     String root_key = "fail_points_active";

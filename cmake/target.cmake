@@ -112,7 +112,14 @@ if (OS_WASM)
 
     # Build the slim chdb-core-lite feature set on WASM (disables ~30 optional
     # libs centrally). Set before the CHDB_LITE option()/block below so it sticks.
-    set (CHDB_LITE ON CACHE BOOL "WASM uses the chdb-core-lite trim set" FORCE)
+    #
+    # Only default it: an explicit -DCHDB_LITE=OFF is respected, which builds the
+    # full/untrimmed WASM engine (complete function registry) — see CHDB_WASM_FULL
+    # in chdb/build-wasm.sh for the other flags that configure needs. The cache
+    # check makes the choice sticky across reconfigures of an existing build dir.
+    if (NOT DEFINED CACHE{CHDB_LITE})
+        set (CHDB_LITE ON CACHE BOOL "WASM uses the chdb-core-lite trim set" FORCE)
+    endif ()
 
     # Go further than lite: the libs lite still opts-in but that WASM can't use
     # (native protoc bootstrap, networked object stores, heavy columnar formats).
