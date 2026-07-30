@@ -391,13 +391,11 @@ void FailPointInjection::enableFailPoint(const String &)
 {
 }
 
+/// Upstream defines this and the two stubs below in this branch, but declares none of
+/// them in FailPoint.h, so they cannot compile in any configuration. Upstream never
+/// builds USE_LIBFIU=0 and so never trips over it. Kept verbatim but disabled, so
+/// ClickHouse syncs merge cleanly; the guard must stay unconditionally false.
 #if 0
-// Orphan stubs (no matching declaration in FailPoint.h), so compiling them
-// under USE_LIBFIU=0 fails; builds with libfiu enabled take the USE_LIBFIU
-// branch above and never reach them. Previously guarded on !CHDB_LITE, which
-// assumed non-lite implies USE_LIBFIU=1 — untrue for the full (CHDB_LITE=OFF)
-// WASM engine, where libfiu is off. Kept under #if 0 so the upstream-style
-// source survives rebases; the dead methods never link anywhere.
 void FailPointInjection::enablePauseFailPoint(const String &, UInt64)
 {
 }
