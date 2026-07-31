@@ -295,7 +295,17 @@ def run_sql(cursor, sql):
     cursor.adbc_statement.execute_update()
 
 
+def is_declared(dst):
+    """An override carrying skip / broken-driver / broken-vendor states what
+    the driver should do, not what it does. Regenerating it would record the
+    defect back as the expectation."""
+    if not dst.exists():
+        return False
+    return re.search(r"^(skip|broken-(driver|vendor))\s*=", dst.read_text(), re.M) is not None
+
+
 def main():
+    os.environ.setdefault("TZ", "UTC")
     lib = (
         os.environ.get("CHDB_ADBC_DRIVER")
         or os.environ.get("CHDB_LIB_PATH")
@@ -306,6 +316,10 @@ def main():
 
     for name in BIND_CASES:
         src = SITE_QUERIES / "type" / "bind" / f"{name}.txtcase"
+        dst = OUT_QUERIES / "type" / "bind" / f"{name}.txtcase"
+        if is_declared(dst):
+            report.append(f"bind/{name}: kept, declared")
+            continue
         header, order, parts = parse_parts(src.read_text())
         drop = re.search(r'drop\s*=\s*"([^"]+)"', parts.get("metadata", ""))
         table_name = drop.group(1) if drop else None
@@ -342,13 +356,16 @@ def main():
         parts["expected"] = table_jsonlines(actual)
         if "expected" not in order:
             order.append("expected")
-        dst = OUT_QUERIES / "type" / "bind" / f"{name}.txtcase"
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(render(header, order, parts))
         report.append(f"bind/{name}: OK schema={actual.schema.types}")
 
     for name in INGEST_CASES:
         src = SITE_QUERIES / "ingest" / f"{name}.txtcase"
+        dst = OUT_QUERIES / "ingest" / f"{name}.txtcase"
+        if is_declared(dst):
+            report.append(f"ingest/{name}: kept, declared")
+            continue
         header, order, parts = parse_parts(src.read_text())
         try:
             input_schema = arrowjson.loads_schema(parts["input_schema"])
@@ -373,7 +390,6 @@ def main():
         for extra in ("expected_schema", "expected"):
             if extra not in order:
                 order.append(extra)
-        dst = OUT_QUERIES / "ingest" / f"{name}.txtcase"
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(render(header, order, parts))
         report.append(f"ingest/{name}: OK schema={actual.schema.types}")

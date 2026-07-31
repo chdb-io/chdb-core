@@ -82,6 +82,11 @@ engine limits and both applied by a named function: `date32` is clamped into
 ClickHouse's 1900..2299 range, and non-UTF-8 binary payloads are swapped for
 same-length ASCII because binary reads back as utf8. Review the diff.
 
+A case whose override declares `skip`, `broken-driver` or `broken-vendor` says
+what the driver *should* do, so the script leaves it alone rather than recording
+the defect back over it. It exits nonzero if any other case fails to
+regenerate.
+
 ```bash
 cd programs/local/adbc/validation/python
 CHDB_ADBC_DRIVER=/path/to/libchdb.so ../../../../../.validation-venv/bin/python gen_overrides.py
