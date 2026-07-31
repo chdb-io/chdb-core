@@ -52,15 +52,14 @@ run takes about 6 seconds.
 
 ## In CI
 
-The `adbc-validation` job in `.github/workflows/pr_ci.yaml` runs the suite on
-every pull request, on all four platforms that ship a libchdb release asset:
-linux x86_64 and aarch64, macOS arm64 and x86_64. Because the suite loads the
-driver by path, the job downloads a release instead of building one, which is
-what keeps four platforms to a few minutes each.
+Each of the four build workflows runs this suite and the one in `python/`
+against the libchdb it just built, in a step named `ADBC validation suites`.
+That covers linux x86_64 and aarch64 and macOS arm64 and x86_64, and it sees a
+change to `../chdb-adbc.cpp` on the pull request that makes it.
 
-That job validates the newest release, so it cannot see a change to
-`../chdb-adbc.cpp` until it ships. The four build workflows therefore run both
-suites again against the libchdb they just built.
+The step sits right after the build rather than at the end of the job, so an
+unrelated failure in the wheel tests cannot withhold the result. Building this
+suite takes about two minutes; running it, seconds.
 
 ## Current state
 
