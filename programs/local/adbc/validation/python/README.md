@@ -48,8 +48,9 @@ are session-scoped, so the run shares one chDB engine and never restarts it. It
 takes about two seconds.
 
 Latest run (macOS arm64, engine 26.5.1.1):
-**215 passed, 27 skipped, 3 xfailed, 0 failed**. CI runs it in the same
-`adbc-validation` job as the gtest suite, against the same downloaded libchdb.
+**214 passed, 27 skipped, 4 xfailed, 0 failed**. CI runs it in the same
+`adbc-validation` job as the gtest suite against a downloaded release, and again
+in each build workflow against the libchdb just built.
 
 ## The capability matrix
 

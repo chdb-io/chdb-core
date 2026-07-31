@@ -442,6 +442,32 @@ jobs:
             pyenv shell --unset
           done
         continue-on-error: false
+      # Both ADBC validation suites, run against the libchdb just built. The
+      # adbc-validation job in pr_ci.yaml runs them against the newest release,
+      # which cannot see a change to programs/local/chdb-adbc.cpp until it ships.
+      - name: ADBC validation suites
+        run: |
+          set -eo pipefail
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+
+          BUILD_DIR="$RUNNER_TEMP/adbc-validation"
+          VENV="$RUNNER_TEMP/adbc-validation-venv"
+          rm -rf "$BUILD_DIR" "$VENV"
+
+          cmake -S programs/local/adbc/validation -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$BUILD_DIR" --parallel "$(getconf _NPROCESSORS_ONLN)"
+          CHDB_ADBC_DRIVER="$GITHUB_WORKSPACE/libchdb.so" \
+            programs/local/adbc/validation/run.sh "$BUILD_DIR"
+
+          pyenv shell 3.13
+          python -m venv "$VENV"
+          "$VENV/bin/pip" install --disable-pip-version-check \
+            -r programs/local/adbc/validation/python/requirements.txt
+          cd programs/local/adbc/validation/python
+          TZ=UTC CHDB_ADBC_DRIVER="$GITHUB_WORKSPACE/libchdb.so" \
+            "$VENV/bin/python" -m pytest -q -rfEsxX tests/
       - name: "numba import-order regression (conda numba, x86_64)"
         run: |
           # Regression guard for the macOS import-order crash. conda's libc++

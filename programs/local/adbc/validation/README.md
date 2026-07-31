@@ -58,8 +58,9 @@ linux x86_64 and aarch64, macOS arm64 and x86_64. Because the suite loads the
 driver by path, the job downloads a release instead of building one, which is
 what keeps four platforms to a few minutes each.
 
-The trade: it validates the newest release, so a change to `../chdb-adbc.cpp`
-is covered once it ships in one.
+That job validates the newest release, so it cannot see a change to
+`../chdb-adbc.cpp` until it ships. The four build workflows therefore run both
+suites again against the libchdb they just built.
 
 ## Current state
 

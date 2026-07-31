@@ -380,6 +380,13 @@ def main():
 
     conn.close()
     print("\n".join(report))
+    # A case that errored leaves its override at the previous engine's
+    # behaviour, which is worse than not regenerating at all.
+    errors = sum(1 for line in report if ": ERROR " in line)
+    if errors:
+        print(f"{errors} case(s) failed to regenerate", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
