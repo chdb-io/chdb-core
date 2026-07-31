@@ -30,3 +30,47 @@ jobs:
         run: |
           # Uses root setup.cfg for unified configuration
           flake8 chdb --count --show-source --statistics
+
+  # Checks the ADBC driver against the Apache Arrow ADBC conformance suite.
+  #
+  # The suite loads the driver by path, so it needs a libchdb but not a build of
+  # one: running against the latest release keeps this job at a few minutes
+  # rather than the hours a ClickHouse build takes. It therefore covers changes
+  # to the suite itself and the released driver; changes to
+  # programs/local/chdb-adbc.cpp are covered once they ship in a release.
+  adbc-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: "chdb-io/chdb-core"
+          ref: "refs/pull/${{ github.event.pull_request.number }}/merge"
+
+      - name: Download libchdb from the newest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Prereleases included. The ADBC driver reaches a prerelease before a
+          # stable one, and `gh release download` without a tag resolves to the
+          # latest *stable* release, which predates the driver.
+          tag="$(gh release list --repo chdb-io/chdb-core --limit 1 --exclude-drafts \
+                   --json tagName --jq '.[0].tagName')"
+          echo "Validating the driver from $tag"
+          gh release download "$tag" --repo chdb-io/chdb-core \
+            --pattern 'linux-x86_64-libchdb.tar.gz' --dir /tmp/libchdb
+          tar -xzf /tmp/libchdb/linux-x86_64-libchdb.tar.gz -C /tmp/libchdb
+          # Say so once, instead of letting all ~100 cases fail on a missing
+          # entrypoint.
+          nm -D --defined-only /tmp/libchdb/libchdb.so | grep -qw chdb_adbc_init \
+            || { echo "::error::$tag does not export chdb_adbc_init"; exit 1; }
+
+      - name: Build the suite
+        run: |
+          cmake -S programs/local/adbc/validation -B /tmp/adbc-validation \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/adbc-validation --parallel "$(nproc)"
+
+      - name: Run the suite
+        env:
+          CHDB_ADBC_DRIVER: /tmp/libchdb/libchdb.so
+        run: programs/local/adbc/validation/run.sh /tmp/adbc-validation
