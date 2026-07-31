@@ -12,6 +12,12 @@ The ~100 test cases are upstream's. All that lives here is:
 | `CMakeLists.txt` | standalone build, fetching the suite from arrow-adbc |
 | `run.sh` | runs the suite with one test case per process |
 
+There is a second suite next to it: `python/` runs the ADBC Driver Foundry's
+[validation framework](https://github.com/adbc-drivers/validation), which checks
+SQL-level behaviour — dialect, type round-trips, metadata, bulk ingest — rather
+than the C contract. Both read `CHDB_ADBC_DRIVER` and both run in the same CI
+job. See `python/README.md`.
+
 ## Running it
 
 ```bash
@@ -47,11 +53,13 @@ run takes about 6 seconds.
 ## In CI
 
 The `adbc-validation` job in `.github/workflows/pr_ci.yaml` runs the suite on
-every pull request. Because the suite loads the driver by path, the job needs a
-libchdb but not a build of one — it downloads the latest release, which keeps it
-at a few minutes instead of the hours a ClickHouse build takes. So it covers
-changes to the suite itself and the released driver; a change to
-`../chdb-adbc.cpp` is covered once it ships in a release.
+every pull request, on all four platforms that ship a libchdb release asset:
+linux x86_64 and aarch64, macOS arm64 and x86_64. Because the suite loads the
+driver by path, the job downloads a release instead of building one, which is
+what keeps four platforms to a few minutes each.
+
+The trade: it validates the newest release, so a change to `../chdb-adbc.cpp`
+is covered once it ships in one.
 
 ## Current state
 

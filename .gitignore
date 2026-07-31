@@ -249,6 +249,8 @@ MANIFEST
 
 # Per-project virtualenvs
 .venv*/
+.validation-venv/
+validation-report*.xml
 .conda*/
 .python-version
 
