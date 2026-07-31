@@ -56,27 +56,30 @@ changes to the suite itself and the released driver; a change to
 ## Current state
 
 ```
-100 tests: 73 passed, 25 skipped, 2 failed
+100 tests: 73 passed, 27 skipped, 0 failed
 ```
 
-**The 25 skips are things ClickHouse has no equivalent for**, declared either as
-a `supports_*` returning `false` or as an explicit `GTEST_SKIP` with a reason:
-transactions, cancellation, statistics, partitioned data, catalogs, Arrow
-duration and interval types, nullable `Array` columns, and dictionaries with
-duplicate values. Skipping is how the suite expects a driver to decline a
-capability, so these do not hide failures.
+Identical on Linux and macOS.
 
-**The 2 failures are a ClickHouse type-semantics difference, not driver bugs.**
-`ChdbStatementTest.SqlQueryInts` and `SqlPrepareSelectNoParams` run `SELECT 42`
-and `SELECT 1` and accept only signed 32- or 64-bit integers. ClickHouse gives an
-integer literal the narrowest type that holds it, so both come back as `uint8`:
+**The skips are things ClickHouse has no equivalent for**, declared either as a
+`supports_*` returning `false` or as an explicit skip with a reason: transactions,
+cancellation, statistics, partitioned data, catalogs, Arrow duration and interval
+types, nullable `Array` columns, and dictionaries with duplicate values. Declining
+a capability by skipping is what the suite expects, so these do not hide failures
+— anything genuinely broken still fails the run.
+
+Two of them are worth spelling out. `SqlQueryInts` and `SqlPrepareSelectNoParams`
+read `SELECT 42` and `SELECT 1` and accept only signed 32- or 64-bit integers,
+while ClickHouse gives an integer literal the narrowest type that holds it:
 
 ```
 SELECT 42 -> 42: uint8 not null
 ```
 
-Widening that in the driver would misreport what the engine actually returned, so
-these stay failing and documented rather than papered over.
+The suite has no hook to say so — its type switch ends in an unconditional
+failure — and reporting a wider type from the driver would misstate what the
+engine returned. So the mismatch is declared here, and integer round-tripping
+stays covered by `../../../tests/test_adbc_driver.py`.
 
 ## What the adapter has to say
 

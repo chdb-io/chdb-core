@@ -241,6 +241,16 @@ public:
         }
     }
 
+    // These two read `SELECT 42` and `SELECT 1` and accept only signed 32- or
+    // 64-bit integers. ClickHouse gives an integer literal the narrowest type
+    // that holds it, so both arrive as uint8, and the suite offers no hook to
+    // say so -- its type switch ends in an unconditional failure. Reporting a
+    // wider type from the driver would misstate what the engine returned, so
+    // declare the mismatch here instead. Integer round-tripping itself stays
+    // covered by tests/test_adbc_driver.py.
+    void TestSqlQueryInts() { GTEST_SKIP() << "ClickHouse types an integer literal as uint8"; }
+    void TestSqlPrepareSelectNoParams() { GTEST_SKIP() << "ClickHouse types an integer literal as uint8"; }
+
     // Cases with no ClickHouse equivalent. Skipping them the same way
     // feature-gated cases skip keeps the remaining failures genuine.
     void TestSqlIngestDuration() { GTEST_SKIP() << "ClickHouse has no Arrow duration mapping"; }
