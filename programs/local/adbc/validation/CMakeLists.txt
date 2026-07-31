@@ -36,6 +36,9 @@ set(CHDB_ADBC_TAG "apache-arrow-adbc-24" CACHE STRING "arrow-adbc tag to build t
 include(FetchContent)
 set(ADBC_BUILD_TESTS ON CACHE BOOL "" FORCE)
 set(ADBC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+# Static-only, so upstream's own test targets must link the static driver
+# manager rather than their default shared one.
+set(ADBC_TEST_LINKAGE "static" CACHE STRING "" FORCE)
 set(ADBC_BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(ADBC_USE_CCACHE OFF CACHE BOOL "" FORCE)
 # Use the copies of nanoarrow and fmt that ship inside arrow-adbc, so the suite
