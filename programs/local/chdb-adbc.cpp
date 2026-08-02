@@ -1765,6 +1765,42 @@ AdbcStatusCode chdbStatementBindStream(
     return ADBC_STATUS_OK;
 }
 
+/// The projection for an INSERT ... SELECT out of a registered Arrow stream.
+///
+/// The Arrow reader turns fixed_size_binary into FixedString(n), and inserting
+/// that into a String column drops the trailing NUL bytes, because that is what
+/// ClickHouse's FixedString-to-String conversion does. Concatenating keeps them.
+/// Every other column, and every column when there is no fixed_size_binary,
+/// passes through as "*".
+///
+/// CREATE ... AS SELECT needs none of this: it makes the column FixedString(n),
+/// so there is no conversion to lose bytes in.
+std::string streamInsertProjection(ArrowArrayStream & stream)
+{
+    ArrowSchema schema;
+    std::memset(&schema, 0, sizeof(schema));
+    if (stream.get_schema(&stream, &schema) != 0 || !schema.release)
+        return "*";
+
+    std::string projection;
+    bool rewritten = false;
+    for (int64_t i = 0; i < schema.n_children; ++i)
+    {
+        const ArrowSchema * child = schema.children[i];
+        const std::string name = child->name ? child->name : "";
+        const std::string format = child->format ? child->format : "";
+        /// "w:<byte width>" is the Arrow format string for fixed_size_binary.
+        const bool fixed_size_binary = format.size() > 2 && format[0] == 'w' && format[1] == ':';
+
+        if (i)
+            projection += ", ";
+        projection += fixed_size_binary ? "concat(" + quoteIdentifier(name) + ", '')" : quoteIdentifier(name);
+        rewritten = rewritten || fixed_size_binary;
+    }
+    schema.release(&schema);
+    return rewritten ? projection : "*";
+}
+
 AdbcStatusCode executeIngest(StatementImpl * impl, int64_t * rows_affected, AdbcError * error)
 {
     if (!impl->has_bound_stream)
@@ -1788,7 +1824,8 @@ AdbcStatusCode executeIngest(StatementImpl * impl, int64_t * rows_affected, Adbc
 
     const std::string create_sql = "CREATE TABLE " + qualified
         + " ENGINE = MergeTree() ORDER BY tuple() AS SELECT * FROM arrowstream(" + reg_name + ")";
-    const std::string insert_sql = "INSERT INTO " + qualified + " SELECT * FROM arrowstream(" + reg_name + ")";
+    const std::string insert_sql = "INSERT INTO " + qualified + " SELECT "
+        + streamInsertProjection(impl->bound_stream) + " FROM arrowstream(" + reg_name + ")";
 
     AdbcStatusCode status = ADBC_STATUS_OK;
     if (impl->ingest_mode == ADBC_INGEST_OPTION_MODE_CREATE)
@@ -1883,7 +1920,10 @@ AdbcStatusCode executeBoundInsertBatch(
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] failed to register bound Arrow stream");
     }
     AdbcStatusCode status = runUpdateQuery(
-        impl->connection, insert_head + " SELECT * FROM arrowstream(" + reg_name + ")", rows_affected, error);
+        impl->connection,
+        insert_head + " SELECT " + streamInsertProjection(impl->bound_stream) + " FROM arrowstream(" + reg_name + ")",
+        rows_affected,
+        error);
     chdb_arrow_unregister_table(*impl->connection->conn, reg_name.c_str());
     impl->releaseBoundStream();
     return status;

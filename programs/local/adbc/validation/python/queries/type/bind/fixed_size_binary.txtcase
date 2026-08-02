@@ -35,7 +35,6 @@ drop = "test_fixed_size_binary"
 
 [tags]
 sql-type-name = "VARBINARY"
-broken-driver = "binding fixed_size_binary drops trailing NUL bytes; binary and bulk ingest keep them"
 
 // part: setup_query
 
