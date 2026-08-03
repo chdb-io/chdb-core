@@ -664,6 +664,40 @@ class TestAdbcParameters(unittest.TestCase):
             cur.execute("SELECT count(), sum(id) FROM many_fast")
             self.assertEqual(cur.fetchone(), (5000, sum(r[0] for r in rows)))
 
+    def test_fixed_size_binary_keeps_trailing_nuls(self):
+        # The Arrow reader turns fixed_size_binary into FixedString(n), and
+        # ClickHouse drops trailing NUL bytes converting that to String. The
+        # bound values must survive both bind paths and read back byte-exact.
+        values = [b"\x00" * 5, b"abc\x00\x00", b"abcde"]
+        params = pa.RecordBatch.from_pydict(
+            {"0": pa.array(values, pa.binary(5))}
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE fsb_bind (v Nullable(String)) ENGINE = Memory"
+            )
+            # The plain INSERT ... VALUES (?) shape takes the Arrow-stream
+            # fast path; a bound SELECT takes the per-row path.
+            cur.adbc_statement.set_sql_query("INSERT INTO fsb_bind VALUES (?)")
+            cur.adbc_statement.bind(params)
+            cur.adbc_statement.execute_update()
+            cur.execute("SELECT v FROM fsb_bind ORDER BY v")
+            fast_path = cur.fetch_arrow_table().column("v").to_pylist()
+
+            cur.adbc_statement.set_sql_query("SELECT ? AS v")
+            cur.adbc_statement.bind(params)
+            handle, _ = cur.adbc_statement.execute_query()
+            per_row = (
+                pa.RecordBatchReader._import_from_c(handle.address)
+                .read_all()
+                .column("v")
+                .to_pylist()
+            )
+
+        expected = sorted(v.decode("latin-1") for v in values)
+        self.assertEqual(sorted(fast_path), expected)
+        self.assertEqual(sorted(per_row), expected)
+
     def test_executemany_expression_falls_back(self):
         # A constant mixed into VALUES doesn't match the fast-path shape;
         # the per-row path must produce the same result.
