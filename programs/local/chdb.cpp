@@ -1319,9 +1319,6 @@ const char * chdb_result_error(chdb_result * result)
 
 const char * chdb_version(void)
 {
-    /// CHDB_VERSION is the header macro, auto-synced from the git tag at build
-    /// time, so the value baked into the library reflects the release it was
-    /// built from — independent of whichever header the caller compiled against.
     return CHDB_VERSION;
 }
 
