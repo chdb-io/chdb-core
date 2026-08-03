@@ -38,6 +38,17 @@ if [ -z "${CHDB_VERSION}" ]; then
 fi
 popd > /dev/null
 
+# Keep the compile-time CHDB_VERSION constant in the public C header in sync with
+# the resolved version, so C API users read the correct version straight from
+# chdb.h (no connection needed) and it never drifts from the release tag. The
+# committed value in chdb.h is just the last-release default for source-only use.
+CHDB_HEADER="${PROJ_DIR}/programs/local/chdb.h"
+if [ -n "${CHDB_VERSION}" ] && [ -f "${CHDB_HEADER}" ]; then
+    CHDB_HEADER_TMP=$(mktemp)
+    sed -E 's|^#define CHDB_VERSION ".*"|#define CHDB_VERSION "'"${CHDB_VERSION}"'"|' \
+        "${CHDB_HEADER}" > "${CHDB_HEADER_TMP}" && mv "${CHDB_HEADER_TMP}" "${CHDB_HEADER}"
+fi
+
 if [ "$1" == "cross-compile" ]; then
     return
 fi

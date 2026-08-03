@@ -12,11 +12,15 @@ extern "C" {
 
 #define CHDB_EXPORT __attribute__((visibility("default")))
 
-/* chDB version as a compile-time string constant, so it can be read straight
- * from the header without opening a connection or running SELECT chdb().
- * Tracks the release tag and is bumped per release (see VERSION-GUIDE.md); the
- * exact version of the loaded library is available at runtime via SELECT chdb(). */
+/* Compile-time chDB version constant, auto-set from the git tag at build time.
+ * Use chdb_version() for the actually-linked library's version. */
 #define CHDB_VERSION "26.5.1-rc.3"
+
+/* Returns the version of the linked chDB library as a NUL-terminated string.
+ * Unlike the CHDB_VERSION macro (fixed at compile time from whatever header you
+ * built against), this reflects the library itself, so it stays correct even if
+ * the header and library versions differ. No connection required. */
+CHDB_EXPORT const char * chdb_version(void);
 
 #ifndef CHDB_NO_DEPRECATED
 // WARNING: The following structs are deprecated and will be removed in a future version.
