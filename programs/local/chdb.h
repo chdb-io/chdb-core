@@ -14,6 +14,10 @@ extern "C" {
 
 #define CHDB_VERSION "26.5.1-rc.3"
 
+/**
+ * Returns the version of the linked chDB library (no connection required).
+ * @return Null-terminated version string, e.g. "26.5.1-rc.3"
+ */
 CHDB_EXPORT const char * chdb_version(void);
 
 #ifndef CHDB_NO_DEPRECATED
