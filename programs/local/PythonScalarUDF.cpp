@@ -533,6 +533,13 @@ UDFArgSpec makeUDFArgSpec(const DB::ColumnWithTypeAndName & arg, const DB::DataT
         default:
             spec.fast = false;
     }
+
+    /// as_bytes is only honored by convertArgFast; the generic convertColumnValueForUDF
+    /// path would hand back a UTF-8-decoded str. String/FixedString always take the fast
+    /// path today, so this invariant holds — assert it so a future change to spec.fast
+    /// eligibility can't silently regress bytes-declared arguments.
+    chassert(!spec.as_bytes || spec.fast);
+
     return spec;
 }
 

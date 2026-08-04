@@ -4776,6 +4776,14 @@ class TestBytesUDF(unittest.TestCase):
         self.assertEqual(str(ret).strip(), '"mv"')
         chdb.drop_function("ret_mv")
 
+    def test_return_non_contiguous_memoryview(self):
+        # PyBytes_FromObject materializes a contiguous copy, so a strided view
+        # must survive intact (guards against a future raw-buffer-copy refactor).
+        chdb.create_function("ret_mv_sliced", lambda: memoryview(b"abcdef")[::2], return_type=bytes)
+        ret = self.session.query("SELECT ret_mv_sliced()", "CSV")
+        self.assertEqual(str(ret).strip(), '"ace"')
+        chdb.drop_function("ret_mv_sliced")
+
     def test_return_bytes_is_binary_safe(self):
         # Non-UTF-8 bytes must survive verbatim; assert via hex() to avoid CSV
         # encoding ambiguity.
@@ -4860,6 +4868,25 @@ class TestBytesUDF(unittest.TestCase):
         ret = self.session.query("SELECT bytes_to_hex(unhex('00FF'))", "CSV")
         self.assertEqual(str(ret).strip(), '"00FF"')
         chdb.drop_function("bytes_to_hex")
+
+    def test_bytes_arg_null_literal_skipped(self):
+        # Default on_null='skip': a NULL argument yields NULL without calling the
+        # UDF, same as every other type — the bytes fast path checks isNullAt first.
+        chdb.create_function("arg_upper_n", lambda x: x.upper(), arg_types=[bytes], return_type=bytes)
+        ret = self.session.query("SELECT arg_upper_n(NULL)", "CSV")
+        self.assertEqual(str(ret).strip(), "\\N")
+        chdb.drop_function("arg_upper_n")
+
+    def test_bytes_arg_nullable_column_mix(self):
+        # NULL rows become NULL; non-NULL rows still receive bytes and run.
+        chdb.create_function("arg_upper_c", lambda x: x.upper(), arg_types=[bytes], return_type=bytes)
+        ret = self.session.query(
+            "SELECT arg_upper_c(x) FROM "
+            "(SELECT v AS x FROM values('v Nullable(String)', ('ab'), (NULL), ('cd')))",
+            "CSV",
+        )
+        self.assertEqual(str(ret).strip(), '"AB"\n\\N\n"CD"')
+        chdb.drop_function("arg_upper_c")
 
     # ── end-to-end binary round-trip: def f(x: bytes) -> bytes ──
 
