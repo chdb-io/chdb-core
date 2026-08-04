@@ -110,12 +110,23 @@ if (OS_WASM)
     # No libunwind on WASM; rely on the host engine for stack traces.
     set (USE_UNWIND OFF CACHE INTERNAL "")
 
-    # Build the slim chdb-core-lite feature set on WASM (disables ~30 optional
-    # libs centrally). Set before the CHDB_LITE option()/block below so it sticks.
-    set (CHDB_LITE ON CACHE BOOL "WASM uses the chdb-core-lite trim set" FORCE)
+    # WASM does NOT use the chdb-core-lite trim set: the single bundle ships the
+    # complete function/aggregate registry (chdb-core#159). The trim saved ~6 MiB
+    # gzip on a ~21 MiB download while dropping ~70 aggregates, among them
+    # quantileExactInclusive and largestTriangleThreeBuckets/lttb.
+    #
+    # The two things lite provided that the WASM build still wants are replaced here:
+    # -Os, and the optional libs lite opted back in over ENABLE_LIBRARIES=0.
+    if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None" OR CMAKE_BUILD_TYPE STREQUAL "Release")
+        set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
+    endif ()
+    set (ENABLE_RAPIDJSON ON CACHE INTERNAL "")
+    set (ENABLE_SIMDJSON ON CACHE INTERNAL "")
+    set (ENABLE_BROTLI ON CACHE INTERNAL "")
+    set (ENABLE_UTF8PROC ON CACHE INTERNAL "")
 
-    # Go further than lite: the libs lite still opts-in but that WASM can't use
-    # (native protoc bootstrap, networked object stores, heavy columnar formats).
+    # Libs that WASM can't use at all (native protoc bootstrap, networked object
+    # stores, heavy columnar formats).
     set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
     set (ENABLE_CAPNP OFF CACHE INTERNAL "")
     # Avro ON: pure C++ (boost::iostreams + snappy, both already built for WASM).

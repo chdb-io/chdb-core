@@ -78,6 +78,14 @@ node packages/chdb-wasm/test/smoke.test.mjs
 node packages/chdb-wasm/test/browser-run.mjs
 ```
 
+### Function coverage
+
+The bundle is built with the **complete** ClickHouse function and aggregate registry —
+chdb-core's `CHDB_LITE` trim set is not applied on wasm. Anything that works in chdb-core
+works here, `quantileExactInclusive` and `largestTriangleThreeBuckets`/`lttb` included.
+It costs ~6 MiB gzip (21.3 -> 27.4 MiB, ClickHouse 26.5.1.1 / Emscripten 5.0.7, MinSizeRel,
+threads on).
+
 ## Build knobs (CMake)
 
 Two bundles are built — **mt** (threaded) and **st** (single-threaded) — both Memory64 +

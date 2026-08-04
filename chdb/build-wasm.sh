@@ -13,7 +13,9 @@ PROJ_DIR=$(cd "$(dirname "$0")/.." && pwd)
 # BUILD_DIR can be overridden (e.g. a separate dir for the single-threaded build).
 BUILD_DIR="${BUILD_DIR:-${PROJ_DIR}/buildwasm}"
 STAGE="${1:-configure}"
-build_type="${BUILD_TYPE:-Release}"
+# MinSizeRel (-Os): the bundle is a download. cmake/target.cmake forces it for OS_WASM
+# anyway; naming it here keeps the configure log honest.
+build_type="${BUILD_TYPE:-MinSizeRel}"
 # WASM_THREADS=ON (default): pthreads (Web Workers + SharedArrayBuffer); the page
 # must be cross-origin isolated. WASM_THREADS=OFF: single-threaded build with no
 # SharedArrayBuffer dependency, runs on non-isolated pages.
@@ -30,7 +32,8 @@ cd "${BUILD_DIR}"
 # WASM: single-threaded MVP first (mirror duckdb-wasm's wasm_mvp default),
 # no networked storage, no JIT, no Rust, no jemalloc. Most of these are also
 # forced off in cmake/target.cmake's OS_WASM block; passing them here keeps the
-# configure log explicit.
+# configure log explicit. CHDB_LITE=OFF is passed so a build dir configured by an
+# older (lite) checkout doesn't silently keep the trim set in its cache.
 CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_THINLTO=0 -DENABLE_TESTS=0 -DENABLE_XRAY=0 \
     -DENABLE_CLICKHOUSE_SERVER=0 -DENABLE_CLICKHOUSE_CLIENT=0 \
@@ -44,6 +47,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_UTILS=0 -DENABLE_EXAMPLES=0 -DENABLE_BENCHMARKS=0 \
     -DENABLE_FUZZING=OFF -DENABLE_BUZZHOUSE=OFF -DENABLE_FUZZER_TEST=OFF \
     -DENABLE_LIBRARIES=0 \
+    -DCHDB_LITE=OFF \
     -DENABLE_PYTHON=0 \
     -DUSE_STATIC_LIBRARIES=1 -DSPLIT_SHARED_LIBRARIES=0 \
     -DENABLE_JEMALLOC=0 -DENABLE_ICU=0 \
