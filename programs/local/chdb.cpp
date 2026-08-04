@@ -1317,6 +1317,11 @@ const char * chdb_result_error(chdb_result * result)
     return query_result->getError().c_str();
 }
 
+const char * chdb_version(void)
+{
+    return CHDB_VERSION;
+}
+
 void chdb_set_signal_handlers_enabled(int enabled)
 {
     HandledSignals::disable_signal_handlers.store(!enabled, std::memory_order_relaxed);

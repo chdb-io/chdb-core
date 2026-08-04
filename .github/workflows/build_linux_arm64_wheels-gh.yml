@@ -290,6 +290,7 @@ jobs:
           bash -x ./examples/runArrowQueryTest.sh
           bash -x ./examples/runInsertProgressTest.sh
           bash -x ./examples/runStreamInsertTest.sh
+          bash -x ./examples/runVersionHeaderTest.sh
           bash -x ./examples/runVersionTest.sh
           bash -x ./examples/runStackTraceTest.sh
           bash -x ./examples/runStreamErrorTest.sh
