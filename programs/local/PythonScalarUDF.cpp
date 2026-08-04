@@ -122,6 +122,18 @@ DB::DataTypePtr fromPythonType(const py::object & annotation)
         std::string(py::str(annotation)));
 }
 
+/// True when the annotation is the builtin `bytes` or `bytearray` type. Both map
+/// to ClickHouse String, but an argument declared this way should receive a raw
+/// Python `bytes` value rather than a UTF-8-decoded `str`.
+bool isBytesLikeAnnotation(const py::object & annotation)
+{
+    if (!py::isinstance<py::type>(annotation))
+        return false;
+
+    auto builtins = py::module_::import("builtins");
+    return annotation.is(builtins.attr("bytes")) || annotation.is(builtins.attr("bytearray"));
+}
+
 DB::DataTypePtr fromString(const py::object & annotation)
 {
     auto string_value = std::string(py::str(annotation));
@@ -219,10 +231,12 @@ void resolveArgTypes(
     const py::list & arg_types_hint,
     const size_t arg_types_hint_count,
     const size_t num_args,
-    DB::DataTypes & arg_types)
+    DB::DataTypes & arg_types,
+    std::vector<bool> & arg_wants_bytes)
 {
     chassert(arg_types_hint_count > 0);
     chassert(arg_types.empty());
+    chassert(arg_wants_bytes.empty());
 
     if (arg_types_hint_count != num_args)
         throw DB::Exception(
@@ -231,7 +245,11 @@ void resolveArgTypes(
             name, py::len(arg_types_hint), num_args);
 
     for (auto item : arg_types_hint)
-        arg_types.push_back(annotationToDataType(py::reinterpret_borrow<py::object>(item)));
+    {
+        auto annotation = py::reinterpret_borrow<py::object>(item);
+        arg_types.push_back(annotationToDataType(annotation));
+        arg_wants_bytes.push_back(isBytesLikeAnnotation(annotation));
+    }
 }
 
 bool isSupportedUDFType(DB::TypeIndex type_id)
@@ -317,6 +335,7 @@ void PythonScalarUDF::initSignature(const py::list & arg_types_hint)
         bool found_varargs = false;
         size_t arg_count = static_cast<size_t>(py::len(params));
         arg_types.reserve(arg_count);
+        arg_wants_bytes.reserve(arg_count);
         const size_t arg_types_hint_count = py::len(arg_types_hint);
         bool no_arg_types_hint = arg_types_hint_count == 0;
 
@@ -349,9 +368,15 @@ void PythonScalarUDF::initSignature(const py::list & arg_types_hint)
             {
                 auto arg_annotation = value.attr("annotation");
                 if (py::none().is(arg_annotation) || empty.is(arg_annotation))
+                {
                     arg_types.emplace_back();
+                    arg_wants_bytes.push_back(false);
+                }
                 else
+                {
                     arg_types.push_back(annotationToDataType(arg_annotation));
+                    arg_wants_bytes.push_back(isBytesLikeAnnotation(arg_annotation));
+                }
             }
         }
 
@@ -375,7 +400,7 @@ void PythonScalarUDF::initSignature(const py::list & arg_types_hint)
                 "Python UDF '{}': return type not specified", name);
 
         if (!no_arg_types_hint)
-            resolveArgTypes(name, arg_types_hint, arg_types_hint_count, positional_count, arg_types);
+            resolveArgTypes(name, arg_types_hint, arg_types_hint_count, positional_count, arg_types, arg_wants_bytes);
 
         validateUDFTypes(name, return_type, arg_types);
     }
@@ -457,15 +482,17 @@ struct UDFArgSpec
     bool is_const = false;
     bool is_bool = false;
     bool cast_to_float = false;                  /// declared arg type is Float32/64
+    bool as_bytes = false;                        /// declared bytes/bytearray -> deliver Python bytes
     bool fast = false;                           /// convertArgFast handles this type
 };
 
-UDFArgSpec makeUDFArgSpec(const DB::ColumnWithTypeAndName & arg, const DB::DataTypePtr & declared_type)
+UDFArgSpec makeUDFArgSpec(const DB::ColumnWithTypeAndName & arg, const DB::DataTypePtr & declared_type, bool declared_bytes)
 {
     UDFArgSpec spec;
     spec.column = arg.column.get();
     spec.type = arg.type;
     spec.declared_type = declared_type;
+    spec.as_bytes = declared_bytes;
 
     const DB::IColumn * col = arg.column.get();
     if (const auto * col_const = typeid_cast<const DB::ColumnConst *>(col))
@@ -551,10 +578,12 @@ py::object convertArgFast(const UDFArgSpec & spec, size_t input_row)
         case DB::TypeIndex::FixedString:
         {
             auto ref = spec.value_column->getDataAt(row);
-            PyObject * str = PyUnicode_FromStringAndSize(ref.data(), static_cast<Py_ssize_t>(ref.size()));
-            if (!str)
+            PyObject * obj = spec.as_bytes
+                ? PyBytes_FromStringAndSize(ref.data(), static_cast<Py_ssize_t>(ref.size()))
+                : PyUnicode_FromStringAndSize(ref.data(), static_cast<Py_ssize_t>(ref.size()));
+            if (!obj)
                 throw py::error_already_set();
-            return py::reinterpret_steal<py::object>(str);
+            return py::reinterpret_steal<py::object>(obj);
         }
         default:
             throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "convertArgFast called for unsupported type id");
@@ -865,6 +894,57 @@ void handleString(
     column.insert(DB::Field(str));
 }
 
+/// bytes / bytearray / memoryview return values. ClickHouse String is binary-safe,
+/// so the raw bytes are inserted verbatim (no UTF-8 decode). Only String is accepted,
+/// mirroring handleString. object_type is the already-resolved kind from the caller.
+void handleBytes(
+    DB::IColumn & column,
+    const DB::DataTypePtr & actual_type,
+    const py::handle & value,
+    PythonObjectType object_type)
+{
+    if (actual_type->getTypeId() != DB::TypeIndex::String)
+        throw DB::Exception(
+            DB::ErrorCodes::TYPE_MISMATCH,
+            "Cannot convert Python object of type '{}' to {}",
+            String(py::str(value.get_type())),
+            actual_type->getName());
+
+    if (object_type == PythonObjectType::Bytes)
+    {
+        char * buffer = nullptr;
+        Py_ssize_t length = 0;
+        if (PyBytes_AsStringAndSize(value.ptr(), &buffer, &length) != 0)
+            throw py::error_already_set();
+        column.insertData(buffer, static_cast<size_t>(length));
+        return;
+    }
+
+    if (object_type == PythonObjectType::ByteArray)
+    {
+        char * buffer = PyByteArray_AsString(value.ptr());
+        if (!buffer)
+            throw py::error_already_set();
+        column.insertData(buffer, static_cast<size_t>(PyByteArray_Size(value.ptr())));
+        return;
+    }
+
+    /// memoryview (or any other buffer exporter): materialize a contiguous copy.
+    /// PyBytes_FromObject is part of the stable ABI, unlike the buffer protocol
+    /// (PyObject_GetBuffer only entered the limited API in 3.11, but the abi3
+    /// build targets 3.9).
+    PyObject * as_bytes = PyBytes_FromObject(value.ptr());
+    if (!as_bytes)
+        throw py::error_already_set();
+    py::object owner = py::reinterpret_steal<py::object>(as_bytes);
+
+    char * buffer = nullptr;
+    Py_ssize_t length = 0;
+    if (PyBytes_AsStringAndSize(as_bytes, &buffer, &length) != 0)
+        throw py::error_already_set();
+    column.insertData(buffer, static_cast<size_t>(length));
+}
+
 void handleNull(DB::IColumn & column)
 {
     column.insertDefault();
@@ -913,10 +993,13 @@ void insertPythonObjectToColumn(
         handleDatetime(column, actual_type->getTypeId(), actual_type, value);
         break;
 
-    case PythonObjectType::Decimal:
     case PythonObjectType::Bytes:
     case PythonObjectType::ByteArray:
     case PythonObjectType::MemoryView:
+        handleBytes(column, actual_type, value, object_type);
+        break;
+
+    case PythonObjectType::Decimal:
     case PythonObjectType::Uuid:
     case PythonObjectType::Time:
     case PythonObjectType::Timedelta:
@@ -958,7 +1041,10 @@ DB::ColumnPtr PythonScalarUDF::executeImpl(
     std::vector<UDFArgSpec> specs;
     specs.reserve(argc);
     for (size_t i = 0; i < argc; ++i)
-        specs.push_back(makeUDFArgSpec(arguments[i], (i < arg_types.size() && arg_types[i]) ? arg_types[i] : nullptr));
+        specs.push_back(makeUDFArgSpec(
+            arguments[i],
+            (i < arg_types.size() && arg_types[i]) ? arg_types[i] : nullptr,
+            i < arg_wants_bytes.size() && arg_wants_bytes[i]));
 
     const DB::DataTypePtr result_actual_type = DB::removeNullable(return_type);
 

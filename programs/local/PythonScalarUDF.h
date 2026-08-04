@@ -5,6 +5,8 @@
 #include <Functions/IFunction.h>
 #include <DataTypes/IDataType.h>
 
+#include <vector>
+
 
 namespace CHDB
 {
@@ -58,6 +60,10 @@ private:
     py::function func;
     DB::DataTypePtr return_type;
     DB::DataTypes arg_types;
+    /// Parallel to arg_types: whether the argument was declared with the Python
+    /// bytes/bytearray annotation. Such arguments receive a Python `bytes` value
+    /// instead of `str`, keeping the String column binary-safe.
+    std::vector<bool> arg_wants_bytes;
     size_t num_args;
     bool is_variadic;
     NullHandling null_handling;

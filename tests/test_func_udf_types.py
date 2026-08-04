@@ -4732,5 +4732,146 @@ class TestDateTime64UDF(unittest.TestCase):
         chdb.drop_function("dt64_py_callable")
 
 
+class TestBytesUDF(unittest.TestCase):
+    """bytes / bytearray / memoryview support (chdb-core#115).
+
+    ClickHouse String is binary-safe. The Python bytes / bytearray annotations
+    map to String, and values carry raw bytes in both directions: returning
+    bytes/bytearray/memoryview inserts the bytes verbatim, and a bytes-declared
+    argument receives a Python ``bytes`` value rather than a UTF-8-decoded str.
+    """
+
+    def setUp(self):
+        self.session = Session()
+
+    def tearDown(self):
+        self.session.close()
+
+    # ── return direction: the exact issue repro ──
+
+    def test_return_bytes_value(self):
+        # Before the fix this raised:
+        #   Cannot convert Python object of type '<class 'bytes'>' to String
+        chdb.create_function("ret_bytes", lambda: b"xy", arg_types=[], return_type=bytes)
+        ret = self.session.query("SELECT ret_bytes()", "CSV")
+        self.assertEqual(str(ret).strip(), '"xy"')
+        chdb.drop_function("ret_bytes")
+
+    def test_return_str_with_bytes_return_type_still_works(self):
+        # A str return into a bytes-declared (String) column keeps working.
+        chdb.create_function("ret_str", lambda: "xy", arg_types=[], return_type=bytes)
+        ret = self.session.query("SELECT ret_str()", "CSV")
+        self.assertEqual(str(ret).strip(), '"xy"')
+        chdb.drop_function("ret_str")
+
+    def test_return_bytearray_value(self):
+        chdb.create_function("ret_ba", lambda: bytearray(b"hello"), return_type=bytes)
+        ret = self.session.query("SELECT ret_ba()", "CSV")
+        self.assertEqual(str(ret).strip(), '"hello"')
+        chdb.drop_function("ret_ba")
+
+    def test_return_memoryview_value(self):
+        chdb.create_function("ret_mv", lambda: memoryview(b"mv"), return_type=bytes)
+        ret = self.session.query("SELECT ret_mv()", "CSV")
+        self.assertEqual(str(ret).strip(), '"mv"')
+        chdb.drop_function("ret_mv")
+
+    def test_return_bytes_is_binary_safe(self):
+        # Non-UTF-8 bytes must survive verbatim; assert via hex() to avoid CSV
+        # encoding ambiguity.
+        chdb.create_function("ret_raw", lambda: b"\x00\x01\xff\xfe", return_type=bytes)
+        ret = self.session.query("SELECT hex(ret_raw())", "CSV")
+        self.assertEqual(str(ret).strip(), '"0001FFFE"')
+        chdb.drop_function("ret_raw")
+
+    def test_return_bytes_length(self):
+        chdb.create_function("ret_len5", lambda: b"abcde", return_type=bytes)
+        ret = self.session.query("SELECT length(ret_len5())", "CSV")
+        self.assertEqual(str(ret).strip(), "5")
+        chdb.drop_function("ret_len5")
+
+    def test_return_empty_bytes(self):
+        chdb.create_function("ret_empty", lambda: b"", return_type=bytes)
+        ret = self.session.query("SELECT length(ret_empty())", "CSV")
+        self.assertEqual(str(ret).strip(), "0")
+        chdb.drop_function("ret_empty")
+
+    def test_return_bytes_inferred_from_annotation(self):
+        def make_bytes() -> bytes:
+            return b"zz"
+
+        chdb.create_function("ret_bytes_ann", make_bytes)
+        ret = self.session.query("SELECT ret_bytes_ann()", "CSV")
+        self.assertEqual(str(ret).strip(), '"zz"')
+        chdb.drop_function("ret_bytes_ann")
+
+    def test_return_bytes_to_non_string_type_raises(self):
+        # Returning bytes where the column is not String is a clear error.
+        chdb.create_function("ret_bytes_bad", lambda: b"xy", arg_types=[], return_type=INT64)
+        with self.assertRaises(Exception):
+            self.session.query("SELECT ret_bytes_bad()", "CSV")
+        chdb.drop_function("ret_bytes_bad")
+
+    # ── input direction: bytes-declared argument receives Python bytes ──
+
+    def test_bytes_arg_receives_bytes_explicit(self):
+        chdb.create_function("arg_kind", lambda x: type(x).__name__, arg_types=[bytes], return_type=STRING)
+        ret = self.session.query("SELECT arg_kind('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"bytes"')
+        chdb.drop_function("arg_kind")
+
+    def test_bytes_arg_receives_bytes_annotation(self):
+        def kind(x: bytes) -> str:
+            return type(x).__name__
+
+        chdb.create_function("arg_kind_ann", kind)
+        ret = self.session.query("SELECT arg_kind_ann('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"bytes"')
+        chdb.drop_function("arg_kind_ann")
+
+    def test_bytearray_arg_receives_bytes(self):
+        # bytearray annotation also maps to String; the value is delivered as
+        # (immutable) bytes.
+        chdb.create_function("arg_kind_ba", lambda x: type(x).__name__, arg_types=[bytearray], return_type=STRING)
+        ret = self.session.query("SELECT arg_kind_ba('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"bytes"')
+        chdb.drop_function("arg_kind_ba")
+
+    def test_str_arg_still_receives_str(self):
+        # No regression: a str-declared argument still receives a str.
+        chdb.create_function("arg_kind_str", lambda x: type(x).__name__, arg_types=[STRING], return_type=STRING)
+        ret = self.session.query("SELECT arg_kind_str('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"str"')
+        chdb.drop_function("arg_kind_str")
+
+    def test_bytes_arg_value_content(self):
+        # The bytes value carries the actual column bytes.
+        chdb.create_function("arg_upper", lambda x: x.upper(), arg_types=[bytes], return_type=bytes)
+        ret = self.session.query("SELECT arg_upper('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"ABC"')
+        chdb.drop_function("arg_upper")
+
+    def test_bytes_arg_binary_input_not_utf8(self):
+        # A bytes-declared arg receives raw non-UTF-8 bytes without a decode error.
+        def to_hex(x: bytes) -> str:
+            return x.hex().upper()
+
+        chdb.create_function("bytes_to_hex", to_hex)
+        ret = self.session.query("SELECT bytes_to_hex(unhex('00FF'))", "CSV")
+        self.assertEqual(str(ret).strip(), '"00FF"')
+        chdb.drop_function("bytes_to_hex")
+
+    # ── end-to-end binary round-trip: def f(x: bytes) -> bytes ──
+
+    def test_bytes_round_trip_binary_safe(self):
+        def echo(x: bytes) -> bytes:
+            return x
+
+        chdb.create_function("bytes_echo", echo)
+        ret = self.session.query("SELECT hex(bytes_echo(unhex('0001FFFE')))", "CSV")
+        self.assertEqual(str(ret).strip(), '"0001FFFE"')
+        chdb.drop_function("bytes_echo")
+
+
 if __name__ == "__main__":
     unittest.main()
