@@ -87,10 +87,6 @@ Both published bundles are compiled with chdb-core's `CHDB_LITE` trim set, which
 
 ```bash
 CHDB_WASM_FULL=1 chdb/build-wasm.sh build      # -> buildwasm-full/
-
-# Assert the registry matches the variant (Node >= 23; exits non-zero on mismatch):
-node programs/wasm/chdb.lite-vs-full.test.mjs buildwasm-full/programs/wasm/chdb.mjs full
-node programs/wasm/chdb.lite-vs-full.test.mjs buildwasm/programs/wasm/chdb.mjs      lite
 ```
 
 It is opt-in because of what it costs (measured, ClickHouse 26.5.1.1 / Emscripten 5.0.7,
