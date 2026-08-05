@@ -138,6 +138,7 @@ if (CHDB_LITE)
         # make outbound HTTP calls to OpenAI / Anthropic; orthogonal to the embedded SQL engine.
         # AI/ subdirectory (providers + quota tracker) is gated separately below.
         aiClassify.cpp
+        aiEmbed.cpp
         aiExtract.cpp
         aiGenerate.cpp
         aiTranslate.cpp
@@ -146,6 +147,18 @@ if (CHDB_LITE)
     foreach (f IN LISTS _chdb_drop_funcs)
         list(REMOVE_ITEM clickhouse_functions_sources ${f})
     endforeach()
+    # pointInPolygon.cpp is dropped above, but InterpreterSystemQuery.cpp calls its
+    # cache hooks unconditionally (SYSTEM DROP POINT IN POLYGON CACHE). Stub them.
+    set(_chdb_geo_stub "${CMAKE_CURRENT_BINARY_DIR}/chdbGeoStubs.cpp")
+    file(WRITE "${_chdb_geo_stub}"
+        "// chdb stub: pointInPolygon.cpp is dropped in lite builds; the polygon cache is a no-op\n"
+        "#include <cstddef>\n"
+        "namespace DB\n"
+        "{\n"
+        "void setPointInPolygonCacheMaxSizeInBytes(size_t) {}\n"
+        "void clearPointInPolygonCache() {}\n"
+        "}\n")
+    list(APPEND clickhouse_functions_sources "${_chdb_geo_stub}")
 endif()
 
 option(CHDB_MINIMAL_FUNCTIONS "Build with minimal SQL functions for chdb" OFF)
