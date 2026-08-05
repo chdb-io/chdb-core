@@ -110,8 +110,9 @@ if (OS_WASM)
     # No libunwind on WASM; rely on the host engine for stack traces.
     set (USE_UNWIND OFF CACHE INTERNAL "")
 
-    # The bundle is a download: build for size (-Os) unless asked otherwise.
-    if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None" OR CMAKE_BUILD_TYPE STREQUAL "Release")
+    # The bundle is a download, so default to size (-Os). Only fills in an unset build
+    # type: an explicit -DCMAKE_BUILD_TYPE=Release is honoured.
+    if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None")
         set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
     endif ()
 
@@ -134,8 +135,8 @@ if (OS_WASM)
     set (ENABLE_PARQUET ON CACHE INTERNAL "")
     set (ENABLE_THRIFT ON CACHE INTERNAL "")
     set (ENABLE_ORC OFF CACHE INTERNAL "")
-    # Hard requirements of the Parquet/Arrow build above, not optional features:
-    # _arrow links ch_contrib::brotli and _parquet links ch_contrib::rapidjson
+    # Hard requirements of the Parquet/Arrow build above - _arrow links
+    # ch_contrib::brotli and _parquet links ch_contrib::rapidjson
     # unconditionally, so with build-wasm.sh's ENABLE_LIBRARIES=0 and these off the
     # configure fails outright with "target was not found".
     set (ENABLE_BROTLI ON CACHE INTERNAL "")
