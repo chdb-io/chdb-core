@@ -13,8 +13,6 @@ PROJ_DIR=$(cd "$(dirname "$0")/.." && pwd)
 # BUILD_DIR can be overridden (e.g. a separate dir for the single-threaded build).
 BUILD_DIR="${BUILD_DIR:-${PROJ_DIR}/buildwasm}"
 STAGE="${1:-configure}"
-# MinSizeRel (-Os): the bundle is a download. cmake/target.cmake forces it for OS_WASM
-# anyway; naming it here keeps the configure log honest.
 build_type="${BUILD_TYPE:-MinSizeRel}"
 # WASM_THREADS=ON (default): pthreads (Web Workers + SharedArrayBuffer); the page
 # must be cross-origin isolated. WASM_THREADS=OFF: single-threaded build with no
