@@ -69,6 +69,12 @@ void ParquetV3BlockInputFormat::initializeIfNeeded()
         format_filter_info->initKeyConditionOnce(getPort().getHeader());
         parser_shared_resources->initOnce([&]
             {
+#ifdef CHDB_WASM_SINGLE_THREADED
+                /// Single-threaded WASM build: no worker thread can be created. Leave
+                /// io_runner Disabled so the Prefetcher reads ranges inline on first use
+                /// (getRangeData runs Scheduled tasks itself), and drive parsing manually.
+                parser_shared_resources->parsing_runner.initManual();
+#else
                 if (format_settings.parquet.enable_row_group_prefetch && parser_shared_resources->max_io_threads > 0)
                     parser_shared_resources->io_runner.initThreadPool(
                         getFormatParsingThreadPool().get(), parser_shared_resources->max_io_threads, ThreadName::PARQUET_PREFETCH, CurrentThread::getGroup());
@@ -85,6 +91,7 @@ void ParquetV3BlockInputFormat::initializeIfNeeded()
                 else
                     parser_shared_resources->parsing_runner.initThreadPool(
                         getFormatParsingThreadPool().get(), parser_shared_resources->max_parsing_threads, ThreadName::PARQUET_DECODER, CurrentThread::getGroup());
+#endif
 
                 auto ext = std::make_shared<Parquet::SharedResourcesExt>();
 

@@ -1395,6 +1395,13 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
         : effective_read_settings;
     /// FIXME: Changing this setting to default value breaks something around parquet reading
     modified_read_settings.remote_fs_settings.min_bytes_for_seek = modified_read_settings.remote_fs_settings.buffer_size;
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// Single-threaded WASM build: ThreadPoolRemoteFSReader can never run a task,
+    /// so the AsynchronousBoundedReadBuffer prefetch path below must stay off
+    /// regardless of which object storage (MEMFS-local included) serves the read.
+    modified_read_settings.remote_fs_settings.method = RemoteFSReadMethod::read;
+    modified_read_settings.remote_fs_settings.prefetch = false;
+#endif
     /// User's object may change, don't cache it.
     modified_read_settings.use_page_cache_for_disks_without_file_cache = false;
     modified_read_settings.filesystem_cache_settings.boundary_alignment = settings[Setting::filesystem_cache_boundary_alignment];

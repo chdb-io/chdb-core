@@ -742,6 +742,7 @@ namespace DB
     extern void registerFunctiontimezoneOffset(FunctionFactory & factory);
 
     /// Force references to ensure function registration functions are linked
+    void * ForceStaticRegistrationObjects();
     void * ForceStaticRegistrationObjects()
     {
         /// Create function pointer array to force linking
