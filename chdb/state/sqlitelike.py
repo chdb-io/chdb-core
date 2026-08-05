@@ -112,6 +112,7 @@ class StreamingResult:
         self._exhausted = False
         self._supports_record_batch = supports_record_batch
         self._is_dataframe = is_dataframe
+        self._arrow_c_stream_exported = False
         self._progress_callback = None
         self._cleanup_progress_callback = None
         self._progress_callback_cleaned = False
@@ -282,6 +283,35 @@ class StreamingResult:
 
         chdb_reader = ChdbRecordBatchReader(self, rows_per_batch)
         return pa.RecordBatchReader.from_batches(chdb_reader.schema(), chdb_reader)
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        """
+        Arrow PyCapsule interface: export this streaming result as an
+        ArrowArrayStream capsule so Arrow-native consumers (polars, pyarrow,
+        duckdb, pandas, ...) can ingest it directly, e.g. ``pl.DataFrame(stream)``.
+
+        Requires the streaming query to have been started with arrow format
+        (``send_query(sql, "Arrow")``) and pyarrow to be installed. Like the
+        stream itself, the export is single-use: batches are consumed as the
+        caller reads them.
+        """
+        if not self._supports_record_batch:
+            raise ValueError(
+                "__arrow_c_stream__ requires arrow format. "
+                "Please use format='Arrow' when calling send_query."
+            )
+        _require_pyarrow("__arrow_c_stream__()")
+        # Single-use: the underlying stream is consumed as the caller reads it.
+        # A second export (or an export after the stream was drained/cancelled)
+        # would otherwise silently hand back a zero-column, zero-row stream, so
+        # reject it with a clear error instead.
+        if self._arrow_c_stream_exported or self._exhausted:
+            raise RuntimeError(
+                "streaming result already consumed; __arrow_c_stream__() is "
+                "single-use. Start a new send_query() to read the data again."
+            )
+        self._arrow_c_stream_exported = True
+        return self.record_batch().__arrow_c_stream__(requested_schema)
 
 
 class InsertResult:

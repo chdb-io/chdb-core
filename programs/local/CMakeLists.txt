@@ -23,16 +23,18 @@ else()
         ChdbClient.cpp
     )
 
-    if (NOT USE_PYTHON)
-        set (CHDB_ARROW_SOURCES
-            chdb-arrow.cpp
-            chdb-arrow-output.cpp
-            ArrowStreamSource.cpp
-            StorageArrowStream.cpp
-            TableFunctionArrowStream.cpp
-        )
-        set (CLICKHOUSE_LOCAL_SOURCES ${CLICKHOUSE_LOCAL_SOURCES} ${CHDB_ARROW_SOURCES})
-    endif()
+    # Arrow C Data Interface API + ADBC driver, compiled into both libchdb
+    # and the Python module (chdb_adbc_init is allowlisted in pychdb_export*)
+    # so the wheel doubles as the ADBC driver.
+    set (CHDB_ARROW_SOURCES
+        chdb-arrow.cpp
+        chdb-arrow-output.cpp
+        chdb-adbc.cpp
+        ArrowStreamSource.cpp
+        StorageArrowStream.cpp
+        TableFunctionArrowStream.cpp
+    )
+    set (CLICKHOUSE_LOCAL_SOURCES ${CLICKHOUSE_LOCAL_SOURCES} ${CHDB_ARROW_SOURCES})
 endif()
 
 # Add force function references only for static library builds
@@ -71,6 +73,7 @@ if (USE_PYTHON)
         ChdbPyType.cpp
         PythonScalarUDF.cpp
         PythonUDFRegistry.cpp
+        PythonArrowStream.cpp
         PythonReader.cpp
         PythonTableCache.cpp
         PythonImportCache.cpp

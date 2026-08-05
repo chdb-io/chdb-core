@@ -113,6 +113,39 @@ else:
 print("ERRORS_INFORMATIVE_OK")
 """
 
+_BODY_ARROW_C_STREAM_NO_PYARROW = """
+import chdb
+
+# The C++ capsule export uses the bundled Arrow, not pyarrow.
+res = chdb.query("SELECT 1 AS x", "Arrow")
+cap = res.__arrow_c_stream__()
+assert type(cap).__name__ == "PyCapsule", type(cap).__name__
+
+# Error contract must hold without pyarrow too (ValueError, not RuntimeError).
+csv_res = chdb.query("SELECT 1", "CSV")
+try:
+    csv_res.__arrow_c_stream__()
+except ValueError as e:
+    assert "Arrow" in str(e), e
+else:
+    raise AssertionError("CSV result should not export an Arrow stream")
+
+# The streaming export goes through record_batch() and does need pyarrow.
+conn = chdb.connect(":memory:")
+stream = conn.send_query("SELECT 1", "Arrow")
+try:
+    stream.__arrow_c_stream__()
+except ImportError as e:
+    assert "pyarrow" in str(e), e
+else:
+    raise AssertionError("streaming __arrow_c_stream__ should require pyarrow")
+finally:
+    stream.close()
+conn.close()
+
+print("ARROW_C_STREAM_NO_PYARROW_OK")
+"""
+
 _BODY_PANDAS_ONLY_MISSING = """
 import chdb
 
@@ -190,6 +223,10 @@ class TestQueryWithoutPandasPyarrow(unittest.TestCase):
     def test_query_works_with_only_pandas_missing(self):
         out = self._run_blocked(("pandas",), _BODY_PANDAS_ONLY_MISSING)
         self.assertIn("PANDAS_ONLY_OK", out)
+
+    def test_arrow_c_stream_capsule_export_works_without_pyarrow(self):
+        out = self._run_blocked(("pandas", "pyarrow"), _BODY_ARROW_C_STREAM_NO_PYARROW)
+        self.assertIn("ARROW_C_STREAM_NO_PYARROW_OK", out)
 
     def test_python_table_function_works_without_pandas_and_pyarrow(self):
         out = self._run_blocked(

@@ -8,19 +8,14 @@ import tempfile
 import pandas as pd
 import chdb
 import os
-from urllib.request import urlretrieve
+from hits_dataset import ensure_hits_parquet
 
 
 class TestChDBDataFrame(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Download parquet file if it doesn't exist
-        parquet_file = "hits_0.parquet"
-        if not os.path.exists(parquet_file):
-            print(f"Downloading {parquet_file}...")
-            url = "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet"
-            urlretrieve(url, parquet_file)
-            print("Download complete!")
+        parquet_file = ensure_hits_parquet()
 
         # Load data and prepare DataFrame
         cls.hits = pd.read_parquet(parquet_file)

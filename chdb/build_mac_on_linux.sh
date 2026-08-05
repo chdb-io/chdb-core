@@ -248,6 +248,9 @@ if [ "${CHDB_LITE}" != "1" ]; then
     # mutex. To expose a new C-ABI symbol, add it to libchdb_export_macos.txt
     # (never widen exports here).
     LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/libchdb_export_macos.txt"
+    # Relocatable install name — see chdb/build.sh for rationale. Consumers
+    # link with: -lchdb -L<dir> -Wl,-rpath,<dir>
+    LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-install_name,@rpath/libchdb.so"
 
     LIBCHDB_CMD=$(echo ${LIBCHDB_CMD} | sed 's/@CMakeFiles\/clickhouse.rsp/@CMakeFiles\/libchdb.rsp/g')
 
@@ -304,6 +307,13 @@ PYCHDB_CMD=$(grep -m 1 'clang++.*-o programs/clickhouse .*' build.log \
 
 # For macOS, set rpath
 PYCHDB_CMD=$(echo ${PYCHDB_CMD} | sed 's|-Wl,-rpath,/[^[:space:]]*/pybind11-cmake|-Wl,-rpath,@loader_path|g')
+
+# Restrict the Python module exports to the allow-list, same as the native
+# build (chdb/build.sh) and the libchdb.so link above. Without it the
+# cross-compiled module exports only _PyInit_* and silently loses the ADBC
+# entrypoints (chdb_adbc_init / AdbcDriverInit); the linker unions this with
+# PYINIT_ENTRY, so keeping both flags is safe.
+PYCHDB_CMD="${PYCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/pychdb_export_macos.txt"
 
 # Save the command to a file for debug
 echo ${PYCHDB_CMD} > pychdb_cmd.sh

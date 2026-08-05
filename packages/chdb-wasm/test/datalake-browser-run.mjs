@@ -72,6 +72,7 @@ function startCorsProxy(port, upstream) {
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, PUT, POST, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || '*');
       res.setHeader('Access-Control-Expose-Headers', '*');
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     };
     if (req.method === 'OPTIONS') {

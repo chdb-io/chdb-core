@@ -105,7 +105,7 @@ ColumnsDescription TableFunctionArrowStream::getActualTableStructure(
     }
 
     NamesAndTypesList names_and_types;
-    CHDB::ArrowSchemaWrapper::convertArrowSchema(schema, names_and_types, context);
+    CHDB::ArrowSchemaWrapper::convertArrowSchema(schema, names_and_types, context, /*drop_illegal_nullables=*/true);
 
     return ColumnsDescription(names_and_types);
 }

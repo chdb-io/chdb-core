@@ -1,0 +1,7 @@
+# The validation framework has no releases and is not on PyPI, so a commit is
+# the only pin available. Bump deliberately: a case added upstream can turn the
+# suite red on its own.
+adbc-drivers-validation @ git+https://github.com/adbc-drivers/validation@dbc6857ff7ab7c43e98d7729a63ee8d9303ac1f9
+adbc-driver-manager==1.11.0
+pyarrow==24.0.0
+pytest==9.1.1

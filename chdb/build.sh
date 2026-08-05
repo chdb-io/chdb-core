@@ -213,6 +213,12 @@ if [ "${CHDB_LITE}" != "1" ]; then
     if [ "$(uname)" == "Darwin" ]; then
         # macOS: use exported_symbols_list file
         LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/libchdb_export_macos.txt"
+        # Give the dylib a relocatable install name (macOS best practice for
+        # tarball-distributed libraries; CMake's default since CMP0042). Without
+        # it the id is the bare "libchdb.so", which linked executables record
+        # verbatim and dyld then cannot resolve from e.g. /usr/local/lib.
+        # Consumers link with: -lchdb -L<dir> -Wl,-rpath,<dir>
+        LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,-install_name,@rpath/libchdb.so"
     else
         # Linux: use version script
         LIBCHDB_CMD="${LIBCHDB_CMD} -Wl,--version-script=${CHDB_DIR}/libchdb_export.map"

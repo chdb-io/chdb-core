@@ -51,8 +51,8 @@ jobs:
             echo "Waiting for dpkg lock (held by unattended-upgrades)..."
             sleep 5
           done
-          sudo apt-get update
-          sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y make build-essential libssl-dev zlib1g-dev \
             libbz2-dev libreadline-dev wget curl llvm \
             libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
             libffi-dev liblzma-dev libsqlite3-dev golang-go liblz4-dev
@@ -85,8 +85,8 @@ jobs:
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 21
-          sudo apt-get install -y make cmake ccache ninja-build yasm gawk wget
-          sudo apt-get install -y lld-21
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y make cmake ccache ninja-build yasm gawk wget
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y lld-21
           if ! command -v wasm-ld &> /dev/null; then
             sudo ln -sf /usr/bin/wasm-ld-21 /usr/bin/wasm-ld || true
           fi
@@ -94,8 +94,8 @@ jobs:
       - name: Update git
         run: |
           sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y git
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
       - uses: actions/checkout@v3
         with:
@@ -160,20 +160,21 @@ jobs:
           name: chdb-ft-linux-x86_64
           path: ft_dist/*.whl
           overwrite: true
-      - name: Upload FT wheels to pypi
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
-        run: |
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init -)"
-          ft_full=$(pyenv versions --bare | grep 't$' | head -1)
-          if [ -z "$ft_full" ]; then
-            echo "ERROR: no free-threading Python found in pyenv (expected one ending in 't')" >&2
-            exit 1
-          fi
-          export PYENV_VERSION=$ft_full
-          python -m pip install twine
-          python -m twine upload ft_dist/*.whl
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      # NOTE: Free-threading wheels PyPI publishing temporarily disabled; uncomment to re-enable.
+      # - name: Upload FT wheels to pypi
+      #   if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
+      #   run: |
+      #     export PATH="$HOME/.pyenv/bin:$PATH"
+      #     eval "$(pyenv init -)"
+      #     ft_full=$(pyenv versions --bare | grep 't$' | head -1)
+      #     if [ -z "$ft_full" ]; then
+      #       echo "ERROR: no free-threading Python found in pyenv (expected one ending in 't')" >&2
+      #       exit 1
+      #     fi
+      #     export PYENV_VERSION=$ft_full
+      #     python -m pip install twine
+      #     python -m twine upload ft_dist/*.whl
+      #   env:
+      #     TWINE_USERNAME: __token__
+      #     TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
 

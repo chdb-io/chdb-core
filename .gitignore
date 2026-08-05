@@ -249,6 +249,8 @@ MANIFEST
 
 # Per-project virtualenvs
 .venv*/
+.validation-venv/
+validation-report*.xml
 .conda*/
 .python-version
 
@@ -275,6 +277,12 @@ test_main
 /examples/chdbCppStreaming
 /examples/:memory:
 /examples/chdbDlopen
+/examples/chdbVersionHeaderTest
+/examples/chdbVersionTest
+/examples/chdbStackTraceTest
+/examples/chdbStreamErrorTest
+/examples/chdbStreamInsertTest
+/examples/chdbStreamQueryEofTest
 libchdb.so
 *.gz
 *.bz2

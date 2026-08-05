@@ -2,6 +2,10 @@
     global:
         PyInit__chdb;
 
+        /* ADBC driver entrypoint — the Python module doubles as the driver */
+        chdb_adbc_init;
+        AdbcDriverInit;
+
         /* C++ operator new/delete (mangled names) */
         _Znwm;              /* operator new(size_t) */
         _Znam;              /* operator new[](size_t) */

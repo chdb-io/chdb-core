@@ -35,6 +35,8 @@
         /* Streaming INSERT (write side) */
         chdb_stream_insert;
         chdb_stream_insert_n;
+        chdb_stream_insert_with_params;
+        chdb_stream_insert_with_params_n;
         chdb_stream_append;
         chdb_stream_done;
         chdb_stream_cancel_insert;
@@ -51,6 +53,7 @@
         chdb_result_rows_written;
         chdb_result_bytes_written;
         chdb_result_error;
+        chdb_version;
 
         /* Arrow Integration */
         chdb_arrow_scan;
@@ -60,7 +63,13 @@
         chdb_query_arrow_n;
         chdb_stream_query_arrow;
         chdb_stream_query_arrow_n;
+        chdb_stream_query_arrow_with_params;
+        chdb_stream_query_arrow_with_params_n;
         chdb_stream_fetch_arrow;
+
+        /* ADBC driver entrypoint */
+        chdb_adbc_init;
+        AdbcDriverInit;
 
         /* Signal Handler Control */
         chdb_set_signal_handlers_enabled;

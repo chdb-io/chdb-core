@@ -36,13 +36,29 @@ void PythonUDFRegistry::registerUDF(
 {
     py::gil_assert();
 
+    {
+        /// Fail fast on duplicate names before paying the Python signature
+        /// inspection below; the authoritative re-check still happens under
+        /// the unique lock. No Python runs while this lock is held.
+        std::shared_lock read_lock(mutex);
+        if (udfs.contains(name))
+            throw DB::Exception(DB::ErrorCodes::FUNCTION_ALREADY_EXISTS, "Python UDF '{}' is already registered", name);
+    }
+
+    /// Build the UDF (initSignature runs Python: inspect.signature) BEFORE
+    /// taking the registry lock. On free-threaded builds, running Python while
+    /// holding a lock that other attached threads may block on is the same
+    /// stop-the-world deadlock class as issue #131: the blocked waiters never
+    /// reach a safepoint, so a GC stop-the-world issued during the signature
+    /// inspection could never complete.
+    auto udf = std::make_shared<PythonScalarUDF>(name, std::move(func), std::move(return_type), null_handling, exception_handling);
+    udf->initSignature(arg_types_hint);
+
     std::unique_lock lock(mutex);
 
     if (udfs.contains(name))
         throw DB::Exception(DB::ErrorCodes::FUNCTION_ALREADY_EXISTS, "Python UDF '{}' is already registered", name);
 
-    auto udf = std::make_shared<PythonScalarUDF>(name, std::move(func), std::move(return_type), null_handling, exception_handling);
-    udf->initSignature(arg_types_hint);
     udfs[name] = std::move(udf);
 }
 

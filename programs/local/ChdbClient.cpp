@@ -78,7 +78,9 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref)
     is_interactive = false;
     ignore_error = false;
     echo_queries = false;
-    print_stack_trace = false;
+    /// Honor the `--stacktrace` connect flag (default off), like clickhouse-local:
+    /// error strings omit the stack trace unless the caller opts in.
+    print_stack_trace = server.config().getBool("stacktrace", false);
     initTTYBuffer(toProgressOption(getClientConfiguration().getString("progress", "default")),
         toProgressOption(getClientConfiguration().getString("progress-table", "default")));
     initKeystrokeInterceptor();
@@ -332,20 +334,20 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
 #if USE_PYTHON
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
 #if USE_PYTHON
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
 CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const char * query, size_t query_len,
-    const char * format, size_t format_len)
+    const char * format, size_t format_len, bool dataframe_over_chunks)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
 
@@ -367,6 +369,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
             return std::make_unique<CHDB::StreamQueryResult>(getErrorMsg());
         }
         streaming_query_context->thread_group = DB::CurrentThread::getGroup();
+        streaming_query_context->dataframe_over_chunks = dataframe_over_chunks;
         auto result = std::make_unique<CHDB::StreamQueryResult>();
         streaming_query_context->streaming_result = result.get();
         return result;
@@ -374,12 +377,12 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     catch (const Exception & e)
     {
         streaming_query_context.reset();
-        return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         streaming_query_context.reset();
-        return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -437,15 +440,20 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     bytes_written - old_bytes_written);
 
 #if USE_PYTHON
-                py::gil_scoped_acquire acquire;
-                CHDB::PandasDataFrameBuilder builder(*chunk_result);
-                py::handle df = builder.getDataFrame().release();
+                if (streaming_query_context->dataframe_over_chunks)
+                {
+                    py::gil_scoped_acquire acquire;
+                    CHDB::PandasDataFrameBuilder builder(*chunk_result);
+                    py::handle df = builder.getDataFrame().release();
 
-                res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
+                    res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
+                }
+                else
+                {
+                    /// Arrow C Data / ADBC consumers want raw chunks.
+                    res = std::move(chunk_result);
+                }
 #else
-                /// Non-Python build: hand raw chunks back so the Arrow C
-                /// Data Interface output path can export them without
-                /// IPC serialization.
                 res = std::move(chunk_result);
 #endif
             }
@@ -501,7 +509,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         }
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
@@ -514,7 +522,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         }
         python_table_cache->clear();
 #endif
-        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -648,13 +656,13 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
         /// for all subsequent statements.
         restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
-        return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, false));
+        return std::make_unique<CHDB::InsertStreamResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         restoreSettingsAfterInsertStream();
         streaming_insert_context.reset();
-        return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(true));
+        return std::make_unique<CHDB::InsertStreamResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
 
@@ -706,8 +714,33 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         ColumnsDescription columns;
         if (!receiveSampleBlock(sample, columns, ctx->parsed_query))
         {
-            String msg = getErrorMsg();
-            signal_init(msg.empty() ? String("Failed to receive table structure") : msg);
+            /// receiveSampleBlock stored the real cause in server_exception (via
+            /// onReceiveExceptionFromServer) but, unlike the query paths, does not
+            /// format it into getErrorMsg() — so surface server_exception here
+            /// instead of dropping it for a generic message (issue #612). The
+            /// generic fallback only applies when the engine reported nothing.
+            String reason = getErrorMsg();
+            if (reason.empty())
+            {
+                /// Mirror executeInsertStreamingInit's catch pattern: format a
+                /// known DB::Exception without a stack trace, and reserve the
+                /// stack-trace fallback for truly unknown exceptions.
+                try
+                {
+                    processError("receiveSampleBlock");
+                }
+                catch (const Exception & e)
+                {
+                    reason = getExceptionMessage(e, print_stack_trace);
+                }
+                catch (...)
+                {
+                    reason = getCurrentExceptionMessage(print_stack_trace);
+                }
+            }
+            signal_init(reason.empty()
+                ? String("Streaming INSERT initialization failed (no error reported by the engine)")
+                : reason);
             ctx->worker_done = true;
             return;
         }
@@ -768,7 +801,7 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         ctx->error = std::current_exception();
         try
         {
-            ctx->error_message = getCurrentExceptionMessage(true);
+            ctx->error_message = getCurrentExceptionMessage(print_stack_trace);
         }
         catch (...)
         {

@@ -2,6 +2,7 @@
 #include "NumpyType.h"
 #include "PandasDataFrame.h"
 #include "PybindWrapper.h"
+#include "PythonArrowStream.h"
 #include "PythonImporter.h"
 #include "PythonSource.h"
 #include "PyArrowTable.h"
@@ -285,6 +286,31 @@ Pipe StoragePython::readImpl(
         if (PyArrowTable::isPyArrowTable(data_source))
         {
             auto arrow_stream = PyArrowStreamFactory::createFromPyObject(data_source, sample_block.getNames());
+            arrow_table_reader = std::make_shared<ArrowTableReader>(
+                std::move(arrow_stream), sample_block,
+                format_settings, num_streams, max_block_size);
+        }
+        else if (!is_pandas_df && CHDB::hasArrowCStreamMethod(data_source))
+        {
+            /// Generic Arrow PyCapsule stream input. pandas DataFrames also
+            /// expose __arrow_c_stream__ (>= 2.2) but stay on the dedicated
+            /// column-cache scan above, which supports pushdowns this generic
+            /// stream path cannot (the protocol has no projection mechanism).
+            ///
+            /// Prefer the stream parked by schema inference so a single scan
+            /// exports from the producer only once. The fresh-export fallback
+            /// covers a re-scan of this same storage; it re-invokes
+            /// __arrow_c_stream__, which yields fresh data for re-exportable
+            /// producers (polars, pyarrow.Table) but an exhausted (empty)
+            /// stream for genuinely single-use producers (a bare
+            /// pyarrow.RecordBatchReader, a generator-backed stream). This is
+            /// inherent to single-use Arrow streams: such a producer likewise
+            /// yields empty on the second reference of e.g. a self-join
+            /// (each reference is a distinct storage that exports once).
+            /// Materialize upfront (pa.table(reader)) to scan more than once.
+            auto arrow_stream = data_source_wrapper->takeCachedArrowStream();
+            if (!arrow_stream)
+                arrow_stream = CHDB::importArrowCStream(data_source);
             arrow_table_reader = std::make_shared<ArrowTableReader>(
                 std::move(arrow_stream), sample_block,
                 format_settings, num_streams, max_block_size);

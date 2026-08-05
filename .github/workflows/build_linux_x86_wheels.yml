@@ -38,8 +38,8 @@ jobs:
     steps:
       - name: Install Python build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y make build-essential libssl-dev zlib1g-dev \
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y make build-essential libssl-dev zlib1g-dev \
             libbz2-dev libreadline-dev wget curl llvm \
             libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
             libffi-dev liblzma-dev libsqlite3-dev golang-go liblz4-dev
@@ -60,7 +60,7 @@ jobs:
           mkdir -p $HOME/.local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b $HOME/.local/bin
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          sudo apt-get update && sudo apt-get install -y jq lsb-release
+          sudo apt-get -o DPkg::Lock::Timeout=600 update && sudo apt-get -o DPkg::Lock::Timeout=600 install -y jq lsb-release
 
           # Detect OS distribution info
           DISTRO_ID=$(lsb_release -si | tr '[:upper:]' '[:lower:]')
@@ -130,7 +130,7 @@ jobs:
             echo "Installing dependencies for Python $version"
             pyenv shell $version
             python -m pip install --upgrade pip
-            python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel jupyter nbconvert
+            python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel jupyter nbconvert "fastjsonschema<2.22"
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain
@@ -149,9 +149,9 @@ jobs:
           sudo ./llvm.sh 21
           which clang++-21
           clang++-21 --version
-          sudo apt-get install -y make cmake ccache ninja-build yasm gawk wget
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y make cmake ccache ninja-build yasm gawk wget
           # Install WebAssembly linker (wasm-ld)
-          sudo apt-get install -y lld-21
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y lld-21
           # Create symlink for wasm-ld
           if ! command -v wasm-ld &> /dev/null; then
             sudo ln -sf /usr/bin/wasm-ld-21 /usr/bin/wasm-ld || true
@@ -161,8 +161,8 @@ jobs:
       - name: Update git
         run: |
           sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get update
-          sudo apt-get install -y git
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
       - uses: actions/checkout@v3
         with:
@@ -275,7 +275,46 @@ jobs:
           bash -x ./examples/runArrowQueryTest.sh
           bash -x ./examples/runInsertProgressTest.sh
           bash -x ./examples/runStreamInsertTest.sh
+          bash -x ./examples/runVersionHeaderTest.sh
+          bash -x ./examples/runVersionTest.sh
+          bash -x ./examples/runStackTraceTest.sh
+          bash -x ./examples/runStreamErrorTest.sh
           bash -x ./examples/runQueryParamsTest.sh
+          bash -x ./examples/runStreamQueryEofTest.sh
+      # Both ADBC validation suites, against the libchdb just built. Placed
+      # here rather than after the wheel tests so an unrelated failure there
+      # does not withhold the result.
+      - name: ADBC validation suites
+        run: |
+          set -eo pipefail
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+
+          BUILD_DIR="$RUNNER_TEMP/adbc-validation"
+          VENV="$RUNNER_TEMP/adbc-validation-venv"
+          rm -rf "$BUILD_DIR" "$VENV"
+
+          cmake -S programs/local/adbc/validation -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$BUILD_DIR" --parallel "$(getconf _NPROCESSORS_ONLN)"
+          CHDB_ADBC_DRIVER="$GITHUB_WORKSPACE/libchdb.so" \
+            programs/local/adbc/validation/run.sh "$BUILD_DIR"
+
+          pyenv shell 3.13
+          python -m venv "$VENV"
+          "$VENV/bin/pip" install --disable-pip-version-check \
+            -r programs/local/adbc/validation/python/requirements.txt
+          cd programs/local/adbc/validation/python
+          TZ=UTC CHDB_ADBC_DRIVER="$GITHUB_WORKSPACE/libchdb.so" \
+            "$VENV/bin/python" -m pytest -q -rfEsxX \
+              --junit-xml=validation-report.xml tests/
+          # The capability matrix is rendered from the run, not maintained by hand.
+          "$VENV/bin/python" -m tests.generate_documentation \
+            --output "$RUNNER_TEMP/adbc-docs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adbc-capability-matrix
+          path: ${{ runner.temp }}/adbc-docs/chdb.md
       - name: Check ccache statistics
         run: |
           ccache -s
@@ -351,7 +390,7 @@ jobs:
 
           # Install lldb for debugging when DEBUG_MODE is enabled
           if [ "$DEBUG_MODE" == "true" ]; then
-            sudo apt-get install -y lldb-21
+            sudo apt-get -o DPkg::Lock::Timeout=600 install -y lldb-21
             sudo ln -sf /usr/bin/lldb-21 /usr/bin/lldb || true
           fi
 
@@ -368,6 +407,8 @@ jobs:
               echo "=============================================="
               pyenv shell $version
               python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" --force-reinstall
+              # ADBC driver tests (tests/test_adbc_driver.py) load libchdb via the standard driver manager
+              python -c "import adbc_driver_manager" 2>/dev/null || python -m pip install -q adbc-driver-manager==1.8.0
               echo "Installed pandas version:"
               python -c "import pandas; print(pandas.__version__)"
               python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"
@@ -489,8 +530,11 @@ jobs:
       - name: Package debug symbols
         run: |
           ls *.debug
-          tar -czvf linux-x86_64-debuginfo.tar.gz *.debug
-          ls -lh linux-x86_64-debuginfo.tar.gz
+          # xz instead of gzip: the x86_64 debuginfo exceeds GitHub's 2 GiB
+          # release-asset limit as .tar.gz, so the upload step 422'd silently
+          # (masked by continue-on-error) and every release shipped without it.
+          XZ_OPT='-T0 -4' tar -cJvf linux-x86_64-debuginfo.tar.xz *.debug
+          ls -lh linux-x86_64-debuginfo.tar.xz
       # -----------------------------------------------------------------------
       # chdb-core-lite: build & test the slim variant of the wheel (~50 MB)
       # The slim variant goes through the same chdb/build.sh + make wheel path,
@@ -659,7 +703,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         continue-on-error: true
         run: |
-          gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.gz --clobber
+          gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       - uses: actions/upload-artifact@v4
@@ -669,7 +713,7 @@ jobs:
             ./dist/*.whl
             ./linux-x86_64-libchdb.tar.gz
             ./linux-x86_64-libchdb-static.tar.gz
-            ./linux-x86_64-debuginfo.tar.gz
+            ./linux-x86_64-debuginfo.tar.xz
           overwrite: true
       - name: Upload pypi
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
