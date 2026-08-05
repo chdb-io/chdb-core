@@ -38,6 +38,13 @@ AggregateFunctionPtr createAggregateFunctionUniqCombined(bool use_64_bit_hash,
 
     switch (precision) // NOLINT(bugprone-switch-missing-default-case)
     {
+#if defined(CHDB_LITE) && CHDB_LITE
+        case 17:
+            return createAggregateFunctionWithHashType<17>(use_64_bit_hash, argument_types, params);
+        default:
+            throw Exception(ErrorCodes::ARGUMENT_OUT_OF_BOUND,
+                "chdb minimal build: only HLL precision 17 is available for uniqCombined (got {})", static_cast<int>(precision));
+#else
         case 12:
             return createAggregateFunctionWithHashType<12>(use_64_bit_hash, argument_types, params);
         case 13:
@@ -56,6 +63,7 @@ AggregateFunctionPtr createAggregateFunctionUniqCombined(bool use_64_bit_hash,
             return createAggregateFunctionWithHashType<19>(use_64_bit_hash, argument_types, params);
         case 20:
             return createAggregateFunctionWithHashType<20>(use_64_bit_hash, argument_types, params);
+#endif
     }
 
     UNREACHABLE();

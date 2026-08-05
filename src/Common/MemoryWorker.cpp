@@ -376,7 +376,7 @@ MemoryWorker::MemoryWorker(
             static constexpr uint64_t cgroups_memory_usage_tick_ms{50};
 
             const auto [cgroup_path, version] = ICgroupsReader::getCgroupsPath();
-            LOG_INFO(
+            LOG_DEBUG(
                 getLogger("CgroupsReader"),
                 "Will create cgroup reader from '{}' (cgroups version: {})",
                 cgroup_path,
@@ -507,7 +507,7 @@ void MemoryWorker::start()
               page_size)
         : "disabled";
 
-    LOG_INFO(
+    LOG_DEBUG(
         log,
         "Starting background memory thread with period of {}ms, using {} as source, purging dirty pages {}",
         rss_update_period_ms,
@@ -1163,7 +1163,9 @@ void MemoryWorker::purgeDirtyPagesThread()
     std::unique_lock purge_dirty_pages_lock(purge_dirty_pages_mutex);
 
     uint64_t default_dirty_decay_ms = dirty_decay_ms_mib.getValue();
-    LOG_INFO(log, "Default dirty pages decay period: {}ms", default_dirty_decay_ms);
+    /// chDB: suppress this startup INFO log to keep embedded usage quiet.
+    /// See https://github.com/chdb-io/chdb-core/issues/55
+    /// LOG_INFO(log, "Default dirty pages decay period: {}ms", default_dirty_decay_ms);
 
     /// On low-memory systems (< 4 GiB), disable jemalloc dirty page retention
     /// (dirty_decay_ms=0) to prevent RSS inflation.

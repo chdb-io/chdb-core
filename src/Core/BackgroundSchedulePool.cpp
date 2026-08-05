@@ -4,14 +4,14 @@
 #include <IO/WriteHelpers.h>
 #include <base/defines.h>
 
-#include <Common/ThreadStatus.h>
-#include <Common/Exception.h>
-#include <Common/setThreadName.h>
-#include <Common/Stopwatch.h>
 #include <Common/CurrentThread.h>
+#include <Common/Exception.h>
+#include <Common/Stopwatch.h>
+#include <Common/ThreadPool.h>
+#include <Common/ThreadStatus.h>
 #include <Common/UniqueLock.h>
 #include <Common/logger_useful.h>
-#include <Common/ThreadPool.h>
+#include <Common/setThreadName.h>
 
 #include <Common/SipHash.h>
 #include <Common/thread_local_rng.h>
@@ -27,8 +27,8 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int CANNOT_SCHEDULE_TASK;
-    extern const int ABORTED;
+extern const int CANNOT_SCHEDULE_TASK;
+extern const int ABORTED;
 }
 
 ///

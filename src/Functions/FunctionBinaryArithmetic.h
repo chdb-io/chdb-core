@@ -914,6 +914,17 @@ class FunctionBinaryArithmetic : public IFunction, WithContext
 
     static bool castType(const IDataType * type, auto && f)
     {
+#if defined(CHDB_LITE) && CHDB_LITE
+        // Drop UInt128/256, Int128/256, Decimal128/256, BFloat16 to shrink template
+        // instantiation matrix. Queries on these types fall back to common-supertype.
+        using IntegerTypes = TypeList<
+            DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
+            DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64>;
+
+        using DecimalTypes = TypeList<DataTypeDecimal32, DataTypeDecimal64>;
+
+        using Floats = TypeList<DataTypeFloat32, DataTypeFloat64>;
+#else
         using IntegerTypes = TypeList<
             DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64, DataTypeUInt128, DataTypeUInt256,
             DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64, DataTypeInt128, DataTypeInt256>;
@@ -921,6 +932,7 @@ class FunctionBinaryArithmetic : public IFunction, WithContext
         using DecimalTypes = TypeList<DataTypeDecimal32, DataTypeDecimal64, DataTypeDecimal128, DataTypeDecimal256>;
 
         using Floats = TypeList<DataTypeFloat32, DataTypeFloat64, DataTypeBFloat16>;
+#endif
 
         /// Only include extra types that this specific operation actually uses.
         /// Decimal: needed only when allow_decimal is true (plus, minus, multiply,

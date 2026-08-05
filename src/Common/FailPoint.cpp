@@ -450,9 +450,14 @@ void FailPointInjection::enableFailPoint(const String &)
 {
 }
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
+// chdb-core-lite drops these: they're orphan stubs (no matching declaration in
+// FailPoint.h), so compiling them under USE_LIBFIU=0 fails. Wrap so the
+// upstream-style source survives rebases; the dead methods never link anywhere.
 void FailPointInjection::enablePauseFailPoint(const String &, UInt64)
 {
 }
+#endif
 
 void FailPointInjection::disableFailPoint(const String &)
 {
@@ -462,9 +467,11 @@ void FailPointInjection::notifyFailPoint(const String &)
 {
 }
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
 void FailPointInjection::wait(const String &)
 {
 }
+#endif
 
 void FailPointInjection::waitForPause(const String &)
 {
@@ -474,6 +481,7 @@ void FailPointInjection::waitForResume(const String &)
 {
 }
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
 void FailPointInjection::enableFromGlobalConfig(const Poco::Util::AbstractConfiguration & config)
 {
     String root_key = "fail_points_active";
@@ -484,6 +492,7 @@ void FailPointInjection::enableFromGlobalConfig(const Poco::Util::AbstractConfig
     if (!fail_point_names.empty())
         throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "FIU is not enabled");
 }
+#endif
 
 std::vector<FailPointInjection::FailPointInfo> FailPointInjection::getFailPoints()
 {

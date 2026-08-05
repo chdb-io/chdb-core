@@ -1,86 +1,520 @@
-<div align=center>
-
-[![Website](https://img.shields.io/website?up_message=AVAILABLE&down_message=DOWN&url=https%3A%2F%2Fclickhouse.com&style=for-the-badge)](https://clickhouse.com)
-[![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-blueviolet?style=for-the-badge)](https://www.apache.org/licenses/LICENSE-2.0)
-
-<picture align=center>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/ClickHouse/clickhouse-docs/assets/9611008/4ef9c104-2d3f-4646-b186-507358d2fe28">
-    <source media="(prefers-color-scheme: light)" srcset="https://github.com/ClickHouse/clickhouse-docs/assets/9611008/b001dc7b-5a45-4dcd-9275-e03beb7f9177">
-    <img alt="The ClickHouse company logo." src="https://github.com/ClickHouse/clickhouse-docs/assets/9611008/b001dc7b-5a45-4dcd-9275-e03beb7f9177">
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/chdb-io/chdb/raw/main/docs/_static/snake-chdb-dark.png" height="130">
+  <img src="https://github.com/chdb-io/chdb/raw/main/docs/_static/snake-chdb.png" height="130">
 </picture>
 
-<h4>ClickHouse® is an open-source column-oriented database management system that allows generating analytical data reports in real-time.</h4>
-
+[![Build X86](https://github.com/chdb-io/chdb/actions/workflows/build_linux_x86_wheels.yml/badge.svg?event=release)](https://github.com/chdb-io/chdb/actions/workflows/build_linux_x86_wheels.yml)
+[![PyPI](https://img.shields.io/pypi/v/chdb.svg)](https://pypi.org/project/chdb/)
+[![Downloads](https://static.pepy.tech/badge/chdb)](https://pepy.tech/project/chdb)
+[![Discord](https://img.shields.io/discord/1098133460310294528?logo=Discord)](https://discord.gg/D2Daa2fM5K)
+[![Twitter](https://img.shields.io/twitter/url/http/shields.io.svg?style=social&label=Twitter)](https://twitter.com/chdb_io)
 </div>
 
-## How To Install (Linux, macOS, FreeBSD)
+# chdb-core
 
+> chdb-core is the foundational engine of the [chDB](https://github.com/chdb-io/chdb) ecosystem — an in-process SQL OLAP Engine powered by ClickHouse [^1]
+
+## Table of Contents
+
+- [Packages & Distributions](#packages--distributions)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+- [Demos and Examples](#demos-and-examples)
+- [Benchmark](#benchmark)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+
+---
+
+## Packages & Distributions
+
+**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine itself ships as five distribution artifacts — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages:
+
+| Artifact | How to get it | Target / runtime | Best for |
+|---|---|---|---|
+| **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS) | Default full build — everything included |
+| **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
+| **chdb-core (free-threaded)** | GitHub release assets | Free-threaded Python 3.14t (no GIL) | Running chDB without the GIL |
+| **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
+| **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | A slimmer build for Cloudflare Workers |
+
+<div align="center">
+<pre>
+┌───────────────────────────────────────────┐
+│          chDB (pip install chdb)          │
+│  ┌─────────────────────────────────────┐  │
+│  │  DataStore: pandas-like lazy API    │  │
+│  │  QueryPlanner / dual-engine exec    │  │
+│  └──────────────────┬──────────────────┘  │
+│                     │                     │
+│  ┌──────────────────▼──────────────────┐  │
+│  │  chdb-core (pip install chdb-core)  │  │
+│  │  C++ ClickHouse Engine              │  │
+│  │  Session / Connection / DB-API      │  │
+│  │  query() / UDF / Stream             │  │
+│  └─────────────────────────────────────┘  │
+└───────────────────────────────────────────┘
+</pre>
+</div>
+
+**chdb-core** provides everything you need to run SQL queries with ClickHouse performance — no server required. If you want a higher-level pandas-compatible DataFrame API, install **chDB** instead.
+
+---
+
+## Features
+
+* In-process SQL OLAP Engine, powered by ClickHouse
+* No need to install ClickHouse
+* Minimized data copy from C++ to Python with [python memoryview](https://docs.python.org/3/c-api/memoryview.html)
+* Input & Output support Parquet, CSV, JSON, Arrow, ORC and [60+ more formats](https://clickhouse.com/docs/en/interfaces/formats)
+* Session and Connection management with stateful queries
+* Streaming query support for constant-memory processing
+* Python DB-API 2.0 compliance
+* User Defined Functions (UDF) support
+* AI-assisted SQL generation
+
+---
+
+## Architecture
+
+<div align="center">
+  <img src="https://github.com/chdb-io/chdb/raw/main/docs/_static/arch-chdb3.png" width="450">
+</div>
+
+---
+
+## Installation
+
+Currently, chdb-core supports Python 3.9+ on macOS and Linux (x86_64 and ARM64).
+
+```bash
+pip install chdb-core
 ```
-curl https://clickhouse.com/ | sh
+
+---
+
+## Quick Start
+
+```python
+import chdb
+
+result = chdb.query("SELECT version()", "Pretty")
+print(result)
 ```
 
-## Useful Links
+---
 
-* [Official website](https://clickhouse.com/) has a quick high-level overview of ClickHouse on the main page.
-* [ClickHouse Cloud](https://clickhouse.cloud) ClickHouse as a service, built by the creators and maintainers.
-* [Tutorial](https://clickhouse.com/docs/getting_started/tutorial/) shows how to set up and query a small ClickHouse cluster.
-* [Documentation](https://clickhouse.com/docs/) provides more in-depth information.
-* [YouTube channel](https://www.youtube.com/c/ClickHouseDB) has a lot of content about ClickHouse in video format.
-* [ClickHouse Theater](https://presentations.clickhouse.com/) contains presentations and videos about ClickHouse.
-* [Slack](https://clickhouse.com/slack) and [Telegram](https://telegram.me/clickhouse_en) allow chatting with ClickHouse users in real-time.
-* [Blog](https://clickhouse.com/blog/) contains various ClickHouse-related articles, as well as announcements and reports about events.
-* [Bluesky](https://bsky.app/profile/clickhouse.com) and [X](https://x.com/ClickHouseDB) for short news.
-* [Code Browser (github.dev)](https://github.dev/ClickHouse/ClickHouse) with syntax highlighting, powered by github.dev.
-* [Contacts](https://clickhouse.com/company/contact) can help to get your questions answered if there are any.
+## API Reference
 
-## Monthly Release & Community Call
+<details>
+<summary><b>One-shot Query</b></summary>
 
-Join us for the [ClickHouse **26.5** Release Call](https://clickhouse.com/company/events/v26-5-community-release-call) on May 21, 2026.
+The simplest way to run SQL — no session or connection needed:
 
-Watch all release presentations and videos at [ClickHouse Theater](https://presentations.clickhouse.com/) and [YouTube Playlist](https://www.youtube.com/playlist?list=PL0Z2YDlm0b3jAlSy1JxyP8zluvXaN3nxU).
+```python
+import chdb
 
-## Upcoming Events
+# Basic query with CSV output (default)
+result = chdb.query("SELECT 1, 'hello'")
+print(result)
 
-Keep an eye out for upcoming meetups and events around the world.
-Want to speak? Apply [here](https://forms.gle/3h4XCEENJZ3eaVGy7)
-You can also peruse [ClickHouse Events](https://clickhouse.com/company/news-events) for a list of all upcoming trainings, meetups, speaking engagements, etc.
+# Pandas DataFrame output
+df = chdb.query("SELECT number, number * 2 AS double FROM numbers(10)", "DataFrame")
+print(df)
 
-Upcoming meetups
-* [AI Builders Night SF](https://luma.com/clickh-gz0r) - July 14th, 2026
-* [Data Engineering Things Seattle Meetup](https://luma.com/sbonpt98) - July 16th, 2026
-* [Bangkok OSS & Data Evening: Queries, Code & Community](https://luma.com/gpzn0n8v) - July 23rd, 2026
-* [Happy Hour warm-up: AWS Summit Bogotá](https://luma.com/clickh-bkld) - July 30th, 2026
-* [ClickHouse Singapore August 2026 Edition](https://luma.com/clickh-2r4t) - August 4th, 2026
-* [ClickHouse Jakarta Meetup](https://luma.com/clickh-552k) - August 5th, 2026
-* [AI Demo Night](https://luma.com/qeg73alr) - August 6th, 2026
-* [Data Engineering Meetup](https://luma.com/clickh-z578) - August 11th, 2026
-* [AI Demo Night](https://luma.com/c4alsewg) - August 18th, 2026
-* [NYC Apache Iceberg™ Community Meetup](https://luma.com/t3z5q5s8) - August 20th, 2026
-* [Bangalore Iceberg Community Meetup](https://luma.com/clickh-t3iz) - August 22nd, 2026
-* [Vancouver Meetup](https://luma.com/jr8tc94e) - August 25th, 2026
-* [The Agentic Data Stack: Berlin](https://luma.com/clickh-2ccj) - September 2nd, 2026
-* [Amsterdam Meetup](https://luma.com/clickh-vu1p) - September 15th, 2026
-* [Cape Town Meetup](https://luma.com/clickh-dw1v) - September 15th, 2026
-* [Rows And Columns Summit](https://luma.com/event/evt-bQcR6tDKi8OmTXu) - September 22nd, 2026
-* [Paris Meetup](https://luma.com/clickh-gsz1) - September 29th, 2026
+# Parameterized queries
+df = chdb.query(
+    "SELECT toDate({base_date:String}) + number AS date "
+    "FROM numbers({total_days:UInt64}) "
+    "LIMIT {items_per_page:UInt64}",
+    "DataFrame",
+    params={"base_date": "2025-01-01", "total_days": 10, "items_per_page": 5},
+)
+print(df)
+```
+
+</details>
+
+<details>
+<summary><b>Query on Files (Parquet, CSV, JSON, Arrow, ORC and 60+)</b></summary>
+
+```python
+import chdb
+
+res = chdb.query('SELECT * FROM file("data.parquet", Parquet)', "JSON")
+print(res)
+
+res = chdb.query('SELECT * FROM file("data.csv", CSV)', "CSV")
+print(res)
+
+# Query result statistics
+print(f"SQL read {res.rows_read()} rows, {res.bytes_read()} bytes, "
+      f"storage read {res.storage_rows_read()} rows, {res.storage_bytes_read()} bytes, "
+      f"elapsed {res.elapsed()} seconds")
+
+# Pandas DataFrame output
+chdb.query('SELECT * FROM file("data.parquet", Parquet)', "Dataframe")
+```
+
+</details>
+
+<details>
+<summary><b>Connection API</b></summary>
+
+Connection-based API for cursor-style interaction, supporting both in-memory and file-based databases:
+
+```python
+import chdb
+
+conn = chdb.connect(":memory:")
+cur = conn.cursor()
+
+cur.execute("CREATE TABLE test (id UInt32, name String) ENGINE = Memory")
+cur.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
+cur.execute("SELECT * FROM test ORDER BY id")
+
+print(cur.fetchone())      # (1, 'Alice')
+print(cur.fetchmany(2))    # ((2, 'Bob'), (3, 'Charlie'))
+print(cur.column_names())  # ['id', 'name']
+print(cur.column_types())  # ['UInt32', 'String']
+
+# Use the cursor as an iterator
+cur.execute("SELECT number FROM system.numbers LIMIT 3")
+for row in cur:
+    print(row)
+
+# Always close resources when done
+cur.close()
+conn.close()
+```
+
+For more details, see [examples/connect.py](examples/connect.py).
+
+```python
+# File-based persistent database
+conn = chdb.connect("mydata.db")
+conn.query("CREATE TABLE IF NOT EXISTS logs (ts DateTime, msg String) ENGINE = MergeTree ORDER BY ts")
+conn.query("INSERT INTO logs VALUES (now(), 'started')")
+result = conn.query("SELECT * FROM logs", "Pretty")
+print(result)
+conn.close()
+```
+
+</details>
+
+<details>
+<summary><b>Stateful Session</b></summary>
+
+Sessions provide a higher-level API with automatic resource management:
+
+```python
+from chdb import session as chs
+
+sess = chs.Session()
+sess.query("CREATE DATABASE IF NOT EXISTS db_xxx ENGINE = Atomic")
+sess.query("CREATE TABLE IF NOT EXISTS db_xxx.log_table (x String, y Int) ENGINE = Log")
+sess.query("INSERT INTO db_xxx.log_table VALUES ('a', 1), ('b', 3), ('c', 2), ('d', 5)")
+sess.query("CREATE VIEW db_xxx.view_xxx AS SELECT * FROM db_xxx.log_table LIMIT 4")
+
+print(sess.query("SELECT * FROM db_xxx.view_xxx", "Pretty"))
+```
+
+see also: [test_stateful.py](tests/test_stateful.py).
+
+</details>
+
+<details>
+<summary><b>Streaming Query</b></summary>
+
+Process large datasets with constant memory usage through chunked streaming:
+
+```python
+from chdb import session as chs
+
+sess = chs.Session()
+
+rows_cnt = 0
+with sess.send_query("SELECT * FROM numbers(200000)", "CSV") as stream_result:
+    for chunk in stream_result:
+        rows_cnt += chunk.rows_read()
+
+print(rows_cnt) # 200000
+
+# Example 2: Manual iteration with fetch()
+rows_cnt = 0
+stream_result = sess.send_query("SELECT * FROM numbers(200000)", "CSV")
+while True:
+    chunk = stream_result.fetch()
+    if chunk is None:
+        break
+    rows_cnt += chunk.rows_read()
+
+print(rows_cnt) # 200000
+```
+
+For more details, see [test_streaming_query.py](tests/test_streaming_query.py).
+
+</details>
+
+<details>
+<summary><b>Python DB-API 2.0</b></summary>
+
+```python
+import chdb.dbapi as dbapi
+print("chdb driver version: {0}".format(dbapi.get_client_info()))
+
+conn1 = dbapi.connect()
+cur1 = conn1.cursor()
+cur1.execute('select version()')
+print("description: ", cur1.description)
+print("data: ", cur1.fetchone())
+cur1.close()
+conn1.close()
+```
+
+</details>
+
+<details>
+<summary><b>Query on Table (Pandas DataFrame, Parquet file/bytes, Arrow bytes)</b></summary>
+
+```python
+import chdb.dataframe as cdf
+import pandas as pd
+# Join 2 DataFrames
+df1 = pd.DataFrame({'a': [1, 2, 3], 'b': ["one", "two", "three"]})
+df2 = pd.DataFrame({'c': [1, 2, 3], 'd': ["①", "②", "③"]})
+ret_tbl = cdf.query(sql="select * from __tbl1__ t1 join __tbl2__ t2 on t1.a = t2.c",
+                  tbl1=df1, tbl2=df2)
+print(ret_tbl)
+# Query on the DataFrame Table
+print(ret_tbl.query('select b, sum(a) from __table__ group by b'))
+# Pandas DataFrames are automatically registered as temporary tables in ClickHouse
+chdb.query("SELECT * FROM Python(df1) t1 JOIN Python(df2) t2 ON t1.a = t2.c").show()
+```
+
+</details>
+
+<details>
+<summary><b>Python Table Engine</b></summary>
+
+#### Query on Pandas DataFrame
+
+```python
+import chdb
+import pandas as pd
+df = pd.DataFrame(
+    {
+        "a": [1, 2, 3, 4, 5, 6],
+        "b": ["tom", "jerry", "auxten", "tom", "jerry", "auxten"],
+    }
+)
+
+chdb.query("SELECT b, sum(a) FROM Python(df) GROUP BY b ORDER BY b").show()
+```
+
+#### Query on Arrow Table
+
+```python
+import chdb
+import pyarrow as pa
+arrow_table = pa.table(
+    {
+        "a": [1, 2, 3, 4, 5, 6],
+        "b": ["tom", "jerry", "auxten", "tom", "jerry", "auxten"],
+    }
+)
+
+chdb.query("SELECT b, sum(a) FROM Python(arrow_table) GROUP BY b ORDER BY b").show()
+```
+
+see also: [test_query_py.py](tests/test_query_py.py).
+
+</details>
+
+<details>
+<summary><b>User Defined Functions (UDF)</b></summary>
+
+chDB supports native Python UDFs that run in-process with full type safety.
+
+```python
+import chdb
+from chdb.session import Session
+from chdb.sqltypes import INT64, STRING
+
+sess = Session()
+
+# Using the @chdb.func decorator
+@chdb.func([INT64, INT64], INT64)
+def add(a, b):
+    return a + b
+
+print(sess.query("SELECT add(12, 22)"))
+
+# With type annotations (types inferred automatically)
+@chdb.func()
+def multiply(a: int, b: int) -> int:
+    return a * b
+
+print(sess.query("SELECT multiply(3, 7)"))
+
+# Using chdb.create_function directly
+chdb.create_function("strlen", len, arg_types=[STRING], return_type=INT64)
+print(sess.query("SELECT strlen('hello')"))
+
+# Remove a registered function
+chdb.drop_function("strlen")
+```
+
+Key features:
+- **Type-safe**: supports `INT64`, `FLOAT64`, `STRING`, `BOOL`, `DATETIME64`, etc. See [chdb.sqltypes](chdb/_chdb/_sqltypes.pyi) for full list.
+- **Type inference**: automatically inferred from Python annotations (`int`, `str`, `bool`, etc.)
+- **NULL handling**: `on_null=NullHandling.SKIP` (default) skips the function call and returns NULL; `NullHandling.PASS` passes `None` to the function.
+- **Exception handling**: `on_error=ExceptionHandling.PROPAGATE` (default) raises the error to the caller; `ExceptionHandling.IGNORE` returns NULL for that row and continues.
+
+See also: [test_func_udf.py](tests/test_func_udf.py), [test_func_udf_types.py](tests/test_func_udf_types.py).
+
+</details>
+
+<details>
+<summary><b>Query Progress</b></summary>
+
+```python
+import chdb
+
+# Auto-detect: TTY progress in terminal, progress bar in notebook
+conn = chdb.connect(":memory:?progress=auto")
+conn.query("SELECT sum(number) FROM numbers_mt(1e10) GROUP BY number % 10 SETTINGS max_threads=4")
+```
+
+Progress options: `progress=auto` | `progress=tty` | `progress=err` | `progress=off`
+
+</details>
+
+<details>
+<summary><b>AI-assisted SQL Generation</b></summary>
+
+```python
+import chdb
+
+conn = chdb.connect("file::memory:?ai_provider=openai&ai_model=gpt-4o-mini")
+conn.query("CREATE TABLE nums (n UInt32) ENGINE = Memory")
+conn.query("INSERT INTO nums VALUES (1), (2), (3)")
+
+sql = conn.generate_sql("Select all rows from nums ordered by n desc")
+print(sql)  # SELECT * FROM nums ORDER BY n DESC
+
+print(conn.ask("List the numbers table", format="Pretty"))
+```
+
+</details>
+
+<details>
+<summary><b>Command Line</b></summary>
+
+> `python3 -m chdb SQL [OutputFormat]`
+```bash
+python3 -m chdb "SELECT 1,'abc'" Pretty
+```
+
+For more examples, see [examples](examples) and [tests](tests).
+
+</details>
+
+---
+
+## Demos and Examples
+
+- [Project Documentation](https://clickhouse.com/docs/en/chdb) and [Usage Examples](https://clickhouse.com/docs/en/chdb/install/python)
+- [Colab Notebooks](https://colab.research.google.com/drive/1-zKB6oKfXeptggXi0kUX87iR8ZTSr4P3?usp=sharing) and other [Script Examples](examples)
+
+---
+
+## Benchmark
+
+- [ClickBench of embedded engines](https://benchmark.clickhouse.com/#eyJzeXN0ZW0iOnsiQXRoZW5hIChwYXJ0aXRpb25lZCkiOnRydWUsIkF0aGVuYSAoc2luZ2xlKSI6dHJ1ZSwiQXVyb3JhIGZvciBNeVNRTCI6dHJ1ZSwiQXVyb3JhIGZvciBQb3N0Z3JlU1FMIjp0cnVlLCJCeXRlSG91c2UiOnRydWUsImNoREIiOnRydWUsIkNpdHVzIjp0cnVlLCJjbGlja2hvdXNlLWxvY2FsIChwYXJ0aXRpb25lZCkiOnRydWUsImNsaWNraG91c2UtbG9jYWwgKHNpbmdsZSkiOnRydWUsIkNsaWNrSG91c2UiOnRydWUsIkNsaWNrSG91c2UgKHR1bmVkKSI6dHJ1ZSwiQ2xpY2tIb3VzZSAoenN0ZCkiOnRydWUsIkNsaWNrSG91c2UgQ2xvdWQiOnRydWUsIkNsaWNrSG91c2UgKHdlYikiOnRydWUsIkNyYXRlREIiOnRydWUsIkRhdGFiZW5kIjp0cnVlLCJEYXRhRnVzaW9uIChzaW5nbGUpIjp0cnVlLCJBcGFjaGUgRG9yaXMiOnRydWUsIkRydWlkIjp0cnVlLCJEdWNrREIgKFBhcnF1ZXQpIjp0cnVlLCJEdWNrREIiOnRydWUsIkVsYXN0aWNzZWFyY2giOnRydWUsIkVsYXN0aWNzZWFyY2ggKHR1bmVkKSI6ZmFsc2UsIkdyZWVucGx1bSI6dHJ1ZSwiSGVhdnlBSSI6dHJ1ZSwiSHlkcmEiOnRydWUsIkluZm9icmlnaHQiOnRydWUsIktpbmV0aWNhIjp0cnVlLCJNYXJpYURCIENvbHVtblN0b3JlIjp0cnVlLCJNYXJpYURCIjpmYWxzZSwiTW9uZXREQiI6dHJ1ZSwiTW9uZ29EQiI6dHJ1ZSwiTXlTUUwgKE15SVNBTSkiOnRydWUsIk15U1FMIjp0cnVlLCJQaW5vdCI6dHJ1ZSwiUG9zdGdyZVNRTCI6dHJ1ZSwiUG9zdGdyZVNRTCAodHVuZWQpIjpmYWxzZSwiUXVlc3REQiAocGFydGl0aW9uZWQpIjp0cnVlLCJRdWVzdERCIjp0cnVlLCJSZWRzaGlmdCI6dHJ1ZSwiU2VsZWN0REIiOnRydWUsIlNpbmdsZVN0b3JlIjp0cnVlLCJTbm93Zmxha2UiOnRydWUsIlNRTGl0ZSI6dHJ1ZSwiU3RhclJvY2tzIjp0cnVlLCJUaW1lc2NhbGVEQiAoY29tcHJlc3Npb24pIjp0cnVlLCJUaW1lc2NhbGVEQiI6dHJ1ZX0sInR5cGUiOnsic3RhdGVsZXNzIjpmYWxzZSwibWFuYWdlZCI6ZmFsc2UsIkphdmEiOmZhbHNlLCJjb2x1bW4tb3JpZW50ZWQiOmZhbHNlLCJDKysiOmZhbHNlLCJNeVNRTCBjb21wYXRpYmxlIjpmYWxzZSwicm93LW9yaWVudGVkIjpmYWxzZSwiQyI6ZmFsc2UsIlBvc3RncmVTUUwgY29tcGF0aWJsZSI6ZmFsc2UsIkNsaWNrSG91c2UgZGVyaXZhdGl2ZSI6ZmFsc2UsImVtYmVkZGVkIjp0cnVlLCJzZXJ2ZXJsZXNzIjpmYWxzZSwiUnVzdCI6ZmFsc2UsInNlYXJjaCI6ZmFsc2UsImRvY3VtZW50IjpmYWxzZSwidGltZS1zZXJpZXMiOmZhbHNlfSwibWFjaGluZSI6eyJzZXJ2ZXJsZXNzIjp0cnVlLCIxNmFjdSI6dHJ1ZSwiTCI6dHJ1ZSwiTSI6dHJ1ZSwiUyI6dHJ1ZSwiWFMiOnRydWUsImM2YS5tZXRhbCwgNTAwZ2IgZ3AyIjp0cnVlLCJjNmEuNHhsYXJnZSwgNTAwZ2IgZ3AyIjp0cnVlLCJjNS40eGxhcmdlLCA1MDBnYiBncDIiOnRydWUsIjE2IHRocmVhZHMiOnRydWUsIjIwIHRocmVhZHMiOnRydWUsIjI0IHRocmVhZHMiOnRydWUsIjI4IHRocmVhZHMiOnRydWUsIjMwIHRocmVhZHMiOnRydWUsIjQ4IHRocmVhZHMiOnRydWUsIjYwIHRocmVhZHMiOnRydWUsIm01ZC4yNHhsYXJnZSI6dHJ1ZSwiYzVuLjR4bGFyZ2UsIDIwMGdiIGdwMiI6dHJ1ZSwiYzZhLjR4bGFyZ2UsIDE1MDBnYiBncDIiOnRydWUsImRjMi44eGxhcmdlIjp0cnVlLCJyYTMuMTZ4bGFyZ2UiOnRydWUsInJhMy40eGxhcmdlIjp0cnVlLCJyYTMueGxwbHVzIjp0cnVlLCJTMjQiOnRydWUsIlMyIjp0cnVlLCIyWEwiOnRydWUsIjNYTCI6dHJ1ZSwiNFhMIjp0cnVlLCJYTCI6dHJ1ZX0sImNsdXN0ZXJfc2l6ZSI6eyIxIjp0cnVlLCIyIjp0cnVlLCI0Ijp0cnVlLCI4Ijp0cnVlLCIxNiI6dHJ1ZSwiMzIiOnRydWUsIjY0Ijp0cnVlLCIxMjgiOnRydWUsInNlcnZlcmxlc3MiOnRydWUsInVuZGVmaW5lZCI6dHJ1ZX0sIm1ldHJpYyI6ImhvdCIsInF1ZXJpZXMiOlt0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlXX0=)
+
+- [chDB vs Pandas](https://colab.research.google.com/drive/1FogLujJ_-ds7RGurDrUnK-U0IW8a8Qd0)
+
+- [Benchmark on DataFrame: chDB Pandas DuckDB Polars](https://benchmark.clickhouse.com/#eyJzeXN0ZW0iOnsiQWxsb3lEQiI6dHJ1ZSwiQWxsb3lEQiAodHVuZWQpIjp0cnVlLCJBdGhlbmEgKHBhcnRpdGlvbmVkKSI6dHJ1ZSwiQXRoZW5hIChzaW5nbGUpIjp0cnVlLCJBdXJvcmEgZm9yIE15U1FMIjp0cnVlLCJBdXJvcmEgZm9yIFBvc3RncmVTUUwiOnRydWUsIkJ5Q29uaXR5Ijp0cnVlLCJCeXRlSG91c2UiOnRydWUsImNoREIgKERhdGFGcmFtZSkiOnRydWUsImNoREIgKFBhcnF1ZXQsIHBhcnRpdGlvbmVkKSI6dHJ1ZSwiY2hEQiI6dHJ1ZSwiQ2l0dXMiOnRydWUsIkNsaWNrSG91c2UgQ2xvdWQgKGF3cykiOnRydWUsIkNsaWNrSG91c2UgQ2xvdWQgKGF6dXJlKSI6dHJ1ZSwiQ2xpY2tIb3VzZSBDbG91ZCAoZ2NwKSI6dHJ1ZSwiQ2xpY2tIb3VzZSAoZGF0YSBsYWtlLCBwYXJ0aXRpb25lZCkiOnRydWUsIkNsaWNrSG91c2UgKGRhdGEgbGFrZSwgc2luZ2xlKSI6dHJ1ZSwiQ2xpY2tIb3VzZSAoUGFycXVldCwgcGFydGl0aW9uZWQpIjp0cnVlLCJDbGlja0hvdXNlIChQYXJxdWV0LCBzaW5nbGUpIjp0cnVlLCJDbGlja0hvdXNlICh3ZWIpIjp0cnVlLCJDbGlja0hvdXNlIjp0cnVlLCJDbGlja0hvdXNlICh0dW5lZCkiOnRydWUsIkNsaWNrSG91c2UgKHR1bmVkLCBtZW1vcnkpIjp0cnVlLCJDbG91ZGJlcnJ5Ijp0cnVlLCJDcmF0ZURCIjp0cnVlLCJDcnVuY2h5IEJyaWRnZSBmb3IgQW5hbHl0aWNzIChQYXJxdWV0KSI6dHJ1ZSwiRGF0YWJlbmQiOnRydWUsIkRhdGFGdXNpb24gKFBhcnF1ZXQsIHBhcnRpdGlvbmVkKSI6dHJ1ZSwiRGF0YUZ1c2lvbiAoUGFycXVldCwgc2luZ2xlKSI6dHJ1ZSwiQXBhY2hlIERvcmlzIjp0cnVlLCJEcnVpZCI6dHJ1ZSwiRHVja0RCIChEYXRhRnJhbWUpIjp0cnVlLCJEdWNrREIgKFBhcnF1ZXQsIHBhcnRpdGlvbmVkKSI6dHJ1ZSwiRHVja0RCIjp0cnVlLCJFbGFzdGljc2VhcmNoIjp0cnVlLCJFbGFzdGljc2VhcmNoICh0dW5lZCkiOmZhbHNlLCJHbGFyZURCIjp0cnVlLCJHcmVlbnBsdW0iOnRydWUsIkhlYXZ5QUkiOnRydWUsIkh5ZHJhIjp0cnVlLCJJbmZvYnJpZ2h0Ijp0cnVlLCJLaW5ldGljYSI6dHJ1ZSwiTWFyaWFEQiBDb2x1bW5TdG9yZSI6dHJ1ZSwiTWFyaWFEQiI6ZmFsc2UsIk1vbmV0REIiOnRydWUsIk1vbmdvREIiOnRydWUsIk1vdGhlcmR1Y2siOnRydWUsIk15U1FMIChNeUlTQU0pIjp0cnVlLCJNeVNRTCI6dHJ1ZSwiT3hsYSI6dHJ1ZSwiUGFuZGFzIChEYXRhRnJhbWUpIjp0cnVlLCJQYXJhZGVEQiAoUGFycXVldCwgcGFydGl0aW9uZWQpIjp0cnVlLCJQYXJhZGVEQiAoUGFycXVldCwgc2luZ2xlKSI6dHJ1ZSwiUGlub3QiOnRydWUsIlBvbGFycyAoRGF0YUZyYW1lKSI6dHJ1ZSwiUG9zdGdyZVNRTCAodHVuZWQpIjpmYWxzZSwiUG9zdGdyZVNRTCI6dHJ1ZSwiUXVlc3REQiAocGFydGl0aW9uZWQpIjp0cnVlLCJRdWVzdERCIjp0cnVlLCJSZWRzaGlmdCI6dHJ1ZSwiU2luZ2xlU3RvcmUiOnRydWUsIlNub3dmbGFrZSI6dHJ1ZSwiU1FMaXRlIjp0cnVlLCJTdGFyUm9ja3MiOnRydWUsIlRhYmxlc3BhY2UiOnRydWUsIlRlbWJvIE9MQVAgKGNvbHVtbmFyKSI6dHJ1ZSwiVGltZXNjYWxlREIgKGNvbXByZXNzaW9uKSI6dHJ1ZSwiVGltZXNjYWxlREIiOnRydWUsIlVtYnJhIjp0cnVlfSwidHlwZSI6eyJDIjpmYWxzZSwiY29sdW1uLW9yaWVudGVkIjpmYWxzZSwiUG9zdGdyZVNRTCBjb21wYXRpYmxlIjpmYWxzZSwibWFuYWdlZCI6ZmFsc2UsImdjcCI6ZmFsc2UsInN0YXRlbGVzcyI6ZmFsc2UsIkphdmEiOmZhbHNlLCJDKysiOmZhbHNlLCJNeVNRTCBjb21wYXRpYmxlIjpmYWxzZSwicm93LW9yaWVudGVkIjpmYWxzZSwiQ2xpY2tIb3VzZSBkZXJpdmF0aXZlIjpmYWxzZSwiZW1iZWRkZWQiOmZhbHNlLCJzZXJ2ZXJsZXNzIjpmYWxzZSwiZGF0YWZyYW1lIjp0cnVlLCJhd3MiOmZhbHNlLCJhenVyZSI6ZmFsc2UsImFuYWx5dGljYWwiOmZhbHNlLCJSdXN0IjpmYWxzZSwic2VhcmNoIjpmYWxzZSwiZG9jdW1lbnQiOmZhbHNlLCJzb21ld2hhdCBQb3N0Z3JlU1FMIGNvbXBhdGlibGUiOmZhbHNlLCJ0aW1lLXNlcmllcyI6ZmFsc2V9LCJtYWNoaW5lIjp7IjE2IHZDUFUgMTI4R0IiOnRydWUsIjggdkNQVSA2NEdCIjp0cnVlLCJzZXJ2ZXJsZXNzIjp0cnVlLCIxNmFjdSI6dHJ1ZSwiYzZhLjR4bGFyZ2UsIDUwMGdiIGdwMiI6dHJ1ZSwiTCI6dHJ1ZSwiTSI6dHJ1ZSwiUyI6dHJ1ZSwiWFMiOnRydWUsImM2YS5tZXRhbCwgNTAwZ2IgZ3AyIjp0cnVlLCIxOTJHQiI6dHJ1ZSwiMjRHQiI6dHJ1ZSwiMzYwR0IiOnRydWUsIjQ4R0IiOnRydWUsIjcyMEdCIjp0cnVlLCI5NkdCIjp0cnVlLCJkZXYiOnRydWUsIjcwOEdCIjp0cnVlLCJjNW4uNHhsYXJnZSwgNTAwZ2IgZ3AyIjp0cnVlLCJBbmFseXRpY3MtMjU2R0IgKDY0IHZDb3JlcywgMjU2IEdCKSI6dHJ1ZSwiYzUuNHhsYXJnZSwgNTAwZ2IgZ3AyIjp0cnVlLCJjNmEuNHhsYXJnZSwgMTUwMGdiIGdwMiI6dHJ1ZSwiY2xvdWQiOnRydWUsImRjMi44eGxhcmdlIjp0cnVlLCJyYTMuMTZ4bGFyZ2UiOnRydWUsInJhMy40eGxhcmdlIjp0cnVlLCJyYTMueGxwbHVzIjp0cnVlLCJTMiI6dHJ1ZSwiUzI0Ijp0cnVlLCIyWEwiOnRydWUsIjNYTCI6dHJ1ZSwiNFhMIjp0cnVlLCJYTCI6dHJ1ZSwiTDEgLSAxNkNQVSAzMkdCIjp0cnVlLCJjNmEuNHhsYXJnZSwgNTAwZ2IgZ3AzIjp0cnVlfSwiY2x1c3Rlcl9zaXplIjp7IjEiOnRydWUsIjIiOnRydWUsIjQiOnRydWUsIjgiOnRydWUsIjE2Ijp0cnVlLCIzMiI6dHJ1ZSwiNjQiOnRydWUsIjEyOCI6dHJ1ZSwic2VydmVybGVzcyI6dHJ1ZX0sIm1ldHJpYyI6ImhvdCIsInF1ZXJpZXMiOlt0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlXX0=)
 
 
-Recent meetups
-* [Happy Hour Open Source de Montréal](https://luma.com/clickh-o8up) - July 9th, 2026
-* [AI Builders Night NY](https://luma.com/clickh-lz8k) - July 8th, 2026
-* [AI Builders Offstage: Docker & ClickHouse](https://paris.aitinkerers.org/p/ait-raise-docker-for-ai)  - July 7th, 2026
-* [AI Demo Night SF](https://luma.com/clickh-2crf) - July 1st, 2026
-* [KL Meetup](https://luma.com/clickh-8cfv) - June 26th, 2026 
-* [Seattle Iceberg Meetup](https://luma.com/vwt2i2rs) - June 25th, 2026
+<div align="center">
+    <img src="https://github.com/chdb-io/chdb/raw/main/docs/_static/df_bench.png" width="800">
+</div>
+---
 
-## Recent Recordings
+## Documentation
+- For chDB specific examples and documentation refer to [chDB docs](https://clickhouse.com/docs/en/chdb)
+- For SQL syntax, please refer to [ClickHouse SQL Reference](https://clickhouse.com/docs/en/sql-reference/syntax)
+- For pandas-like DataStore API, see [chDB](https://github.com/chdb-io/chdb)
 
-* **Recent Meetup Videos**: [Meetup Playlist](https://www.youtube.com/playlist?list=PL0Z2YDlm0b3iNDUzpY1S3L_iV4nARda_U) Whenever possible recordings of the ClickHouse Community Meetups are edited and presented as individual talks. 
+---
 
-## Interested in joining ClickHouse and making it your full-time job?
+## AI Coding Agent Skill
 
-ClickHouse is a nice DBMS, and it's a good place to work.
+chDB provides an [AI Skill](agent/skills/using-chdb/) that teaches AI coding agents (Cursor, Claude Code, etc.) chDB's multi-source data analytics API. Install it so your AI assistant can write correct chDB code out of the box:
 
-Check out our **current openings** here: https://clickhouse.com/company/careers
+```bash
+curl -sL https://raw.githubusercontent.com/chdb-io/chdb/main/install_skill.sh | bash
+```
 
-Email: careers@clickhouse.com!
+---
+
+## Events
+
+- Demo chDB at [ClickHouse v23.7 livehouse!](https://t.co/todc13Kn19) and [Slides](https://docs.google.com/presentation/d/1ikqjOlimRa7QAg588TAB_Fna-Tad2WMg7_4AgnbQbFA/edit?usp=sharing)
+
+---
+
+## Contributing
+
+Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+- [ ] Help test and report bugs
+- [ ] Help improve documentation
+- [ ] Help improve code quality and performance
+
+### Bindings
+
+We welcome bindings for other languages, please refer to [bindings](bindings.md) for more details.
+
+---
+
+## Version Guide
+
+Please refer to [VERSION-GUIDE.md](VERSION-GUIDE.md) for more details.
+
+---
+
+## Paper
+
+- [ClickHouse - Lightning Fast Analytics for Everyone](https://www.vldb.org/pvldb/vol17/p3731-schulze.pdf)
+
+---
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE.txt) for more information.
+
+---
+
+## Acknowledgments
+
+chDB is mainly based on [ClickHouse](https://github.com/ClickHouse/ClickHouse) [^1]
+for trade mark and other reasons, I named it chDB.
+
+---
+
+## Contact
+
+- Discord: [https://discord.gg/D2Daa2fM5K](https://discord.gg/D2Daa2fM5K)
+- Email: auxten@clickhouse.com
+- Twitter: [@chdb](https://twitter.com/chdb_io)
+
+<br>
+
+[^1]: ClickHouse® is a trademark of ClickHouse Inc. All trademarks, service marks, and logos mentioned or depicted are the property of their respective owners. The use of any third-party trademarks, brand names, product names, and company names does not imply endorsement, affiliation, or association with the respective owners.

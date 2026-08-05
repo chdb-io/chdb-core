@@ -16,6 +16,8 @@
 #include <Poco/Runnable.h>
 #include <Poco/Thread.h>
 
+#include "ExtendedLogMessage.h"
+
 namespace ProfileEvents
 {
 using Event = StrongTypedef<size_t, struct EventTag>;

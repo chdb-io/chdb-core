@@ -31,6 +31,7 @@
 #include <Common/ErrorCodes.h>
 #include <Common/getNumberOfCPUCoresToUse.h>
 #include <Common/logger_useful.h>
+#include <Common/MemoryTrackerBlockerInThread.h>
 #include <Common/typeid_cast.h>
 #include <Common/TerminalSize.h>
 #include <Common/StringUtils.h>
@@ -180,6 +181,14 @@ namespace ErrorCodes
     extern const int CANNOT_CREATE_DIRECTORY;
     extern const int TIMEOUT_EXCEEDED;
 }
+
+/// Chunk-collecting output-format creator: registered by the wrapper
+/// (programs/local/) so that ClientBase can dispatch the magic
+/// "dataframe" output format to a raw Chunk-collection sink instead of
+/// any serializing IOutputFormat. Both USE_PYTHON=1 (DataFrame) and
+/// USE_PYTHON=0 (Arrow C Data Interface) consumers register the same
+/// ChunkCollectorOutputFormat creator here.
+static CustomOutputFormatCreator g_dataframe_format_creator = nullptr;
 
 }
 
@@ -590,6 +599,7 @@ void ClientBase::onData(Block & block, ASTPtr parsed_query)
         return;
 
     processed_rows_from_blocks += block.rows();
+    processed_bytes_from_blocks += block.bytes();
     /// Even if all blocks are empty, we still need to initialize the output stream to write empty resultset.
     initOutputFormat(block, parsed_query);
 
@@ -622,7 +632,12 @@ void ClientBase::onData(Block & block, ASTPtr parsed_query)
     }
 
     /// Received data block is immediately displayed to the user.
-    output_format->flush();
+    /// FIXME: this is a hack to avoid flush the writebuffer when we are inside chdb
+    /// which will cause memory doubled every call of onData.
+    /// Another possible solution is fix the logic in WriteBufferFromVector.nextImpl()
+    /// We could use `if (&inside_chdb == nullptr || !inside_chdb)` here but it will cause
+    /// clickhouse-local has different behavior with chdb, which will make debugging harder.
+    /// output_format->flush();
 
     /// Restore progress bar and progress table after data block.
     if (need_render_progress && tty_buf)
@@ -703,6 +718,21 @@ try
 {
     if (!output_format)
     {
+        if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
+        {
+            auto creator = getDataFrameFormatCreator();
+            if (creator)
+            {
+                collected_chunks_header = std::make_shared<const Block>(block);
+                output_format = creator(collected_chunks_header, collected_chunks);
+                return;
+            }
+            else
+            {
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "DataFrame output format creator not set");
+            }
+        }
+
         /// Ignore all results when fuzzing as they can be huge.
         if (query_fuzzer_runs)
         {
@@ -710,6 +740,7 @@ try
             return;
         }
 
+        WriteBuffer * out_buf = nullptr;
         WriteBuffer * underlying_buf = nullptr;
         if (!pager.empty() && !isEmbeeddedClient())
         {
@@ -727,29 +758,56 @@ try
         }
         else
         {
-            underlying_buf = std_out.get();
+            /// out_buf = std_out.get();
+            /// The underlying vector<char> will be freed by `free_result` from Python side.
+            /// When the input query contains multiple statements, such as "SELECT 1; SELECT 2". When executing "SELECT 2",
+            /// the query_result_memory corresponding to SELECT 1 has not been "stolen" by function stealQueryOutputVector,
+            /// so it remains non-empty.
+            if (query_result_memory)
+            {
+                query_result_buf = std::make_shared<WriteBufferFromVectorMTB<std::vector<char>>>(*query_result_memory, AppendModeTag{});
+            }
+            else
+            {
+                {
+                    MemoryTrackerBlockerInThread blocker;
+                    query_result_memory = new std::vector<char>(4096);
+                }
+                query_result_buf = std::make_shared<WriteBufferFromVectorMTB<std::vector<char>>>(*query_result_memory);
+            }
+
+            /// chdb: results go directly into the in-memory vector instead of through the
+            /// FlushCallbackWriteBuffer wrapper below. The wrapper exists to clear tty
+            /// progress output before flushes (irrelevant for an in-memory result), and it
+            /// would keep data buffered until it is finalized in resetOutput() - the
+            /// streaming fetch path (resetOutputFormat + stealQueryOutputVector) never
+            /// finalizes it, so the tail of every streamed batch would be lost.
+            out_buf = query_result_buf.get();
         }
 
-        /// Use the flush callback wrapper to prevent progress flickering
-        std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
-            underlying_buf,
-            [this]()
-            {
-                /// If results are written INTO OUTFILE, we can avoid clearing progress to avoid flicker.
-                if (need_render_progress && tty_buf && (!select_into_file || select_into_file_and_stdout))
+        if (underlying_buf)
+        {
+            /// Use the flush callback wrapper to prevent progress flickering
+            std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
+                underlying_buf,
+                [this]()
                 {
-                    std::unique_lock lock(tty_mutex);
-                    progress_indication.clearProgressOutput(*tty_buf, lock);
+                    /// If results are written INTO OUTFILE, we can avoid clearing progress to avoid flicker.
+                    if (need_render_progress && tty_buf && (!select_into_file || select_into_file_and_stdout))
+                    {
+                        std::unique_lock lock(tty_mutex);
+                        progress_indication.clearProgressOutput(*tty_buf, lock);
+                    }
+                    if (need_render_progress_table && tty_buf && (!select_into_file || select_into_file_and_stdout))
+                    {
+                        std::unique_lock lock(tty_mutex);
+                        progress_table.clearTableOutput(*tty_buf, lock);
+                    }
                 }
-                if (need_render_progress_table && tty_buf && (!select_into_file || select_into_file_and_stdout))
-                {
-                    std::unique_lock lock(tty_mutex);
-                    progress_table.clearTableOutput(*tty_buf, lock);
-                }
-            }
-        );
+            );
 
-        WriteBuffer * out_buf = std_out_wrapper.get();
+            out_buf = std_out_wrapper.get();
+        }
 
         select_into_file = false;
         select_into_file_and_stdout = false;
@@ -879,7 +937,8 @@ try
             output_format = client_context->getOutputFormat(
                 current_format, out_file_buf ? *out_file_buf : *out_buf, block, format_settings);
 
-        output_format->setAutoFlush();
+        /// See comment above `output_format->flush();`
+        /// output_format->setAutoFlush();
 
         /// Replay progress that was accumulated before the output format was created
         /// (e.g. from scalar subqueries evaluated during query analysis on the server).
@@ -887,23 +946,25 @@ try
         if (replayed.read_rows || replayed.read_bytes)
             output_format->onProgress(replayed);
 
-        if ((!select_into_file || select_into_file_and_stdout)
-            && stdout_is_a_tty
-            && stdin_is_a_tty
-            && !FormatFactory::instance().checkIfOutputFormatIsTTYFriendly(current_format))
-        {
-            stopKeystrokeInterceptorIfExists();
-            SCOPE_EXIT({ startKeystrokeInterceptorIfExists(); });
+        // chdb_spec
+        /// if ((!select_into_file || select_into_file_and_stdout)
+        ///    && stdout_is_a_tty
+        ///   && stdin_is_a_tty
+        ///    && !FormatFactory::instance().checkIfOutputFormatIsTTYFriendly(current_format))
+        /// {
+        ///    stopKeystrokeInterceptorIfExists();
+        ///    SCOPE_EXIT({ startKeystrokeInterceptorIfExists(); });
+        // chdb_spec
 
-            const auto question = fmt::format(R"(The requested output format `{}` is binary and could produce side-effects when output directly into the terminal.
-If you want to output it into a file, use the "INTO OUTFILE" modifier in the query or redirect the output of the shell command.
-Do you want to output it anyway? [y/N] )", current_format);
+        ///    const auto question = fmt::format(R"(The requested output format `{}` is binary and could produce side-effects when output directly into the terminal.
+        /// If you want to output it into a file, use the "INTO OUTFILE" modifier in the query or redirect the output of the shell command.
+        /// Do you want to output it anyway? [y/N] )", current_format);
 
-            if (!ask(question, *std_in, *std_out))
-                output_format = std::make_shared<NullOutputFormat>(std::make_shared<const Block>(block));
+        ///    if (!ask(question, *std_in, *std_out))
+        ///        output_format = std::make_shared<NullOutputFormat>(block);
 
-            *std_out << '\n';
-        }
+        ///    *std_out << '\n';
+        /// }
     }
 }
 catch (...)
@@ -1000,6 +1061,12 @@ bool ClientBase::isFileDescriptorSuitableForInput(int fd)
     struct stat file_stat{};
     return fstat(fd, &file_stat) == 0
         && (S_ISREG(file_stat.st_mode) || S_ISLNK(file_stat.st_mode));
+}
+
+void ClientBase::setDefaultFormat(const String & format)
+{
+    default_output_format = format;
+    is_default_format = false;
 }
 
 void ClientBase::setDefaultFormatsAndCompressionFromConfiguration()
@@ -1259,6 +1326,23 @@ bool ClientBase::processTextAsSingleQuery(const String & full_query)
     if (!parsed_query)
         return false;
 
+    if (!streaming_query_context)
+    {
+    }
+    else if (streaming_query_context->is_streaming_query && parsed_query->as<ASTSelectWithUnionQuery>())
+    {
+        streaming_query_context->is_streaming_query = true;
+        streaming_query_context->full_query = full_query;
+        streaming_query_context->parsed_query = parsed_query;
+    }
+    else
+    {
+        streaming_query_context->is_streaming_query = false;
+        /// Prefix matched by chdb-adbc.cpp (kErrorStreamingNotSupportedPrefix
+        /// in chdb-internal.h) — keep in sync when rewording.
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Streaming query is not supported for query: {}", full_query);
+    }
+
     /// Query will be parsed before checking the result because error does not
     /// always means a problem, i.e. if table already exists, and it is no a
     /// huge problem if suggestion will be added even on error, since this is
@@ -1468,6 +1552,9 @@ void ClientBase::processOrdinaryQuery(String query, ASTPtr parsed_query)
 
                 if (send_external_tables)
                     sendExternalTables(parsed_query);
+
+                if (streaming_query_context && streaming_query_context->is_streaming_query)
+                    break;
             }
             catch (const NetException &)
             {
@@ -1668,6 +1755,34 @@ bool ClientBase::receiveAndProcessPacket(ASTPtr parsed_query, bool cancelled_)
     }
 }
 
+void ClientBase::setProgressCallback(ProgressCallback callback)
+{
+    std::lock_guard lock(progress_callback_mutex);
+    progress_callback = std::move(callback);
+}
+
+bool ClientBase::hasProgressCallback() const
+{
+    std::lock_guard lock(progress_callback_mutex);
+    return static_cast<bool>(progress_callback);
+}
+
+void ClientBase::setProgressValuesCallback(ProgressValuesCallback callback)
+{
+    std::lock_guard lock(progress_values_callback_mutex);
+    progress_values_callback = std::move(callback);
+    if (!progress_values_callback)
+    {
+        std::lock_guard accumulated_lock(progress_values_accumulated_mutex);
+        progress_values_accumulated.reset();
+    }
+}
+
+bool ClientBase::hasProgressValuesCallback() const
+{
+    std::lock_guard lock(progress_values_callback_mutex);
+    return static_cast<bool>(progress_values_callback);
+}
 
 void ClientBase::onProgress(const Progress & value)
 {
@@ -1688,6 +1803,31 @@ void ClientBase::onProgress(const Progress & value)
         output_format->onProgress(value);
     else
         pending_progress.incrementPiecewiseAtomically(value);
+
+    ProgressCallback callback;
+    {
+        std::lock_guard lock(progress_callback_mutex);
+        callback = progress_callback;
+    }
+    if (callback)
+        callback(value);
+
+    ProgressValuesCallback values_callback;
+    {
+        std::lock_guard lock(progress_values_callback_mutex);
+        values_callback = progress_values_callback;
+    }
+    if (values_callback)
+    {
+        ProgressValues accumulated_values;
+        {
+            std::lock_guard lock(progress_values_accumulated_mutex);
+            progress_values_accumulated.incrementPiecewiseAtomically(value);
+            accumulated_values = progress_values_accumulated.getValues();
+        }
+        auto elapsed_ns = static_cast<UInt64>(progress_indication.elapsedSeconds() * 1000000000.0);
+        values_callback(accumulated_values, elapsed_ns);
+    }
 
     if (need_render_progress && tty_buf)
     {
@@ -1753,7 +1893,7 @@ void ClientBase::onProfileEvents(Block & block)
     if (rows == 0)
         return;
 
-    if (getName() == "local" || isEmbeeddedClient() || server_revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_INCREMENTAL_PROFILE_EVENTS)
+    if (getName() == "chdb" || isEmbeeddedClient() || server_revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_INCREMENTAL_PROFILE_EVENTS)
     {
         const auto & array_thread_id = typeid_cast<const ColumnUInt64 &>(*block.getByName("thread_id").column).getData();
         const auto & names = typeid_cast<const ColumnString &>(*block.getByName("name").column);
@@ -1895,6 +2035,8 @@ void ClientBase::resetOutput()
 
     out_logs_buf.reset();
 
+    query_result_buf.reset();
+
     if (pager_cmd)
     {
         pager_cmd->in.close();
@@ -1981,6 +2123,21 @@ bool isStdinNotEmptyAndValid(ReadBuffer & std_in)
 {
     try
     {
+        // Use non-blocking check for stdin to avoid hanging
+        if (auto * fd_buffer = typeid_cast<ReadBufferFromFileDescriptor *>(&std_in))
+        {
+            int fd = fd_buffer->getFD();
+            if (fd == STDIN_FILENO)
+            {
+                int flags = fcntl(fd, F_GETFL);
+                if (flags != -1)
+                {
+                    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+                    SCOPE_EXIT({ fcntl(fd, F_SETFL, flags); });
+                    return !std_in.eof();
+                }
+            }
+        }
         return !std_in.eof();
     }
     catch (const Exception & e)
@@ -2010,7 +2167,7 @@ void ClientBase::processInsertQuery(String query, ASTPtr parsed_query)
 
     /// Process the query that requires transferring data blocks to the server.
     const auto & parsed_insert_query = parsed_query->as<ASTInsertQuery &>();
-    if ((!parsed_insert_query.data && !parsed_insert_query.infile) && (is_interactive || (!stdin_is_a_tty && !isStdinNotEmptyAndValid(*std_in))))
+    if ((!parsed_insert_query.data && !parsed_insert_query.infile) && (true /* is_interactive || (!stdin_is_a_tty && !isStdinNotEmptyAndValid(*std_in)) */))
     {
         const auto & settings = client_context->getSettingsRef();
         if (settings[Setting::throw_if_no_data_to_insert])
@@ -2335,6 +2492,7 @@ void ClientBase::sendDataFromPipe(Pipe && pipe, ASTPtr parsed_query, bool have_m
         {
             connection->sendData(block, /* name */"", /* scalar */false);
             processed_rows_from_blocks += block.rows();
+            processed_bytes_from_blocks += block.bytes();
         }
     }
 
@@ -2510,9 +2668,14 @@ void ClientBase::processParsedSingleQuery(
     }
 
     processed_rows_from_blocks = 0;
+    processed_bytes_from_blocks = 0;
     processed_rows_from_progress = 0;
     written_first_block = false;
     progress_indication.resetProgress();
+    {
+        std::lock_guard lock(progress_values_accumulated_mutex);
+        progress_values_accumulated.reset();
+    }
     progress_table.resetTable();
     profile_events.watch.restart();
 
@@ -2613,6 +2776,9 @@ void ClientBase::processParsedSingleQuery(
         else
             processOrdinaryQuery(query, parsed_query);
     }
+
+    if (streaming_query_context && streaming_query_context->is_streaming_query)
+        return;
 
     /// Do not change context (current DB, settings) in case of an exception.
     if (!have_error)
@@ -3404,7 +3570,216 @@ bool ClientBase::processQueryText(const String & text)
         return true;
     }
 
+    cancelled = false;
+    const bool is_streaming_query = streaming_query_context && streaming_query_context->is_streaming_query;
+    if (is_streaming_query)
+    {
+        processTextAsSingleQuery(text);
+        return true;
+    }
+
     return executeMultiQuery(text);
+}
+
+
+bool ClientBase::processStreamingQuery(void * streaming_result_, bool is_canceled)
+{
+    auto processed_rows = std::max(processed_rows_from_blocks, processed_rows_from_progress);
+    const auto old_processed_rows = processed_rows;
+
+    try
+    {
+        if (!streaming_query_context)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "There is no streaming query to process");
+
+        if (streaming_query_context->streaming_result != streaming_result_)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Mismatch between streaming result and query context");
+
+        resetOutputFormat();
+
+        /// The query-level SETTINGS clause (e.g. date_time_output_format = 'iso')
+        /// was applied to client_context in processParsedSingleQuery, but its
+        /// SCOPE_EXIT rolled the settings back before this deferred fetch runs.
+        /// Re-apply it from the stored AST so initOutputFormat() (which builds the
+        /// output format from getFormatSettings(client_context)) formats the result
+        /// as requested, then restore to avoid leaking into later statements on
+        /// this connection. Mirrors the streaming-insert path in ChdbClient.
+        Settings old_settings = client_context->getSettingsRef();
+        SCOPE_EXIT_SAFE({
+            try
+            {
+                /// Park ParallelFormatting threads before restoring settings:
+                /// they can read settings from the context, which would race
+                /// with setSettings (mirrors processParsedSingleQuery). This
+                /// must run before setSettings even when receiveResult threw,
+                /// so it lives in the scope-exit rather than after receiveResult.
+                resetOutputFormat();
+            }
+            catch (...)
+            {
+                if (!have_error)
+                {
+                    client_exception = std::make_unique<Exception>(getCurrentExceptionMessageAndPattern(print_stack_trace), getCurrentExceptionCode());
+                    have_error = true;
+                }
+            }
+            client_context->setSettings(old_settings);
+        });
+        InterpreterSetQuery::applySettingsFromQuery(streaming_query_context->parsed_query, client_context);
+
+        receiveResult(streaming_query_context->parsed_query, is_canceled);
+    }
+    catch (...)
+    {
+        // Surprisingly, this is a client error. A server error would
+        // have been reported without throwing (see onReceiveExceptionFromServer()).
+        if (!have_error)
+        {
+            client_exception = std::make_unique<Exception>(getCurrentExceptionMessageAndPattern(print_stack_trace), getCurrentExceptionCode());
+            have_error = true;
+        }
+    }
+
+    if (have_error)
+    {
+        processError(streaming_query_context->full_query);
+        return false;
+    }
+
+    processed_rows = std::max(processed_rows_from_blocks, processed_rows_from_progress);
+
+    if (old_processed_rows == processed_rows)
+    {
+        /// Always print last block (if it was not printed already)
+        if (!profile_events.last_block.empty())
+        {
+            initLogsOutputStream();
+            if (need_render_progress && tty_buf)
+            {
+                std::unique_lock lock(tty_mutex);
+                progress_indication.clearProgressOutput(*tty_buf, lock);
+            }
+            logs_out_stream->writeProfileEvents(profile_events.last_block);
+            logs_out_stream->flush();
+
+            profile_events.last_block = {};
+        }
+
+        if (is_interactive)
+        {
+            output_stream << std::endl;
+            if (!server_exception || processed_rows != 0)
+                output_stream << processed_rows << " row" << (processed_rows == 1 ? "" : "s") << " in set. ";
+            output_stream << "Elapsed: " << progress_indication.elapsedSeconds() << " sec. ";
+            progress_indication.writeFinalProgress();
+            output_stream << std::endl << std::endl;
+        }
+        else
+        {
+            const auto & config = getClientConfiguration();
+            if (config.getBool("print-time-to-stderr", false))
+                error_stream << progress_indication.elapsedSeconds() << "\n";
+
+            const auto & print_memory_mode = config.getString("print-memory-to-stderr", "");
+            auto peak_memeory_usage = std::max<Int64>(progress_indication.getMemoryUsage().peak, 0);
+            if (print_memory_mode == "default")
+                error_stream << peak_memeory_usage << "\n";
+            else if (print_memory_mode == "readable")
+                error_stream << formatReadableSizeWithBinarySuffix(peak_memeory_usage) << "\n";
+        }
+
+        if (!is_interactive && getClientConfiguration().getBool("print-num-processed-rows", false))
+        {
+            output_stream << "Processed rows: " << processed_rows << "\n";
+        }
+    }
+
+    return true;
+}
+
+
+void ClientBase::resetOutputFormat()
+{
+    try
+    {
+        if (output_format)
+            output_format->finalize();
+    }
+    catch (...)
+    {
+        output_format.reset();
+        throw;
+    }
+
+    output_format.reset();
+}
+
+
+void ClientBase::receiveResult(ASTPtr parsed_query, bool is_canceled)
+{
+    const auto receive_timeout = connection_parameters.timeouts.receive_timeout;
+    constexpr size_t default_poll_interval = 1000000; /// in microseconds
+    constexpr size_t min_poll_interval = 5000; /// in microseconds
+    const size_t poll_interval
+        = std::max(min_poll_interval, std::min<size_t>(receive_timeout.totalMicroseconds(), default_poll_interval));
+
+    std::exception_ptr local_format_error;
+
+    if (is_canceled)
+        cancelQuery();
+
+    while (true)
+    {
+        while (true)
+        {
+            if (connection->poll(poll_interval))
+                break;
+        }
+
+        try
+        {
+            auto processed_rows = std::max(processed_rows_from_blocks, processed_rows_from_progress);
+            const auto old_processed_rows = processed_rows;
+
+            if (!receiveAndProcessPacket(parsed_query, cancelled))
+                break;
+
+            if (is_canceled)
+                continue;
+
+            processed_rows = std::max(processed_rows_from_blocks, processed_rows_from_progress);
+            if (processed_rows > old_processed_rows)
+                break;
+        }
+        catch (const LocalFormatError &)
+        {
+            /// Remember the first exception.
+            if (!local_format_error)
+                local_format_error = std::current_exception();
+            connection->sendCancel();
+        }
+    }
+
+    if (local_format_error)
+        std::rethrow_exception(local_format_error);
+}
+
+
+bool ClientBase::parseQueryTextWithOutputFormat(const String & query, const String & format)
+{
+    // Set output format if specified
+    if (!format.empty())
+    {
+        client_context->setDefaultFormat(format);
+        setDefaultFormat(format);
+    }
+
+    // Check connection and reconnect if needed
+    if (!connection->checkConnected(connection_parameters.timeouts))
+        connect();
+
+    // Execute query
+    return processQueryText(query);
 }
 
 
@@ -4377,6 +4752,22 @@ void ClientBase::runInteractive()
 }
 
 
+void ClientBase::runBackground()
+{
+    initQueryIdFormats();
+
+    // Initialize DateLUT here to avoid counting time spent here as query execution time.
+    (void)DateLUT::instance().getTimeZone();
+
+    if (home_path.empty())
+    {
+        const char * home_path_cstr = getenv("HOME"); // NOLINT(concurrency-mt-unsafe)
+        if (home_path_cstr)
+            home_path = home_path_cstr;
+    }
+}
+
+
 bool ClientBase::processMultiQueryFromFile(const String & file_name)
 {
     if (isEmbeeddedClient())
@@ -4498,6 +4889,16 @@ void ClientBase::clearTerminal()
 void ClientBase::showClientVersion()
 {
     output_stream << VERSION_NAME << " " + getName() + " version " << VERSION_STRING << VERSION_OFFICIAL << "." << std::endl;
+}
+
+void ClientBase::setDataFrameFormatCreator(CustomOutputFormatCreator creator)
+{
+    g_dataframe_format_creator = std::move(creator);
+}
+
+CustomOutputFormatCreator ClientBase::getDataFrameFormatCreator()
+{
+    return g_dataframe_format_creator;
 }
 
 }

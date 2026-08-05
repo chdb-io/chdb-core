@@ -59,6 +59,11 @@ namespace Coordination
 
 struct OvercommitTracker;
 
+namespace CHDB
+{
+class PythonTableCache;
+}
+
 namespace DB
 {
 
@@ -339,6 +344,22 @@ struct SharedContextHolder
 
 private:
     std::unique_ptr<ContextSharedPart> shared;
+};
+
+struct SharedPtrContextHolder
+{
+    ~SharedPtrContextHolder();
+    SharedPtrContextHolder();
+    explicit SharedPtrContextHolder(ContextSharedPart *);
+    SharedPtrContextHolder(SharedPtrContextHolder &&) noexcept;
+
+    SharedPtrContextHolder & operator=(SharedPtrContextHolder &&) noexcept;
+
+    ContextSharedPart * get() const { return shared; }
+    void reset();
+
+private:
+    ContextSharedPart * shared;
 };
 
 class ContextSharedMutex : public SharedMutexHelper<ContextSharedMutex>
@@ -719,6 +740,14 @@ protected:
     mutable std::mutex mutex_shared_context;    /// mutex to avoid accessing destroyed shared context pointer
                                                 /// some Context methods can be called after the shared context is destroyed
                                                 /// example, Context::handleCrash() method - called from signal handler
+
+    /// Always present: sizeof(ContextData) must be identical in USE_PYTHON=0 and USE_PYTHON=1
+    /// builds because src/ and programs/local/ compile with different flags.  A sizeof difference
+    /// causes wrong offsets for any member after this point (e.g. mutex_shared_context moved here
+    /// would cause pthread_mutex_lock(0x0)).  bool and shared_ptr<forward-decl> are safe without
+    /// Python headers; null shared_ptr destruction never dereferences the pointed-to type.
+    bool is_json_supported = true;
+    std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
 };
 
 /** A set of known objects that can be used in the query.
@@ -747,6 +776,7 @@ public:
     static ContextMutablePtr createCopy(const ContextMutablePtr & other);
     static ContextMutablePtr createCopy(const ContextPtr & other);
     static SharedContextHolder createShared();
+    static SharedPtrContextHolder createSharedHolder();
 
 
     ~Context();
@@ -849,6 +879,12 @@ public:
     /// Global application configuration settings.
     void setConfig(const ConfigurationPtr & config);
     const Poco::Util::AbstractConfiguration & getConfigRef() const;
+#if defined(USE_PYTHON) && USE_PYTHON
+    bool isJSONSupported() const { return is_json_supported; }
+    void setJSONSupport(bool support) { is_json_supported = support; }
+    CHDB::PythonTableCache * getPythonTableCache() const { return py_table_cache.get(); }
+    void setPythonTableCache(const std::shared_ptr<CHDB::PythonTableCache> & cache) { this->py_table_cache = cache; }
+#endif
 
     AccessControl & getAccessControl();
     const AccessControl & getAccessControl() const;

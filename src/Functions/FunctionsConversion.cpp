@@ -2991,12 +2991,24 @@ FunctionCast::WrapperType FunctionCast::prepareImpl(const DataTypePtr & from_typ
         using Types = std::decay_t<decltype(types)>;
         using ToDataType = typename Types::LeftType;
 
+#if defined(CHDB_LITE) && CHDB_LITE
+        // chdb-core-lite: drop UInt128/256, Int128/256, BFloat16. SQL using
+        // these types fails at the wrapper-dispatch step (no wrapper, raises
+        // CANNOT_CONVERT_TYPE), matching the arithmetic/comparison trim.
+        if constexpr (is_any_of<ToDataType,
+            DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
+            DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+            DataTypeFloat32, DataTypeFloat64,
+            DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeTime,
+            DataTypeUUID, DataTypeIPv4, DataTypeIPv6>)
+#else
         if constexpr (is_any_of<ToDataType,
             DataTypeUInt16, DataTypeUInt32, DataTypeUInt64, DataTypeUInt128, DataTypeUInt256,
             DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64, DataTypeInt128, DataTypeInt256,
             DataTypeBFloat16, DataTypeFloat32, DataTypeFloat64,
             DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeTime,
             DataTypeUUID, DataTypeIPv4, DataTypeIPv6>)
+#endif
         {
             ret = createWrapper(from_type, checkAndGetDataType<ToDataType>(to_type.get()), requested_result_is_nullable);
             return true;
@@ -3016,10 +3028,16 @@ FunctionCast::WrapperType FunctionCast::prepareImpl(const DataTypePtr & from_typ
             ret = createEnumWrapper(from_type, checkAndGetDataType<ToDataType>(to_type.get()));
             return true;
         }
+#if defined(CHDB_LITE) && CHDB_LITE
+        if constexpr (is_any_of<ToDataType,
+            DataTypeDecimal<Decimal32>, DataTypeDecimal<Decimal64>,
+            DataTypeDateTime64, DataTypeTime64>)
+#else
         if constexpr (is_any_of<ToDataType,
             DataTypeDecimal<Decimal32>, DataTypeDecimal<Decimal64>,
             DataTypeDecimal<Decimal128>, DataTypeDecimal<Decimal256>,
             DataTypeDateTime64, DataTypeTime64>)
+#endif
         {
             ret = createDecimalWrapper(from_type, checkAndGetDataType<ToDataType>(to_type.get()), requested_result_is_nullable);
             return true;
@@ -3223,12 +3241,21 @@ FunctionBasePtr createFunctionBaseCast(
         }))
     {
     }
+#if defined(CHDB_LITE) && CHDB_LITE
+    else if (castTypeToEither<
+        DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
+        DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+        DataTypeFloat32, DataTypeFloat64,
+        DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeDateTime64, DataTypeTime, DataTypeTime64,
+        DataTypeString>(monotonicity_result_type.get(), [&](auto & type)
+#else
     else if (castTypeToEither<
         DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64, DataTypeUInt128, DataTypeUInt256,
         DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64, DataTypeInt128, DataTypeInt256,
         DataTypeFloat32, DataTypeFloat64,
         DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeDateTime64, DataTypeTime, DataTypeTime64,
         DataTypeString>(monotonicity_result_type.get(), [&](auto & type)
+#endif
         {
             monotonicity = detail::FunctionTo<std::decay_t<decltype(type)>>::Type::Monotonic::get;
             return true;

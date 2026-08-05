@@ -1690,6 +1690,15 @@ using TupleOrArrayFunctionL2DistanceTransposedQuantized = TupleOrArrayFunction<L
 using TupleOrArrayFunctionCosineDistanceTransposedQuantized = TupleOrArrayFunction<CosineDistanceTransposedQuantizedTraits>;
 using TupleOrArrayFunctionDotProductTransposedQuantized = TupleOrArrayFunction<DotProductTransposedQuantizedTraits>;
 
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: skip vector distance/norm/normalize/transposed functions.
+/// Array variants are already stubbed (see src/Functions/array/CMakeLists.txt);
+/// tuple variants pull in heavy template instantiations.
+#define CHDB_LITE_VEC(call) (void)0
+#else
+#define CHDB_LITE_VEC(call) call
+#endif
+
 REGISTER_FUNCTION(VectorFunctions)
 {
     /// tuplePlus documentation
@@ -2128,8 +2137,8 @@ Returns the sum of the products of the corresponding elements.
     FunctionDocumentation::Category category_dotProduct = FunctionDocumentation::Category::Tuple;
     FunctionDocumentation documentation_dotProduct = {description_dotProduct, syntax_dotProduct, arguments_dotProduct, {}, returned_value_dotProduct, examples_dotProduct, introduced_in_dotProduct, category_dotProduct};
 
-    factory.registerFunction<TupleOrArrayFunctionDotProduct>(documentation_dotProduct);
-    factory.registerAlias("scalarProduct", TupleOrArrayFunctionDotProduct::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionDotProduct>(documentation_dotProduct));
+    CHDB_LITE_VEC(factory.registerAlias("scalarProduct", TupleOrArrayFunctionDotProduct::name, FunctionFactory::Case::Insensitive));
 
     /// L1Norm documentation
     FunctionDocumentation::Description description_l1_norm = R"(
@@ -2156,7 +2165,7 @@ SELECT L1Norm((1, 2))
     FunctionDocumentation::Category category_l1_norm = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l1_norm = {description_l1_norm, syntax_l1_norm, arguments_l1_norm, {}, returned_value_l1_norm, examples_l1_norm, introduced_in_l1_norm, category_l1_norm};
 
-    factory.registerFunction<TupleOrArrayFunctionL1Norm>(documentation_l1_norm);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL1Norm>(documentation_l1_norm));
 
     /// L2Norm documentation
     FunctionDocumentation::Description description_l2_norm = R"(
@@ -2183,7 +2192,7 @@ SELECT L2Norm((1, 2))
     FunctionDocumentation::Category category_l2_norm = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l2_norm = {description_l2_norm, syntax_l2_norm, arguments_l2_norm, {}, returned_value_l2_norm, examples_l2_norm, introduced_in_l2_norm, category_l2_norm};
 
-    factory.registerFunction<TupleOrArrayFunctionL2Norm>(documentation_l2_norm);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2Norm>(documentation_l2_norm));
 
     /// L2SquaredNorm documentation
     FunctionDocumentation::Description description_l2_squared_norm = R"(
@@ -2210,7 +2219,7 @@ SELECT L2SquaredNorm((1, 2))
     FunctionDocumentation::Category category_l2_squared_norm = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l2_squared_norm = {description_l2_squared_norm, syntax_l2_squared_norm, arguments_l2_squared_norm, {}, returned_value_l2_squared_norm, examples_l2_squared_norm, introduced_in_l2_squared_norm, category_l2_squared_norm};
 
-    factory.registerFunction<TupleOrArrayFunctionL2SquaredNorm>(documentation_l2_squared_norm);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2SquaredNorm>(documentation_l2_squared_norm));
 
     /// LinfNorm documentation
     FunctionDocumentation::Description description_linf_norm = R"(
@@ -2237,7 +2246,7 @@ SELECT LinfNorm((1, -2))
     FunctionDocumentation::Category category_linf_norm = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_linf_norm = {description_linf_norm, syntax_linf_norm, arguments_linf_norm, {}, returned_value_linf_norm, examples_linf_norm, introduced_in_linf_norm, category_linf_norm};
 
-    factory.registerFunction<TupleOrArrayFunctionLinfNorm>(documentation_linf_norm);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionLinfNorm>(documentation_linf_norm));
 
     /// LpNorm documentation
     FunctionDocumentation::Description description_lp_norm = R"(
@@ -2270,14 +2279,14 @@ SELECT LpNorm((1, -2), 2)
     FunctionDocumentation::Category category_lp_norm = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_lp_norm = {description_lp_norm, syntax_lp_norm, arguments_lp_norm, {}, returned_value_lp_norm, examples_lp_norm, introduced_in_lp_norm, category_lp_norm};
 
-    factory.registerFunction<TupleOrArrayFunctionLpNorm>(documentation_lp_norm);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionLpNorm>(documentation_lp_norm));
 
     // Register aliases for norm functions
-    factory.registerAlias("normL1", TupleOrArrayFunctionL1Norm::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("normL2", TupleOrArrayFunctionL2Norm::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("normL2Squared", TupleOrArrayFunctionL2SquaredNorm::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("normLinf", TupleOrArrayFunctionLinfNorm::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("normLp", FunctionLpNorm::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerAlias("normL1", TupleOrArrayFunctionL1Norm::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("normL2", TupleOrArrayFunctionL2Norm::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("normL2Squared", TupleOrArrayFunctionL2SquaredNorm::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("normLinf", TupleOrArrayFunctionLinfNorm::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("normLp", FunctionLpNorm::name, FunctionFactory::Case::Insensitive));
 
     /// L1Distance documentation
     FunctionDocumentation::Description description_l1_distance = R"(
@@ -2305,7 +2314,7 @@ SELECT L1Distance((1, 2), (2, 3))
     FunctionDocumentation::Category category_l1_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l1_distance = {description_l1_distance, syntax_l1_distance, arguments_l1_distance, {}, returned_value_l1_distance, examples_l1_distance, introduced_in_l1_distance, category_l1_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionL1Distance>(documentation_l1_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL1Distance>(documentation_l1_distance));
 
     /// L2Distance documentation
     FunctionDocumentation::Description description_l2_distance = R"(
@@ -2333,7 +2342,7 @@ SELECT L2Distance((1, 2), (2, 3))
     FunctionDocumentation::Category category_l2_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l2_distance = {description_l2_distance, syntax_l2_distance, arguments_l2_distance, {}, returned_value_l2_distance, examples_l2_distance, introduced_in_l2_distance, category_l2_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionL2Distance>(documentation_l2_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2Distance>(documentation_l2_distance));
 
     /// L2SquaredDistance documentation
     FunctionDocumentation::Description description_l2_squared_distance = R"(
@@ -2361,7 +2370,7 @@ SELECT L2SquaredDistance([1, 2, 3], [0, 0, 0])
     FunctionDocumentation::Category category_l2_squared_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l2_squared_distance = {description_l2_squared_distance, syntax_l2_squared_distance, arguments_l2_squared_distance, {}, returned_value_l2_squared_distance, examples_l2_squared_distance, introduced_in_l2_squared_distance, category_l2_squared_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionL2SquaredDistance>(documentation_l2_squared_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2SquaredDistance>(documentation_l2_squared_distance));
 
     /// LinfDistance documentation
     FunctionDocumentation::Description description_linf_distance = R"(
@@ -2389,7 +2398,7 @@ SELECT LinfDistance((1, 2), (2, 3))
     FunctionDocumentation::Category category_linf_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_linf_distance = {description_linf_distance, syntax_linf_distance, arguments_linf_distance, {}, returned_value_linf_distance, examples_linf_distance, introduced_in_linf_distance, category_linf_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionLinfDistance>(documentation_linf_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionLinfDistance>(documentation_linf_distance));
 
     /// LpDistance documentation
     FunctionDocumentation::Description description_lp_distance = R"(
@@ -2418,7 +2427,7 @@ SELECT LpDistance((1, 2), (2, 3), 3)
     FunctionDocumentation::Category category_lp_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_lp_distance = {description_lp_distance, syntax_lp_distance, arguments_lp_distance, {}, returned_value_lp_distance, examples_lp_distance, introduced_in_lp_distance, category_lp_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionLpDistance>(documentation_lp_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionLpDistance>(documentation_lp_distance));
 
     /// cosineDistance documentation
     FunctionDocumentation::Description description_cosine_distance = R"(
@@ -2446,7 +2455,7 @@ SELECT cosineDistance((1, 2), (2, 3));
     FunctionDocumentation::Category category_cosine_distance = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_cosine_distance = {description_cosine_distance, syntax_cosine_distance, arguments_cosine_distance, {}, returned_value_cosine_distance, examples_cosine_distance, introduced_in_cosine_distance, category_cosine_distance};
 
-    factory.registerFunction<TupleOrArrayFunctionCosineDistance>(documentation_cosine_distance);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionCosineDistance>(documentation_cosine_distance));
 
     /// L2DistanceTransposed documentation
     FunctionDocumentation::Description description_l2_distance_transposed = R"(
@@ -2480,7 +2489,7 @@ SELECT L2DistanceTransposed(vec, array(1, 2), 16) FROM qbit;
            introduced_in_l2_distance_transposed,
            category_l2_distance_transposed};
 
-    factory.registerFunction<TupleOrArrayFunctionL2DistanceTransposed>(documentation_l2_distance_transposed);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2DistanceTransposed>(documentation_l2_distance_transposed));
 
     /// CosineDistanceTransposed documentation
     FunctionDocumentation::Description description_cosine_distance_transposed = R"(
@@ -2526,7 +2535,7 @@ SELECT cosineDistanceTransposed(vec, array(1, 2), 16) FROM qbit;
            introduced_in_cosine_distance_transposed,
            category_cosine_distance_transposed};
 
-    factory.registerFunction<TupleOrArrayFunctionCosineDistanceTransposed>(documentation_cosine_distance_transposed);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionCosineDistanceTransposed>(documentation_cosine_distance_transposed));
 
     /// DotProductTransposed documentation
     FunctionDocumentation::Description description_dot_product_transposed = R"(
@@ -2572,7 +2581,7 @@ SELECT dotProductTransposed(vec, array(1, 2), 16) FROM qbit;
            introduced_in_dot_product_transposed,
            category_dot_product_transposed};
 
-    factory.registerFunction<TupleOrArrayFunctionDotProductTransposed>(documentation_dot_product_transposed);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionDotProductTransposed>(documentation_dot_product_transposed));
 
     /// Quantized transposed distance functions. These operate on a QBit(Int8) whose codes were produced by the
     /// quantizeBFloat16ToInt8 Lloyd-Max codec. Because the quantizer is non-linear, the codes are dequantized to their
@@ -2639,7 +2648,7 @@ SELECT L2DistanceTransposedQuantized(vec, [0.1, -0.5]::Array(Float32), 8) FROM q
            introduced_in_transposed_quantized,
            category_transposed_quantized};
 
-    factory.registerFunction<TupleOrArrayFunctionL2DistanceTransposedQuantized>(documentation_l2_distance_transposed_quantized);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionL2DistanceTransposedQuantized>(documentation_l2_distance_transposed_quantized));
 
     /// CosineDistanceTransposedQuantized documentation
     FunctionDocumentation::Description description_cosine_distance_transposed_quantized
@@ -2677,7 +2686,7 @@ SELECT cosineDistanceTransposedQuantized(vec, [0.1, -0.5]::Array(Float32), 8) FR
            introduced_in_transposed_quantized,
            category_transposed_quantized};
 
-    factory.registerFunction<TupleOrArrayFunctionCosineDistanceTransposedQuantized>(documentation_cosine_distance_transposed_quantized);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionCosineDistanceTransposedQuantized>(documentation_cosine_distance_transposed_quantized));
 
     /// DotProductTransposedQuantized documentation
     FunctionDocumentation::Description description_dot_product_transposed_quantized
@@ -2715,18 +2724,18 @@ SELECT dotProductTransposedQuantized(vec, [0.1, -0.5]::Array(Float32), 8) FROM q
            introduced_in_transposed_quantized,
            category_transposed_quantized};
 
-    factory.registerFunction<TupleOrArrayFunctionDotProductTransposedQuantized>(documentation_dot_product_transposed_quantized);
+    CHDB_LITE_VEC(factory.registerFunction<TupleOrArrayFunctionDotProductTransposedQuantized>(documentation_dot_product_transposed_quantized));
 
     // Register aliases for distance functions
-    factory.registerAlias("distanceL1", FunctionL1Distance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceL2", FunctionL2Distance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceL2Squared", FunctionL2SquaredDistance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceLinf", FunctionLinfDistance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceLp", FunctionLpDistance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceCosine", TupleOrArrayFunctionCosineDistance::name, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceL2Transposed", L2DistanceTransposedName, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("distanceCosineTransposed", CosineDistanceTransposedName, FunctionFactory::Case::Insensitive);
-    factory.registerAlias("scalarProductTransposed", DotProductTransposedName, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerAlias("distanceL1", FunctionL1Distance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceL2", FunctionL2Distance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceL2Squared", FunctionL2SquaredDistance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceLinf", FunctionLinfDistance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceLp", FunctionLpDistance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceCosine", TupleOrArrayFunctionCosineDistance::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceL2Transposed", L2DistanceTransposedName, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("distanceCosineTransposed", CosineDistanceTransposedName, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_VEC(factory.registerAlias("scalarProductTransposed", DotProductTransposedName, FunctionFactory::Case::Insensitive));
 
     /// L1Normalize documentation
     FunctionDocumentation::Description description_l1_normalize = R"(
@@ -2753,8 +2762,8 @@ SELECT L1Normalize((1, 2))
     FunctionDocumentation::Category category_l1_normalize = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l1_normalize = {description_l1_normalize, syntax_l1_normalize, arguments_l1_normalize, {}, returned_value_l1_normalize, examples_l1_normalize, introduced_in_l1_normalize, category_l1_normalize};
 
-    factory.registerFunction<FunctionL1Normalize>(documentation_l1_normalize);
-    factory.registerAlias("normalizeL1", FunctionL1Normalize::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerFunction<FunctionL1Normalize>(documentation_l1_normalize));
+    CHDB_LITE_VEC(factory.registerAlias("normalizeL1", FunctionL1Normalize::name, FunctionFactory::Case::Insensitive));
 
     /// L2Normalize documentation
     FunctionDocumentation::Description description_l2_normalize = R"(
@@ -2781,8 +2790,8 @@ SELECT L2Normalize((3, 4))
     FunctionDocumentation::Category category_l2_normalize = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_l2_normalize = {description_l2_normalize, syntax_l2_normalize, arguments_l2_normalize, {}, returned_value_l2_normalize, examples_l2_normalize, introduced_in_l2_normalize, category_l2_normalize};
 
-    factory.registerFunction<FunctionL2Normalize>(documentation_l2_normalize);
-    factory.registerAlias("normalizeL2", FunctionL2Normalize::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerFunction<FunctionL2Normalize>(documentation_l2_normalize));
+    CHDB_LITE_VEC(factory.registerAlias("normalizeL2", FunctionL2Normalize::name, FunctionFactory::Case::Insensitive));
 
     /// LinfNormalize documentation
     FunctionDocumentation::Description description_linf_normalize = R"(
@@ -2809,8 +2818,8 @@ SELECT LinfNormalize((3, 4))
     FunctionDocumentation::Category category_linf_normalize = FunctionDocumentation::Category::Distance;
     FunctionDocumentation documentation_linf_normalize = {description_linf_normalize, syntax_linf_normalize, arguments_linf_normalize, {}, returned_value_linf_normalize, examples_linf_normalize, introduced_in_linf_normalize, category_linf_normalize};
 
-    factory.registerFunction<FunctionLinfNormalize>(documentation_linf_normalize);
-    factory.registerAlias("normalizeLinf", FunctionLinfNormalize::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerFunction<FunctionLinfNormalize>(documentation_linf_normalize));
+    CHDB_LITE_VEC(factory.registerAlias("normalizeLinf", FunctionLinfNormalize::name, FunctionFactory::Case::Insensitive));
 
     /// LpNormalize documentation
     {
@@ -2839,8 +2848,8 @@ SELECT LpNormalize((3, 4), 5)
         FunctionDocumentation::Category category_lp_normalize = FunctionDocumentation::Category::Distance;
         FunctionDocumentation documentation_lp_normalize = {description_lp_normalize, syntax_lp_normalize, arguments_lp_normalize, {}, returned_value_lp_normalize, examples_lp_normalize, introduced_in_lp_normalize, category_lp_normalize};
 
-        factory.registerFunction<FunctionLpNormalize>(documentation_lp_normalize);
+        CHDB_LITE_VEC(factory.registerFunction<FunctionLpNormalize>(documentation_lp_normalize));
     }
-    factory.registerAlias("normalizeLp", FunctionLpNormalize::name, FunctionFactory::Case::Insensitive);
+    CHDB_LITE_VEC(factory.registerAlias("normalizeLp", FunctionLpNormalize::name, FunctionFactory::Case::Insensitive));
 }
 }

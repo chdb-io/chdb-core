@@ -2,8 +2,8 @@
 #include <Common/Allocator.h>
 #include <Common/BitHelpers.h>
 #include <Common/CurrentMemoryTracker.h>
-#include <Common/Exception.h>
 #include <Common/ErrnoException.h>
+#include <Common/Exception.h>
 #include <Common/VersionNumber.h>
 #include <Common/formatReadable.h>
 #include <Common/logger_useful.h>
@@ -11,9 +11,13 @@
 #include <base/errnoToString.h>
 #include <base/getPageSize.h>
 
+#include <sys/mman.h> /// MADV_POPULATE_WRITE
 #include <Poco/Environment.h>
 #include <Poco/Logger.h>
-#include <sys/mman.h> /// MADV_POPULATE_WRITE
+
+#if USE_JEMALLOC
+#    include <jemalloc/jemalloc.h>
+#endif
 
 
 namespace DB
@@ -21,8 +25,8 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int CANNOT_ALLOCATE_MEMORY;
-    extern const int LOGICAL_ERROR;
+extern const int CANNOT_ALLOCATE_MEMORY;
+extern const int LOGICAL_ERROR;
 }
 
 }
@@ -78,10 +82,17 @@ void * allocImpl(size_t size, size_t alignment)
     void * buf = nullptr;
     if (alignment <= MALLOC_MIN_ALIGNMENT) [[likely]]
     {
+#if USE_JEMALLOC
+        if constexpr (clear_memory)
+            buf = je_calloc(size, 1);
+        else
+            buf = je_malloc(size);
+#else
         if constexpr (clear_memory)
             buf = __real_calloc(size, 1);
         else
             buf = __real_malloc(size);
+#endif
 
         if (nullptr == buf) [[unlikely]]
         {
@@ -116,13 +127,25 @@ void * allocImpl(size_t size, size_t alignment)
 
 void freeImpl(void * buf)
 {
+#if USE_JEMALLOC
+    if (unlikely(buf == nullptr))
+        return;
+    int arena_ind = je_mallctl("arenas.lookup", nullptr, nullptr, &buf, sizeof(buf));
+    if (unlikely(arena_ind != 0))
+    {
+        __real_free(buf);
+        return;
+    }
+    je_free(buf);
+#else
     __real_free(buf);
+#endif
 }
 
 void checkSize(size_t size)
 {
     /// More obvious exception in case of possible overflow (instead of just "Cannot mmap").
-    if (size >= 0x8000000000000000ULL) [[unlikely]]
+    if (unlikely(size >= 0x8000000000000000ULL))
         throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Too large size ({}) passed to allocator. It indicates an error.", size);
 }
 
@@ -169,7 +192,7 @@ void * Allocator<clear_memory_, populate>::realloc(void * buf, size_t old_size, 
         return buf;
     }
 
-    if (alignment <= MALLOC_MIN_ALIGNMENT) [[likely]]
+    if (likely(alignment <= MALLOC_MIN_ALIGNMENT))
     {
         /// Resize malloc'd memory region with no special alignment requirement.
         /// Realloc can do 2 possible things:
@@ -178,9 +201,12 @@ void * Allocator<clear_memory_, populate>::realloc(void * buf, size_t old_size, 
         /// Because we don't know which option will be picked we need to make sure there is enough
         /// memory for all options
         auto trace_alloc = CurrentMemoryTracker::alloc(new_size);
-
+#if USE_JEMALLOC
+        void * new_buf = je_realloc(buf, new_size);
+#else
         void * new_buf = __real_realloc(buf, new_size);
-        if (nullptr == new_buf) [[unlikely]]
+#endif
+        if (unlikely(nullptr == new_buf))
         {
             [[maybe_unused]] auto trace_free = CurrentMemoryTracker::free(new_size);
             throw DB::ErrnoException(

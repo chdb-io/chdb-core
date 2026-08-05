@@ -291,7 +291,7 @@ ThreadPoolImpl<Thread>::ThreadPoolImpl(
     Metric metric_active_threads_,
     Metric metric_scheduled_jobs_,
     size_t max_threads_)
-    : ThreadPoolImpl(metric_threads_, metric_active_threads_, metric_scheduled_jobs_, max_threads_, max_threads_, max_threads_)
+    : ThreadPoolImpl(metric_threads_, metric_active_threads_, metric_scheduled_jobs_, max_threads_, 0, max_threads_)
 {
 }
 
@@ -420,6 +420,20 @@ ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std:
         else
             return false;
     };
+
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// Single-threaded WASM build (compiled without -pthread): no worker thread can
+    /// ever be created. Fail loudly *here* instead of attempting it: running the job
+    /// inline would deadlock for the long-lived worker loops (BackgroundSchedulePool,
+    /// SystemLog saving thread, the async pipeline executor, ...) that never return.
+    /// So an un-disabled threaded code path surfaces as a recoverable query error
+    /// (CANNOT_SCHEDULE_TASK for scheduleOrThrow; false for trySchedule, letting the
+    /// caller degrade) rather than a busy-spin hang. Subsystems that legitimately
+    /// spawn threads are disabled at their source (SystemLog, DatabaseCatalog
+    /// background tasks, async logging, the async pulling executor, parallel
+    /// formatting/parsing); reaching here means one was missed.
+    return on_error("thread creation unavailable in the single-threaded WASM build");
+#endif
 
     // Decrement available_threads, scoped to the job lifecycle.
     // This ensures that available_threads decreases when a new job starts
@@ -1198,8 +1212,9 @@ void GlobalThreadPool::initialize(size_t max_threads, size_t max_free_threads, s
 {
     if (the_instance)
     {
-        throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR,
-            "The global thread pool is initialized twice");
+        // throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR,
+        //     "The global thread pool is initialized twice");
+        return;
     }
 
     the_instance.reset(new GlobalThreadPool(max_threads, max_free_threads, queue_size, false /*shutdown_on_exception*/, global_profiler_real_time_period_ns, global_profiler_cpu_time_period_ns));
@@ -1251,7 +1266,8 @@ void GlobalThreadPool::shutdown()
             {
             }
         }
-        the_instance->finalize();
+        /// the_instance->finalize();
+        auto * leaked [[maybe_unused]] = the_instance.release();
     }
 }
 

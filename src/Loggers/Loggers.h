@@ -8,9 +8,10 @@
 #include <optional>
 #include <string>
 
+#include "OwnSplitChannel.h"
+
 namespace DB
 {
-class OwnSplitChannelBase;
 
 using AsyncLogQueueSize = std::pair<std::string, size_t>;
 using AsyncLogQueueSizes = VectorWithMemoryTracking<AsyncLogQueueSize>;

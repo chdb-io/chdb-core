@@ -24,6 +24,7 @@ namespace DB
 {
 namespace Setting
 {
+    extern const SettingsString chdb_client_name;
     extern const SettingsUInt64 distributed_connections_pool_size;
     extern const SettingsUInt64 distributed_replica_error_cap;
     extern const SettingsSeconds distributed_replica_error_half_life;
@@ -512,7 +513,7 @@ Cluster::Cluster(const Poco::Util::AbstractConfiguration & config,
                 address.quota_key,
                 address.cluster,
                 address.cluster_secret,
-                "server",
+                settings[Setting::chdb_client_name],
                 address.compression,
                 address.secure,
                 address.bind_host,
@@ -672,7 +673,7 @@ void Cluster::addShard(
             replica.quota_key,
             replica.cluster,
             replica.cluster_secret,
-            "server",
+            settings[Setting::chdb_client_name],
             replica.compression,
             replica.secure,
             replica.bind_host,
@@ -840,7 +841,7 @@ Cluster::Cluster(Cluster::ReplicasAsShardsTag, const Cluster & from, const Setti
                     address.quota_key,
                     address.cluster,
                     address.cluster_secret,
-                    "server",
+                    settings[Setting::chdb_client_name],
                     address.compression,
                     address.secure,
                     address.bind_host,

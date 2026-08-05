@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstddef>
+#include <dlfcn.h>
 
 #include <jemalloc/jemalloc.h>
 
@@ -43,6 +44,22 @@ void * malloc(size_t size)
 
 void free(void * ptr)
 {
+    if (!ptr)
+        return;
+
+    /// glibc functions such as realpath() and getcwd() use __libc_malloc@GLIBC_PRIVATE
+    /// which bypasses our malloc override, returning pointers not known to jemalloc.
+    /// je_vsallocx() safely returns 0 for such foreign pointers (uses rtree dependent=false),
+    /// whereas je_sallocx / je_free crash in jemalloc's rtree lookup.
+    if (unlikely(je_vsallocx(ptr, 0) == 0))
+    {
+        static void (* libc_free_ptr)(void *) =
+            reinterpret_cast<void (*)(void *)>(dlsym(RTLD_NEXT, "free"));
+        if (libc_free_ptr)
+            libc_free_ptr(ptr);
+        return;
+    }
+
     AllocationTrace trace;
     size_t actual_size = Memory::untrackMemory(ptr, trace);
     trace.onFree(ptr, actual_size);

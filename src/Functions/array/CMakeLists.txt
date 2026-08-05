@@ -3,6 +3,39 @@ include(CMakePrintHelpers)
 
 add_headers_and_sources(clickhouse_functions_array .)
 
+if (CHDB_LITE)
+    # chdb embedded build: drop arrayDistance/distanceTransposed/arrayNormalizedGini/arrayDotProduct/arrayLevenshtein
+    # plus niche array/map helpers (mapOp, arrayCumSum, arrayFold, ...).
+    message(STATUS "CHDB_LITE: dropping niche array / vector-distance / map functions")
+    foreach (_drop arrayDistance.cpp distanceTransposed.cpp arrayNormalizedGini.cpp arrayDotProduct.cpp arrayLevenshtein.cpp mapPopulateSeries.cpp mapOp.cpp arrayShingles.cpp arrayJaccardIndex.cpp arrayShiftRotate.cpp arrayCumSum.cpp arrayCumSumNonNegative.cpp arrayDifference.cpp arrayFold.cpp arrayAUC.cpp arrayRandomSample.cpp arrayShuffle.cpp arrayEnumerateDense.cpp arrayEnumerateDenseRanked.cpp arrayEnumerateUniqRanked.cpp indexOfAssumeSorted.cpp)
+        list(REMOVE_ITEM clickhouse_functions_array_sources "${_drop}" "./${_drop}")
+    endforeach()
+    set(_chdb_vec_stub "${CMAKE_CURRENT_BINARY_DIR}/chdbVectorStubs.cpp")
+    file(WRITE "${_chdb_vec_stub}"
+        "// chdb stubs: vector helpers throw at call site (functions register but error when invoked)\n"
+        "#include <Functions/IFunction.h>\n"
+        "#include <Interpreters/Context_fwd.h>\n"
+        "#include <Common/Exception.h>\n"
+        "namespace DB {\n"
+        "namespace ErrorCodes { extern const int NOT_IMPLEMENTED; }\n"
+        "#define CHDB_VEC_STUB { throw Exception(ErrorCodes::NOT_IMPLEMENTED, \"chdb: vector functions disabled at build time\"); }\n"
+        "FunctionPtr createFunctionArrayL1Distance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayL2Distance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayL2SquaredDistance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayLpDistance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayLinfDistance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayCosineDistance(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayL2DistanceTransposed(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayCosineDistanceTransposed(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayDotProduct(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayDotProductTransposed(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayL2DistanceTransposedQuantized(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayCosineDistanceTransposedQuantized(ContextPtr) CHDB_VEC_STUB\n"
+        "FunctionPtr createFunctionArrayDotProductTransposedQuantized(ContextPtr) CHDB_VEC_STUB\n"
+        "}\n")
+    list(APPEND clickhouse_functions_array_sources "${_chdb_vec_stub}")
+endif()
+
 # createInternalFunctionHasOverloadResolver, FunctionArrayResize,  FunctionEmptyArrayToSingle
 # Used by ArrayExistsToHasPass.cpp and ArrayJoinAction.cpp
 set(DBMS_ARRAY_FUNCTIONS

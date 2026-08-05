@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import sys
-
 import pyspark
 from delta import configure_spark_with_delta_pip
 

@@ -19,6 +19,12 @@ if (OS_FREEBSD)
 endif()
 option (ENABLE_PARQUET "Enable parquet" ${ENABLE_PARQUET_DEFAULT})
 
+# ORC (a) is the only consumer of protobuf/protoc here and (b) is not needed for
+# Parquet read. Default ON — matches the previous unconditional ORC build, so non-wasm
+# builds are unchanged; the wasm build forces it OFF in cmake/target.cmake to drop the
+# protobuf/protoc bootstrap.
+option (ENABLE_ORC "Enable ORC (needs protobuf/protoc)" ON)
+
 if (NOT ENABLE_PARQUET)
     message(STATUS "Not using parquet")
     return()
@@ -28,6 +34,7 @@ endif()
 if(NOT DEFINED CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
 endif()
+
 
 # This ensures that a standard higher than the minimum can be passed correctly
 if(NOT DEFINED CMAKE_CXX_STANDARD)
@@ -78,11 +85,13 @@ else ()
 endif()
 set(PROTO_DIR "${ORC_SOURCE_DIR}/../proto")
 
+if (ENABLE_ORC)
 add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
         COMMAND ${PROTOBUF_EXECUTABLE}
         -I ${PROTO_DIR}
         --cpp_out="${CMAKE_CURRENT_BINARY_DIR}"
         "${PROTO_DIR}/orc_proto.proto")
+endif()
 
 # === flatbuffers
 set(FLATBUFFERS_SRC_DIR "${ClickHouse_SOURCE_DIR}/contrib/flatbuffers")
@@ -216,6 +225,7 @@ set(ORC_SRCS
         "${ORC_SOURCE_SRC_DIR}/sargs/TruthValue.cc"
         )
 
+if (ENABLE_ORC)
 add_library(_orc ${ORC_SRCS})
 target_link_libraries(_orc PRIVATE
     ch_contrib::protobuf
@@ -229,6 +239,9 @@ target_include_directories(_orc SYSTEM BEFORE PUBLIC
 target_compile_options(_orc PRIVATE
     -include "${ClickHouse_SOURCE_DIR}/contrib/google-protobuf/src/google/protobuf/stubs/port.h"
 )
+if (TARGET ch_contrib::jemalloc)
+    target_link_libraries(_orc PRIVATE ch_contrib::jemalloc)
+endif ()
 target_include_directories(_orc SYSTEM BEFORE PUBLIC ${ORC_BUILD_INCLUDE_DIR})
 target_include_directories(_orc SYSTEM PRIVATE
     ${ORC_SOURCE_SRC_DIR}
@@ -236,6 +249,7 @@ target_include_directories(_orc SYSTEM PRIVATE
     ${ORC_BUILD_SRC_DIR}
     ${ORC_ADDITION_SOURCE_DIR}
     ${ARROW_SRC_DIR})
+endif()
 
 # === arrow
 
@@ -249,9 +263,7 @@ configure_file("${LIBRARY_DIR}/util/config_internal.h.cmake" "${ARROW_GENERATED_
 # find . \( -iname \*.cc -o -iname \*.cpp -o -iname \*.c \) | sort | awk '{print "\"${LIBRARY_DIR}" substr($1,2) "\"" }' | grep -v 'test.cc' | grep -v 'json' | grep -v 'flight' \|
 # grep -v 'csv' | grep -v 'acero' | grep -v 'dataset' | grep -v 'testing' | grep -v 'gpu' | grep -v 'engine' | grep -v 'filesystem' | grep -v 'benchmark.cc'
 set(ARROW_SRCS
-        "${LIBRARY_DIR}/adapters/orc/adapter.cc"
-        "${LIBRARY_DIR}/adapters/orc/options.cc"
-        "${LIBRARY_DIR}/adapters/orc/util.cc"
+        # adapters/orc/*.cc need orc/OrcFile.hh; appended below only when ENABLE_ORC.
         "${LIBRARY_DIR}/array/array_base.cc"
         "${LIBRARY_DIR}/array/array_binary.cc"
         "${LIBRARY_DIR}/array/array_decimal.cc"
@@ -471,17 +483,24 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/vendored/uriparser/UriResolve.c"
         "${LIBRARY_DIR}/vendored/uriparser/UriShorten.c"
         "${LIBRARY_DIR}/visitor.cc"
+        )
 
+# The Arrow<->ORC adapter pulls in orc/OrcFile.hh; only compile it when ORC is on.
+if (ENABLE_ORC)
+    list (APPEND ARROW_SRCS
         "${ARROW_SRC_DIR}/arrow/adapters/orc/adapter.cc"
         "${ARROW_SRC_DIR}/arrow/adapters/orc/util.cc"
-        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc"
-        )
+        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc")
+endif()
+
 
 add_definitions(-DARROW_WITH_BROTLI)
 SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_brotli.cc" ${ARROW_SRCS})
 
-add_definitions(-DARROW_WITH_BZ2)
-SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_bz2.cc" ${ARROW_SRCS})
+if (TARGET ch_contrib::bzip2)
+    add_definitions(-DARROW_WITH_BZ2)
+    SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_bz2.cc" ${ARROW_SRCS})
+endif()
 
 add_definitions(-DARROW_WITH_LZ4)
 SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_lz4.cc" ${ARROW_SRCS})
@@ -495,6 +514,85 @@ SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_zlib.cc" ${ARROW_SRCS})
 add_definitions(-DARROW_WITH_ZSTD)
 SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_zstd.cc" ${ARROW_SRCS})
 
+if (TARGET ch_contrib::jemalloc)
+    set (ARROW_JEMALLOC ON)
+    add_definitions(-DARROW_JEMALLOC=1)
+    message(STATUS "Using jemalloc in arrow lib (je_-prefix compatibility shim)")
+
+    # Arrow v23 calls unprefixed jemalloc extended API (mallocx, mallctl, …).
+    # ClickHouse builds jemalloc with --with-jemalloc-prefix=je_, so those
+    # symbols are exported as je_mallocx, je_mallctl, etc.
+    # We generate a thin shim header and force-include it only for this source
+    # file so that the rest of the build is not affected.
+    set(ARROW_JEMALLOC_COMPAT_HDR "${CMAKE_CURRENT_BINARY_DIR}/jemalloc_arrow_compat.h")
+    file(WRITE "${ARROW_JEMALLOC_COMPAT_HDR}" [[
+#pragma once
+/* Map Arrow's unprefixed jemalloc extended API to ClickHouse's je_-prefixed symbols.
+ *
+ * ClickHouse builds jemalloc with --with-jemalloc-prefix=je_ and propagates
+ * -DJEMALLOC_NO_RENAME to all consumers via target_compile_definitions INTERFACE.
+ * JEMALLOC_NO_RENAME suppresses the jemalloc_rename.h aliases that would have
+ * mapped je_XXX → XXX, so Arrow's calls to unprefixed names (mallocx, mallctl,
+ * malloc_stats_print …) are undefined.  This shim restores the mapping in the
+ * opposite direction: unprefixed → je_-prefixed, but only when renaming has
+ * been explicitly suppressed (JEMALLOC_NO_RENAME), which is exactly when the
+ * je_-prefix symbols are the canonical names. */
+#include <jemalloc/jemalloc.h>
+#ifdef JEMALLOC_NO_RENAME
+#  ifndef mallocx
+#    define mallocx            je_mallocx
+#  endif
+#  ifndef rallocx
+#    define rallocx            je_rallocx
+#  endif
+#  ifndef xallocx
+#    define xallocx            je_xallocx
+#  endif
+#  ifndef sallocx
+#    define sallocx            je_sallocx
+#  endif
+#  ifndef dallocx
+#    define dallocx            je_dallocx
+#  endif
+#  ifndef sdallocx
+#    define sdallocx           je_sdallocx
+#  endif
+#  ifndef nallocx
+#    define nallocx            je_nallocx
+#  endif
+#  ifndef mallctl
+#    define mallctl            je_mallctl
+#  endif
+#  ifndef mallctlnametomib
+#    define mallctlnametomib   je_mallctlnametomib
+#  endif
+#  ifndef mallctlbymib
+#    define mallctlbymib       je_mallctlbymib
+#  endif
+#  ifndef malloc_stats_print
+#    define malloc_stats_print je_malloc_stats_print
+#  endif
+#endif /* JEMALLOC_NO_RENAME */
+]])
+
+    set_source_files_properties(
+        "${LIBRARY_DIR}/memory_pool_jemalloc.cc"
+        PROPERTIES COMPILE_OPTIONS "-include;${ARROW_JEMALLOC_COMPAT_HDR}"
+    )
+    SET(ARROW_SRCS "${LIBRARY_DIR}/memory_pool_jemalloc.cc" ${ARROW_SRCS})
+endif()
+
+
+# file_to_stream.cc / stream_to_file.cc are standalone Arrow CLI tools — each has its own
+# main(). chdb_wasm is an executable with its own (stub) main; in the wasm link one of these
+# tool main()s shadows it and runs on module init (prints a usage line and returns 1). Drop
+# them for wasm — chdb never uses them. Native keeps them (they sit unreferenced in
+# libarrow.a), so non-wasm builds are byte-unaffected.
+if (OS_WASM)
+    list (REMOVE_ITEM ARROW_SRCS
+        "${LIBRARY_DIR}/ipc/file_to_stream.cc"
+        "${LIBRARY_DIR}/ipc/stream_to_file.cc")
+endif ()
 
 # Enable Arrow's SIMD codepaths (bit unpacking, byte stream split, UTF-8 validation); otherwise they fall back
 # to scalar. These headers include <xsimd/xsimd.hpp>, hence the xsimd dependency. Our production target is ARM,
@@ -541,16 +639,22 @@ target_link_libraries(_arrow PRIVATE
     ch_contrib::zlib
     ch_contrib::zstd
     ch_contrib::brotli
-    ch_contrib::bzip2
+    $<$<TARGET_EXISTS:ch_contrib::bzip2>:ch_contrib::bzip2>
+    $<$<TARGET_EXISTS:ch_contrib::jemalloc>:ch_contrib::jemalloc>
 )
-target_link_libraries(_arrow PUBLIC _orc)
 # PUBLIC so the xsimd headers are visible to _parquet too (it links _arrow PUBLIC).
 target_link_libraries(_arrow PUBLIC ch_contrib::xsimd)
 
-add_dependencies(_arrow protoc)
+# ORC carries the protobuf/protoc dependency; only link/depend on it when enabled.
+if (ENABLE_ORC)
+    target_link_libraries(_arrow PUBLIC _orc)
+    add_dependencies(_arrow protoc)
+endif()
 
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/arrow-cmake/cpp/src")
+
+target_include_directories(_arrow SYSTEM PRIVATE ${ARROW_SRC_DIR})
 
 target_include_directories(_arrow SYSTEM PRIVATE ${HDFS_INCLUDE_DIR})
 
@@ -637,7 +741,9 @@ target_link_libraries(_parquet
         boost::headers_only
         boost::regex
         OpenSSL::Crypto OpenSSL::SSL
-        ch_contrib::rapidjson)
+        ch_contrib::rapidjson
+        $<$<TARGET_EXISTS:ch_contrib::jemalloc>:ch_contrib::jemalloc>)
+
 
 if (SANITIZE STREQUAL "undefined" OR SANITIZE STREQUAL "address,undefined")
     target_compile_options(_parquet PRIVATE -fno-sanitize=undefined)

@@ -11,8 +11,15 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 # Control maximum size of stack frames. It can be important if the code is run in fibers with small stack size.
 # Only in release build because debug has too large stack frames.
+# chdb-core-lite uses MinSizeRel (-Os) + heavy trim flags, some TUs cross the
+# upstream 65536 threshold; relax to 131072 only for lite, keep upstream default
+# for the regular chdb-core build.
 if ((NOT CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG") AND (NOT SANITIZE))
-    add_warning(frame-larger-than=65536)
+    if (CHDB_LITE)
+        add_warning(frame-larger-than=131072)
+    else()
+        add_warning(frame-larger-than=65536)
+    endif()
 endif ()
 
 # Add some warnings that are not available even with -Wall -Wextra -Wpedantic.
@@ -63,3 +70,26 @@ endif ()
 # Note: right now cmake 4.2.1 does not recognize "set (CMAKE_C_STANDARD 2y)"
 no_warning(c2y-extensions)
 no_warning(c23-extensions) # For #embed
+no_warning(unique-object-duplication) # Static locals in inline/static fns with hidden visibility; linker deduplicates via comdat
+
+# Apple Clang can treat /usr/local/include as poisoned when mixed with -isystem (e.g. bundled PCRE in Poco).
+if (OS_DARWIN)
+    no_warning (poison-system-directories)
+endif ()
+
+# WebAssembly can target wasm32 (32-bit ILP32) or wasm64 (Memory64, 64-bit size_t /
+# pointers — the default here, WASM_MEMORY64=ON). ClickHouse's codebase assumes a
+# 64-bit size_t in many places, so -Weverything -Werror flags 64->32 narrowings and
+# constants that overflow 32-bit types. These are pervasive on a wasm32 build
+# (WASM_MEMORY64=OFF) and still present on wasm64 (e.g. size_t -> int through some
+# Emscripten APIs). They are ABI/port artifacts, not real defects here, so relax them
+# for the experimental WASM port. (Genuine 32-bit truncation bugs would need an audit,
+# out of scope for bring-up.)
+if (OS_WASM)
+    no_warning (shorten-64-to-32)
+    no_warning (integer-overflow)
+    no_warning (tautological-constant-out-of-range-compare)
+    no_warning (c++11-narrowing)
+    no_warning (c++11-narrowing-const-reference)
+    no_warning (constant-conversion)
+endif ()

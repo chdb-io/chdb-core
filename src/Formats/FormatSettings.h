@@ -188,6 +188,7 @@ struct FormatSettings
         bool output_string_as_string = false;
         bool output_fixed_string_as_fixed_byte_array = true;
         ArrowCompression output_compression_method = ArrowCompression::NONE;
+        bool parallel_encoding = true;
         bool output_date_as_uint16 = false;
         bool output_unsupported_types_as_binary = true;
         bool input_use_native_reader = true;

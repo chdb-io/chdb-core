@@ -1460,6 +1460,13 @@ Use Arrow FIXED_SIZE_BINARY type instead of Binary for FixedString columns.
     DECLARE(ArrowCompression, output_format_arrow_compression_method, "lz4_frame", R"(
 Compression method for Arrow output format. Supported codecs: lz4_frame, zstd, none (uncompressed)
 )", 0) \
+    DECLARE(Bool, output_format_arrow_parallel_encoding, true, R"(
+Encode Arrow output (Arrow / ArrowStream) using multiple threads. CH chunks are converted to Arrow
+RecordBatches in parallel and serialized to the IPC stream in arrival order on the main thread.
+Automatically falls back to single-threaded mode when LowCardinality columns are emitted as Arrow
+Dictionary (output_format_arrow_low_cardinality_as_dictionary = 1), because the dictionary state
+must be shared across batches.
+)", 0) \
     DECLARE(Bool, output_format_arrow_date_as_uint16, false, R"(
 Write Date values as plain 16-bit numbers (read back as UInt16), instead of converting to a 32-bit Arrow DATE32 type (read back as Date32).
 )", 0) \

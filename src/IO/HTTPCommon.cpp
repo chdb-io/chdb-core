@@ -6,6 +6,10 @@
 
 #include "config.h"
 
+#if defined(OS_WASM)
+#    include <IO/WasmHTTPSession.h>
+#endif
+
 #if USE_SSL
 #    include <Poco/Net/AcceptCertificateHandler.h>
 #    include <Poco/Net/Context.h>
@@ -56,8 +60,19 @@ HTTPSessionPtr makeHTTPSession(
     const ProxyConfiguration & proxy_configuration,
     UInt64 * connect_time)
 {
+#if defined(OS_WASM)
+    /// Raw sockets don't exist on WASM, so the pool (and Poco's socket-backed
+    /// sessions) can never connect. Every HTTP client path gets a session that
+    /// performs the exchange through the host JS environment instead.
+    (void)group;
+    (void)timeouts;
+    (void)proxy_configuration;
+    (void)connect_time;
+    return std::make_shared<WasmHTTPSession>(uri);
+#else
     auto connection_pool = HTTPConnectionPools::instance().getPool(group, uri, proxy_configuration);
     return connection_pool->getConnection(timeouts, connect_time);
+#endif
 }
 
 bool isRedirect(const Poco::Net::HTTPResponse::HTTPStatus status) { return status == Poco::Net::HTTPResponse::HTTP_MOVED_PERMANENTLY  || status == Poco::Net::HTTPResponse::HTTP_FOUND || status == Poco::Net::HTTPResponse::HTTP_SEE_OTHER  || status == Poco::Net::HTTPResponse::HTTP_TEMPORARY_REDIRECT; }

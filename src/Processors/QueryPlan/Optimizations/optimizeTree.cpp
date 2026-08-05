@@ -329,6 +329,15 @@ void optimizeTreeSecondPass(
             });
     }
 
+    /// ORDER BY ... LIMIT (top-N) pushdown into sources that can cheaply produce
+    /// only the top-N rows. Runs after PREWHERE so a pushed-down WHERE is part of
+    /// the source instead of a downstream FilterStep.
+    traverseQueryPlan(stack, root,
+        [&](auto & frame_node)
+        {
+            trySortLimitPushdownToSource(frame_node);
+        });
+
     /// WITH TOTALS / ROLLUP / CUBE / extremes produce extra streams the exchange protocol does not
     /// carry, so such plans cannot be distributed. make_distributed_plan is explicit, so fail rather
     /// than silently running single-node.

@@ -42,7 +42,7 @@
 	url = https://github.com/ClickHouse/boost
 [submodule "contrib/arrow"]
 	path = contrib/arrow
-	url = https://github.com/ClickHouse/arrow
+	url = https://github.com/chdb-io/arrow.git
 [submodule "contrib/thrift"]
 	path = contrib/thrift
 	url = https://github.com/ClickHouse/thrift
@@ -384,6 +384,16 @@
 [submodule "contrib/clickstack"]
 	path = contrib/clickstack
 	url = https://github.com/ClickHouse/clickhouse-clickstack.git
+# chdb_spec
+[submodule "contrib/pybind11"]
+	path = contrib/pybind11
+	url = https://github.com/chdb-io/mrbind-pybind11.git
+[submodule "contrib/utf8proc"]
+	path = contrib/utf8proc
+	url = https://github.com/JuliaStrings/utf8proc.git
+[submodule "contrib/pybind11-upstream"]
+	path = contrib/pybind11-upstream
+	url = https://github.com/pybind/pybind11.git
 [submodule "contrib/musl"]
 	path = contrib/musl
 	url = https://github.com/ClickHouse/musl

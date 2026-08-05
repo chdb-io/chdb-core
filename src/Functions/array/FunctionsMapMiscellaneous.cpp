@@ -637,6 +637,15 @@ using FunctionMapReverseSort = FunctionMapToArrayAdapter<FunctionArrayReverseSor
 using FunctionMapPartialSort = FunctionMapToArrayAdapter<FunctionArrayPartialSort, MapToNestedAdapter<NameMapPartialSort>, NameMapPartialSort>;
 using FunctionMapPartialReverseSort = FunctionMapToArrayAdapter<FunctionArrayPartialReverseSort, MapToNestedAdapter<NameMapPartialReverseSort>, NameMapPartialReverseSort>;
 
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: keep mapConcat/mapKeys/mapValues/mapContains{,Key,Value};
+/// drop higher-order map fns (Filter/Apply/Exists/All), sort variants, and
+/// Like-pattern lookups.
+#define CHDB_LITE_MAP(call) (void)0
+#else
+#define CHDB_LITE_MAP(call) call
+#endif
+
 REGISTER_FUNCTION(MapMiscellaneous)
 {
     /// mapConcat documentation
@@ -775,7 +784,7 @@ Filters a map by applying a function to each map element.
     FunctionDocumentation::IntroducedIn introduced_in_mapFilter = {22, 3};
     FunctionDocumentation::Category category_mapFilter = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapFilter = {description_mapFilter, syntax_mapFilter, arguments_mapFilter, {}, returned_value_mapFilter, examples_mapFilter, introduced_in_mapFilter, category_mapFilter};
-    factory.registerFunction<FunctionMapFilter>(documentation_mapFilter);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapFilter>(documentation_mapFilter));
 
     /// mapApply documentation
     FunctionDocumentation::Description description_mapApply = R"(
@@ -797,7 +806,7 @@ Applies a function to each element of a map.
     FunctionDocumentation::IntroducedIn introduced_in_mapApply = {22, 3};
     FunctionDocumentation::Category category_mapApply = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapApply = {description_mapApply, syntax_mapApply, arguments_mapApply, {}, returned_value_mapApply, examples_mapApply, introduced_in_mapApply, category_mapApply};
-    factory.registerFunction<FunctionMapApply>(documentation_mapApply);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapApply>(documentation_mapApply));
 
     /// mapExists documentation
     FunctionDocumentation::Description description_mapExists = R"(
@@ -821,7 +830,7 @@ You can pass a lambda function to it as the first argument.
     FunctionDocumentation::IntroducedIn introduced_in_mapExists = {23, 4};
     FunctionDocumentation::Category category_mapExists = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapExists = {description_mapExists, syntax_mapExists, arguments_mapExists, {}, returned_value_mapExists, examples_mapExists, introduced_in_mapExists, category_mapExists};
-    factory.registerFunction<FunctionMapExists>(documentation_mapExists);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapExists>(documentation_mapExists));
 
     /// mapAll documentation
     FunctionDocumentation::Description description_mapAll = R"(
@@ -845,7 +854,7 @@ You can pass a lambda function to it as the first argument.
     FunctionDocumentation::IntroducedIn introduced_in_mapAll = {23, 4};
     FunctionDocumentation::Category category_mapAll = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapAll = {description_mapAll, syntax_mapAll, arguments_mapAll, {}, returned_value_mapAll, examples_mapAll, introduced_in_mapAll, category_mapAll};
-    factory.registerFunction<FunctionMapAll>(documentation_mapAll);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapAll>(documentation_mapAll));
 
     /// mapSort documentation
     FunctionDocumentation::Description description_mapSort = R"(
@@ -868,7 +877,7 @@ If the func function is specified, the sorting order is determined by the result
     FunctionDocumentation::IntroducedIn introduced_in_mapSort = {23, 4};
     FunctionDocumentation::Category category_mapSort = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapSort = {description_mapSort, syntax_mapSort, arguments_mapSort, {}, returned_value_mapSort, examples_mapSort, introduced_in_mapSort, category_mapSort};
-    factory.registerFunction<FunctionMapSort>(documentation_mapSort);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapSort>(documentation_mapSort));
 
     /// mapReverseSort documentation
     FunctionDocumentation::Description description_mapReverseSort = R"(
@@ -891,7 +900,7 @@ If the func function is specified, the sorting order is determined by the result
     FunctionDocumentation::IntroducedIn introduced_in_mapReverseSort = {23, 4};
     FunctionDocumentation::Category category_mapReverseSort = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapReverseSort = {description_mapReverseSort, syntax_mapReverseSort, arguments_mapReverseSort, {}, returned_value_mapReverseSort, examples_mapReverseSort, introduced_in_mapReverseSort, category_mapReverseSort};
-    factory.registerFunction<FunctionMapReverseSort>(documentation_mapReverseSort);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapReverseSort>(documentation_mapReverseSort));
 
     /// mapPartialSort documentation
     FunctionDocumentation::Description description_mapPartialSort = R"(
@@ -915,7 +924,7 @@ If the func function is specified, the sorting order is determined by the result
     FunctionDocumentation::IntroducedIn introduced_in_mapPartialSort = {23, 4};
     FunctionDocumentation::Category category_mapPartialSort = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapPartialSort = {description_mapPartialSort, syntax_mapPartialSort, arguments_mapPartialSort, {}, returned_value_mapPartialSort, examples_mapPartialSort, introduced_in_mapPartialSort, category_mapPartialSort};
-    factory.registerFunction<FunctionMapPartialSort>(documentation_mapPartialSort);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapPartialSort>(documentation_mapPartialSort));
 
     /// mapPartialReverseSort documentation
     FunctionDocumentation::Description description_mapPartialReverseSort = R"(
@@ -939,7 +948,7 @@ If the func function is specified, the sorting order is determined by the result
     FunctionDocumentation::IntroducedIn introduced_in_mapPartialReverseSort = {23, 4};
     FunctionDocumentation::Category category_mapPartialReverseSort = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapPartialReverseSort = {description_mapPartialReverseSort, syntax_mapPartialReverseSort, arguments_mapPartialReverseSort, {}, returned_value_mapPartialReverseSort, examples_mapPartialReverseSort, introduced_in_mapPartialReverseSort, category_mapPartialReverseSort};
-    factory.registerFunction<FunctionMapPartialReverseSort>(documentation_mapPartialReverseSort);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapPartialReverseSort>(documentation_mapPartialReverseSort));
 
     /// mapContainsKeyLike documentation
     FunctionDocumentation::Description description_mapContainsKeyLike = R"(
@@ -974,7 +983,7 @@ SELECT mapContainsKeyLike(a, 'a%') FROM tab;
     FunctionDocumentation::IntroducedIn introduced_in_mapContainsKeyLike = {23, 4};
     FunctionDocumentation::Category category_mapContainsKeyLike = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapContainsKeyLike = {description_mapContainsKeyLike, syntax_mapContainsKeyLike, arguments_mapContainsKeyLike, {}, returned_value_mapContainsKeyLike, examples_mapContainsKeyLike, introduced_in_mapContainsKeyLike, category_mapContainsKeyLike};
-    factory.registerFunction<FunctionMapContainsKeyLike>(documentation_mapContainsKeyLike);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapContainsKeyLike>(documentation_mapContainsKeyLike));
 
     /// mapContainsValueLike documentation
     FunctionDocumentation::Description description_mapContainsValueLike = R"(
@@ -1008,7 +1017,7 @@ SELECT mapContainsValueLike(a, 'a%') FROM tab;
     FunctionDocumentation::IntroducedIn introduced_in_mapContainsValueLike = {25, 5};
     FunctionDocumentation::Category category_mapContainsValueLike = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapContainsValueLike = {description_mapContainsValueLike, syntax_mapContainsValueLike, arguments_mapContainsValueLike, {}, returned_value_mapContainsValueLike, examples_mapContainsValueLike, introduced_in_mapContainsValueLike, category_mapContainsValueLike};
-    factory.registerFunction<FunctionMapContainsValueLike>(documentation_mapContainsValueLike);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapContainsValueLike>(documentation_mapContainsValueLike));
 
     /// mapExtractKeyLike documentation
     FunctionDocumentation::Description description_mapExtractKeyLike = R"(
@@ -1043,7 +1052,7 @@ SELECT mapExtractKeyLike(a, 'a%') FROM tab;
     FunctionDocumentation::IntroducedIn introduced_in_mapExtractKeyLike = {23, 4};
     FunctionDocumentation::Category category_mapExtractKeyLike = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapExtractKeyLike = {description_mapExtractKeyLike, syntax_mapExtractKeyLike, arguments_mapExtractKeyLike, {}, returned_value_mapExtractKeyLike, examples_mapExtractKeyLike, introduced_in_mapExtractKeyLike, category_mapExtractKeyLike};
-    factory.registerFunction<FunctionMapExtractKeyLike>(documentation_mapExtractKeyLike);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapExtractKeyLike>(documentation_mapExtractKeyLike));
 
     /// mapExtractValueLike documentation
     FunctionDocumentation::Description description_mapExtractValueLike = R"(
@@ -1078,7 +1087,7 @@ SELECT mapExtractValueLike(a, 'a%') FROM tab;
     FunctionDocumentation::IntroducedIn introduced_in_mapExtractValueLike = {25, 5};
     FunctionDocumentation::Category category_mapExtractValueLike = FunctionDocumentation::Category::Map;
     FunctionDocumentation documentation_mapExtractValueLike = {description_mapExtractValueLike, syntax_mapExtractValueLike, arguments_mapExtractValueLike, {}, returned_value_mapExtractValueLike, examples_mapExtractValueLike, introduced_in_mapExtractValueLike, category_mapExtractValueLike};
-    factory.registerFunction<FunctionMapExtractValueLike>(documentation_mapExtractValueLike);
+    CHDB_LITE_MAP(factory.registerFunction<FunctionMapExtractValueLike>(documentation_mapExtractValueLike));
 }
 
 }

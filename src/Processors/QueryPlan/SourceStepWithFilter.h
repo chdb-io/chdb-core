@@ -54,6 +54,13 @@ public:
         limit = limit_value;
     }
 
+    /// ORDER BY ... LIMIT (top-N) pushdown. Sources that can cheaply produce
+    /// only the top-N rows by the sort key (e.g. in-memory DataFrame sources)
+    /// override these; MergeTree keeps its own lazy-materialization path and
+    /// leaves the default no-op, so this pushdown never targets it.
+    virtual bool supportsSortLimitPushdown() const { return false; }
+    virtual void setSortLimitPushdown(const SortDescription & /*sort_description*/, size_t /*limit*/) { }
+
     /// Apply filters that can optimize reading from storage.
     void applyFilters()
     {

@@ -1289,7 +1289,23 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
 
 std::future<StorageObjectStorageSource::ReaderHolder> StorageObjectStorageSource::createReaderAsync()
 {
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// Single-threaded WASM build: the reader-ahead pool can never run a task.
+    /// Create the reader inline and hand back a ready future — callers only
+    /// .get() it (fire-then-wait), so the semantics are preserved.
+    std::promise<ReaderHolder> reader_promise;
+    try
+    {
+        reader_promise.set_value(createReader());
+    }
+    catch (...)
+    {
+        reader_promise.set_exception(std::current_exception());
+    }
+    return reader_promise.get_future();
+#else
     return create_reader_scheduler([=, this] { return createReader(); }, Priority{});
+#endif
 }
 
 std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
@@ -1301,7 +1317,17 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
     bool allow_page_cache)
 {
     const auto & settings = context_->getSettingsRef();
+#if defined(OS_WASM)
+    /// Let the object storage veto read methods it cannot serve before the
+    /// use_prefetch/use_async_buffer decisions below: the WASM web-fetch
+    /// storage downgrades remote_fs_method to plain synchronous reads (no
+    /// threadpool reader, no prefetch — pool pthreads are scarce and the
+    /// single-threaded bundle has none at all).
+    const auto effective_read_settings
+        = object_storage->patchSettings(read_settings.has_value() ? read_settings.value() : context_->getReadSettings());
+#else
     const auto & effective_read_settings = read_settings.has_value() ? read_settings.value() : context_->getReadSettings();
+#endif
 
     bool use_distributed_cache = false;
 #if ENABLE_DISTRIBUTED_CACHE

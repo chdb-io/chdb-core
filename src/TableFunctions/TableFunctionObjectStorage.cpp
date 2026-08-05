@@ -2173,6 +2173,17 @@ The command returns a table with `metric_name` and `metric_value` columns showin
             .category = FunctionDocumentation::Category::TableFunction},
         {.allow_readonly = false});
 
+#elif defined(OS_WASM)
+    factory.registerFunction<TableFunctionIceberg>(
+         {.description = R"(The table function can be used to read the Iceberg table stored on S3 object store (via the WASM web-fetch data plane). Alias to icebergS3)",
+            .examples{{IcebergDefinition::name, "SELECT * FROM iceberg(url, access_key_id, secret_access_key)", ""}},
+            .category = FunctionDocumentation::Category::TableFunction},
+        {.allow_readonly = false});
+    factory.registerFunction<TableFunctionIcebergS3>(
+         {.description = R"(The table function can be used to read the Iceberg table stored on S3 object store (via the WASM web-fetch data plane).)",
+            .examples{{IcebergS3Definition::name, "SELECT * FROM icebergS3(url, access_key_id, secret_access_key)", ""}},
+            .category = FunctionDocumentation::Category::TableFunction},
+        {.allow_readonly = false});
 #endif
 #if USE_AZURE_BLOB_STORAGE
     factory.registerFunction<TableFunctionIcebergAzure>(
@@ -2478,6 +2489,17 @@ Query id: 65032944-bed6-4d45-86b3-a71205a2b659
 }
 #endif
 
+#if USE_PARQUET && !USE_DELTA_KERNEL_RS && defined(OS_WASM)
+void registerTableFunctionDeltaLake(TableFunctionFactory & factory)
+{
+    factory.registerFunction<TableFunctionDeltaLake>(
+         {.description = R"(The table function can be used to read the DeltaLake table stored on S3 (via the WASM web-fetch data plane and the legacy metadata reader).)",
+            .examples{{DeltaLakeDefinition::name, "SELECT * FROM deltaLake(url, access_key_id, secret_access_key)", ""}},
+            .category = FunctionDocumentation::Category::TableFunction},
+         {.allow_readonly = false});
+}
+#endif
+
 #if USE_AWS_S3
 void registerTableFunctionHudi(TableFunctionFactory & factory);
 void registerTableFunctionHudi(TableFunctionFactory & factory)
@@ -2536,6 +2558,8 @@ void registerDataLakeTableFunctions(TableFunctionFactory & factory)
 #endif
 
 #if USE_PARQUET && USE_DELTA_KERNEL_RS
+    registerTableFunctionDeltaLake(factory);
+#elif USE_PARQUET && defined(OS_WASM)
     registerTableFunctionDeltaLake(factory);
 #endif
 #if USE_AWS_S3

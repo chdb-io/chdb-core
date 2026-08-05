@@ -116,7 +116,7 @@ add_headers_and_sources(clickhouse_common_io IO/Protobuf)
 add_headers_and_sources(clickhouse_common_io IO/S3)
 add_headers_and_sources(clickhouse_common_io IO/AzureBlobStorage)
 add_headers_and_sources(clickhouse_common_io Disks/DiskObjectStorage/ObjectStorages/AzureBlobStorage)
-list (REMOVE_ITEM clickhouse_common_io_sources Common/malloc.cpp Common/AllocationInterceptors.cpp)
+list (REMOVE_ITEM clickhouse_common_io_sources Common/malloc.cpp Common/stubFree.c Common/AllocationInterceptors.cpp)
 list (REMOVE_ITEM clickhouse_common_io_sources Common/ExceptionExt.cpp)
 
 
@@ -156,6 +156,15 @@ add_headers_and_sources(dbms Storages/ObjectStorage/Azure)
 add_headers_and_sources(dbms Storages/ObjectStorage/S3)
 add_headers_and_sources(dbms Storages/ObjectStorage/HDFS)
 add_headers_and_sources(dbms Storages/ObjectStorage/Local)
+if (OS_WASM)
+    # WASM web-fetch data plane.
+    add_headers_and_sources(dbms Storages/ObjectStorage/WasmWeb)
+    if (WASM_JSPI)
+        # Only the bridge translation unit sees the flag — flipping WASM_JSPI
+        # relinks + recompiles one file instead of the world.
+        set_source_files_properties (IO/WasmHTTPBridge.cpp PROPERTIES COMPILE_DEFINITIONS CHDB_WASM_JSPI)
+    endif ()
+endif ()
 add_headers_and_sources(dbms Storages/ObjectStorage/Web)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes)
 add_headers_and_sources(dbms Storages/ObjectStorage/DataLakes/Common)
@@ -207,6 +216,10 @@ add_headers_and_sources(dbms Databases/DataLake)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Cached)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Local)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Web)
+if (OS_WASM)
+    # WASM web-fetch data plane.
+    add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/WasmWeb)
+endif ()
 
 add_headers_and_sources(dbms Storages/Cache)
 if (TARGET ch_contrib::hivemetastore)
@@ -239,6 +252,24 @@ if (NOT ENABLE_SSL)
 endif ()
 
 add_library(clickhouse_common_io ${clickhouse_common_io_headers} ${clickhouse_common_io_sources})
+
+set_source_files_properties(Common/ThreadFuzzer.cpp PROPERTIES COMPILE_FLAGS "-fomit-frame-pointer -momit-leaf-frame-pointer")
+
+if (SPLIT_SHARED_LIBRARIES)
+    target_compile_definitions(clickhouse_common_io PRIVATE SPLIT_SHARED_LIBRARIES)
+endif ()
+
+if (ENABLE_JEMALLOC)
+    add_library (clickhouse_malloc OBJECT Common/stubFree.c Common/malloc.cpp)
+    set_source_files_properties(Common/stubFree.c PROPERTIES COMPILE_FLAGS "-Wno-reserved-identifier") # suppress warning about __wrap_ functions
+    if (TARGET ch_contrib::jemalloc)
+        target_link_libraries (clickhouse_malloc PRIVATE ch_contrib::jemalloc clickhouse_common_io)
+    endif()
+else()
+    add_library (clickhouse_malloc OBJECT Common/malloc.cpp)
+endif()
+
+set_source_files_properties(Common/malloc.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin")
 
 if (ENABLE_CLICKHOUSE_DISTRIBUTED_CACHE)
     target_compile_definitions(clickhouse_common_io PUBLIC ENABLE_DISTRIBUTED_CACHE=1)
@@ -290,13 +321,10 @@ if (SANITIZE STREQUAL "address,undefined")
         PROPERTIES COMPILE_FLAGS "-fno-sanitize=pointer-overflow")
 endif ()
 
-add_library (clickhouse_malloc OBJECT Common/malloc.cpp)
-set_source_files_properties(Common/malloc.cpp PROPERTIES COMPILE_FLAGS "-fno-builtin")
-if (TARGET ch_contrib::jemalloc)
-    target_link_libraries (clickhouse_malloc PRIVATE ch_contrib::jemalloc clickhouse_common_io)
-endif()
-
 add_library (clickhouse_new_delete STATIC Common/AllocationInterceptors.cpp)
+if (ENABLE_JEMALLOC)
+    set_source_files_properties(Common/AllocationInterceptors.cpp PROPERTIES COMPILE_FLAGS "-Wno-reserved-identifier")
+endif()
 target_link_libraries (clickhouse_new_delete PRIVATE clickhouse_common_io)
 if (TARGET ch_contrib::jemalloc)
     target_link_libraries (clickhouse_new_delete PRIVATE ch_contrib::jemalloc)
@@ -346,6 +374,21 @@ add_object_library(clickhouse_interpreters Interpreters)
 add_object_library(clickhouse_interpreters_cache Interpreters/Cache)
 add_object_library(clickhouse_interpreters_filecache Interpreters/FileCache)
 add_object_library(clickhouse_interpreters_hash_join Interpreters/HashJoin)
+# Niche storage engines (Distributed/WindowView/KeeperMap) — gated in registerStorages.cpp
+# via `#if defined(CHDB_LITE) && CHDB_LITE`; the umbrella's add_compile_definitions(CHDB_LITE=1)
+# is enough, no per-trim flag needed.
+option(CHDB_MINIMAL_HASH_JOIN "Drop niche hash-join variants (ASOF/ANTI/SEMI) to reduce binary size" OFF)
+if (CHDB_MINIMAL_HASH_JOIN)
+    message(STATUS "CHDB_MINIMAL_HASH_JOIN: dropping ASOF/ANTI/SEMI hash-join variants")
+    # joinDispatch.h shrinks STRICTNESSES to {RightAny,Any,All}, so no TU instantiates
+    # HashJoinMethods<*, Asof|Semi|Anti, *>. Drop their .cpp's to skip the codegen.
+    foreach (variant Asof Anti Semi)
+        foreach (kind Inner Left Right Full)
+            list(REMOVE_ITEM dbms_sources Interpreters/HashJoin/${kind}HashJoin${variant}.cpp)
+        endforeach()
+    endforeach()
+    add_compile_definitions(CHDB_MINIMAL_HASH_JOIN=1)
+endif()
 add_object_library(clickhouse_interpreters_access Interpreters/Access)
 add_object_library(clickhouse_interpreters_mysql Interpreters/MySQL)
 add_object_library(clickhouse_interpreters_clusterproxy Interpreters/ClusterProxy)
@@ -419,9 +462,6 @@ set_source_files_properties(Server/IndexRequestHandler.cpp PROPERTIES OBJECT_DEP
 
 set_source_files_properties(Server/WebTerminalRequestHandler.cpp PROPERTIES OBJECT_DEPENDS
     "${CMAKE_SOURCE_DIR}/programs/server/webterminal.html")
-
-set_source_files_properties(Server/KeeperDashboardRequestHandler.cpp PROPERTIES OBJECT_DEPENDS
-    "${CMAKE_SOURCE_DIR}/programs/keeper/dashboard.html")
 
 set_source_files_properties(Server/KeeperJemallocHandler.cpp PROPERTIES OBJECT_DEPENDS
     "${CMAKE_SOURCE_DIR}/programs/server/jemalloc.html")
@@ -506,7 +546,9 @@ endif()
 add_library (dbms STATIC ${dbms_headers} ${dbms_sources})
 
 target_link_libraries (dbms PRIVATE ch_contrib::libdivide daemon)
-target_link_libraries (dbms PRIVATE ch_contrib::clickstack_resources)
+if (TARGET ch_contrib::clickstack_resources)
+    target_link_libraries (dbms PRIVATE ch_contrib::clickstack_resources)
+endif ()
 if (TARGET ch_contrib::jemalloc)
     target_link_libraries (dbms PRIVATE ch_contrib::jemalloc)
 endif()
@@ -806,6 +848,12 @@ if (USE_ORC)
     target_link_libraries(dbms PUBLIC ${ORC_LIBRARIES})
     target_include_directories(dbms SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR} "${PROJECT_BINARY_DIR}/contrib/orc/c++/include")
 endif ()
+
+if (USE_UTF8PROC)
+    target_link_libraries(dbms PUBLIC ch_contrib::utf8proc)
+    target_include_directories (clickhouse_common_io SYSTEM BEFORE PUBLIC ${UTF8PROC_INCLUDE_DIR})
+    message(STATUS "UTF8PROC_INCLUDE_DIR: ${UTF8PROC_INCLUDE_DIR}")
+endif()
 
 if (TARGET ch_contrib::rocksdb)
     target_link_libraries(dbms PUBLIC ch_contrib::rocksdb)

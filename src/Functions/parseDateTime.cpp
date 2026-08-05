@@ -110,7 +110,7 @@ namespace
         int error_code;
         String error_message;
 
-        explicit ErrorCodeAndMessage(int error_code_)
+        [[maybe_unused]] explicit ErrorCodeAndMessage(int error_code_)
             : error_code(error_code_)
         {}
 
@@ -2292,62 +2292,62 @@ namespace
 
     struct NameParseDateTime
     {
-        static constexpr auto name = "parseDateTime";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime";
     };
 
     struct NameParseDateTimeOrZero
     {
-        static constexpr auto name = "parseDateTimeOrZero";
+        [[maybe_unused]] static constexpr auto name = "parseDateTimeOrZero";
     };
 
     struct NameParseDateTimeOrNull
     {
-        static constexpr auto name = "parseDateTimeOrNull";
+        [[maybe_unused]] static constexpr auto name = "parseDateTimeOrNull";
     };
 
     struct NameParseDateTimeInJodaSyntax
     {
-        static constexpr auto name = "parseDateTimeInJodaSyntax";
+        [[maybe_unused]] static constexpr auto name = "parseDateTimeInJodaSyntax";
     };
 
     struct NameParseDateTimeInJodaSyntaxOrZero
     {
-        static constexpr auto name = "parseDateTimeInJodaSyntaxOrZero";
+        [[maybe_unused]] static constexpr auto name = "parseDateTimeInJodaSyntaxOrZero";
     };
 
     struct NameParseDateTimeInJodaSyntaxOrNull
     {
-        static constexpr auto name = "parseDateTimeInJodaSyntaxOrNull";
+        [[maybe_unused]] static constexpr auto name = "parseDateTimeInJodaSyntaxOrNull";
     };
 
     struct NameParseDateTime64
     {
-        static constexpr auto name = "parseDateTime64";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64";
     };
 
     struct NameParseDateTime64OrZero
     {
-        static constexpr auto name = "parseDateTime64OrZero";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64OrZero";
     };
 
     struct NameParseDateTime64OrNull
     {
-        static constexpr auto name = "parseDateTime64OrNull";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64OrNull";
     };
 
     struct NameParseDateTime64InJodaSyntax
     {
-        static constexpr auto name = "parseDateTime64InJodaSyntax";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64InJodaSyntax";
     };
 
     struct NameParseDateTime64InJodaSyntaxOrZero
     {
-        static constexpr auto name = "parseDateTime64InJodaSyntaxOrZero";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64InJodaSyntaxOrZero";
     };
 
     struct NameParseDateTime64InJodaSyntaxOrNull
     {
-        static constexpr auto name = "parseDateTime64InJodaSyntaxOrNull";
+        [[maybe_unused]] static constexpr auto name = "parseDateTime64InJodaSyntaxOrNull";
     };
 
     using FunctionParseDateTime = FunctionParseDateTimeImpl<NameParseDateTime, ParseSyntax::MySQL, ReturnType::DateTime, ErrorHandling::Exception>;
@@ -2718,21 +2718,29 @@ SELECT parseDateTime64InJodaSyntaxOrNull('2025-01-04 23:00:00.123', 'yyyy-MM-dd 
     FunctionDocumentation::Category parseDateTime64InJodaSyntaxOrNull_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64InJodaSyntaxOrNull_documentation = {parseDateTime64InJodaSyntaxOrNull_description, parseDateTime64InJodaSyntaxOrNull_syntax, parseDateTime64InJodaSyntaxOrNull_arguments, {}, parseDateTime64InJodaSyntaxOrNull_returned_value, parseDateTime64InJodaSyntaxOrNull_examples, parseDateTime64InJodaSyntaxOrNull_introduced_in, parseDateTime64InJodaSyntaxOrNull_category};
 
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: keep base parseDateTime + parseDateTime64; drop OrZero/OrNull
+/// variants and all Joda-syntax variants (used by Spark/Presto migrations).
+#define CHDB_LITE_DT(call) (void)0
+#else
+#define CHDB_LITE_DT(call) call
+#endif
+
     factory.registerFunction<FunctionParseDateTime>(parseDateTime_documentation);
     factory.registerAlias("TO_UNIXTIME", FunctionParseDateTime::name, FunctionFactory::Case::Insensitive);
-    factory.registerFunction<FunctionParseDateTimeOrZero>(parseDateTimeOrZero_documentation);
-    factory.registerFunction<FunctionParseDateTimeOrNull>(parseDateTimeOrNull_documentation);
-    factory.registerAlias("str_to_date", FunctionParseDateTimeOrNull::name, FunctionFactory::Case::Insensitive);
-    factory.registerFunction<FunctionParseDateTimeInJodaSyntax>(parseDateTimeInJodaSyntax_documentation);
-    factory.registerFunction<FunctionParseDateTimeInJodaSyntaxOrZero>(parseDateTimeInJodaSyntaxOrZero_documentation);
-    factory.registerFunction<FunctionParseDateTimeInJodaSyntaxOrNull>(parseDateTimeInJodaSyntaxOrNull_documentation);
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTimeOrZero>(parseDateTimeOrZero_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTimeOrNull>(parseDateTimeOrNull_documentation));
+    CHDB_LITE_DT(factory.registerAlias("str_to_date", FunctionParseDateTimeOrNull::name, FunctionFactory::Case::Insensitive));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTimeInJodaSyntax>(parseDateTimeInJodaSyntax_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTimeInJodaSyntaxOrZero>(parseDateTimeInJodaSyntaxOrZero_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTimeInJodaSyntaxOrNull>(parseDateTimeInJodaSyntaxOrNull_documentation));
 
-    factory.registerFunction<FunctionParseDateTime64InJodaSyntax>(parseDateTime64InJodaSyntax_documentation);
-    factory.registerFunction<FunctionParseDateTime64InJodaSyntaxOrZero>(parseDateTime64InJodaSyntaxOrZero_documentation);
-    factory.registerFunction<FunctionParseDateTime64InJodaSyntaxOrNull>(parseDateTime64InJodaSyntaxOrNull_documentation);
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTime64InJodaSyntax>(parseDateTime64InJodaSyntax_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTime64InJodaSyntaxOrZero>(parseDateTime64InJodaSyntaxOrZero_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTime64InJodaSyntaxOrNull>(parseDateTime64InJodaSyntaxOrNull_documentation));
     factory.registerFunction<FunctionParseDateTime64>(parseDateTime64_documentation);
-    factory.registerFunction<FunctionParseDateTime64OrZero>(parseDateTime64OrZero_documentation);
-    factory.registerFunction<FunctionParseDateTime64OrNull>(parseDateTime64OrNull_documentation);
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTime64OrZero>(parseDateTime64OrZero_documentation));
+    CHDB_LITE_DT(factory.registerFunction<FunctionParseDateTime64OrNull>(parseDateTime64OrNull_documentation));
 }
 
 

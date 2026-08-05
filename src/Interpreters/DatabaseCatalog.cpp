@@ -256,6 +256,14 @@ void DatabaseCatalog::initializeAndLoadTemporaryDatabase()
 
 void DatabaseCatalog::createBackgroundTasks()
 {
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// Single-threaded WASM build: these tasks live on the BackgroundSchedulePool,
+    /// whose construction eagerly spawns OS threads (impossible without -pthread).
+    /// Skip them entirely; the tasks (async table-data cleanup, disk reload) are not
+    /// needed for an in-memory session. drop_task/reload_disks_task stay null and are
+    /// only dereferenced from DROP/RELOAD paths, which are unsupported here.
+    return;
+#else
     /// It has to be done before databases are loaded (to avoid a race condition on initialization)
     if (Context::getGlobalContextInstance()->getApplicationType() == Context::ApplicationType::SERVER && getContext()->getServerSettings()[ServerSetting::database_catalog_unused_dir_cleanup_period_sec])
     {
@@ -269,10 +277,15 @@ void DatabaseCatalog::createBackgroundTasks()
 
     auto reload_disks_task_holder = getContext()->getSchedulePool().createTask(StorageID::createEmpty(), "DatabaseCatalogReloadDisksTask", [this](){ this->reloadDisksTask(); });
     reload_disks_task = std::make_unique<BackgroundSchedulePoolTaskHolder>(std::move(reload_disks_task_holder));
+#endif
 }
 
 void DatabaseCatalog::startupBackgroundTasks()
 {
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// See createBackgroundTasks(): no schedule-pool tasks exist in this build.
+    return;
+#else
     /// And it has to be done after all databases are loaded, otherwise cleanup_task may remove something that should not be removed
     if (cleanup_task)
     {
@@ -285,6 +298,7 @@ void DatabaseCatalog::startupBackgroundTasks()
     std::lock_guard lock{tables_marked_dropped_mutex};
     if (!tables_marked_dropped.empty())
         (*drop_task)->schedule();
+#endif
 }
 
 void DatabaseCatalog::shutdownImpl(std::function<void()> shutdown_system_logs)
@@ -1016,8 +1030,9 @@ void DatabaseCatalog::addUUIDMapping(const UUID & uuid, const DatabasePtr & data
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Mapping for table with UUID={} already exists", uuid);
     /// Normally this should never happen, but it's possible when the same UUIDs are explicitly specified in different CREATE queries,
     /// so it's not LOGICAL_ERROR
-    throw Exception(ErrorCodes::TABLE_ALREADY_EXISTS, "Mapping for table with UUID={} already exists. It happened due to UUID collision, "
-                    "most likely because some not random UUIDs were manually specified in CREATE queries.", uuid);
+    /// chDB: No exception if table uuid exist for stateful query
+    // throw Exception(ErrorCodes::TABLE_ALREADY_EXISTS, "Mapping for table with UUID={} already exists. It happened due to UUID collision, "
+    //                 "most likely because some not random UUIDs were manually specified in CREATE queries.", uuid);
 }
 
 void DatabaseCatalog::removeUUIDMapping(const UUID & uuid)
@@ -1098,6 +1113,11 @@ DatabaseCatalog & DatabaseCatalog::instance()
     return *database_catalog;
 }
 
+bool DatabaseCatalog::isAvailable()
+{
+    return database_catalog != nullptr;
+}
+
 void DatabaseCatalog::shutdown(std::function<void()> shutdown_system_logs)
 {
     auto compoment_guard = Coordination::setCurrentComponent("DatabaseCatalog::shutdown");
@@ -1107,6 +1127,8 @@ void DatabaseCatalog::shutdown(std::function<void()> shutdown_system_logs)
     {
         database_catalog->shutdownImpl(std::move(shutdown_system_logs));
     }
+
+    database_catalog.reset();
 }
 
 DatabasePtr DatabaseCatalog::getDatabase(const String & database_name, ContextPtr local_context) const
@@ -2244,6 +2266,12 @@ void DatabaseCatalog::startReplicatedDDLQueries()
 bool DatabaseCatalog::canPerformReplicatedDDLQueries() const
 {
     return replicated_ddl_queries_enabled;
+}
+
+/// chdb: chdb session query need to fix the path.
+void DatabaseCatalog::fixPath(const String & path)
+{
+    getContext()->setPath(path);
 }
 
 static void maybeUnlockUUID(UUID uuid)

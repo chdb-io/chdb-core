@@ -3,6 +3,7 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
+#include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/InDepthNodeVisitor.h>
@@ -118,6 +119,11 @@ struct HasNonDeterministicFunctionsMatcher
             {
                 if (!udf_executable->isDeterministic())
                     data.has_non_deterministic_functions = true;
+                return;
+            }
+            if (CHDB::PythonUDFFactory::instance().tryGetFunction(function->name))
+            {
+                data.has_non_deterministic_functions = true;
                 return;
             }
         }

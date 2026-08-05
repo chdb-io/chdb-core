@@ -4789,7 +4789,7 @@ Enabled by default.
     DECLARE(Bool, optimize_respect_aliases, true, R"(
 If it is set to true, it will respect aliases in WHERE/GROUP BY/ORDER BY, that will help with partition pruning/secondary indexes/optimize_aggregation_in_order/optimize_read_in_order/optimize_trivial_count
 )", 0) \
-    DECLARE(UInt64, mutations_sync, 0, R"(
+    DECLARE(UInt64, mutations_sync, 1, R"(
 Allows to execute `ALTER TABLE ... UPDATE|DELETE|MATERIALIZE INDEX|MATERIALIZE PROJECTION|MATERIALIZE COLUMN|MATERIALIZE STATISTICS` queries ([mutations](../../sql-reference/statements/alter/index.md/#mutations)) synchronously.
 
 Possible values:
@@ -8589,6 +8589,24 @@ Maximum number of WebAssembly UDF instances that can run in parallel per functio
     DECLARE(Bool, allow_experimental_eval_table_function, false, R"(
 Enable experimental table function `eval`.
 )", EXPERIMENTAL) \
+    \
+    /** Experimental feature for chDB. */ \
+    DECLARE(Int64, pandas_analyze_sample, 10000, R"(
+Sample rows in pandas to automatically determine the data types. When set to 0, sampling is disabled
+)", EXPERIMENTAL) \
+    DECLARE(String, chdb_client_name, "", R"(
+The application name appended to 'chDB' when connecting to remote servers via remote() or remoteSecure() table functions.
+If empty, query_log shows 'chDB'. If set to 'my-app', query_log shows 'chDB my-app'.
+)", EXPERIMENTAL) \
+    DECLARE(Bool, allow_python_table_function, true, R"(
+Enables or disables the [Python](../../sql-reference/table-functions/python.md) table function. Set to 0 when you don't want queries to be able to reference variables declared in Python.
+
+Possible values:
+- 1 - Python table function enabled (default).
+- 0 - Python table function disabled.
+
+Once disabled, it cannot be re-enabled for the same session.
+)", 0) \
     \
     /* ####################################################### */ \
     /* AI function settings */ \

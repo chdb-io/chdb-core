@@ -522,7 +522,7 @@ ReplicatedMergeTree queue.
 How many tasks of merging parts with TTL are allowed simultaneously in
 ReplicatedMergeTree queue.
 )", 0) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_lower_max_size_of_merge, 8, R"(
+    DECLARE(UInt64, number_of_free_entries_in_pool_to_lower_max_size_of_merge, 0, R"(
 When there is less than the specified number of free entries in pool
 (or replicated queue), start to lower maximum size of merge to process
 (or to put in queue).
@@ -532,7 +532,7 @@ running merges.
 Possible values:
 - Any positive integer.
 )", 0) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_mutation, 20, R"(
+    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_mutation, 0, R"(
 When there is less than specified number of free entries in pool, do not
 execute part mutations. This is to leave free threads for regular merges and
 to avoid "Too many parts" errors.
@@ -557,7 +557,7 @@ still be constrained by other settings).
     new merge with TTL. This is to leave free threads for regular merges and
     avoid \"Too many parts\"
 )", 0) \
-    DECLARE(Seconds, old_parts_lifetime, 8 * 60, R"(
+    DECLARE(Seconds, old_parts_lifetime, 0, R"(
 The time (in seconds) of storing inactive parts to protect against data loss
 during spontaneous server reboots.
 
@@ -756,7 +756,7 @@ Possible values:
 - `true`
 - `false`
 )", false) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 25, R"(
+    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 0, R"(
 When there is less than specified number of free entries in pool, do not
 execute optimizing entire partition in the background (this task generated
 when set `min_age_to_force_merge_seconds` and enable

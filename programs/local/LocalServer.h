@@ -34,6 +34,8 @@ class LocalServer : public ClientApplicationBase, public Loggers, public IServer
 public:
     LocalServer() = default;
 
+    ~LocalServer() override;
+
     void initialize(Poco::Util::Application & self) override;
 
     int main(const std::vector<String> & /*args*/) override;
@@ -107,6 +109,22 @@ private:
     std::optional<std::filesystem::path> temporary_directory_to_delete;
 
     std::unique_ptr<ReadBufferFromFile> input;
+
+// chdb_spec
+public:
+    size_t getStorgaeRowsRead() const
+    {
+        auto * local_connection = static_cast<LocalConnection *>(connection.get());
+        return local_connection->getCHDBProgress().read_rows;
+    }
+    size_t getStorageBytesRead() const
+    {
+        auto * local_connection = static_cast<LocalConnection *>(connection.get());
+        return local_connection->getCHDBProgress().read_bytes;
+    }
+
+private:
+// chdb_spec
 
     /// MemoryWorker periodically updates RSS and resizes the userspace page cache.
     /// Without it the page cache stays stuck at `page_cache_min_size`.

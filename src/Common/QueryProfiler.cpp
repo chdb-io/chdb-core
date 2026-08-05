@@ -145,7 +145,10 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
 }
 
-#if defined(SIGEV_THREAD_ID)
+/// Emscripten/WASM defines SIGEV_THREAD_ID but its `sigevent` struct lacks the
+/// `_sigev_un` member (and there are no POSIX per-thread timers, signals or stack
+/// unwinding), so the timer-based sampling profiler cannot work there. Disable it.
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
 Timer::Timer()
     : log(getLogger("Timer"))
 {}
@@ -475,7 +478,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
     [[maybe_unused]] UInt64 thread_id, [[maybe_unused]] int clock_type, [[maybe_unused]] UInt64 period, [[maybe_unused]] int pause_signal_)
     : log(getLogger("QueryProfiler")), pause_signal(pause_signal_)
 {
-#if defined(QUERY_PROFILER_SUPPORTED)
+#if defined(QUERY_PROFILER_SUPPORTED) && !defined(OS_WASM)
     /// Under TSan we use frame-pointer-based unwinding (via abseil) which does not
     /// call dl_iterate_phdr in the signal handler, so the PHDR cache is not needed for
     /// stack capture. Symbolization happens later in a normal thread context.
@@ -545,7 +548,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
 template <typename ProfilerImpl>
 void QueryProfilerBase<ProfilerImpl>::setPeriod([[maybe_unused]] UInt64 period_)
 {
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     timer.set(period_);
 #elif defined(OS_DARWIN)
     ProfilerSampler::instance().setThreadPeriod(pthread_self(), pause_signal, period_);
@@ -570,7 +573,7 @@ QueryProfilerBase<ProfilerImpl>::~QueryProfilerBase()
 template <typename ProfilerImpl>
 void QueryProfilerBase<ProfilerImpl>::cleanup()
 {
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     timer.stop();
     signal_handler_disarmed = true;
 #elif defined(OS_DARWIN)

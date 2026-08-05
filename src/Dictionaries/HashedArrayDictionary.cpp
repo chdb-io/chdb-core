@@ -248,7 +248,7 @@ ColumnPtr HashedArrayDictionary<dictionary_key_type, sharded>::getHierarchy(Colu
         std::optional<UInt64> null_value;
 
         if (!dictionary_attribute.null_value.isNull())
-            null_value = dictionary_attribute.null_value.safeGet<UInt64>();
+            null_value = dictionary_attribute.null_value.template safeGet<UInt64>();
 
 
         auto is_key_valid_func = [&, this](auto & key)
@@ -321,7 +321,7 @@ ColumnUInt8::Ptr HashedArrayDictionary<dictionary_key_type, sharded>::isInHierar
         std::optional<UInt64> null_value;
 
         if (!dictionary_attribute.null_value.isNull())
-            null_value = dictionary_attribute.null_value.safeGet<UInt64>();
+            null_value = dictionary_attribute.null_value.template safeGet<UInt64>();
 
 
         auto is_key_valid_func = [&](auto & key)

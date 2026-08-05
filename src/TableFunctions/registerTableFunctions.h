@@ -19,6 +19,9 @@ void registerTableFunctionFile(TableFunctionFactory & factory);
 void registerTableFunctionFileCluster(TableFunctionFactory & factory);
 void registerTableFunctionURL(TableFunctionFactory & factory);
 void registerTableFunctionURLCluster(TableFunctionFactory & factory);
+#if defined(OS_WASM)
+void registerTableFunctionS3(TableFunctionFactory & factory);
+#endif
 void registerTableFunctionValues(TableFunctionFactory & factory);
 void registerTableFunctionInput(TableFunctionFactory & factory);
 void registerTableFunctionGenerate(TableFunctionFactory & factory);

@@ -788,14 +788,14 @@ struct ContextSharedPart : boost::noncopyable
     ContextSharedPart()
         : access_control(std::make_unique<AccessControl>()), global_overcommit_tracker(&process_list), macros(std::make_unique<Macros>())
     {
-        /// TODO: make it singleton (?)
-        static std::atomic<size_t> num_calls{0};
-        if (++num_calls > 1)
-        {
-            std::cerr << "Attempting to create multiple ContextShared instances. Stack trace:\n" << StackTrace().toString();
-            std::cerr.flush();
-            std::terminate();
-        }
+        // /// TODO: make it singleton (?)
+        // static std::atomic<size_t> num_calls{0};
+        // if (++num_calls > 1)
+        // {
+        //     std::cerr << "Attempting to create multiple ContextShared instances. Stack trace:\n" << StackTrace().toString();
+        //     std::cerr.flush();
+        //     std::terminate();
+        // }
     }
 
     ~ContextSharedPart()
@@ -1392,6 +1392,21 @@ SharedContextHolder::SharedContextHolder(std::unique_ptr<ContextSharedPart> shar
 
 void SharedContextHolder::reset() { shared.reset(); }
 
+SharedPtrContextHolder::SharedPtrContextHolder(SharedPtrContextHolder &&) noexcept = default;
+SharedPtrContextHolder & SharedPtrContextHolder::operator=(SharedPtrContextHolder &&) noexcept = default;
+SharedPtrContextHolder::SharedPtrContextHolder() = default;
+//chdb-todo: fix SharedPtrContextHolder.shared leak
+SharedPtrContextHolder::~SharedPtrContextHolder() = default;
+SharedPtrContextHolder::SharedPtrContextHolder(ContextSharedPart * shared_context) : shared(shared_context)
+{
+}
+
+void SharedPtrContextHolder::reset()
+{
+    delete shared;
+    shared = nullptr;
+}
+
 ContextMutablePtr Context::createGlobal(ContextSharedPart * shared_part)
 {
     auto res = std::shared_ptr<Context>(new Context);
@@ -1405,6 +1420,11 @@ ContextMutablePtr Context::createGlobal(ContextSharedPart * shared_part)
 SharedContextHolder Context::createShared()
 {
     return SharedContextHolder(std::make_unique<ContextSharedPart>());
+}
+
+SharedPtrContextHolder Context::createSharedHolder()
+{
+    return SharedPtrContextHolder(new ContextSharedPart());
 }
 
 ContextMutablePtr Context::createCopy(const ContextPtr & other)
@@ -1788,7 +1808,7 @@ void Context::setPath(const String & path)
         shared->flags_path = shared->path + "flags/";
 
     if (shared->user_files_path.empty())
-        shared->user_files_path = shared->path + "user_files/";
+        shared->user_files_path = ""; // chdb should use cwd
 
     if (shared->dictionaries_lib_path.empty())
         shared->dictionaries_lib_path = shared->path + "dictionaries_lib/";
@@ -3742,7 +3762,6 @@ void Context::makeSessionContext()
 
 void Context::makeGlobalContext()
 {
-    chassert(!global_context_instance);
     global_context_instance = shared_from_this();
     DatabaseCatalog::init(shared_from_this());
     EventNotifier::init();
@@ -4048,18 +4067,54 @@ void Context::loadUserDefinedExecutableFunctionDrivers(const Poco::Util::Abstrac
 
 const IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage() const
 {
-    callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
+    // callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
+    //     shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
+    // });
+
+    if (!shared->user_defined_sql_objects_storage)
+    {
         shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-    });
+        return *shared->user_defined_sql_objects_storage;
+    }
+
+    String udf_path;
+    if (getConfigRef().has("path"))
+    {
+        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
+    }
+
+    SharedLockGuard lock(shared->mutex);
+    if (!udf_path.empty())
+    {
+        shared->user_defined_sql_objects_storage->setPath(udf_path);
+    }
 
     return *shared->user_defined_sql_objects_storage;
 }
 
 IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
 {
-    callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
+    // callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
+    //     shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
+    // });
+
+    if (!shared->user_defined_sql_objects_storage)
+    {
         shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-    });
+        return *shared->user_defined_sql_objects_storage;
+    }
+
+    String udf_path;
+    if (getConfigRef().has("path"))
+    {
+        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
+    }
+
+    std::lock_guard lock(shared->mutex);
+    if (!udf_path.empty())
+    {
+        shared->user_defined_sql_objects_storage->setPath(udf_path);
+    }
 
     return *shared->user_defined_sql_objects_storage;
 }
@@ -4492,7 +4547,7 @@ ThreadPool & Context::getLoadMarksThreadpool() const
         auto pool_size = shared->server_settings[ServerSetting::load_marks_threadpool_pool_size];
         auto queue_size = shared->server_settings[ServerSetting::load_marks_threadpool_queue_size];
         shared->load_marks_threadpool = std::make_unique<ThreadPool>(
-            CurrentMetrics::MarksLoaderThreads, CurrentMetrics::MarksLoaderThreadsActive, CurrentMetrics::MarksLoaderThreadsScheduled, pool_size, pool_size, queue_size);
+            CurrentMetrics::MarksLoaderThreads, CurrentMetrics::MarksLoaderThreadsActive, CurrentMetrics::MarksLoaderThreadsScheduled, pool_size, 0, queue_size);
     });
 
     return *shared->load_marks_threadpool;
@@ -5248,7 +5303,7 @@ ThreadPool & Context::getPrefetchThreadpool() const
         auto queue_size = shared->server_settings[ServerSetting::prefetch_threadpool_queue_size];
 
         shared->prefetch_threadpool = std::make_unique<ThreadPool>(
-            CurrentMetrics::IOPrefetchThreads, CurrentMetrics::IOPrefetchThreadsActive, CurrentMetrics::IOPrefetchThreadsScheduled, pool_size, pool_size, queue_size);
+            CurrentMetrics::IOPrefetchThreads, CurrentMetrics::IOPrefetchThreadsActive, CurrentMetrics::IOPrefetchThreadsScheduled, pool_size, 0, queue_size);
     });
 
     return *shared->prefetch_threadpool;
@@ -8256,7 +8311,7 @@ ThreadPool & Context::getThreadPoolWriter() const
         auto queue_size = shared->server_settings[ServerSetting::threadpool_writer_queue_size];
 
         shared->threadpool_writer = std::make_unique<ThreadPool>(
-            CurrentMetrics::IOWriterThreads, CurrentMetrics::IOWriterThreadsActive, CurrentMetrics::IOWriterThreadsScheduled, pool_size, pool_size, queue_size);
+            CurrentMetrics::IOWriterThreads, CurrentMetrics::IOWriterThreadsActive, CurrentMetrics::IOWriterThreadsScheduled, pool_size, 0, queue_size);
     });
 
     return *shared->threadpool_writer;

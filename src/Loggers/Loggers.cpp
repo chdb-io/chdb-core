@@ -113,6 +113,11 @@ void Loggers::buildLoggers(Poco::Util::AbstractConfiguration & config, Poco::Log
 
     /// Split logs to ordinary log, error log, syslog and console.
     /// Use extended interface of Channel for more comprehensive logging.
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// Async logging starts a Poco::Thread per channel; impossible without -pthread.
+    /// Force the synchronous split channel in the single-threaded WASM build.
+    split = new DB::OwnSplitChannel();
+#else
     if (config.getBool("logger.async", true))
     {
         auto async_queue_size = config.getUInt("logger.async_queue_max_size", 65536);
@@ -120,6 +125,7 @@ void Loggers::buildLoggers(Poco::Util::AbstractConfiguration & config, Poco::Log
     }
     else
         split = new DB::OwnSplitChannel();
+#endif
 
     auto log_level_string = config.getString("logger.level", "trace");
 

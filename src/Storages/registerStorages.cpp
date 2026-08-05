@@ -47,6 +47,8 @@ void registerStorageS3Queue(StorageFactory & factory);
 
 #if USE_PARQUET && USE_DELTA_KERNEL_RS
 void registerStorageDeltaLake(StorageFactory & factory);
+#elif USE_PARQUET && defined(OS_WASM)
+void registerStorageDeltaLake(StorageFactory & factory);
 #endif
 
 #if USE_AVRO
@@ -136,10 +138,14 @@ void registerStorages()
     registerStorageView(factory);
     registerStorageMaterializedView(factory);
     registerStorageGenerateRandom(factory);
+#if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageExecutable(factory);
     registerStorageWindowView(factory);
+#endif
     registerStorageLoop(factory);
+#if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageFuzzQuery(factory);
+#endif
     registerStorageTimeSeries(factory);
     registerStorageAlias(factory);
 
@@ -147,7 +153,7 @@ void registerStorages()
     registerStorageArrowFlight(factory);
 #endif
 
-#if USE_RAPIDJSON || USE_SIMDJSON
+#if (USE_RAPIDJSON || USE_SIMDJSON) && (!defined(CHDB_LITE) || !CHDB_LITE)
     registerStorageFuzzJSON(factory);
 #endif
 
@@ -166,6 +172,8 @@ void registerStorages()
 #endif
 
 #if USE_PARQUET && USE_DELTA_KERNEL_RS
+    registerStorageDeltaLake(factory);
+#elif USE_PARQUET && defined(OS_WASM)
     registerStorageDeltaLake(factory);
 #endif
 
@@ -186,8 +194,10 @@ void registerStorages()
     registerStorageMongoDB(factory);
 #endif
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageYTsaurus(factory);
     registerStorageRedis(factory);
+#endif
 
 #if USE_RDKAFKA
     registerStorageKafka(factory);
@@ -218,7 +228,9 @@ void registerStorages()
     registerStorageSQLite(factory);
 #endif
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageKeeperMap(factory);
+#endif
 
     registerStorageObjectStorage(factory);
 }

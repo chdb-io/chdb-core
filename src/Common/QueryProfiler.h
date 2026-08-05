@@ -39,7 +39,9 @@ namespace DB
   * Note that signal handler implementation is defined by template parameter. See QueryProfilerReal and QueryProfilerCPU.
   */
 
-#if defined(SIGEV_THREAD_ID)
+/// WASM/Emscripten defines SIGEV_THREAD_ID but cannot support POSIX per-thread
+/// timers (its `sigevent` lacks `_sigev_un`), so the Timer is disabled there.
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
 class Timer
 {
 public:
@@ -57,7 +59,7 @@ private:
     LoggerPtr log;
     std::optional<timer_t> timer_id;
 };
-#endif // defined(SIGEV_THREAD_ID)
+#endif // defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
 
 template <typename ProfilerImpl>
 class QueryProfilerBase
@@ -75,7 +77,7 @@ private:
 
     LoggerPtr log;
 
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
     inline static thread_local Timer timer = Timer();
 #endif
 

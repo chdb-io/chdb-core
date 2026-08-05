@@ -49,6 +49,8 @@ thread_local size_t terminate_current_exception_trace_size = 0;
 using namespace DB;
 
 
+std::atomic<bool> HandledSignals::disable_signal_handlers = false;
+
 static std::atomic_bool is_crashed = false;
 static_assert(std::atomic_bool::is_always_lock_free, "is_crashed must be lock-free for use in signal handlers");
 bool isCrashed() { return is_crashed.load(std::memory_order_relaxed); }
@@ -64,11 +66,16 @@ static_assert(std::atomic<uintptr_t>::is_always_lock_free, "saved_fault_address 
 
 void call_default_signal_handler(int sig)
 {
+#if defined(OS_WASM)
+    /// No process-level signal handling on WebAssembly.
+    (void)sig;
+#else
     if (SIG_ERR == signal(sig, SIG_DFL))
         throw ErrnoException(ErrorCodes::CANNOT_SET_SIGNAL_HANDLER, "Cannot set signal handler");
 
     if (0 != raise(sig))
         throw ErrnoException(ErrorCodes::CANNOT_SEND_SIGNAL, "Cannot send signal");
+#endif
 }
 
 
@@ -204,12 +211,16 @@ static void signalHandler(int sig, siginfo_t * info, void * context)
         }
         catch (const std::exception & e)
         {
+#if STD_EXCEPTION_HAS_STACK_TRACE
             const auto * stack_trace_frames = e.get_stack_trace_frames();
             const size_t stack_trace_size = e.get_stack_trace_size();
             __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
             terminate_current_exception_trace_size = std::min(stack_trace_size, FRAMEPOINTER_CAPACITY);
             for (size_t i = 0; i < terminate_current_exception_trace_size; ++i)
                 terminate_current_exception_trace[i] = stack_trace_frames[i];
+#else
+            (void)e;
+#endif
         }
         catch (...) {} // NOLINT(bugprone-empty-catch) Ok: best-effort in terminate handler
     }
@@ -307,6 +318,13 @@ void HandledSignals::addSignalHandler(
     bool register_signal,
     const std::vector<int> & additional_masked_signals)
 {
+#if defined(OS_WASM)
+    /// WebAssembly has no process-level signal handlers; installation is a no-op.
+    (void)signals;
+    (void)handler;
+    (void)register_signal;
+    (void)additional_masked_signals;
+#else
     struct sigaction sa{};
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = handler;
@@ -337,10 +355,15 @@ void HandledSignals::addSignalHandler(
 
     if (register_signal)
         std::copy(signals.begin(), signals.end(), std::back_inserter(handled_signals));
+#endif
 }
 
 void blockSignals(const std::vector<int> & signals)
 {
+#if defined(OS_WASM)
+    /// No signal masks on WebAssembly.
+    (void)signals;
+#else
     sigset_t sig_set;
 
 #if defined(OS_DARWIN)
@@ -358,6 +381,7 @@ void blockSignals(const std::vector<int> & signals)
 
     if (pthread_sigmask(SIG_BLOCK, &sig_set, nullptr))
         throw Poco::Exception("Cannot block signal.");
+#endif
 }
 
 
@@ -753,6 +777,7 @@ void HandledSignals::reset(bool close_pipe)
 {
     handled_signals_were_reset.test_and_set();
 
+#if !defined(OS_WASM)
     /// Reset signals to SIG_DFL to avoid trying to write to the signal_pipe that will be closed after.
     for (int sig : handled_signals)
     {
@@ -768,6 +793,9 @@ void HandledSignals::reset(bool close_pipe)
             }
         }
     }
+#endif
+
+    handled_signals.clear();
 
     if (close_pipe)
         signal_pipe.close();
@@ -807,6 +835,9 @@ void HandledSignals::setupTerminateHandler()
 
 void HandledSignals::setupCommonDeadlySignalHandlers()
 {
+    if (disable_signal_handlers.load(std::memory_order_relaxed))
+        return;
+
     /// SIGTSTP is added for debugging purposes. To output a stack trace of any running thread at anytime.
     /// NOTE: that it is also used by clickhouse-test wrapper
 #if defined(OS_LINUX) || defined(OS_DARWIN)
@@ -830,6 +861,9 @@ void HandledSignals::setupCommonDeadlySignalHandlers()
 
 void HandledSignals::setupCommonTerminateRequestSignalHandlers()
 {
+    if (disable_signal_handlers.load(std::memory_order_relaxed))
+        return;
+
     addSignalHandler({SIGINT, SIGQUIT, SIGTERM}, terminateRequestedSignalHandler, true);
 }
 

@@ -287,6 +287,10 @@ IcebergIterator::IcebergIterator(
     LOG_DEBUG(logger, "Taken {} position deletes file and {} equality deletes files in iceberg iterator", position_deletes_files.size(), equality_deletes_files.size());
     std::sort(equality_deletes_files.begin(), equality_deletes_files.end());
     std::sort(position_deletes_files.begin(), position_deletes_files.end());
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// Single-threaded WASM build: no thread can be spawned, so next() pulls
+    /// from data_files_iterator synchronously instead of via the producer.
+#else
     producer_task = std::make_unique<ThreadFromGlobalPool>(
         [this, thread_group = CurrentThread::getGroup()]()
         {
@@ -320,13 +324,26 @@ IcebergIterator::IcebergIterator(
             }
             blocking_queue.finish();
         });
+#endif
 }
 
 ObjectInfoPtr IcebergIterator::next(size_t)
 {
     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::IcebergMetadataReadWaitTimeMicroseconds);
     Iceberg::ProcessedManifestFileEntryPtr manifest_file_entry;
+#ifdef CHDB_WASM_SINGLE_THREADED
+    /// No producer thread on the single-threaded WASM build: pull the next
+    /// manifest entry synchronously (exceptions propagate directly).
+    bool has_manifest_file_entry = false;
+    if (auto entry = data_files_iterator.next(); entry.has_value())
+    {
+        manifest_file_entry = std::move(entry.value());
+        has_manifest_file_entry = true;
+    }
+    if (has_manifest_file_entry)
+#else
     if (blocking_queue.pop(manifest_file_entry))
+#endif
     {
         IcebergDataObjectInfoPtr object_info
             = std::make_shared<IcebergDataObjectInfo>(

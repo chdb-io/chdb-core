@@ -19,6 +19,7 @@
 #include <Parsers/ASTTablesInSelectQuery.h>
 #include <Parsers/ASTWithElement.h>
 #include <Processors/Executors/PullingAsyncPipelineExecutor.h>
+#include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Common/FieldVisitorToString.h>
 #include <Common/ProfileEvents.h>
 
@@ -212,11 +213,17 @@ void ExecuteScalarSubqueriesMatcher::visit(const ASTSubquery & subquery, ASTPtr 
         {
             auto io = interpreter->execute();
 
+#ifdef CHDB_WASM_SINGLE_THREADED
+            PullingPipelineExecutor executor(io.pipeline);
+#else
             PullingAsyncPipelineExecutor executor(io.pipeline);
+#endif
             io.pipeline.setProgressCallback(data.getContext()->getProgressCallback());
             io.pipeline.setConcurrencyControl(data.getContext()->getSettingsRef()[Setting::use_concurrency_control]);
+#ifndef CHDB_WASM_SINGLE_THREADED
             if (auto cancel_cb = data.getContext()->hasQueryContext() ? data.getContext()->getQueryContext()->getInteractiveCancelCallback() : nullptr)
                 executor.setCancelCallback(std::move(cancel_cb), std::max(UInt64(100), data.getContext()->getSettingsRef()[Setting::interactive_delay] / 1000));
+#endif
 
             while (block.rows() == 0 && executor.pull(block))
             {

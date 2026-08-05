@@ -289,6 +289,18 @@ public:
         c_end += ELEMENT_SIZE;
     }
 
+    template <typename... TAllocatorParams>
+    void append_raw(const void * ptr, size_t count, TAllocatorParams &&... allocator_params) /// NOLINT
+    {
+        size_t bytes_to_copy = PODArrayDetails::byte_size(count, ELEMENT_SIZE);
+        size_t required_capacity = size() + bytes_to_copy;
+        if (unlikely(required_capacity > capacity()))
+            reserve(required_capacity, std::forward<TAllocatorParams>(allocator_params)...);
+
+        memcpy(c_end, ptr, bytes_to_copy);
+        c_end += bytes_to_copy;
+    }
+
     void protect()
     {
 #ifndef NDEBUG

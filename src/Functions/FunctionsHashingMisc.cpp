@@ -6,6 +6,16 @@
 /// to better parallelize the build procedure and avoid MSan build failure
 /// due to excessive resource consumption.
 
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: skip registering niche hash functions. The linker's
+/// --gc-sections then drops the corresponding FunctionAnyHash<Impl> template
+/// instantiations (each ~250-500 KB stripped). Kept: sipHash64{,Keyed},
+/// cityHash64, xxHash64, halfMD5 (when SSL is on).
+#define CHDB_LITE_HASH(call) (void)0
+#else
+#define CHDB_LITE_HASH(call) call
+#endif
+
 namespace DB
 {
 
@@ -102,7 +112,7 @@ New projects are advised to use [`sipHash128Reference`](#sipHash128Reference).
     FunctionDocumentation::IntroducedIn sipHash128_introduced_in = {1, 1};
     FunctionDocumentation::Category sipHash128_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation sipHash128_documentation = {sipHash128_description, sipHash128_syntax, sipHash128_arguments, {}, sipHash128_returned_value, sipHash128_examples, sipHash128_introduced_in, sipHash128_category};
-    factory.registerFunction<FunctionSipHash128>(sipHash128_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionSipHash128>(sipHash128_documentation));
 
     FunctionDocumentation::Description sipHash128Keyed_description = R"(
 Same as [`sipHash128`](#sipHash128) but additionally takes an explicit key argument instead of using a fixed key.
@@ -133,7 +143,7 @@ New projects should probably use [`sipHash128ReferenceKeyed`](#sipHash128Referen
     FunctionDocumentation::IntroducedIn sipHash128Keyed_introduced_in = {23, 2};
     FunctionDocumentation::Category sipHash128Keyed_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation sipHash128Keyed_documentation = {sipHash128Keyed_description, sipHash128Keyed_syntax, sipHash128Keyed_arguments, {}, sipHash128Keyed_returned_value, sipHash128Keyed_examples, sipHash128Keyed_introduced_in, sipHash128Keyed_category};
-    factory.registerFunction<FunctionSipHash128Keyed>(sipHash128Keyed_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionSipHash128Keyed>(sipHash128Keyed_documentation));
 
     FunctionDocumentation::Description sipHash128Ref_description = R"(
 Like [`sipHash128`](/sql-reference/functions/hash-functions#sipHash128) but implements the 128-bit algorithm from the original authors of SipHash.
@@ -157,7 +167,7 @@ Like [`sipHash128`](/sql-reference/functions/hash-functions#sipHash128) but impl
     FunctionDocumentation::IntroducedIn sipHash128Ref_introduced_in = {23, 2};
     FunctionDocumentation::Category sipHash128Ref_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation sipHash128Ref_documentation = {sipHash128Ref_description, sipHash128Ref_syntax, sipHash128Ref_arguments, {}, sipHash128Ref_returned_value, sipHash128Ref_examples, sipHash128Ref_introduced_in, sipHash128Ref_category};
-    factory.registerFunction<FunctionSipHash128Reference>(sipHash128Ref_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionSipHash128Reference>(sipHash128Ref_documentation));
 
     FunctionDocumentation::Description sipHash128RefKeyed_description = R"(
 Same as [`sipHash128Reference`](#sipHash128Reference) but additionally takes an explicit key argument instead of using a fixed key.
@@ -182,7 +192,7 @@ Same as [`sipHash128Reference`](#sipHash128Reference) but additionally takes an 
     FunctionDocumentation::IntroducedIn sipHash128RefKeyed_introduced_in = {23, 2};
     FunctionDocumentation::Category sipHash128RefKeyed_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation sipHash128RefKeyed_documentation = {sipHash128RefKeyed_description, sipHash128RefKeyed_syntax, sipHash128RefKeyed_arguments, {}, sipHash128RefKeyed_returned_value, sipHash128RefKeyed_examples, sipHash128RefKeyed_introduced_in, sipHash128RefKeyed_category};
-    factory.registerFunction<FunctionSipHash128ReferenceKeyed>(sipHash128RefKeyed_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionSipHash128ReferenceKeyed>(sipHash128RefKeyed_documentation));
 
     FunctionDocumentation::Description cityHash64_description = R"(
 Produces a 64-bit [CityHash](https://github.com/google/cityhash) hash value.
@@ -279,7 +289,7 @@ This affects for example integer types of different size, named and unnamed `Tup
     FunctionDocumentation::IntroducedIn farmFingerprint64_introduced_in = {20, 12};
     FunctionDocumentation::Category farmFingerprint64_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation farmFingerprint64_documentation = {farmFingerprint64_description, farmFingerprint64_syntax, farmFingerprint64_arguments, {}, farmFingerprint64_returned_value, farmFingerprint64_examples, farmFingerprint64_introduced_in, farmFingerprint64_category};
-    factory.registerFunction<FunctionFarmFingerprint64>(farmFingerprint64_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionFarmFingerprint64>(farmFingerprint64_documentation));
 
     FunctionDocumentation::Description farmHash64_description = R"(
 Produces a 64-bit [FarmHash](https://github.com/google/farmhash) using the `Hash64` method.
@@ -312,7 +322,7 @@ This affects for example integer types of different size, named and unnamed `Tup
     FunctionDocumentation::IntroducedIn farmHash64_introduced_in = {1, 1};
     FunctionDocumentation::Category farmHash64_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation farmHash64_documentation = {farmHash64_description, farmHash64_syntax, farmHash64_arguments, {}, farmHash64_returned_value, farmHash64_examples, farmHash64_introduced_in, farmHash64_category};
-    factory.registerFunction<FunctionFarmHash64>(farmHash64_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionFarmHash64>(farmHash64_documentation));
     FunctionDocumentation::Description metroHash64_description = R"(
 Produces a 64-bit [MetroHash](http://www.jandrewrogers.com/2015/05/27/metrohash/) hash value.
 
@@ -342,7 +352,7 @@ SELECT metroHash64(array('e','x','a'), 'mple', 10, toDateTime('2019-06-15 23:00:
     FunctionDocumentation::IntroducedIn metroHash64_introduced_in = {1, 1};
     FunctionDocumentation::Category metroHash64_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation metroHash64_documentation = {metroHash64_description, metroHash64_syntax, metroHash64_arguments, {}, metroHash64_returned_value, metroHash64_examples, metroHash64_introduced_in, metroHash64_category};
-    factory.registerFunction<FunctionMetroHash64>(metroHash64_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionMetroHash64>(metroHash64_documentation));
     FunctionDocumentation::Description URLHash_description = R"(
 A fast, decent-quality non-cryptographic hash function for a string obtained from a URL using some type of normalization.
 
@@ -390,7 +400,7 @@ SELECT URLHash('https://www.clickhouse.com/docs', 1);
     FunctionDocumentation::IntroducedIn URLHash_introduced_in = {1, 1};
     FunctionDocumentation::Category URLHash_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation URLHash_documentation = {URLHash_description, URLHash_syntax, URLHash_arguments, {}, URLHash_returned_value, URLHash_examples, URLHash_introduced_in, URLHash_category};
-    factory.registerFunction<FunctionURLHash>(URLHash_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionURLHash>(URLHash_documentation));
     FunctionDocumentation::Description javaHash_description = R"(
 Calculates JavaHash from:
 - [string](http://hg.openjdk.java.net/jdk8u/jdk8u/jdk/file/478a4add975b/src/share/classes/java/lang/String.java#l1452),
@@ -441,7 +451,7 @@ SELECT javaHash('Hello, world!');
     FunctionDocumentation::IntroducedIn javaHash_introduced_in = {20, 1};
     FunctionDocumentation::Category javaHash_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation javaHash_documentation = {javaHash_description, javaHash_syntax, javaHash_arguments, {}, javaHash_returned_value, javaHash_examples, javaHash_introduced_in, javaHash_category};
-    factory.registerFunction<FunctionJavaHash>(javaHash_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionJavaHash>(javaHash_documentation));
     FunctionDocumentation::Description javaHashUTF16LE_description = R"(
 Calculates [JavaHash](http://hg.openjdk.java.net/jdk8u/jdk8u/jdk/file/478a4add975b/src/share/classes/java/lang/String.java#l1452) from a string, assuming it contains bytes representing a string in UTF-16LE encoding.
 )";
@@ -464,7 +474,7 @@ Calculates [JavaHash](http://hg.openjdk.java.net/jdk8u/jdk8u/jdk/file/478a4add97
     FunctionDocumentation::IntroducedIn javaHashUTF16LE_introduced_in = {20, 1};
     FunctionDocumentation::Category javaHashUTF16LE_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation javaHashUTF16LE_documentation = {javaHashUTF16LE_description, javaHashUTF16LE_syntax, javaHashUTF16LE_arguments, {}, javaHashUTF16LE_returned_value, javaHashUTF16LE_examples, javaHashUTF16LE_introduced_in, javaHashUTF16LE_category};
-    factory.registerFunction<FunctionJavaHashUTF16LE>(javaHashUTF16LE_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionJavaHashUTF16LE>(javaHashUTF16LE_documentation));
     FunctionDocumentation::Description hiveHash_description = R"(
 Calculates a "HiveHash" from a string.
 This is just [`JavaHash`](#javaHash) with zeroed out sign bits.
@@ -494,7 +504,7 @@ Use it only when this algorithm is already used in another system and you need t
     FunctionDocumentation::IntroducedIn hiveHash_introduced_in = {20, 1};
     FunctionDocumentation::Category hiveHash_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation hiveHash_documentation = {hiveHash_description, hiveHash_syntax, hiveHash_arguments, {}, hiveHash_returned_value, hiveHash_examples, hiveHash_introduced_in, hiveHash_category};
-    factory.registerFunction<FunctionHiveHash>(hiveHash_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionHiveHash>(hiveHash_documentation));
 
     FunctionDocumentation::Description xxHash32_description = R"(
 Calculates a [xxHash](http://cyan4973.github.io/xxHash/) from a string.
@@ -520,7 +530,7 @@ For the 64-bit version see [`xxHash64`](#xxHash64)
     FunctionDocumentation::IntroducedIn xxHash32_introduced_in = {20, 1};
     FunctionDocumentation::Category xxHash32_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation xxHash32_documentation = {xxHash32_description, xxHash32_syntax, xxHash32_arguments, {}, xxHash32_returned_value, xxHash32_examples, xxHash32_introduced_in, xxHash32_category};
-    factory.registerFunction<FunctionXxHash32>(xxHash32_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionXxHash32>(xxHash32_documentation));
 
     FunctionDocumentation::Description xxHash64_description = R"(
 Calculates a [xxHash](http://cyan4973.github.io/xxHash/) from a string.
@@ -578,7 +588,7 @@ For `NULL`, the function returns `42`, matching Spark's seed behavior.
            xxHash64Spark_examples,
            xxHash64Spark_introduced_in,
            xxHash64Spark_category};
-    factory.registerFunction<FunctionXxHash64Spark>(xxHash64Spark_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionXxHash64Spark>(xxHash64Spark_documentation));
 
     FunctionDocumentation::Description xxh3_description = "Computes a [XXH3](https://github.com/Cyan4973/xxHash) 64-bit hash value.";
     FunctionDocumentation::Syntax xxh3_syntax = "xxh3(expr)";
@@ -588,7 +598,7 @@ For `NULL`, the function returns `42`, matching Spark's seed behavior.
     FunctionDocumentation::IntroducedIn xxh3_introduced_in = {22, 12};
     FunctionDocumentation::Category xxh3_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation xxh3_documentation = {xxh3_description, xxh3_syntax, xxh3_argument, {}, xxh3_returned_value, xxh3_example, xxh3_introduced_in, xxh3_category};
-    factory.registerFunction<FunctionXXH3>(xxh3_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionXXH3>(xxh3_documentation));
 
     FunctionDocumentation::Description xxh3_128_description = "Computes a [XXH3](https://github.com/Cyan4973/xxHash) 128-bit hash value.";
     FunctionDocumentation::Syntax xxh3_128_syntax = "xxh3_128(expr)";
@@ -599,7 +609,7 @@ For `NULL`, the function returns `42`, matching Spark's seed behavior.
     FunctionDocumentation::Category xxh3_128_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation::IntroducedIn xxh3_128_introduced_in = {26, 2};
     FunctionDocumentation xxh3_128_documentation = {xxh3_128_description, xxh3_128_syntax, xxh3_128_argument, {}, xxh3_128_returned_value, xxh3_128_example, xxh3_128_introduced_in, xxh3_128_category};
-    factory.registerFunction<FunctionXXH3_128>(xxh3_128_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionXXH3_128>(xxh3_128_documentation));
 
     FunctionDocumentation::Description wyHash64_description = "Computes a 64-bit [wyHash64](https://github.com/wangyi-fudan/wyhash) hash value.";
     FunctionDocumentation::Syntax wyHash64_syntax = "wyHash64(arg)";
@@ -609,7 +619,7 @@ For `NULL`, the function returns `42`, matching Spark's seed behavior.
     FunctionDocumentation::IntroducedIn wyHash64_introduced_in = {22, 7};
     FunctionDocumentation::Category wyHash64_category = FunctionDocumentation::Category::Hash;
     FunctionDocumentation wyHash64_documentation = {wyHash64_description, wyHash64_syntax, wyHash64_argument, {}, wyHash64_returned_value, wyHash64_example, wyHash64_introduced_in, wyHash64_category};
-    factory.registerFunction<FunctionWyHash64>(wyHash64_documentation);
+    CHDB_LITE_HASH(factory.registerFunction<FunctionWyHash64>(wyHash64_documentation));
 
 #if USE_SSL
     FunctionDocumentation::Description halfMD5_description = R"(

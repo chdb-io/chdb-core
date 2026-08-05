@@ -14,7 +14,9 @@
 #cmakedefine01 USE_GOOGLE_CLOUD
 #cmakedefine01 USE_GOOGLE_CLOUD_KMS
 #cmakedefine01 USE_AZURE_BLOB_STORAGE
+#cmakedefine01 ENABLE_DISTRIBUTED_CACHE
 #cmakedefine01 USE_BROTLI
+#cmakedefine01 USE_BECH32
 #cmakedefine01 USE_LIBDEFLATE
 #cmakedefine01 USE_CASSANDRA
 #cmakedefine01 USE_GRPC
@@ -28,14 +30,17 @@
 #cmakedefine01 USE_HIVE
 #cmakedefine01 USE_REPLXX
 #cmakedefine01 USE_JEMALLOC
+#cmakedefine01 USE_GWP_ASAN
 #cmakedefine01 USE_H3
 #cmakedefine01 USE_S2_GEOMETRY
 #cmakedefine01 USE_WAGYU
 #cmakedefine01 USE_FASTOPS
 #cmakedefine01 USE_SQIDS
-#cmakedefine01 USE_BECH32
 #cmakedefine01 USE_IDNA
 #cmakedefine01 USE_NLP
+// chdb_spec
+#cmakedefine01 USE_PYTHON
+// chdb_spec
 #cmakedefine01 USE_LIBSTEMMER
 #cmakedefine01 USE_VECTORSCAN
 #cmakedefine01 USE_LIBURING
@@ -48,6 +53,7 @@
 #cmakedefine01 USE_PROTOBUF
 #cmakedefine01 USE_MSGPACK
 #cmakedefine01 USE_ICU
+#cmakedefine01 USE_UTF8PROC
 #cmakedefine01 USE_MYSQL
 #cmakedefine01 USE_RDKAFKA
 #cmakedefine01 USE_AMQPCPP
@@ -91,6 +97,5 @@
 #cmakedefine01 USE_LIBCOTP
 #cmakedefine01 USE_WASMEDGE
 #cmakedefine01 USE_WASMTIME
-#cmakedefine01 USE_OPENSSL_FIPS
 #cmakedefine01 WITH_COVERAGE
 
