@@ -383,12 +383,10 @@ namespace DB
     extern void registerFunctionJoinGet(FunctionFactory & factory);
     extern void registerFunctionJumpConsistentHash(FunctionFactory & factory);
     extern void registerFunctionKostikConsistentHash(FunctionFactory & factory);
-    extern void registerFunctionKqlArraySort(FunctionFactory & factory);
     extern void registerFunctionLCM(FunctionFactory & factory);
     extern void registerFunctionLGamma(FunctionFactory & factory);
     extern void registerFunctionLeast(FunctionFactory & factory);
     extern void registerFunctionLeft(FunctionFactory & factory);
-    extern void registerFunctionLegacySnowflakeConversion(FunctionFactory & factory);
     extern void registerFunctionLength(FunctionFactory & factory);
     extern void registerFunctionLengthUTF8(FunctionFactory & factory);
     extern void registerFunctionLess(FunctionFactory & factory);
@@ -1116,12 +1114,10 @@ namespace DB
             &registerFunctionJoinGet,
             &registerFunctionJumpConsistentHash,
             &registerFunctionKostikConsistentHash,
-            &registerFunctionKqlArraySort,
             &registerFunctionLCM,
             &registerFunctionLGamma,
             &registerFunctionLeast,
             &registerFunctionLeft,
-            &registerFunctionLegacySnowflakeConversion,
             &registerFunctionLength,
             &registerFunctionLengthUTF8,
             &registerFunctionLess,

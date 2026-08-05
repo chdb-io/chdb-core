@@ -1399,7 +1399,7 @@ JoinResultPtr HashJoin::joinScatteredBlock(ScatteredBlock block)
 
     const bool prefer_use_maps_all = preferUseMapsAll();
     JoinResultPtr res;
-    [[maybe_unused]] const bool joined = joinDispatch(
+    const bool joined = joinDispatch(
         kind,
         strictness,
         maps_vector,
@@ -1427,7 +1427,10 @@ JoinResultPtr HashJoin::joinScatteredBlock(ScatteredBlock block)
             }
         });
 
-    chassert(joined);
+    /// joinDispatch only returns false when the strictness/kind instantiation is compiled
+    /// out (CHDB_MINIMAL_HASH_JOIN); returning the null result would crash the caller.
+    if (!joined)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Wrong JOIN combination: {} {}", strictness, kind);
     return res;
 }
 
