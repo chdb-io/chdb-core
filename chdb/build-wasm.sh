@@ -30,8 +30,7 @@ cd "${BUILD_DIR}"
 # WASM: single-threaded MVP first (mirror duckdb-wasm's wasm_mvp default),
 # no networked storage, no JIT, no Rust, no jemalloc. Most of these are also
 # forced off in cmake/target.cmake's OS_WASM block; passing them here keeps the
-# configure log explicit. CHDB_LITE=OFF is passed so a build dir configured by an
-# older (lite) checkout doesn't silently keep the trim set in its cache.
+# configure log explicit.
 CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_THINLTO=0 -DENABLE_TESTS=0 -DENABLE_XRAY=0 \
     -DENABLE_CLICKHOUSE_SERVER=0 -DENABLE_CLICKHOUSE_CLIENT=0 \
