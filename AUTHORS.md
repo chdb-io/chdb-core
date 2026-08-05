@@ -13,6 +13,7 @@
 * xinhuitian  [xinhui_tian@126.com](mailto:xinhui_tian@126.com)
 * Alex Bocharov  [alex@x.ai](mailto:alex@x.ai)
 * meastham [meastham@ramp.com](mailto:meastham@ramp.com)
+* Alexander Hill  [alex.hill@nominal.io](mailto:alex.hill@nominal.io)
 
 To see the list of authors who created the source code of ClickHouse, published and distributed by ClickHouse, Inc. as the owner,
 run "SELECT * FROM system.contributors;" query on any ClickHouse server.
