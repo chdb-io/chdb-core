@@ -739,6 +739,28 @@ namespace DB
     extern void registerFunctionseriesDecomposeSTL(FunctionFactory & factory);
     extern void registerFunctiontimezoneOffset(FunctionFactory & factory);
 
+    /// New in ClickHouse v26.7
+    extern void registerFunctionArrayBottomK(FunctionFactory & factory);
+    extern void registerFunctionArrayTopK(FunctionFactory & factory);
+    extern void registerFunctionDigits(FunctionFactory & factory);
+    extern void registerFunctionGeoToMGRS(FunctionFactory & factory);
+    extern void registerFunctionGeoToUTM(FunctionFactory & factory);
+    extern void registerFunctionLocalTime(FunctionFactory & factory);
+    extern void registerFunctionMGRSToGeo(FunctionFactory & factory);
+    extern void registerFunctionMVTBoundingBox(FunctionFactory & factory);
+    extern void registerFunctionMVTEncodeGeom(FunctionFactory & factory);
+    extern void registerFunctionNaiveBayesNgrams(FunctionFactory & factory);
+    extern void registerFunctionQuantizeLloydMax(FunctionFactory & factory);
+    extern void registerFunctionRandomHadamardTransform(FunctionFactory & factory);
+    extern void registerFunctionSHA1(FunctionFactory & factory);
+    extern void registerFunctionSqr(FunctionFactory & factory);
+    extern void registerFunctionToMicrosecond(FunctionFactory & factory);
+    extern void registerFunctionToNanosecond(FunctionFactory & factory);
+    extern void registerFunctionToYearCalendarOnly(FunctionFactory & factory);
+    extern void registerFunctionUTMToGeo(FunctionFactory & factory);
+    extern void registerFunctiongeometryIntersect(FunctionFactory & factory);
+    extern void registerFunctionh3PolygonToCellsWithContainment(FunctionFactory & factory);
+
     /// Force references to ensure function registration functions are linked
     void * ForceStaticRegistrationObjects();
     void * ForceStaticRegistrationObjects()
@@ -747,6 +769,26 @@ namespace DB
         static void (*registration_funcs[])(FunctionFactory &) =
         {
             &::registerFunctionIsValidASCII,
+            &registerFunctionArrayBottomK,
+            &registerFunctionArrayTopK,
+            &registerFunctionDigits,
+            &registerFunctionGeoToMGRS,
+            &registerFunctionGeoToUTM,
+            &registerFunctionLocalTime,
+            &registerFunctionMGRSToGeo,
+            &registerFunctionMVTBoundingBox,
+            &registerFunctionMVTEncodeGeom,
+            &registerFunctionNaiveBayesNgrams,
+            &registerFunctionQuantizeLloydMax,
+            &registerFunctionRandomHadamardTransform,
+            &registerFunctionSHA1,
+            &registerFunctionSqr,
+            &registerFunctionToMicrosecond,
+            &registerFunctionToNanosecond,
+            &registerFunctionToYearCalendarOnly,
+            &registerFunctionUTMToGeo,
+            &registerFunctiongeometryIntersect,
+            &registerFunctionh3PolygonToCellsWithContainment,
             &registerFunctionAESDecryptMysql,
             &registerFunctionAESEncryptMysql,
             &registerFunctionAbs,
