@@ -12,6 +12,7 @@
 #include <Poco/JSON/Object.h>
 #include <Poco/JSON/Stringifier.h>
 #include <Common/Exception.h>
+#include <Common/ThreadPool.h>
 
 
 #include <Core/NamesAndTypes.h>
@@ -26,6 +27,7 @@
 #include <Interpreters/Context.h>
 
 #include <IO/CompressedReadBufferWrapper.h>
+#include <IO/Progress.h>
 #include <Interpreters/ExpressionActions.h>
 #include <Storages/ObjectStorage/DataLakes/Common/Common.h>
 #include <Storages/ObjectStorage/DataLakes/DataLakeStorageSettings.h>
@@ -122,8 +124,8 @@ std::span<const ProcessedManifestFileEntryPtr> defineDeletesSpan(
     if (beg_it != end_it)
     {
         auto previous_it = std::prev(end_it);
-        assert(*beg_it);
-        assert(*previous_it);
+        chassert(*beg_it);
+        chassert(*previous_it);
         LOG_DEBUG(
             logger,
             "Preliminary check got {} {} delete elements for data file {}, taken data file object info: {}, first taken delete object info is "
@@ -188,7 +190,6 @@ std::optional<ProcessedManifestFileEntryPtr> SingleThreadIcebergKeysIterator::ne
             current_manifest_file_iterator = Iceberg::ManifestFileIterator::create(
                 manifest_file_cacheable_part.deserializer,
                 manifest_list_entry.manifest_file_path,
-                persistent_components.format_version,
                 persistent_components.path_resolver,
                 *persistent_components.schema_processor,
                 manifest_list_entry.added_sequence_number,
@@ -268,7 +269,6 @@ IcebergIterator::IcebergIterator(
           data_snapshot_,
           persistent_components_)
     , blocking_queue(100)
-    , producer_task(std::nullopt)
     , callback(std::move(callback_))
 {
     auto delete_file = deletes_iterator.next();
@@ -287,11 +287,7 @@ IcebergIterator::IcebergIterator(
     LOG_DEBUG(logger, "Taken {} position deletes file and {} equality deletes files in iceberg iterator", position_deletes_files.size(), equality_deletes_files.size());
     std::sort(equality_deletes_files.begin(), equality_deletes_files.end());
     std::sort(position_deletes_files.begin(), position_deletes_files.end());
-#ifdef CHDB_WASM_SINGLE_THREADED
-    /// Single-threaded WASM build: no thread can be spawned, so next() pulls
-    /// from data_files_iterator synchronously instead of via the producer.
-#else
-    producer_task.emplace(
+    producer_task = std::make_unique<ThreadFromGlobalPool>(
         [this, thread_group = CurrentThread::getGroup()]()
         {
             DB::ThreadGroupSwitcher switcher(thread_group, DB::ThreadName::ICEBERG_ITERATOR);
@@ -324,26 +320,13 @@ IcebergIterator::IcebergIterator(
             }
             blocking_queue.finish();
         });
-#endif
 }
 
 ObjectInfoPtr IcebergIterator::next(size_t)
 {
     ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::IcebergMetadataReadWaitTimeMicroseconds);
     Iceberg::ProcessedManifestFileEntryPtr manifest_file_entry;
-#ifdef CHDB_WASM_SINGLE_THREADED
-    /// No producer thread on the single-threaded WASM build: pull the next
-    /// manifest entry synchronously (exceptions propagate directly).
-    bool has_manifest_file_entry = false;
-    if (auto entry = data_files_iterator.next(); entry.has_value())
-    {
-        manifest_file_entry = std::move(entry.value());
-        has_manifest_file_entry = true;
-    }
-    if (has_manifest_file_entry)
-#else
     if (blocking_queue.pop(manifest_file_entry))
-#endif
     {
         IcebergDataObjectInfoPtr object_info
             = std::make_shared<IcebergDataObjectInfo>(
@@ -415,6 +398,10 @@ ObjectInfoPtr IcebergIterator::next(size_t)
         }
 
         ProfileEvents::increment(ProfileEvents::IcebergMetadataReturnedObjectInfos);
+
+        if (callback)
+            callback(FileProgress(0, size_t(manifest_file_entry->parsed_entry->file_size_in_bytes)));
+
         return object_info;
     }
     {

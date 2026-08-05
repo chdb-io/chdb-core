@@ -3,18 +3,18 @@
 #include <cstring>
 
 #ifdef NDEBUG
-#    define ALLOCATOR_ASLR 0
+    #define ALLOCATOR_ASLR 0
 #else
-#    define ALLOCATOR_ASLR 1
+    #define ALLOCATOR_ASLR 1
 #endif
 
 #if !defined(OS_DARWIN) && !defined(OS_FREEBSD)
-#    include <malloc.h>
+#include <malloc.h>
 #endif
 
-#include <cstdlib>
 #include <Core/Defines.h>
 #include <Common/Allocator_fwd.h>
+#include <cstdlib>
 
 
 extern const size_t POPULATE_THRESHOLD;
@@ -55,7 +55,10 @@ public:
     void * realloc(void * buf, size_t old_size, size_t new_size, size_t alignment = 0);
 
 protected:
-    static constexpr size_t getStackThreshold() { return 0; }
+    static constexpr size_t getStackThreshold()
+    {
+        return 0;
+    }
 
     static constexpr bool clear_memory = clear_memory_;
 
@@ -66,7 +69,7 @@ private:
 /** Allocator with optimization to place small memory ranges in automatic memory.
   */
 template <typename Base, size_t _initial_bytes, size_t Alignment>
-class AllocatorWithStackMemory : private Base
+class AllocatorWithStackMemory : private Base /// NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init) - stack_memory is cleared in alloc() when needed
 {
 private:
     alignas(Alignment) char stack_memory[_initial_bytes];
@@ -77,8 +80,8 @@ public:
     /// Do not use boost::noncopyable to avoid the warning about direct base
     /// being inaccessible due to ambiguity, when derived classes are also
     /// noncopiable (-Winaccessible-base).
-    AllocatorWithStackMemory(const AllocatorWithStackMemory &) = delete;
-    AllocatorWithStackMemory & operator=(const AllocatorWithStackMemory &) = delete;
+    AllocatorWithStackMemory(const AllocatorWithStackMemory&) = delete;
+    AllocatorWithStackMemory & operator = (const AllocatorWithStackMemory&) = delete;
     AllocatorWithStackMemory() = default;
     ~AllocatorWithStackMemory() = default;
 
@@ -117,17 +120,21 @@ public:
     }
 
 protected:
-    static constexpr size_t getStackThreshold() { return initial_bytes; }
+    static constexpr size_t getStackThreshold()
+    {
+        return initial_bytes;
+    }
 };
 
 // A constant that gives the number of initially available bytes in
 // the allocator. Used to check that this number is in sync with the
 // initial size of array or hash table that uses the allocator.
-template <typename TAllocator>
+template<typename TAllocator>
 constexpr size_t allocatorInitialBytes = 0;
 
-template <typename Base, size_t initial_bytes, size_t Alignment>
-constexpr size_t allocatorInitialBytes<AllocatorWithStackMemory<Base, initial_bytes, Alignment>> = initial_bytes;
+template<typename Base, size_t initial_bytes, size_t Alignment>
+constexpr size_t allocatorInitialBytes<AllocatorWithStackMemory<
+    Base, initial_bytes, Alignment>> = initial_bytes;
 
 /// Prevent implicit template instantiation of Allocator
 

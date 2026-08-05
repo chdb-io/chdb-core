@@ -1,6 +1,7 @@
 #pragma once
 
 #include <TableFunctions/ITableFunction.h>
+#include <Storages/Distributed/parseRemoteFunctionArguments.h>
 #include <Interpreters/Cluster.h>
 #include <Interpreters/StorageID.h>
 
@@ -42,11 +43,6 @@ private:
     StorageID remote_table_id = StorageID::createEmpty();
     ASTPtr remote_table_function_ptr;
     ASTPtr sharding_key = nullptr;
-
-    /// Arbitrary SQL (including DDL) to execute on the remote server(s).
-    /// When set, the table function sends this query directly instead of
-    /// creating a StorageDistributed for SELECT/INSERT.
-    String remote_query;
 };
 
 }

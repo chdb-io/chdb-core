@@ -54,13 +54,6 @@ public:
         limit = limit_value;
     }
 
-    /// ORDER BY ... LIMIT (top-N) pushdown. Sources that can cheaply produce
-    /// only the top-N rows by the sort key (e.g. in-memory DataFrame sources)
-    /// override these; MergeTree keeps its own lazy-materialization path and
-    /// leaves the default no-op, so this pushdown never targets it.
-    virtual bool supportsSortLimitPushdown() const { return false; }
-    virtual void setSortLimitPushdown(const SortDescription & /*sort_description*/, size_t /*limit*/) { }
-
     /// Apply filters that can optimize reading from storage.
     void applyFilters()
     {
@@ -131,6 +124,13 @@ public:
     void applyFilters(ActionDAGNodes added_filter_nodes) override;
 
     virtual void updatePrewhereInfo(const PrewhereInfoPtr & prewhere_info_value);
+
+    /// Whether updatePrewhereInfo() may be invoked more than once on this step.
+    /// The base implementation rebuilds the output header from the full sample block, so it is
+    /// idempotent. Format-based steps (file/url/object storage) shrink their header incrementally
+    /// and can only accept a single prewhere update, so they return false to opt out of the
+    /// optimize_prewhere_after_pushdown second pass.
+    virtual bool canUpdatePrewhereInfoMultipleTimes() const { return true; }
 
     void describeActions(FormatSettings & format_settings) const override;
 

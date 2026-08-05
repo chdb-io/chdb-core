@@ -7,7 +7,7 @@
  * multiple allocators simultaneously.
  */
 #define JEMALLOC_PREFIX "je_"
-#define JEMALLOC_CPREFIX "JE_"
+#define JEMALLOC_CPREFIX ""
 
 /*
  * Define overrides for non-standard allocator-related functions if they are
@@ -127,7 +127,7 @@
  * Among other things, it must be possible to initialize a mutex without
  * triggering allocation in order for threaded allocation to be safe.
  */
-/* #undef JEMALLOC_THREADED_INIT */
+#define JEMALLOC_THREADED_INIT
 
 /*
  * Defined if the pthreads implementation defines
@@ -137,7 +137,14 @@
 /* #undef JEMALLOC_MUTEX_INIT_CB */
 
 /* Non-empty if the tls_model attribute is supported. */
-#define JEMALLOC_TLS_MODEL
+#define JEMALLOC_TLS_MODEL __attribute__((tls_model("initial-exec")))
+
+/*
+ * Defined when the TSD thread-locals use the initial-exec (static) TLS model,
+ * i.e. live at a fixed offset from the thread pointer.  Gates the fast path of
+ * JEMALLOC_TLS_ADDR (see tsd_internals.h).
+ */
+#define JEMALLOC_TLS_MODEL_INITIAL_EXEC
 
 /*
  * JEMALLOC_DEBUG enables assertions and other sanity checks, and disables
@@ -375,10 +382,10 @@
 #define LG_SIZEOF_INTMAX_T 3
 
 /* glibc malloc hooks (__malloc_hook, __realloc_hook, __free_hook). */
-/* #undef JEMALLOC_GLIBC_MALLOC_HOOK */
+#define JEMALLOC_GLIBC_MALLOC_HOOK
 
 /* glibc memalign hook. */
-/* #undef JEMALLOC_GLIBC_MEMALIGN_HOOK */
+#define JEMALLOC_GLIBC_MEMALIGN_HOOK
 
 /* pthread support */
 #define JEMALLOC_HAVE_PTHREAD
@@ -398,7 +405,7 @@
 /*
  * If defined, all the features necessary for background threads are present.
  */
-/* #undef JEMALLOC_BACKGROUND_THREAD */
+#define JEMALLOC_BACKGROUND_THREAD
 
 /*
  * If defined, jemalloc symbols are not exported (doesn't work when

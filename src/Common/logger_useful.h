@@ -12,14 +12,8 @@
 #include <Common/LoggingFormatStringHelpers.h>
 #include <Common/LoggingHelpers.h>
 #include <Common/MemoryTrackerBlockerInThread.h>
-#include <Common/ProfileEvents.h>
+#include <Common/ProfileEventsLogger.h>
 #include <Common/Stopwatch.h>
-
-namespace DB
-{
-    /// Check if the process is shutting down (to avoid crashes when Poco::Logger is destroyed)
-    bool isShuttingDown();
-}
 
 
 #define LogToStr(x, y) LogToStrImpl(x, y)
@@ -79,9 +73,6 @@ constexpr bool constexprContains(std::string_view haystack, std::string_view nee
 
 #define LOG_IMPL(logger, priority, PRIORITY, ...) do                                                                \
 {                                                                                                                   \
-    /* Skip logging during shutdown to prevent crashes when Poco::Logger is destroyed */                            \
-    if (DB::isShuttingDown())                                                                                       \
-        break;                                                                                                      \
     static_assert(!constexprContains(#__VA_ARGS__, "formatWithSecretsOneLine"), "Think twice!");                    \
     static_assert(!constexprContains(#__VA_ARGS__, "formatWithSecretsMultiLine"), "Think twice!");                  \
                                                                                                                     \

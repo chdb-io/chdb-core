@@ -1,25 +1,35 @@
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Common/CurrentThread.h>
+#include <Common/logger_useful.h>
+#include <Common/UnorderedSetWithMemoryTracking.h>
+#include <Common/ThreadStatus.h>
 
 #include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <Backups/RestorerFromBackup.h>
 #include <Core/Settings.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/IUserDefinedSQLObjectsStorage.h>
+#include <Functions/UserDefined/UserDefinedExecutableFunctionDriverUtils.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLObjectType.h>
 #include <Functions/UserDefined/UserDefinedSQLObjectsBackup.h>
 #include <Functions/UserDefined/UserDefinedWebAssembly.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/FunctionNameNormalizer.h>
+#include <Interpreters/InterpreterFactory.h>
 #include <Interpreters/NormalizeSelectWithUnionQueryVisitor.h>
 #include <Interpreters/SelectIntersectExceptQueryVisitor.h>
+
+#include <filesystem>
+#include <Parsers/ASTCreateFunctionWithDriverQuery.h>
 #include <Parsers/ASTCreateSQLFunctionQuery.h>
 #include <Parsers/ASTCreateWasmFunctionQuery.h>
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTIdentifier.h>
+#include <Common/escapeForFileName.h>
 #include <Common/quoteString.h>
 
+#include <optional>
 
 namespace DB
 {
@@ -33,65 +43,65 @@ namespace Setting
 
 namespace ErrorCodes
 {
-extern const int FUNCTION_ALREADY_EXISTS;
-extern const int CANNOT_DROP_FUNCTION;
-extern const int CANNOT_CREATE_RECURSIVE_FUNCTION;
-extern const int BAD_ARGUMENTS;
+    extern const int FUNCTION_ALREADY_EXISTS;
+    extern const int CANNOT_DROP_FUNCTION;
+    extern const int CANNOT_CREATE_RECURSIVE_FUNCTION;
+    extern const int BAD_ARGUMENTS;
 }
 
 
 namespace
 {
-void validateSQLFunctionRecursiveness(const IAST & node, const String & function_to_create)
-{
-    for (const auto & child : node.children)
+    void validateSQLFunctionRecursiveness(const IAST & node, const String & function_to_create)
     {
-        auto function_name_opt = tryGetFunctionName(child);
-        if (function_name_opt && function_name_opt.value() == function_to_create)
-            throw Exception(ErrorCodes::CANNOT_CREATE_RECURSIVE_FUNCTION, "You cannot create recursive function");
+        for (const auto & child : node.children)
+        {
+            auto function_name_opt = tryGetFunctionName(child);
+            if (function_name_opt && function_name_opt.value() == function_to_create)
+                throw Exception(ErrorCodes::CANNOT_CREATE_RECURSIVE_FUNCTION, "You cannot create recursive function");
 
-        validateSQLFunctionRecursiveness(*child, function_to_create);
-    }
-}
-
-void validateSQLFunction(ASTPtr function, const String & name)
-{
-    ASTFunction * lambda_function = function->as<ASTFunction>();
-
-    if (!lambda_function)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Expected function, got: {}", function->formatForErrorMessage());
-
-    auto & lambda_function_expression_list = lambda_function->arguments->children;
-
-    if (lambda_function_expression_list.size() != 2)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have arguments and body");
-
-    const ASTFunction * tuple_function_arguments = lambda_function_expression_list[0]->as<ASTFunction>();
-
-    if (!tuple_function_arguments || !tuple_function_arguments->arguments || tuple_function_arguments->name != "tuple")
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid arguments");
-
-    std::unordered_set<String> arguments;
-
-    for (const auto & argument : tuple_function_arguments->arguments->children)
-    {
-        const auto * argument_identifier = argument->as<ASTIdentifier>();
-
-        if (!argument_identifier)
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda argument must be identifier");
-
-        const auto & argument_name = argument_identifier->name();
-        auto [_, inserted] = arguments.insert(argument_name);
-        if (!inserted)
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
+            validateSQLFunctionRecursiveness(*child, function_to_create);
+        }
     }
 
-    ASTPtr function_body = lambda_function_expression_list[1];
-    if (!function_body)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid function body");
+    void validateSQLFunction(ASTPtr function, const String & name)
+    {
+        ASTFunction * lambda_function = function->as<ASTFunction>();
 
-    validateSQLFunctionRecursiveness(*function_body, name);
-}
+        if (!lambda_function)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Expected function, got: {}", function->formatForErrorMessage());
+
+        auto & lambda_function_expression_list = lambda_function->arguments->children;
+
+        if (lambda_function_expression_list.size() != 2)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have arguments and body");
+
+        const ASTFunction * tuple_function_arguments = lambda_function_expression_list[0]->as<ASTFunction>();
+
+        if (!tuple_function_arguments || !tuple_function_arguments->arguments || tuple_function_arguments->name != "tuple")
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid arguments");
+
+        UnorderedSetWithMemoryTracking<String> arguments;
+
+        for (const auto & argument : tuple_function_arguments->arguments->children)
+        {
+            const auto * argument_identifier = argument->as<ASTIdentifier>();
+
+            if (!argument_identifier)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda argument must be identifier");
+
+            const auto & argument_name = argument_identifier->name();
+            auto [_, inserted] = arguments.insert(argument_name);
+            if (!inserted)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
+        }
+
+        ASTPtr function_body = lambda_function_expression_list[1];
+        if (!function_body)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid function body");
+
+        validateSQLFunctionRecursiveness(*function_body, name);
+    }
 }
 
 ASTPtr normalizeCreateFunctionQuery(const IAST & create_function_query, const ContextPtr & context)
@@ -120,6 +130,13 @@ ASTPtr normalizeCreateFunctionQuery(const IAST & create_function_query, const Co
         query->or_replace = false;
     }
 
+    if (auto * query = typeid_cast<ASTCreateFunctionWithDriverQuery *>(ptr.get()))
+    {
+        query->if_not_exists = false;
+        query->or_replace = false;
+        query->is_attach = true;
+    }
+
     return ptr;
 }
 
@@ -134,8 +151,7 @@ UserDefinedSQLFunctionFactory::UserDefinedSQLFunctionFactory()
 {}
 
 /// Checks that a specified function can be registered, throws an exception if not.
-static void checkCanBeRegistered(
-    const ContextPtr & context, const String & function_name, const IAST & create_function_query, bool throw_if_exists)
+static void checkCanBeRegistered(const ContextPtr & context, const String & function_name, const IAST & create_function_query, bool throw_if_exists)
 {
     if (FunctionFactory::instance().hasNameOrAlias(function_name))
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "The function '{}' already exists", function_name);
@@ -143,8 +159,7 @@ static void checkCanBeRegistered(
     if (AggregateFunctionFactory::instance().hasNameOrAlias(function_name))
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "The aggregate function '{}' already exists", function_name);
 
-    if (UserDefinedExecutableFunctionFactory::instance().has(
-        function_name, context)) /// NOLINT(readability-static-accessed-through-instance)
+    if (UserDefinedExecutableFunctionFactory::instance().has(function_name, context)) /// NOLINT(readability-static-accessed-through-instance)
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "User defined executable function '{}' already exists", function_name);
 
     if (throw_if_exists && UserDefinedWebAssemblyFunctionFactory::instance().has(function_name)) /// NOLINT(readability-static-accessed-through-instance)
@@ -156,11 +171,11 @@ static void checkCanBeRegistered(
 
 static void checkCanBeUnregistered(const ContextPtr & context, const String & function_name)
 {
-    if (FunctionFactory::instance().hasNameOrAlias(function_name) || AggregateFunctionFactory::instance().hasNameOrAlias(function_name))
+    if (FunctionFactory::instance().hasNameOrAlias(function_name) ||
+        AggregateFunctionFactory::instance().hasNameOrAlias(function_name))
         throw Exception(ErrorCodes::CANNOT_DROP_FUNCTION, "Cannot drop system function '{}'", function_name);
 
-    if (UserDefinedExecutableFunctionFactory::instance().has(
-        function_name, context)) // NOLINT(readability-static-accessed-through-instance)
+    if (UserDefinedExecutableFunctionFactory::instance().has(function_name, context)) // NOLINT(readability-static-accessed-through-instance)
         throw Exception(ErrorCodes::CANNOT_DROP_FUNCTION, "Cannot drop user defined executable function '{}'", function_name);
 }
 
@@ -171,10 +186,10 @@ bool UserDefinedSQLFunctionFactory::registerFunction(const ContextMutablePtr & c
 
     try
     {
+        auto & wasm_factory = UserDefinedWebAssemblyFunctionFactory::instance();
+        std::optional<UserDefinedWebAssemblyFunctionFactory::RegisteredFunction> wasm_function;
         if (create_function_query->as<ASTCreateWasmFunctionQuery>())
-            UserDefinedWebAssemblyFunctionFactory::instance().addOrReplace(create_function_query, current_context->getWasmModuleManager());
-        else if (replace_if_exists && UserDefinedWebAssemblyFunctionFactory::instance().has(function_name))
-            UserDefinedWebAssemblyFunctionFactory::instance().dropIfExists(function_name);
+            wasm_function = wasm_factory.prepareFunction(create_function_query, current_context->getWasmModuleManager());
 
         auto & loader = current_context->getUserDefinedSQLObjectsStorage();
         bool stored = loader.storeObject(
@@ -187,6 +202,11 @@ bool UserDefinedSQLFunctionFactory::registerFunction(const ContextMutablePtr & c
             current_context->getSettingsRef());
         if (!stored)
             return false;
+
+        if (wasm_function)
+            wasm_factory.addOrReplace(std::move(*wasm_function));
+        else if (replace_if_exists && wasm_factory.has(function_name))
+            wasm_factory.dropIfExists(function_name);
     }
     catch (Exception & exception)
     {
@@ -225,68 +245,55 @@ bool UserDefinedSQLFunctionFactory::unregisterFunction(const ContextMutablePtr &
     return true;
 }
 
+/// Records the use of a SQL user-defined function in system.query_log. Driver-created executable
+/// functions are persisted in the same SQL-object storage, but they are executable UDFs (recorded
+/// separately as ExecutableUserDefinedFunction), so they must not be reported as SQL UDFs here.
+static void recordSQLUserDefinedFunctionUse(const ASTPtr & ast, const String & function_name)
+{
+    if (!ast || ast->as<ASTCreateFunctionWithDriverQuery>() || !CurrentThread::isInitialized())
+        return;
+
+    auto query_context = CurrentThread::get().tryGetQueryContext();
+    if (query_context && query_context->getSettingsRef()[Setting::log_queries])
+        query_context->addQueryFactoriesInfo(Context::QueryLogFactories::SQLUserDefinedFunction, function_name);
+}
+
 ASTPtr UserDefinedSQLFunctionFactory::get(const String & function_name) const
 {
-    // chdb_spec
-    ASTPtr ast = Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().get(function_name);
-    // chdb_spec
-
-    if (ast && CurrentThread::isInitialized())
-    {
-        auto query_context = CurrentThread::get().tryGetQueryContext();
-        if (query_context && query_context->getSettingsRef()[Setting::log_queries])
-            query_context->addQueryFactoriesInfo(Context::QueryLogFactories::SQLUserDefinedFunction, function_name);
-    }
-
+    ASTPtr ast = getContext()->getUserDefinedSQLObjectsStorage().get(function_name);
+    recordSQLUserDefinedFunctionUse(ast, function_name);
     return ast;
 }
 
 ASTPtr UserDefinedSQLFunctionFactory::tryGet(const std::string & function_name) const
 {
-    // chdb_spec
-    ASTPtr ast = Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().tryGet(function_name);
-    // chdb_spec
-
-    if (ast && CurrentThread::isInitialized())
-    {
-        auto query_context = CurrentThread::get().tryGetQueryContext();
-        if (query_context && query_context->getSettingsRef()[Setting::log_queries])
-            query_context->addQueryFactoriesInfo(Context::QueryLogFactories::SQLUserDefinedFunction, function_name);
-    }
-
+    ASTPtr ast = getContext()->getUserDefinedSQLObjectsStorage().tryGet(function_name);
+    recordSQLUserDefinedFunctionUse(ast, function_name);
     return ast;
 }
 
 bool UserDefinedSQLFunctionFactory::has(const String & function_name) const
 {
-    // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().has(function_name);
-    // chdb_spec
+    return getContext()->getUserDefinedSQLObjectsStorage().has(function_name);
 }
 
-std::vector<std::string> UserDefinedSQLFunctionFactory::getAllRegisteredNames() const
+VectorWithMemoryTracking<String> UserDefinedSQLFunctionFactory::getAllRegisteredNames() const
 {
-    // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().getAllObjectNames();
-    // chdb_spec
+    return getContext()->getUserDefinedSQLObjectsStorage().getAllObjectNames();
 }
 
 bool UserDefinedSQLFunctionFactory::empty() const
 {
-    // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().empty();
-    // chdb_spec
+    return getContext()->getUserDefinedSQLObjectsStorage().empty();
 }
 
 void UserDefinedSQLFunctionFactory::backup(BackupEntriesCollector & backup_entries_collector, const String & data_path_in_backup) const
 {
-    // chdb_spec
     backupUserDefinedSQLObjects(
         backup_entries_collector,
         data_path_in_backup,
         UserDefinedSQLObjectType::Function,
-        Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().getAllObjects());
-    // chdb_spec
+        getContext()->getUserDefinedSQLObjectsStorage().getAllObjects());
 }
 
 void UserDefinedSQLFunctionFactory::restore(RestorerFromBackup & restorer, const String & data_path_in_backup)
@@ -313,6 +320,74 @@ void UserDefinedSQLFunctionFactory::loadFunctions(IUserDefinedSQLObjectsStorage 
         {
             exception.addMessage(fmt::format("while loading user defined function {}", backQuote(name)));
             throw;
+        }
+    }
+}
+
+void UserDefinedSQLFunctionFactory::reloadDriverBasedFunctions(
+    const ContextMutablePtr & current_context, IUserDefinedSQLObjectsStorage & function_storage)
+{
+    auto log = getLogger("UserDefinedSQLFunctionFactory");
+
+    String dynamic_dir = current_context->getDynamicUserDefinedExecutableFunctionsPath();
+    if (!dynamic_dir.empty() && !dynamic_dir.ends_with('/'))
+        dynamic_dir.push_back('/');
+
+    for (const auto & [name, create_function_query] : function_storage.getAllObjects())
+    {
+        const auto * driver_ast = create_function_query->as<ASTCreateFunctionWithDriverQuery>();
+        if (!driver_ast)
+            continue;
+
+        if (dynamic_dir.empty())
+        {
+            LOG_WARNING(log, "Cannot recreate driver-based function '{}' - dynamic_user_defined_executable_functions_path is not configured", name);
+            continue;
+        }
+
+        /// Both XML and YAML are valid generated configuration formats - either is fine.
+        const String escaped_name = escapeForFileName(name);
+        const bool config_present = std::filesystem::exists(dynamic_dir + escaped_name + ".xml")
+            || std::filesystem::exists(dynamic_dir + escaped_name + ".yaml");
+
+        /// The generated config alone is not enough: it references the function's working
+        /// directory, so a missing or invalid `.workdir` sidecar (or a missing directory it
+        /// points to) also means the dynamic state has to be recreated.
+        bool working_dir_present = false;
+        if (config_present)
+        {
+            try
+            {
+                const String working_dir = UserDefinedExecutableFunctionDriverUtils::readDriverWorkingDirectory(current_context, name);
+                working_dir_present = !working_dir.empty() && std::filesystem::is_directory(working_dir);
+            }
+            catch (...)
+            {
+                tryLogCurrentException(log, fmt::format("while reading the working directory of driver-based function {}", backQuote(name)));
+            }
+        }
+
+        if (config_present && working_dir_present)
+            continue;
+
+        LOG_INFO(log, "Recreating driver-based function '{}' - dynamic {} is missing", name, config_present ? "working directory" : "configuration");
+
+        try
+        {
+            /// Re-run the create flow via the interpreter, replacing the existing function.
+            auto recreate_ast = create_function_query->clone();
+            auto & recreate_driver_ast = recreate_ast->as<ASTCreateFunctionWithDriverQuery &>();
+            recreate_driver_ast.is_attach = false;
+            recreate_driver_ast.or_replace = true;
+            recreate_driver_ast.if_not_exists = false;
+
+            ASTPtr query = recreate_ast;
+            auto interpreter = InterpreterFactory::instance().get(query, current_context);
+            interpreter->execute();
+        }
+        catch (...)
+        {
+            tryLogCurrentException(log, fmt::format("while recreating driver-based function {}", backQuote(name)));
         }
     }
 }

@@ -6,6 +6,7 @@
 #include <Common/NamedCollections/NamedCollectionsMetadataStorage.h>
 #include <Common/ZooKeeper/KeeperException.h>
 #include <Core/BackgroundSchedulePool.h>
+#include <Core/UUID.h>
 #include <Interpreters/Context.h>
 
 namespace CurrentMetrics
@@ -38,29 +39,10 @@ NamedCollectionFactory::~NamedCollectionFactory()
 
 void NamedCollectionFactory::shutdown()
 {
-    /// Stop the background update thread (if any) first, and do so WITHOUT holding
-    /// `mutex`: the update task runs reloadFromSQL() which locks `mutex`, and
-    /// deactivate() blocks until the task finishes - holding the lock here would
-    /// deadlock.
     shutdown_called = true;
     if (update_task)
         update_task->deactivate();
-
-    /// Reset the factory to an uninitialized state so it can be lazily reloaded
-    /// later. In embedded chDB the global Context (which owns the named collection
-    /// metadata storage) is shut down and recreated several times within a single
-    /// process, while this factory is a process-wide singleton. If we only reset
-    /// `metadata_storage` but leave `loaded == true`, the next loadIfNot() becomes a
-    /// no-op and a subsequent CREATE/DROP/ALTER NAMED COLLECTION dereferences the
-    /// null `metadata_storage`, crashing (caught by the fault handler, so it looks
-    /// like a hang). See https://github.com/chdb-io/chdb-core/issues/81.
-    std::lock_guard lock(mutex);
-    update_task = {};
     metadata_storage.reset();
-    loaded_named_collections.clear();
-    dependencies.clear();
-    loaded = false;
-    shutdown_called = false;
 }
 
 bool NamedCollectionFactory::exists(const std::string & collection_name) const

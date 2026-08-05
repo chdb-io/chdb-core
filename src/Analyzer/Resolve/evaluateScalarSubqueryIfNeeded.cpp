@@ -10,7 +10,6 @@
 #include <Planner/Utils.h>
 
 #include <Processors/Executors/PullingAsyncPipelineExecutor.h>
-#include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Processors/QueryPlan/LimitStep.h>
 #include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
 #include <Processors/QueryPlan/BuildQueryPipelineSettings.h>
@@ -26,6 +25,7 @@
 #include <Interpreters/ProcessorsProfileLog.h>
 #include <Storages/IStorage.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
+#include <Common/ProfileEvents.h>
 
 namespace ProfileEvents
 {
@@ -146,6 +146,36 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
         if (auto * new_union_node = query_tree->as<UnionNode>())
             new_union_node->getMutableContext() = subquery_context;
 
+        /// The Planner reads the context from every node, so parallel replicas must be disabled
+        /// in nested QueryNode/UnionNode contexts too, not just on the top node. Same recursive
+        /// walk as createLocalPlanForParallelReplicas.
+        std::vector<IQueryTreeNode *> nodes_to_visit;
+        for (const auto & child : query_tree->getChildren())
+            if (child)
+                nodes_to_visit.push_back(child.get());
+        while (!nodes_to_visit.empty())
+        {
+            auto * current = nodes_to_visit.back();
+            nodes_to_visit.pop_back();
+
+            if (auto * nested_query_node = current->as<QueryNode>())
+            {
+                auto nested_context = Context::createCopy(nested_query_node->getContext());
+                nested_context->setSetting("allow_experimental_parallel_reading_from_replicas", Field(0));
+                nested_query_node->getMutableContext() = std::move(nested_context);
+            }
+            else if (auto * nested_union_node = current->as<UnionNode>())
+            {
+                auto nested_context = Context::createCopy(nested_union_node->getContext());
+                nested_context->setSetting("allow_experimental_parallel_reading_from_replicas", Field(0));
+                nested_union_node->getMutableContext() = std::move(nested_context);
+            }
+
+            for (const auto & child : current->getChildren())
+                if (child)
+                    nodes_to_visit.push_back(child.get());
+        }
+
         auto options = SelectQueryOptions(QueryProcessingStage::Complete, scope.subquery_depth, true /*is_subquery*/);
         options.only_analyze = only_analyze;
 
@@ -237,13 +267,10 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
 
                 io.pipeline = QueryPipelineBuilder::getPipeline(std::move(pipeline_builder));
                 io.pipeline.setQuota(subquery_context->getQuota());
+                io.pipeline.setNormalizedQueryHash(subquery_context->getNormalizedQueryHash());
             }
 
-#ifdef CHDB_WASM_SINGLE_THREADED
-            std::optional<PullingPipelineExecutor> executor;
-#else
             std::optional<PullingAsyncPipelineExecutor> executor;
-#endif
             Chunk chunk;
 
             if (!skip_execution_for_exists)
@@ -253,10 +280,8 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
                 io.pipeline.setConcurrencyControl(context->getSettingsRef()[Setting::use_concurrency_control]);
 
                 executor.emplace(io.pipeline);
-#ifndef CHDB_WASM_SINGLE_THREADED
                 if (auto cancel_cb = context->hasQueryContext() ? context->getQueryContext()->getInteractiveCancelCallback() : nullptr)
                     executor->setCancelCallback(std::move(cancel_cb), std::max(UInt64(100), context->getSettingsRef()[Setting::interactive_delay] / 1000));
-#endif
                 while (chunk.getNumRows() == 0 && executor->pull(chunk))
                 {
                 }
@@ -340,7 +365,7 @@ void QueryAnalyzer::evaluateScalarSubqueryIfNeeded(QueryTreeNodePtr & node, Iden
     if (!context->getSettingsRef()[Setting::enable_scalar_subquery_optimization] || !useless_literal_types.contains(scalar_type_name)
         || !context->hasQueryContext() || !nearest_query_scope)
     {
-        ConstantValue constant_value{ scalar_column_with_type.column, scalar_type };
+        ConstantValue constant_value{ ConstantValue::wrapToColumnConst(scalar_column_with_type.column), scalar_type };
         auto constant_node = std::make_shared<ConstantNode>(constant_value, node);
 
         if (scalar_column_with_type.column->isNullAt(0))

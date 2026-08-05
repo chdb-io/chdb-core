@@ -72,6 +72,10 @@ bool isCrashed();
 
 void blockSignals(const std::vector<int> & signals);
 
+/// Reset the deadly signal handlers to SIG_DFL (like HandledSignals::reset(false)), idempotently.
+/// Safe to call from the sanitizer death callback: it does not construct HandledSignals.
+void resetHandledSignals();
+
 
 /** The thread that read info about signal or std::terminate from pipe.
   * On HUP, close log files (for new files to be opened later).
@@ -125,11 +129,6 @@ struct HandledSignals
     DB::PipeFDs signal_pipe;
     std::atomic_flag fatal_error_printed;
 
-    /// When true, setupCommonDeadlySignalHandlers() and
-    /// setupCommonTerminateRequestSignalHandlers() become no-ops.
-    /// Must be set BEFORE any init() call to take effect.
-    static std::atomic<bool> disable_signal_handlers;
-
     HandledSignals();
     ~HandledSignals();
 
@@ -137,7 +136,13 @@ struct HandledSignals
     void setupCommonDeadlySignalHandlers();
     void setupCommonTerminateRequestSignalHandlers();
 
-    void addSignalHandler(const std::vector<int> & signals, signal_function handler, bool register_signal);
+    /// `additional_masked_signals` are blocked while `handler` runs (added to `sa_mask`) but the
+    /// handler is not registered for them.
+    void addSignalHandler(
+        const std::vector<int> & signals,
+        signal_function handler,
+        bool register_signal,
+        const std::vector<int> & additional_masked_signals = {});
 
     void reset(bool close_pipe = true);
 

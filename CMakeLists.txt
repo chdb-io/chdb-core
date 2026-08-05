@@ -33,13 +33,6 @@ endif()
 
 include (cmake/arch.cmake)
 include (cmake/target.cmake)
-
-if (NOT OS_DARWIN)
-    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-    set(CMAKE_C_VISIBILITY_PRESET hidden)
-    set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
-endif()
-
 include (cmake/tools.cmake)
 include (cmake/ccache.cmake)
 include (cmake/clang_tidy.cmake)
@@ -109,103 +102,6 @@ if (ENABLE_BUZZHOUSE)
     set (ENABLE_PROTOBUF 1)
 endif()
 
-if (ENABLE_PYTHON)
-    set(USE_PYTHON 1)
-    set(USE_UTF8PROC 1)
-endif()
-
-# -----------------------------------------------------------------------------
-# CHDB_LITE: umbrella flag for building the slim chdb-core-lite variant.
-# When ON, gates all chdb trim sites (CMake `if (CHDB_LITE)` plus C++
-# `#if defined(CHDB_LITE) && CHDB_LITE`), disables ~30 optional libraries,
-# switches to MinSizeRel, and adds the RELR linker flag.
-#
-# Build chdb-core (default, full ~158 MB):
-#     bash chdb/build.sh
-# Build chdb-core-lite (~50 MB):
-#     CHDB_LITE=1 bash chdb/build.sh   # or pass -DCHDB_LITE=ON to cmake
-# -----------------------------------------------------------------------------
-option(CHDB_LITE "Build slim chdb-core-lite variant (~50 MB wheel, fewer features)" OFF)
-
-# Allow env var to flip the flag for build.sh callers
-if (NOT CHDB_LITE AND DEFINED ENV{CHDB_LITE} AND "$ENV{CHDB_LITE}" STREQUAL "1")
-    set(CHDB_LITE ON CACHE BOOL "Enabled via CHDB_LITE env var" FORCE)
-endif()
-
-if (CHDB_LITE)
-    message(STATUS "")
-    message(STATUS "=== CHDB_LITE: building chdb-core-lite (slim) variant ===")
-    message(STATUS "")
-
-    # MinSizeRel for size optimization (-Os). -Oz is more aggressive but broke
-    # the libllvmlibc archive (eliminated cross-TU statics like libc_errno).
-    if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None" OR CMAKE_BUILD_TYPE STREQUAL "Release")
-        set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "Forced by CHDB_LITE" FORCE)
-    endif()
-
-    # CHDB_LITE=1 is the single switch read by all trim sites (CMake `if (CHDB_LITE)`
-    # and C++ `#if defined(CHDB_LITE) && CHDB_LITE`).
-    add_compile_definitions(CHDB_LITE=1)
-    # Drop niche hash-join strictnesses (ASOF/SEMI/ANTI) — see src/CMakeLists.txt
-    # for what this gates. Saves ~3-5 MB wheel; upstream DataStore tests don't use them.
-    set(CHDB_MINIMAL_HASH_JOIN ON CACHE BOOL "Auto-enabled by CHDB_LITE" FORCE)
-    # ENABLE_MULTITARGET_CODE is intentionally LEFT ON: turning it off saves
-    # ~1.5 MB wheel but costs 5-15% on hash/aggregation-heavy workloads
-    # (uniq/uniqCombined, GROUP BY with many keys, hash-join build phase).
-
-    # Master switch: ENABLE_LIBRARIES=0 turns off all optional libs by default;
-    # we then opt-in only what chdb-core-lite needs.
-    if (NOT DEFINED ENABLE_LIBRARIES)
-        set(ENABLE_LIBRARIES OFF CACHE BOOL "Auto-disabled by CHDB_LITE")
-    endif()
-
-    # Heavy / niche optional libs explicitly disabled
-    set(_chdb_lite_libs_off
-        ENABLE_HDFS ENABLE_GSASL_LIBRARY ENABLE_KRB5
-        ENABLE_MYSQL ENABLE_LIBPQXX
-        ENABLE_AZURE_BLOB_STORAGE ENABLE_HIVE
-        ENABLE_AVRO ENABLE_ROCKSDB ENABLE_SQLITE
-        ENABLE_KAFKA ENABLE_NATS ENABLE_AMQPCPP ENABLE_NURAFT
-        ENABLE_CASSANDRA ENABLE_ODBC ENABLE_NLP ENABLE_LDAP
-        ENABLE_RUST ENABLE_DELTA_KERNEL_RS
-        ENABLE_VECTORSCAN ENABLE_MSGPACK
-        ENABLE_H3 ENABLE_CLIENT_AI ENABLE_LIBFIU
-        ENABLE_EMBEDDED_COMPILER ENABLE_DWARF_PARSER
-        ENABLE_ICU ENABLE_S2_GEOMETRY ENABLE_USEARCH ENABLE_SIMSIMD
-        ENABLE_BCRYPT ENABLE_BZIP2 ENABLE_CAPNP ENABLE_DATASKETCHES
-        ENABLE_FASTOPS ENABLE_GRPC ENABLE_IDNA ENABLE_JWT_CPP
-        ENABLE_LIBURING ENABLE_MINIZIP ENABLE_POCKETFFT
-        ENABLE_SIMDCOMP ENABLE_SQIDS ENABLE_SSH ENABLE_ULID
-        ENABLE_YAML_CPP ENABLE_BASE64
-        ENABLE_GOOGLE_CLOUD_CPP ENABLE_GOOGLE_CLOUD_CPP_KMS
-        ENABLE_XRAY
-    )
-    foreach (_flag IN LISTS _chdb_lite_libs_off)
-        if (NOT DEFINED ${_flag})
-            set(${_flag} OFF CACHE BOOL "Auto-disabled by CHDB_LITE")
-        endif()
-    endforeach()
-
-    # Opt-in: features chdb-core-lite needs to keep working
-    set(_chdb_lite_libs_on
-        ENABLE_PARQUET ENABLE_THRIFT ENABLE_RAPIDJSON
-        ENABLE_PROTOBUF ENABLE_BROTLI
-        ENABLE_AWS_S3 ENABLE_CURL
-        ENABLE_SIMDJSON
-        ENABLE_JEMALLOC ENABLE_UTF8PROC
-    )
-    foreach (_flag IN LISTS _chdb_lite_libs_on)
-        if (NOT DEFINED ${_flag})
-            set(${_flag} ON CACHE BOOL "Kept enabled by CHDB_LITE")
-        endif()
-    endforeach()
-
-    # RELR (-Wl,-z,pack-relative-relocs) would shrink .rela.dyn by ~13 MiB
-    # but injects a GLIBC_ABI_DT_RELR symbol version that auditwheel rejects
-    # for every manylinux policy (RELR needs glibc 2.36+). Keep classic relocs
-    # so the wheel passes auditwheel repair against manylinux2014.
-endif()
-
 option (ENABLE_XRAY "Enable LLVM XRay" ON)
 
 if (NOT ENABLE_XRAY)
@@ -225,6 +121,7 @@ endif()
 add_library(global-libs INTERFACE)
 
 include (cmake/sanitize.cmake)
+include (cmake/profile_optimization.cmake)
 
 option(ENABLE_COLORED_BUILD "Enable colors in compiler output" ON)
 
@@ -241,13 +138,16 @@ endif ()
 
 include (cmake/add_warning.cmake)
 
-# chdb_spec
-if (USE_MUSL)
-    add_definitions(-DUSE_MUSL=1 -D__MUSL__=1)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftls-model=global-dynamic")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftls-model=global-dynamic")
-endif()
-# chdb_spec
+# A compiler without zlib accepts -gz but only warns, so -Werror on that warning makes the check fail.
+include (CheckCompilerFlag)
+set (CMAKE_REQUIRED_FLAGS "-Werror=debug-compression-unavailable")
+check_compiler_flag (C   "-gz=zlib" C_COMPILER_SUPPORTS_GZ_ZLIB)
+check_compiler_flag (CXX "-gz=zlib" CXX_COMPILER_SUPPORTS_GZ_ZLIB)
+unset (CMAKE_REQUIRED_FLAGS)
+set (COMPILER_SUPPORTS_GZ_ZLIB OFF)
+if (C_COMPILER_SUPPORTS_GZ_ZLIB AND CXX_COMPILER_SUPPORTS_GZ_ZLIB)
+    set (COMPILER_SUPPORTS_GZ_ZLIB ON)
+endif ()
 
 # Block build-time CMake probes (check_*, try_compile, try_run) project-wide. Compiler and
 # toolchain are fixed (see cmake/tools.cmake), so feature detection is unnecessary - any
@@ -273,11 +173,7 @@ if (OS_LINUX)
 
     if (LINKER_NAME MATCHES "lld" AND NOT SANITIZE AND NOT SANITIZE_COVERAGE AND NOT WITH_COVERAGE)
         # Fold identical code and data sections to reduce binary size.
-        # chdb-spec: --icf=safe (not upstream's --icf=all) to avoid folding
-        # functions whose addresses are taken; also apply to SHARED_LINKER_FLAGS
-        # for libchdb.so.
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=safe")
-        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--icf=safe")
+        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
     endif ()
 
     # In Release builds, strip residual debug sections that may come from contrib
@@ -288,6 +184,26 @@ if (OS_LINUX)
 endif ()
 
 if (OS_DARWIN)
+    # Same reasoning as `--no-export-dynamic` on Linux: the main clickhouse binary does not
+    # use dlopen, so it does not need to export any dynamic symbols. By default the Mach-O
+    # linker puts every global symbol into the export trie (hundreds of thousands of them for
+    # clickhouse), which dyld walks for weak-symbol coalescing on every launch, adding ~0.15s
+    # of startup latency. An empty `-exported_symbols_list` suppresses the export trie while
+    # keeping the LC_SYMTAB used for backtraces intact. We use it instead of the simpler
+    # `-no_exported_symbols` because the latter is not understood by the cctools `ld` used for
+    # cross-compilation in CI, while `-exported_symbols_list` is supported by both it and lld.
+    #
+    # Skip this for sanitizer builds: on Darwin we rely on Apple's bundled sanitizer runtime,
+    # which resolves hooks such as `__asan_default_options` / `__lsan_default_suppressions`
+    # (see base/base/sanitizer_options.h) by symbol name via dyld weak-symbol coalescing.
+    # Hiding the executable's exports would silently drop those options. Sanitizer builds are
+    # for testing and do not need the startup optimization anyway.
+    if (NOT SANITIZE)
+        set (EMPTY_EXPORTED_SYMBOLS_LIST "${CMAKE_BINARY_DIR}/empty_exported_symbols.txt")
+        file (WRITE "${EMPTY_EXPORTED_SYMBOLS_LIST}" "")
+        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-exported_symbols_list,${EMPTY_EXPORTED_SYMBOLS_LIST}")
+    endif ()
+
     # Remove unreachable functions/data (Darwin equivalent of --gc-sections).
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-dead_strip")
 
@@ -374,14 +290,7 @@ if (NOT OS_DARWIN)
     # Asynchronous unwind tables are needed for Query Profiler.
     # They are already by default on some platforms but possibly not on all platforms.
     # Enable it explicitly.
-    if (CHDB_LITE)
-        # chdb embedded build: query profiler is not used, drop async unwind tables
-        # to shrink .eh_frame by several MB. C++ exception handling still works
-        # via .eh_frame entries that compiler emits for functions that throw.
-        set (COMPILER_FLAGS "${COMPILER_FLAGS} -fno-asynchronous-unwind-tables")
-    else()
-        set (COMPILER_FLAGS "${COMPILER_FLAGS} -fasynchronous-unwind-tables")
-    endif()
+    set (COMPILER_FLAGS "${COMPILER_FLAGS} -fasynchronous-unwind-tables")
 endif()
 
 # Reproducible builds.
@@ -453,13 +362,31 @@ endif()
 # Disable floating-point expression contraction in order to get consistent floating point calculation results across platforms
 set (COMPILER_FLAGS "${COMPILER_FLAGS} -ffp-contract=off")
 
-set (COMPILER_FLAGS "${COMPILER_FLAGS} -fPIC")
+# Do not maintain `errno` for math functions (`sqrt`, `log`, `pow`, ...). This changes no
+# computed result - `errno` is the only observable difference and ClickHouse never reads it
+# after a libm call - but it lets the compiler emit math instructions directly instead of
+# guarding each call with a branch to a libm wrapper, which also unblocks vectorization.
+# Clang's default on Linux is `-fmath-errno` (errno-setting), so this is not already implied.
+set (COMPILER_FLAGS "${COMPILER_FLAGS} -fno-math-errno")
 
-if (CHDB_LITE)
-    # Place each function/datum in its own section so the linker's --gc-sections can
-    # remove unreferenced ones (otherwise dead code in the same TU as live code is kept).
-    set (COMPILER_FLAGS "${COMPILER_FLAGS} -ffunction-sections -fdata-sections")
-endif()
+# `-fno-math-errno` lets the compiler fold, hoist, and eliminate libm calls. That can remove the
+# last `src/`-side references to a libm function, leaving its only references in contrib objects
+# (e.g. usearch, arrow) that are linked after our in-tree `glibc-compatibility` math archive. Since
+# an archive member is pulled only to satisfy an already-undefined symbol, the in-tree object is
+# never extracted and the reference binds to shared glibc's newer symbol version, which the
+# compatibility check rejects (max allowed GLIBC version is 2.4 on amd64, 2.18 on aarch64). Force
+# our in-tree `musl` implementations to be pulled from the static archive so they preempt glibc,
+# in the same spirit as the explicit `memcpy` interposition in `clickhouse_add_executable` below.
+#
+# Both the single-precision functions (new glibc version `@GLIBC_2.27`) and the double-precision
+# ones (`@GLIBC_2.29`) are pinned. The doubles matter when `ENABLE_LLVM_LIBC_MATH=OFF`: in that
+# configuration llvm-libc does not provide them, so `exp`/`log`/`pow`/`exp2`/`log2` are available
+# only from the earlier `glibc-compatibility` archive and a later contrib reference can otherwise
+# bind to glibc's `@GLIBC_2.29` symbols above the floor. With llvm-libc on they are already pulled
+# from it, so the extra `-u` requests are harmless no-ops.
+if (GLIBC_COMPATIBILITY)
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-u,logf -Wl,-u,powf -Wl,-u,expf -Wl,-u,exp2f -Wl,-u,log2f -Wl,-u,log -Wl,-u,pow -Wl,-u,exp -Wl,-u,exp2 -Wl,-u,log2")
+endif ()
 
 set (DEBUG_INFO_FLAGS "-g")
 if (DISABLE_ALL_DEBUG_SYMBOLS)
@@ -469,16 +396,6 @@ endif()
 if (OS_DARWIN)
     # On Darwin the optimizatiosns to reduce the debug size are off by default. `-fno-standalone-debug` enables them
     set (DEBUG_INFO_FLAGS "${DEBUG_INFO_FLAGS} -fno-standalone-debug")
-
-    # chdb_spec
-    # Apple clang implicitly adds /usr/local/include to its search path. With -Werror and
-    # -Weverything (enabled project-wide), -Wpoison-system-directories fires on every TU
-    # that uses an angle-bracket include resolved from that path (poco PCRE, ICU, etc.).
-    # chdb-core's wheel is built on hosts that have /usr/local/include populated by
-    # Homebrew or pip; silencing the warning here is the same rationale used in
-    # programs/local/CMakeLists.txt and contrib/pybind11-cmake/CMakeLists.txt on Linux.
-    set (COMPILER_FLAGS "${COMPILER_FLAGS} -Wno-poison-system-directories")
-    # chdb_spec
 endif()
 
 # generate ranges for fast "addr2line" search
@@ -486,6 +403,17 @@ if (NOT CMAKE_BUILD_TYPE_UC STREQUAL "RELEASE")
     # NOTE: that clang has a bug because of it does not emit .debug_aranges
     # with ThinLTO, so custom ld.lld wrapper is shipped in docker images.
     set(DEBUG_INFO_FLAGS "${DEBUG_INFO_FLAGS} -gdwarf-aranges")
+endif ()
+
+# Compress DWARF debug sections (`.debug_*`) in object files with -gz=zlib to shrink the build dir
+# (debug info dominates it). Compile-only via add_compile_options, so binaries stay uncompressed and
+# the symbolizer is unaffected. Defaults on where the compiler supports it (probed above).
+option (COMPRESS_DEBUG_SECTIONS "Compress DWARF debug sections in object files with zlib (-gz)" ${COMPILER_SUPPORTS_GZ_ZLIB})
+
+if (COMPRESS_DEBUG_SECTIONS)
+    # Only C/C++ (and GNU-style ASM handled by clang) understand -gz; scope it away from other
+    # languages such as ASM_NASM (ISA-L on amd64), whose nasm assembler rejects the flag.
+    add_compile_options ($<$<COMPILE_LANGUAGE:C,CXX,ASM>:-gz=zlib>)
 endif ()
 
 # Disable omit frame pointer compiler optimization using -fno-omit-frame-pointer
@@ -501,31 +429,20 @@ endif()
 # https://stackoverflow.com/questions/63386189/whats-the-difference-between-a-compilers-o0-option-and-og-option/63386263#63386263
 set(DEBUG_O_LEVEL "g" CACHE STRING "The -Ox level used for debug builds")
 
-set (CMAKE_CXX_FLAGS                     "${CMAKE_CXX_FLAGS} ${COMPILER_FLAGS}")
-set (CMAKE_CXX_FLAGS_RELWITHDEBINFO      "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fPIC -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
+set (CMAKE_CXX_FLAGS                     "${CMAKE_CXX_FLAGS} ${COMPILER_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
+set (CMAKE_CXX_FLAGS_RELWITHDEBINFO      "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
 set (CMAKE_CXX_FLAGS_DEBUG               "${CMAKE_CXX_FLAGS_DEBUG} -O${DEBUG_O_LEVEL} ${DEBUG_INFO_FLAGS} ${CMAKE_CXX_FLAGS_ADD}")
 
 set (CMAKE_C_FLAGS                       "${CMAKE_C_FLAGS} ${COMPILER_FLAGS} ${CMAKE_C_FLAGS_ADD}")
-set (CMAKE_C_FLAGS_RELWITHDEBINFO        "${CMAKE_C_FLAGS_RELWITHDEBINFO} -fPIC -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_C_FLAGS_ADD}")
+set (CMAKE_C_FLAGS_RELWITHDEBINFO        "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_C_FLAGS_ADD}")
 set (CMAKE_C_FLAGS_DEBUG                 "${CMAKE_C_FLAGS_DEBUG} -O${DEBUG_O_LEVEL} ${DEBUG_INFO_FLAGS} ${CMAKE_C_FLAGS_ADD}")
 
 set (CMAKE_ASM_FLAGS                     "${CMAKE_ASM_FLAGS} ${COMPILER_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
-set (CMAKE_ASM_FLAGS_RELWITHDEBINFO      "${CMAKE_ASM_FLAGS_RELWITHDEBINFO} -fPIC -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
+set (CMAKE_ASM_FLAGS_RELWITHDEBINFO      "${CMAKE_ASM_FLAGS_RELWITHDEBINFO} -O3 ${DEBUG_INFO_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
 set (CMAKE_ASM_FLAGS_DEBUG               "${CMAKE_ASM_FLAGS_DEBUG} -O${DEBUG_O_LEVEL} ${DEBUG_INFO_FLAGS} ${CMAKE_ASM_FLAGS_ADD}")
 
 if (OS_DARWIN)
-    # Set macOS deployment target if specified
-    if (CMAKE_OSX_DEPLOYMENT_TARGET)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-macosx_version_min,${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-macosx_version_min,${CMAKE_OSX_DEPLOYMENT_TARGET}")
-    endif()
-    if (USE_PYTHON)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-undefined,dynamic_lookup")
-    else()
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-U,_inside_main")
-    endif()
-elseif (USE_PYTHON)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--unresolved-symbols=ignore-all")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-U,_inside_main")
 endif()
 
 # Display absolute paths in error messages. Otherwise KDevelop fails to navigate to correct file and opens a new file instead.
@@ -539,6 +456,29 @@ option(ENABLE_THINLTO "Clang-specific link time optimization" OFF)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstrict-vtable-pointers")
 
+# CFI requires ThinLTO. Validate here, after ENABLE_THINLTO has been resolved by
+# the option() call above. sanitize.cmake is included earlier (before the option()
+# declaration) so the check must live here where ENABLE_THINLTO is fully defined.
+if (ENABLE_CFI AND NOT ENABLE_THINLTO)
+    message (FATAL_ERROR "ENABLE_CFI requires ENABLE_THINLTO. "
+        "CFI needs -flto=thin and -fwhole-program-vtables which are only applied "
+        "when ThinLTO is enabled. Current configuration has ENABLE_THINLTO=${ENABLE_THINLTO}.")
+endif ()
+
+if (ENABLE_CFI AND ENABLE_TESTS)
+    message (FATAL_ERROR "ENABLE_CFI is incompatible with ENABLE_TESTS. "
+        "ThinLTO (required by CFI) is disabled when building tests. "
+        "Build without tests (ENABLE_TESTS=0) to use CFI.")
+endif ()
+
+# CFI flags are wired into the RelWithDebInfo profile only (CMAKE_*_FLAGS_RELWITHDEBINFO).
+# Other build types would configure successfully and print the CFI status message while
+# silently producing a non-CFI binary, so reject them explicitly.
+if (ENABLE_CFI AND NOT CMAKE_BUILD_TYPE_UC STREQUAL "RELWITHDEBINFO")
+    message (FATAL_ERROR "ENABLE_CFI is only supported with CMAKE_BUILD_TYPE=RelWithDebInfo. "
+        "Current configuration has CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}.")
+endif ()
+
 # We cannot afford to use LTO when compiling unit tests, and it's not enough
 # to only supply -fno-lto at the final linking stage. So we disable it
 # completely.
@@ -551,6 +491,35 @@ if (ENABLE_THINLTO AND NOT ENABLE_TESTS AND NOT SANITIZE)
     if(LINKER_NAME MATCHES "lld")
         set(CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO} -Wl,--lto-whole-program-visibility")
     endif()
+
+    if (ENABLE_CFI)
+        # CFI checks: virtual dispatch type safety and bad downcasts via static_cast.
+        # cfi-icall is omitted because C function pointers in contrib libraries (compiled without
+        # CFI) would cause false positives. Start conservative; broaden after baseline is clean.
+        # cfi-vcall and cfi-derived-cast are C++-only checks; do not apply to C compilation.
+        #
+        # Use `-fvisibility=default` rather than the CFI-documented `hidden`: with hidden
+        # visibility the build succeeds (with `-Wunique-object-duplication` suppressed) but the
+        # resulting binary crashes with SIGSEGV before main runs, because inline-static singletons
+        # like `Context::global_context_instance` and `BaseSettings::unknown_settings` get
+        # duplicated per translation unit and singleton identity is broken. Validated empirically
+        # by WeeklyCFI run 25790910376 — `clickhouse-server --version` exited with signal 11.
+        # CFI vtable visibility is still satisfied for in-binary types because
+        # `-fwhole-program-vtables` and `-Wl,--lto-whole-program-visibility` (set above) cause
+        # the linker to treat all vtables as internal to the binary.
+        #
+        # CFI is left in the default trap mode: a violation executes an illegal instruction
+        # (SIGILL) and CI's core-dump handler yields a stack trace pinpointing the bad vcall/cast.
+        # Diagnostic mode (`-fno-sanitize-trap=cfi`, which prints a UBSan-style type/location
+        # report) is deliberately NOT used: it makes Clang link `libclang_rt.ubsan_standalone`,
+        # which this toolchain does not ship (only select compiler-rt libs are built from contrib),
+        # so even host tools like `protoc` fail to link — validated by WeeklyCFI run 28943752776.
+        # `-fno-sanitize-recover=cfi` is redundant in trap mode but kept as an explicit marker that
+        # a violation must never be continued past.
+        set (CFI_FLAGS "-fsanitize=cfi-vcall,cfi-derived-cast -fno-sanitize-recover=cfi -fvisibility=default")
+        set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${CFI_FLAGS}")
+        set (CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO} ${CFI_FLAGS}")
+    endif ()
 elseif (ENABLE_THINLTO)
     message (${RECONFIGURE_MESSAGE_LEVEL} "Cannot enable ThinLTO")
 endif ()
@@ -572,9 +541,12 @@ include(cmake/limit_jobs.cmake)
 # Turns on all external libs like s3, kafka, ODBC, ...
 option(ENABLE_LIBRARIES "Enable all external libraries by default" ON)
 
-# Increase stack size on Musl. We need big stack for our recursive-descend parser.
+# Increase stack size on Musl. We need big stack for our recursive-descend parser
+# and for analyzer passes that recurse on deeply-nested join trees (e.g.
+# 1000-join queries). Match glibc's 8 MiB default; musl reads this from
+# PT_GNU_STACK and clamps it to DEFAULT_STACK_MAX (also 8 MiB).
 if (USE_MUSL)
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,stack-size=2097152")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,stack-size=8388608")
 endif ()
 
 include(cmake/dbms_glob_sources.cmake)
@@ -588,19 +560,13 @@ elseif (OS_FREEBSD)
     include(cmake/freebsd/default_libs.cmake)
 elseif (OS_SUNOS)
     include(cmake/sunos/default_libs.cmake)
-elseif (OS_WASM)
-    include(cmake/wasm/default_libs.cmake)
 endif ()
 link_libraries(global-group)
 target_link_libraries(global-group INTERFACE $<TARGET_PROPERTY:global-libs,INTERFACE_LINK_LIBRARIES>)
 
-option (ENABLE_FIU "Enable Fiu" ON)
+option (ENABLE_LIBFIU "Enable libfiu" ON)
 
 option(WERROR "Enable -Werror compiler option" ON)
-if (OS_WASM)
-    # Experimental WASM port: too many 32->64/ABI-shaped warnings to treat as errors yet.
-    set (WERROR OFF)
-endif ()
 
 if (WERROR)
     # Don't pollute CMAKE_CXX_FLAGS with -Werror as it will break some CMake checks.
@@ -610,9 +576,9 @@ if (WERROR)
 endif ()
 
 # Make this extra-checks for correct library dependencies.
-# if (OS_LINUX AND NOT SANITIZE)
-#     target_link_options(global-group INTERFACE "LINKER:--no-undefined")
-# endif ()
+if (OS_LINUX AND NOT SANITIZE)
+    target_link_options(global-group INTERFACE "LINKER:--no-undefined")
+endif ()
 
 ######################################
 ### Add targets below this comment ###
@@ -634,27 +600,26 @@ set (CMAKE_POSTFIX_VARIABLE "CMAKE_${CMAKE_BUILD_TYPE_UC}_POSTFIX")
 #
 # For some sophisticated platforms we have different issues with fPIC:
 # For example riscv toolchain itself compiled without fPIC
-# if (NOT ENABLE_THINLTO AND (ARCH_AMD64 OR ARCH_AARCH64))
-#    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
-# endif()
+if (NOT ENABLE_THINLTO AND (ARCH_AMD64 OR ARCH_AARCH64))
+    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
+endif()
 
-# if (ENABLE_POSITION_INDEPENDENT_BINARY)
-#    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-#    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
-#    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-# endif()
-set (CMAKE_POSITION_INDEPENDENT_CODE ON)
+if (ENABLE_POSITION_INDEPENDENT_BINARY)
+    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+endif()
 
-# if (NOT OS_ANDROID AND OS_LINUX AND NOT ARCH_S390X AND NOT SANITIZE AND NOT ENABLE_POSITION_INDEPENDENT_BINARY) 
-#     # Using '-no-pie' builds executables with fixed addresses, resulting in slightly more efficient code
-#     # and keeping binary addresses constant even with ASLR enabled.
-#     # Disabled on Android as it requires PIE: https://source.android.com/docs/security/enhancements#android-5
-#     # Slightly more efficient code can be generated
-#     # It's disabled for ARM because otherwise ClickHouse cannot run on Android.
-#     set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fno-pie")
-#     set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -fno-pie")
-#     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie -Wl,-no-pie")
-# endif ()
+if (NOT OS_ANDROID AND OS_LINUX AND NOT ARCH_S390X AND NOT SANITIZE AND NOT ENABLE_POSITION_INDEPENDENT_BINARY)
+    # Using '-no-pie' builds executables with fixed addresses, resulting in slightly more efficient code
+    # and keeping binary addresses constant even with ASLR enabled.
+    # Disabled on Android as it requires PIE: https://source.android.com/docs/security/enhancements#android-5
+    # Disabled on IBM S390X due to build issues with 'no-pie'
+    # Disabled with sanitizers to avoid issues with maximum relocation size: https://github.com/ClickHouse/ClickHouse/pull/49145
+    set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fno-pie")
+    set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -fno-pie")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie -Wl,-no-pie")
+endif ()
 
 if (ENABLE_TESTS)
     message (STATUS "Unit tests are enabled")
@@ -697,23 +662,15 @@ endif()
 enable_dummy_launchers_if_needed()
 
 if (NOT ENABLE_JEMALLOC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_JEMALLOC=0")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUSE_JEMALLOC=0")
     message (WARNING "Non default allocator is disabled. This is not recommended for production builds.")
-else ()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUSE_JEMALLOC=1 -DJEMALLOC_NO_RENAME=1 -DARROW_JEMALLOC=1")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUSE_JEMALLOC=1 -DJEMALLOC_NO_RENAME=1 -DARROW_JEMALLOC=1")
 endif ()
 
 macro (clickhouse_add_executable target)
     # invoke built-in add_executable
     # explicitly acquire and interpose malloc symbols by clickhouse_malloc
-    # if GLIBC_COMPATIBILITY is ON and ENABLE_THINLTO is on than provide memcpy symbol explicitly to neutrialize thinlto's libcall generation.
-    if (ARCH_AMD64 AND GLIBC_COMPATIBILITY AND ENABLE_THINLTO)
-        add_executable (${ARGV} $<TARGET_OBJECTS:clickhouse_malloc> $<TARGET_OBJECTS:memcpy>)
-    else ()
-        add_executable (${ARGV} $<TARGET_OBJECTS:clickhouse_malloc>)
-    endif ()
+    # Note: for musl builds (-nostartfiles), the CRT startup files are added to every
+    # executable through the link flags, see cmake/linux/default_libs.cmake.
+    add_executable (${ARGV} $<TARGET_OBJECTS:clickhouse_malloc>)
 
     get_target_property (type ${target} TYPE)
     if (${type} STREQUAL EXECUTABLE)
@@ -828,52 +785,15 @@ if (COMPILER_CACHE STREQUAL "chcache" AND CHCACHE_EXECUTABLE_PATH STREQUAL "")
 endif()
 
 # Build native targets if necessary
-#
-# CHDB_SKIP_NATIVE_BOOTSTRAP: hard guard against infinite recursion. The WASM
-# (Emscripten) configure triggers this native bootstrap, but emcmake leaks env
-# vars into the spawned host cmake so it is still seen as cross-compiling and
-# would recurse forever. We pass CHDB_SKIP_NATIVE_BOOTSTRAP=1 to that sub-build
-# so it never re-enters here. protoc still links as a native host ELF because the
-# native sub-build uses a host clang whose default target is x86_64-linux.
 get_property(NATIVE_BUILD_TARGETS GLOBAL PROPERTY NATIVE_BUILD_TARGETS)
 if (NATIVE_BUILD_TARGETS
-    AND NOT CHDB_SKIP_NATIVE_BOOTSTRAP
     AND NOT(
         CMAKE_HOST_SYSTEM_NAME STREQUAL CMAKE_SYSTEM_NAME
         AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL CMAKE_SYSTEM_PROCESSOR
+        AND NOT USE_MUSL
     )
 )
     message (STATUS "Building native targets: ${NATIVE_BUILD_TARGETS}")
-
-    # The native bootstrap (protoc, grpc plugin, ...) must be built with a real
-    # host compiler. Under Emscripten, CMAKE_C_COMPILER is `emcc`, which targets
-    # WASM again -> the native build re-detects OS_WASM and recurses infinitely.
-    # Use a host clang for the native sub-build instead. (emsdk ships clang >= 21,
-    # which satisfies CLANG_MINIMUM_VERSION; the system clang may be too old.)
-    if (OS_WASM)
-        get_filename_component (EMSCRIPTEN_BIN_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
-        set (NATIVE_C_COMPILER   "${EMSCRIPTEN_BIN_DIR}/../bin/clang")
-        set (NATIVE_CXX_COMPILER "${EMSCRIPTEN_BIN_DIR}/../bin/clang++")
-        # Find an ld.lld for the native host build (tools.cmake requires LLD).
-        find_program (CHDB_NATIVE_LINKER NAMES ld.lld ld.lld-23 ld.lld-22 ld.lld-21 ld.lld-20 ld.lld-19 ld.lld-18)
-        if (NOT CHDB_NATIVE_LINKER)
-            message (FATAL_ERROR "WASM native bootstrap needs ld.lld on the host PATH")
-        endif ()
-        # WASM-only sub-build flags. They keep the native bootstrap a plain host build
-        # (drop the hermetic linux toolchain so it is not seen as cross-compiling and
-        # does not recurse, with no leaked Emscripten toolchain) and point it at the
-        # host LLD. They must NOT be applied on other (non-wasm) cross builds — e.g.
-        # macOS-on-Linux — which keep their hermetic toolchain unchanged.
-        set (NATIVE_BOOTSTRAP_EXTRA_ARGS
-            "-DDISABLE_HERMETIC_BUILD=1"
-            "-DCMAKE_TOOLCHAIN_FILE="
-            "-DCHDB_SKIP_NATIVE_BOOTSTRAP=1"
-            "-DLINKER_NAME=${CHDB_NATIVE_LINKER}")
-    else ()
-        set (NATIVE_C_COMPILER   "${CMAKE_C_COMPILER}")
-        set (NATIVE_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
-        set (NATIVE_BOOTSTRAP_EXTRA_ARGS "")
-    endif ()
 
     set (NATIVE_BUILD_DIR "${PROJECT_BINARY_DIR}/native")
 
@@ -889,19 +809,13 @@ if (NATIVE_BUILD_TARGETS
         COMMAND ${CMAKE_COMMAND}
             "-G${CMAKE_GENERATOR}"
             "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
-            "-DCMAKE_C_COMPILER=${NATIVE_C_COMPILER}"
-            "-DCMAKE_CXX_COMPILER=${NATIVE_CXX_COMPILER}"
+            "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
+            "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
             "-DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}"
             "-DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}"
             "-DCMAKE_BUILD_TYPE=Release"
-            # WASM-only: drop the hermetic toolchain (avoids cross-compile recursion +
-            # leaked Emscripten toolchain) and point at the host LLD. Empty on non-wasm
-            # builds, so their native bootstrap (incl. macOS-on-Linux) is unchanged.
-            ${NATIVE_BOOTSTRAP_EXTRA_ARGS}
             # Avoid overriding .cargo/config.toml with native toolchain.
             "-DENABLE_RUST=OFF"
-            # ISA-L requires NASM which may not be available in cross-compilation
-            "-DENABLE_ISAL_LIBRARY=OFF"
             "-DENABLE_CLICKHOUSE_SELF_EXTRACTING=${ENABLE_CLICKHOUSE_SELF_EXTRACTING}"
             "-DUSE_BINARY_HASH=${USE_BINARY_HASH}"
         ${PROJECT_SOURCE_DIR}

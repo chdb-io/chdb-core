@@ -1,7 +1,7 @@
 #include <unistd.h>
 #include <cerrno>
-#include <cassert>
 #include <sys/stat.h>
+#include <algorithm>
 
 #include <Common/Throttler.h>
 #include <Common/Exception.h>
@@ -65,12 +65,11 @@ void WriteBufferFromFileDescriptor::nextImpl()
             ProfileEvents::increment(ProfileEvents::WriteBufferFromFileDescriptorWriteFailed);
 
             /// Don't use getFileName() here because this method can be called from destructor
-            // String error_file_name = file_name;
-            // if (error_file_name.empty())
-            //     error_file_name = "(fd = " + toString(fd) + ")";
-            // ErrnoException::throwFromPath(
-            //     ErrorCodes::CANNOT_WRITE_TO_FILE_DESCRIPTOR, error_file_name, "Cannot write to file {}", error_file_name);
-            break;
+            String error_file_name = file_name;
+            if (error_file_name.empty())
+                error_file_name = "(fd = " + toString(fd) + ")";
+            ErrnoException::throwFromPath(
+                ErrorCodes::CANNOT_WRITE_TO_FILE_DESCRIPTOR, error_file_name, "Cannot write to file {}", error_file_name);
         }
 
         if (res > 0)
@@ -104,7 +103,10 @@ WriteBufferFromFileDescriptor::WriteBufferFromFileDescriptor(
     std::string file_name_,
     bool use_adaptive_buffer_size_,
     size_t adaptive_buffer_initial_size)
-    : WriteBufferFromFileBase(use_adaptive_buffer_size_ ? adaptive_buffer_initial_size : buf_size, existing_memory, alignment)
+    /// The adaptive buffer grows from the initial size up to buf_size (the max), so the
+    /// initial allocation must not exceed it. An out-of-range initial size would otherwise
+    /// be passed straight to the allocator (e.g. a fuzzed adaptive_write_buffer_initial_size).
+    : WriteBufferFromFileBase(use_adaptive_buffer_size_ ? std::min(adaptive_buffer_initial_size, buf_size) : buf_size, existing_memory, alignment)
     , fd(fd_)
     , throttler(throttler_)
     , file_name(std::move(file_name_))
@@ -117,7 +119,7 @@ void WriteBufferFromFileDescriptor::finalizeImpl()
 {
     if (fd < 0)
     {
-        /// chassert(!offset(), "attempt to write after close");
+        chassert(!offset(), "attempt to write after close");
         return;
     }
 
@@ -165,7 +167,7 @@ void WriteBufferFromFileDescriptor::truncate(off_t length) // NOLINT
 
 off_t WriteBufferFromFileDescriptor::size() const
 {
-    struct stat buf;
+    struct stat buf{};
     int res = fstat(fd, &buf);
     if (-1 == res)
         ErrnoException::throwFromPath(ErrorCodes::CANNOT_FSTAT, getFileName(), "Cannot execute fstat {}", getFileName());

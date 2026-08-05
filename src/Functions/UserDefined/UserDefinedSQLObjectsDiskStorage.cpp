@@ -16,8 +16,9 @@
 #include <IO/WriteBufferFromFile.h>
 #include <IO/WriteHelpers.h>
 
-#include <Parsers/IAST.h>
 #include <Interpreters/Context.h>
+
+#include <Parsers/IAST.h>
 #include <Parsers/parseQuery.h>
 #include <Parsers/ParserCreateFunctionQuery.h>
 
@@ -131,13 +132,11 @@ void UserDefinedSQLObjectsDiskStorage::loadObjectsImpl()
 
     if (!std::filesystem::exists(dir_path))
     {
-        setAllObjects({});
-        objects_loaded = false;
         LOG_DEBUG(log, "The directory for user defined objects ({}) does not exist: nothing to load", dir_path);
         return;
     }
 
-    std::vector<std::pair<String, ASTPtr>> function_names_and_queries;
+    VectorWithMemoryTracking<std::pair<String, ASTPtr>> function_names_and_queries;
 
     Poco::DirectoryIterator dir_end;
     for (Poco::DirectoryIterator it(dir_path); it != dir_end; ++it)

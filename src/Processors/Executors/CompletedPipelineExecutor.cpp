@@ -7,6 +7,7 @@
 #include <Common/ThreadPool.h>
 #include <Common/scope_guard_safe.h>
 #include <Common/CurrentThread.h>
+#include <Common/ThreadGroupSwitcher.h>
 
 namespace DB
 {
@@ -65,23 +66,10 @@ void CompletedPipelineExecutor::setCancelCallback(std::function<bool()> is_cance
 
 void CompletedPipelineExecutor::execute()
 {
-#if defined(CHDB_WASM_SINGLE_THREADED)
-    /// The interactive (cancel-callback) path spawns a ThreadFromGlobalPool to run
-    /// the pipeline while the caller polls — impossible without -pthread. Run the
-    /// completed pipeline directly on the calling thread instead. The read-progress
-    /// callback is still installed (below); only the interactive cancellation/polling
-    /// is skipped. The query runs to completion.
-    {
-        PipelineExecutor executor(pipeline.processors, pipeline.process_list_element);
-        executor.setReadProgressCallback(pipeline.getReadProgressCallback());
-        executor.execute(pipeline.getNumThreads(), pipeline.getConcurrencyControl());
-        return;
-    }
-#endif
     if (interactive_timeout_ms)
     {
         data = std::make_unique<Data>();
-        data->executor = std::make_shared<PipelineExecutor>(pipeline.processors, pipeline.process_list_element);
+        data->executor = std::make_shared<PipelineExecutor>(pipeline.processors, pipeline.process_list_element, pipeline.step_wall_clock_registry.get());
         data->executor->setReadProgressCallback(pipeline.getReadProgressCallback());
 
         /// Avoid passing this to lambda, copy ptr to data instead.
@@ -113,7 +101,7 @@ void CompletedPipelineExecutor::execute()
     }
     else
     {
-        PipelineExecutor executor(pipeline.processors, pipeline.process_list_element);
+        PipelineExecutor executor(pipeline.processors, pipeline.process_list_element, pipeline.step_wall_clock_registry.get());
         executor.setReadProgressCallback(pipeline.getReadProgressCallback());
         executor.execute(pipeline.getNumThreads(), pipeline.getConcurrencyControl());
     }

@@ -48,7 +48,7 @@ public:
         return configuration->format != "auto" && FormatFactory::instance().checkIfFormatSupportsSubsetOfColumns(configuration->format, context);
     }
 
-    std::unordered_set<String> getVirtualsToCheckBeforeUsingStructureHint() const override
+    NameSet getVirtualsToCheckBeforeUsingStructureHint() const override
     {
         return VirtualColumnUtils::getVirtualNamesForFileLikeStorage();
     }
@@ -106,7 +106,7 @@ protected:
     std::shared_ptr<Settings> settings;
     ASTPtr partition_by;
 
-    std::vector<size_t> skipAnalysisForArguments(const QueryTreeNodePtr & query_node_table_function, ContextPtr context) const override;
+    VectorWithMemoryTracking<size_t> skipAnalysisForArguments(const QueryTreeNodePtr & query_node_table_function, ContextPtr context) const override;
 };
 
 #if USE_AWS_S3
@@ -126,10 +126,6 @@ using TableFunctionHDFS = TableFunctionObjectStorage<HDFSDefinition, StorageHDFS
 #    if USE_AWS_S3
 using TableFunctionIceberg = TableFunctionObjectStorage<IcebergDefinition, StorageS3IcebergConfiguration, true>;
 using TableFunctionIcebergS3 = TableFunctionObjectStorage<IcebergS3Definition, StorageS3IcebergConfiguration, true>;
-#    elif defined(OS_WASM)
-/// WASM has no AWS SDK: s3:// tables are read through the web-fetch data plane.
-using TableFunctionIceberg = TableFunctionObjectStorage<IcebergDefinition, StorageWasmWebIcebergConfiguration, true>;
-using TableFunctionIcebergS3 = TableFunctionObjectStorage<IcebergS3Definition, StorageWasmWebIcebergConfiguration, true>;
 #    endif
 #    if USE_AZURE_BLOB_STORAGE
 using TableFunctionIcebergAzure = TableFunctionObjectStorage<IcebergAzureDefinition, StorageAzureIcebergConfiguration, true>;
@@ -162,11 +158,6 @@ using TableFunctionDeltaLakeAzure = TableFunctionObjectStorage<DeltaLakeAzureDef
 #endif
 // New alias for local Delta Lake table function
 using TableFunctionDeltaLakeLocal = TableFunctionObjectStorage<DeltaLakeLocalDefinition, StorageLocalDeltaLakeConfiguration, true>;
-#endif
-#if USE_PARQUET && !USE_DELTA_KERNEL_RS && defined(OS_WASM)
-/// WASM has no rust delta-kernel: the legacy C++ DeltaLakeMetadata replays the
-/// log, and data is read through the web-fetch data plane.
-using TableFunctionDeltaLake = TableFunctionObjectStorage<DeltaLakeDefinition, StorageWasmWebDeltaLakeConfiguration, true>;
 #endif
 #if USE_AWS_S3
 using TableFunctionHudi = TableFunctionObjectStorage<HudiDefinition, StorageS3HudiConfiguration, true>;

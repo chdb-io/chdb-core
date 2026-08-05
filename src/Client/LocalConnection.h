@@ -6,27 +6,17 @@
 #include <Interpreters/Session.h>
 #include <Interpreters/ProfileEventsExt.h>
 #include <Common/QueryScope.h>
+#include <Common/ThreadStatus.h>
 
 
 namespace DB
 {
 class ColumnsDescription;
 class PullingAsyncPipelineExecutor;
-class PullingPipelineExecutor;
 class PushingAsyncPipelineExecutor;
 class PushingPipelineExecutor;
 class QueryPipeline;
 class ReadBuffer;
-
-/// The pulling executor for SELECT results. The async variant runs the pipeline on
-/// a background thread; in the single-threaded WASM build (no -pthread) that would
-/// deadlock (producer/consumer on one thread), so use the synchronous executor,
-/// which advances the pipeline on the calling thread.
-#if defined(CHDB_WASM_SINGLE_THREADED)
-using LocalPullingExecutor = PullingPipelineExecutor;
-#else
-using LocalPullingExecutor = PullingAsyncPipelineExecutor;
-#endif
 
 /// State of query processing.
 struct LocalQueryState
@@ -40,12 +30,12 @@ struct LocalQueryState
     /// Streams of blocks, that are processing the query.
     BlockIO io;
     /// Current stream to pull blocks from.
-    std::unique_ptr<LocalPullingExecutor> executor;
+    std::unique_ptr<PullingAsyncPipelineExecutor> executor;
     std::unique_ptr<PushingPipelineExecutor> pushing_executor;
     std::unique_ptr<PushingAsyncPipelineExecutor> pushing_async_executor;
     /// For sending data for input() function.
     std::unique_ptr<QueryPipeline> input_pipeline;
-    std::unique_ptr<LocalPullingExecutor> input_pipeline_executor;
+    std::unique_ptr<PullingAsyncPipelineExecutor> input_pipeline_executor;
 
     InternalProfileEventsQueuePtr profile_queue;
     InternalTextLogsQueuePtr logs_queue;
@@ -155,7 +145,11 @@ public:
 
     void sendExternalTablesData(ExternalTablesData &) override;
 
+    void sendScalarsData(Scalars & data) override;
+
     void sendMergeTreeReadTaskResponse(const ParallelReadResponse & response) override;
+
+    void sendMergeTreeAllRangesAnnouncementResponse(const InitialAllRangesAnnouncementResponse & response) override;
 
     bool poll(size_t timeout_microseconds/* = 0 */) override;
 
@@ -176,20 +170,12 @@ public:
 
     void setThrottler(const ThrottlerPtr &) override {}
 
-    const Progress & getCHDBProgress() const { return chdb_progress; }
-#if USE_PYTHON
-    void resetQueryContext();
-    Session & getSession() const { return *session; }
-#endif
-
 private:
     bool pullBlock(Block & block);
 
     void finishQuery();
 
     void updateProgress(const Progress & value);
-
-    void updateCHDBProgress(const Progress & value);
 
     void sendProfileEvents();
 
@@ -212,8 +198,6 @@ private:
 
     std::optional<LocalQueryState> state;
 
-    Progress chdb_progress;
-
     /// Last "server" packet.
     std::optional<UInt64> next_packet_type;
 
@@ -223,21 +207,5 @@ private:
 
     ReadBuffer * in;
 };
-
-#if defined(OS_WASM)
-/// chdb-wasm: register a hook fired on each query-progress tick with the accumulated
-/// counters (read_rows, total_rows_to_read, read_bytes, total_bytes_to_read, elapsed_ns).
-/// Plain-primitive signature so the wasm glue can forward-declare it WITHOUT including this
-/// (heavy, Poco/Net-pulling) header. Pass {} to clear.
-void setCHDBProgressHook(
-    std::function<void(uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
-                       uint64_t total_bytes_to_read, uint64_t elapsed_ns)> hook);
-
-/// chdb-wasm: register a predicate the engine polls during a query (via setCancelCallback
-/// on each connection) to decide whether to cancel it — the wasm glue reads a
-/// SharedArrayBuffer flag the page sets. Returns false when unset (native: never cancels).
-void setCHDBCancelCheck(std::function<bool()> check);
-bool chdbWasmCancelRequested();
-#endif
 
 }

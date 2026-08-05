@@ -18,36 +18,13 @@ endif()
 option (ENABLE_PRQL "Enable prql" ${ENABLE_LIBRARIES})
 option (ENABLE_SKIM "Enable skim" ${ENABLE_LIBRARIES})
 option (ENABLE_POLYGLOT "Enable polyglot SQL transpiler" ${ENABLE_LIBRARIES})
-# chdb: WasmTime backs the WebAssembly UDF runtime and is enabled independently
-# of ENABLE_LIBRARIES (see chdb/build.sh). It is built from the same cargo
-# workspace, so it must be considered here too — otherwise this early return
-# would skip clickhouse_import_crate() and add_subdirectory(wasmtime) below.
-option (ENABLE_WASMTIME "Enable WasmTime engine" ${ENABLE_LIBRARIES})
 
-if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_WASMTIME)
-    message(STATUS "prql, skim, polyglot, and wasmtime are disabled")
+if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT)
+    message(STATUS "prql, skim, and polyglot are disabled")
     return()
 endif()
 
-# Import only the crates that are actually enabled. Without an explicit CRATES
-# allowlist, corrosion builds the entire workspace, which forces unwanted crates
-# (e.g. skim) to compile even when disabled — and skim fails to build in chdb's
-# minimized macOS toolchain. This keeps a wasmtime-only build from dragging them in.
-set (_ch_rust_enabled_crates "")
-if (ENABLE_PRQL)
-    list (APPEND _ch_rust_enabled_crates _ch_rust_prql)
-endif()
-if (ENABLE_SKIM)
-    list (APPEND _ch_rust_enabled_crates _ch_rust_skim_rust)
-endif()
-if (ENABLE_POLYGLOT)
-    list (APPEND _ch_rust_enabled_crates _ch_rust_polyglot)
-endif()
-if (ENABLE_WASMTIME)
-    list (APPEND _ch_rust_enabled_crates _ch_rust_wasmtime)
-endif()
-
-clickhouse_import_crate(MANIFEST_PATH Cargo.toml CRATES ${_ch_rust_enabled_crates})
+clickhouse_import_crate(MANIFEST_PATH Cargo.toml)
 
 if (ENABLE_PRQL)
     clickhouse_config_crate_flags(_ch_rust_prql)
@@ -78,6 +55,10 @@ if (ENABLE_PRQL)
                 VERBATIM
             )
             add_dependencies(_ch_rust_prql strip_prql_symbols)
+            # Ensure localize runs before strip (they both modify the same .a)
+            if (TARGET localize_rust_c__ch_rust_prql)
+                add_dependencies(strip_prql_symbols localize_rust_c__ch_rust_prql)
+            endif()
         endif ()
     endif ()
 endif()
@@ -101,6 +82,10 @@ if (ENABLE_POLYGLOT)
                 VERBATIM
             )
             add_dependencies(_ch_rust_polyglot strip_polyglot_symbols)
+            # Ensure localize runs before strip (they both modify the same .a)
+            if (TARGET localize_rust_c__ch_rust_polyglot)
+                add_dependencies(strip_polyglot_symbols localize_rust_c__ch_rust_polyglot)
+            endif()
         endif ()
     endif ()
 endif()

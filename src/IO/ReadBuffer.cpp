@@ -17,7 +17,6 @@ namespace ErrorCodes
 {
     extern const int ATTEMPT_TO_READ_AFTER_EOF;
     extern const int CANNOT_READ_ALL_DATA;
-    extern const int CANNOT_READ_FROM_FILE_DESCRIPTOR;
 }
 
 namespace
@@ -32,6 +31,15 @@ namespace
         }
 
         const ReadBuffer & getWrappedReadBuffer() const override { return in; }
+
+        bool poll(size_t timeout_microseconds) override
+        {
+            if (hasPendingData())
+                return true;
+
+            in.position() = position();
+            return in.poll(timeout_microseconds);
+        }
 
     private:
         ReadBuffer & in;
@@ -53,10 +61,18 @@ namespace
 
 void ReadBuffer::readStrict(char * to, size_t n)
 {
-    auto read_bytes = read(to, n);
+    size_t read_bytes = read(to, n);
     if (n != read_bytes)
         throw Exception(ErrorCodes::CANNOT_READ_ALL_DATA,
                         "Cannot read all data. Bytes read: {}. Bytes expected: {}.", read_bytes, std::to_string(n));
+}
+
+void ReadBuffer::readBigStrict(char * to, size_t n)
+{
+    size_t read_bytes = readBig(to, n);
+    if (n != read_bytes)
+        throw Exception(ErrorCodes::CANNOT_READ_ALL_DATA,
+                        "Cannot read all data with readBig. Bytes read: {}. Bytes expected: {}.", read_bytes, std::to_string(n));
 }
 
 void ReadBuffer::throwReadAfterEOF()
@@ -96,10 +112,8 @@ bool ReadBuffer::next()
     {
         res = nextImpl();
     }
-    catch (const Exception & e)
+    catch (...)
     {
-        if (e.code() == ErrorCodes::CANNOT_READ_FROM_FILE_DESCRIPTOR)
-            return false;
         cancel();
         throw;
     }

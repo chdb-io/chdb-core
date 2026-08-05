@@ -1,15 +1,5 @@
 #include <Functions/FunctionsConversion.h>
 
-#if defined(CHDB_LITE) && CHDB_LITE
-/// chdb-core-lite: skip registering converters to big-int/big-decimal/BFloat16
-/// types. The arithmetic/comparison/conversion paths already drop instantiations
-/// for these types; skipping the registrations lets the linker --gc-sections
-/// remove the corresponding FunctionTo<...> template chains.
-#define CHDB_LITE_CONV(call) (void)0
-#else
-#define CHDB_LITE_CONV(call) call
-#endif
-
 namespace DB
 {
 
@@ -298,7 +288,7 @@ toUInt128('128'): 128
     FunctionDocumentation::Category toUInt128_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toUInt128_documentation = {toUInt128_description, toUInt128_syntax, toUInt128_arguments, {}, toUInt128_returned_value, toUInt128_examples, toUInt128_introduced_in, toUInt128_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt128>(toUInt128_documentation));
+    factory.registerFunction<detail::FunctionToUInt128>(toUInt128_documentation);
     FunctionDocumentation::Description toUInt256_description = R"(
 Converts an input value to a value of type UInt256.
 Throws an exception in case of an error.
@@ -350,7 +340,7 @@ toUInt256('256'):   256
     FunctionDocumentation::Category toUInt256_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toUInt256_documentation = {toUInt256_description, toUInt256_syntax, toUInt256_arguments, {}, toUInt256_returned_value, toUInt256_examples, toUInt256_introduced_in, toUInt256_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt256>(toUInt256_documentation));
+    factory.registerFunction<detail::FunctionToUInt256>(toUInt256_documentation);
 
     /// toInt8 documentation
     FunctionDocumentation::Description toInt8_description = R"(
@@ -636,7 +626,7 @@ toInt128('-128'): -128
     FunctionDocumentation::Category toInt128_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toInt128_documentation = {toInt128_description, toInt128_syntax, toInt128_arguments, {}, toInt128_returned_value, toInt128_examples, toInt128_introduced_in, toInt128_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt128>(toInt128_documentation));
+    factory.registerFunction<detail::FunctionToInt128>(toInt128_documentation);
 
     /// toInt256 documentation
     FunctionDocumentation::Description toInt256_description = R"(
@@ -690,7 +680,7 @@ toInt256('-256'):   -256
     FunctionDocumentation::Category toInt256_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toInt256_documentation = {toInt256_description, toInt256_syntax, toInt256_arguments, {}, toInt256_returned_value, toInt256_examples, toInt256_introduced_in, toInt256_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt256>(toInt256_documentation));
+    factory.registerFunction<detail::FunctionToInt256>(toInt256_documentation);
 
     /// toBFloat16 documentation
     FunctionDocumentation::Description toBFloat16_description = R"(
@@ -727,7 +717,7 @@ toBFloat16('42.7'):          42.5
     FunctionDocumentation::Category toBFloat16_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toBFloat16_documentation = {toBFloat16_description, toBFloat16_syntax, toBFloat16_arguments, {}, toBFloat16_returned_value, toBFloat16_examples, toBFloat16_introduced_in, toBFloat16_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToBFloat16>(toBFloat16_documentation));
+    factory.registerFunction<detail::FunctionToBFloat16>(toBFloat16_documentation);
 
     /// toFloat32 documentation
     FunctionDocumentation::Description toFloat32_description = R"(
@@ -1055,8 +1045,8 @@ type_c: Decimal(76, 3)
 
     factory.registerFunction<detail::FunctionToDecimal32>(documentation_toDecimal32);
     factory.registerFunction<detail::FunctionToDecimal64>(documentation_toDecimal64);
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal128>(documentation_toDecimal128));
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal256>(documentation_toDecimal256));
+    factory.registerFunction<detail::FunctionToDecimal128>(documentation_toDecimal128);
+    factory.registerFunction<detail::FunctionToDecimal256>(documentation_toDecimal256);
 
     /// toDate documentation
     FunctionDocumentation::Description description_toDate = R"(
@@ -1169,18 +1159,20 @@ toTypeName(value): Date32
     /// toTime documentation
     FunctionDocumentation::Description description_toTime = R"(
 Converts an input value to type [Time](/sql-reference/data-types/time).
-Supports conversion from String, FixedString, DateTime, or numeric types representing seconds since midnight.
+Supports conversion from String, FixedString, DateTime, DateTime64, or numeric types representing seconds since midnight.
     )";
     FunctionDocumentation::Syntax syntax_toTime = "toTime(x)";
     FunctionDocumentation::Arguments arguments_toTime = {
-        {"x", "Input value to convert.", {"String", "FixedString", "DateTime", "(U)Int*", "Float*"}}
+        {"x", "Input value to convert.", {"String", "FixedString", "DateTime", "DateTime64", "(U)Int*", "Float*"}}
     };
     FunctionDocumentation::ReturnedValue returned_value_toTime = {"Returns the converted value.", {"Time"}};
     FunctionDocumentation::Examples examples_toTime = {
     {
-        "String to Time conversion",
+        "DateTime64 to Time conversion",
         R"(
-SELECT toTime('14:30:25')
+SET enable_time_time64_type = 1;
+SET use_legacy_to_time = 0;
+SELECT toTime(toDateTime64('2025-04-15 14:30:25.123', 3))
         )",
         R"(
 14:30:25
@@ -1189,6 +1181,8 @@ SELECT toTime('14:30:25')
     {
         "DateTime to Time conversion",
         R"(
+SET enable_time_time64_type = 1;
+SET use_legacy_to_time = 0;
 SELECT toTime(toDateTime('2025-04-15 14:30:25'))
         )",
         R"(
@@ -1196,9 +1190,11 @@ SELECT toTime(toDateTime('2025-04-15 14:30:25'))
         )"
     },
     {
-        "Integer to Time conversion",
+        "Integer (seconds since epoch) to Time conversion",
         R"(
-SELECT toTime(52225)
+SET enable_time_time64_type = 1;
+SET use_legacy_to_time = 0;
+SELECT toTime(toDateTime(52225, 'UTC'))
         )",
         R"(
 14:30:25
@@ -1213,19 +1209,21 @@ SELECT toTime(52225)
 
     FunctionDocumentation::Description description_toTime64 = R"(
 Converts an input value to type [Time64](/sql-reference/data-types/time64).
-Supports conversion from String, FixedString, DateTime64, or numeric types representing microseconds since midnight.
-Provides microsecond precision for time values.
+Supports conversion from String, FixedString, DateTime64, or numeric types representing seconds since midnight.
+Provides sub-second precision for time values, up to `scale` fractional digits.
     )";
-    FunctionDocumentation::Syntax syntax_toTime64 = "toTime64(x)";
+    FunctionDocumentation::Syntax syntax_toTime64 = "toTime64(x, scale)";
     FunctionDocumentation::Arguments arguments_toTime64 = {
-        {"x", "Input value to convert.", {"String", "FixedString", "DateTime64", "(U)Int*", "Float*"}}
+        {"x", "Input value to convert.", {"String", "FixedString", "DateTime64", "(U)Int*", "Float*"}},
+        {"scale", "Precision (number of fractional digits, `0`–`9`) of the resulting `Time64`.", {"(U)Int*"}}
     };
-    FunctionDocumentation::ReturnedValue returned_value_toTime64 = {"Returns the converted input value with microsecond precision.", {"Time64(6)"}};
+    FunctionDocumentation::ReturnedValue returned_value_toTime64 = {"Returns the converted value with the requested `scale`.", {"Time64"}};
     FunctionDocumentation::Examples examples_toTime64 = {
     {
         "String to Time64 conversion",
         R"(
-SELECT toTime64('14:30:25.123456')
+SET enable_time_time64_type = 1;
+SELECT toTime64('14:30:25.123456', 6)
         )",
         R"(
 14:30:25.123456
@@ -1234,16 +1232,18 @@ SELECT toTime64('14:30:25.123456')
     {
         "DateTime64 to Time64 conversion",
         R"(
-SELECT toTime64(toDateTime64('2025-04-15 14:30:25.123456', 6))
+SET enable_time_time64_type = 1;
+SELECT toTime64(toDateTime64('2025-04-15 14:30:25.123456', 6), 6)
         )",
         R"(
 14:30:25.123456
         )"
     },
     {
-        "Integer to Time64 conversion",
+        "Float (seconds since midnight) to Time64 conversion",
         R"(
-SELECT toTime64(52225123456)
+SET enable_time_time64_type = 1;
+SELECT toTime64(52225.123456, 6)
         )",
         R"(
 14:30:25.123456
@@ -1312,9 +1312,9 @@ DateTime32 provides extended range compared to `DateTime`, supporting dates from
 SELECT toDateTime64('2025-01-01 00:00:00.000', 3) AS value, toTypeName(value);
         )",
         R"(
-┌───────────────────value─┬─toTypeName(toDateTime64('20255-01-01 00:00:00.000', 3))─┐
-│ 2025-01-01 00:00:00.000 │ DateTime64(3)                                          │
-└─────────────────────────┴────────────────────────────────────────────────────────┘
+┌───────────────────value─┬─toTypeName(value)─┐
+│ 2025-01-01 00:00:00.000 │ DateTime64(3)     │
+└─────────────────────────┴───────────────────┘
         )"
     },
     {
@@ -1325,12 +1325,12 @@ SELECT toDateTime64(1735689600.000, 3) AS value, toTypeName(value);
 SELECT toDateTime64(1546300800000, 3) AS value, toTypeName(value);
         )",
         R"(
-┌───────────────────value─┬─toTypeName(toDateTime64(1735689600.000, 3))─┐
-│ 2025-01-01 00:00:00.000 │ DateTime64(3)                            │
-└─────────────────────────┴──────────────────────────────────────────┘
-┌───────────────────value─┬─toTypeName(toDateTime64(1546300800000, 3))─┐
-│ 2282-12-31 00:00:00.000 │ DateTime64(3)                              │
-└─────────────────────────┴────────────────────────────────────────────┘
+┌───────────────────value─┬─toTypeName(value)─┐
+│ 2025-01-01 00:00:00.000 │ DateTime64(3)     │
+└─────────────────────────┴───────────────────┘
+┌───────────────────value─┬─toTypeName(value)─┐
+│ 2299-12-31 23:59:59.000 │ DateTime64(3)     │
+└─────────────────────────┴───────────────────┘
         )"
     },
     {
@@ -1861,7 +1861,7 @@ toUInt128OrZero('abc'): 0
     FunctionDocumentation::Category category_toUInt128OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toUInt128OrZero = {description_toUInt128OrZero, syntax_toUInt128OrZero, arguments_toUInt128OrZero, {}, returned_value_toUInt128OrZero, examples_toUInt128OrZero, introduced_in_toUInt128OrZero, category_toUInt128OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt128OrZero>(documentation_toUInt128OrZero));
+    factory.registerFunction<detail::FunctionToUInt128OrZero>(documentation_toUInt128OrZero);
 
     /// toUInt256OrZero documentation
     FunctionDocumentation::Description description_toUInt256OrZero = R"(
@@ -1910,7 +1910,7 @@ toUInt256OrZero('abc'): 0
     FunctionDocumentation::Category category_toUInt256OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toUInt256OrZero = {description_toUInt256OrZero, syntax_toUInt256OrZero, arguments_toUInt256OrZero, {}, returned_value_toUInt256OrZero, examples_toUInt256OrZero, introduced_in_toUInt256OrZero, category_toUInt256OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt256OrZero>(documentation_toUInt256OrZero));
+    factory.registerFunction<detail::FunctionToUInt256OrZero>(documentation_toUInt256OrZero);
 
     /// toInt8OrZero documentation
     FunctionDocumentation::Description description_toInt8OrZero = R"(
@@ -2137,7 +2137,7 @@ SELECT toInt128OrZero('abc')
     FunctionDocumentation::Category category_toInt128OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toInt128OrZero = {description_toInt128OrZero, syntax_toInt128OrZero, arguments_toInt128OrZero, {}, returned_value_toInt128OrZero, examples_toInt128OrZero, introduced_in_toInt128OrZero, category_toInt128OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt128OrZero>(documentation_toInt128OrZero));
+    factory.registerFunction<detail::FunctionToInt128OrZero>(documentation_toInt128OrZero);
 
     FunctionDocumentation::Description description_toInt256OrZero = R"(
 Converts an input value to type [Int256](/sql-reference/data-types/int-uint) but returns `0` in case of an error.
@@ -2177,7 +2177,7 @@ SELECT toInt256OrZero('abc')
     FunctionDocumentation::Category category_toInt256OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toInt256OrZero = {description_toInt256OrZero, syntax_toInt256OrZero, arguments_toInt256OrZero, {}, returned_value_toInt256OrZero, examples_toInt256OrZero, introduced_in_toInt256OrZero, category_toInt256OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt256OrZero>(documentation_toInt256OrZero));
+    factory.registerFunction<detail::FunctionToInt256OrZero>(documentation_toInt256OrZero);
 
     /// toBFloat16OrZero documentation
     FunctionDocumentation::Description toBFloat16OrZero_description = R"(
@@ -2223,7 +2223,7 @@ SELECT toBFloat16OrZero('0x5E'), -- unsupported arguments
     FunctionDocumentation::Category toBFloat16OrZero_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toBFloat16OrZero_documentation = {toBFloat16OrZero_description, toBFloat16OrZero_syntax, toBFloat16OrZero_arguments, {}, toBFloat16OrZero_returned_value, toBFloat16OrZero_examples, toBFloat16OrZero_introduced_in, toBFloat16OrZero_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToBFloat16OrZero>(toBFloat16OrZero_documentation));
+    factory.registerFunction<detail::FunctionToBFloat16OrZero>(toBFloat16OrZero_documentation);
 
     /// toFloat32OrZero documentation
     FunctionDocumentation::Description description_toFloat32OrZero = R"(
@@ -2416,8 +2416,8 @@ SELECT toTime64OrZero('12:30:45.123'), toTime64OrZero('invalid')
     )",
     R"(
 ┌─toTime64OrZero('12:30:45.123')─┬─toTime64OrZero('invalid')─┐
-│                   12:30:45.123 │             00:00:00.000 │
-└────────────────────────────────┴──────────────────────────┘
+│                   12:30:45.123 │              00:00:00.000 │
+└────────────────────────────────┴───────────────────────────┘
     )"
     }
     };
@@ -2479,8 +2479,8 @@ SELECT toDateTime64OrZero('2025-12-30 13:44:17.123'), toDateTime64OrZero('invali
         )",
         R"(
 ┌─toDateTime64OrZero('2025-12-30 13:44:17.123')─┬─toDateTime64OrZero('invalid')─┐
-│                         2025-12-30 13:44:17.123 │             1970-01-01 00:00:00.000 │
-└─────────────────────────────────────────────────┴─────────────────────────────────────┘
+│                       2025-12-30 13:44:17.123 │       1970-01-01 00:00:00.000 │
+└───────────────────────────────────────────────┴───────────────────────────────┘
         )"
     }
     };
@@ -2619,7 +2619,7 @@ SELECT toDecimal128OrZero('42.7', 2), toDecimal128OrZero('invalid', 2)
     FunctionDocumentation::Category category_toDecimal128OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toDecimal128OrZero = {description_toDecimal128OrZero, syntax_toDecimal128OrZero, arguments_toDecimal128OrZero, {}, returned_value_toDecimal128OrZero, examples_toDecimal128OrZero, introduced_in_toDecimal128OrZero, category_toDecimal128OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal128OrZero>(documentation_toDecimal128OrZero));
+    factory.registerFunction<detail::FunctionToDecimal128OrZero>(documentation_toDecimal128OrZero);
 
     /// toDecimal256OrZero documentation
     FunctionDocumentation::Description description_toDecimal256OrZero = R"(
@@ -2666,7 +2666,7 @@ SELECT toDecimal256OrZero('42.7', 2), toDecimal256OrZero('invalid', 2)
     FunctionDocumentation::Category category_toDecimal256OrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toDecimal256OrZero = {description_toDecimal256OrZero, syntax_toDecimal256OrZero, arguments_toDecimal256OrZero, {}, returned_value_toDecimal256OrZero, examples_toDecimal256OrZero, introduced_in_toDecimal256OrZero, category_toDecimal256OrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal256OrZero>(documentation_toDecimal256OrZero));
+    factory.registerFunction<detail::FunctionToDecimal256OrZero>(documentation_toDecimal256OrZero);
 
     /// toUUIDOrZero documentation
     FunctionDocumentation::Description description_toUUIDOrZero = R"(
@@ -3039,7 +3039,7 @@ toUInt128OrNull('abc'): \N
     FunctionDocumentation::Category category_toUInt128OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toUInt128OrNull = {description_toUInt128OrNull, syntax_toUInt128OrNull, arguments_toUInt128OrNull, {}, returned_value_toUInt128OrNull, examples_toUInt128OrNull, introduced_in_toUInt128OrNull, category_toUInt128OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt128OrNull>(documentation_toUInt128OrNull));
+    factory.registerFunction<detail::FunctionToUInt128OrNull>(documentation_toUInt128OrNull);
 
     /// toUInt256OrNull documentation
     FunctionDocumentation::Description description_toUInt256OrNull = R"(
@@ -3089,7 +3089,7 @@ toUInt256OrNull('abc'): \N
     FunctionDocumentation::Category category_toUInt256OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toUInt256OrNull = {description_toUInt256OrNull, syntax_toUInt256OrNull, arguments_toUInt256OrNull, {}, returned_value_toUInt256OrNull, examples_toUInt256OrNull, introduced_in_toUInt256OrNull, category_toUInt256OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToUInt256OrNull>(documentation_toUInt256OrNull));
+    factory.registerFunction<detail::FunctionToUInt256OrNull>(documentation_toUInt256OrNull);
 
     /// toInt8OrNull documentation
     FunctionDocumentation::Description description_toInt8OrNull = R"(
@@ -3339,7 +3339,7 @@ toInt128OrNull('abc'):  \N
     FunctionDocumentation::Category category_toInt128OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toInt128OrNull = {description_toInt128OrNull, syntax_toInt128OrNull, arguments_toInt128OrNull, {}, returned_value_toInt128OrNull, examples_toInt128OrNull, introduced_in_toInt128OrNull, category_toInt128OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt128OrNull>(documentation_toInt128OrNull));
+    factory.registerFunction<detail::FunctionToInt128OrNull>(documentation_toInt128OrNull);
 
     /// toInt256OrNull documentation
     FunctionDocumentation::Description description_toInt256OrNull = R"(
@@ -3389,7 +3389,7 @@ toInt256OrNull('abc'):  \N
     FunctionDocumentation::Category category_toInt256OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toInt256OrNull = {description_toInt256OrNull, syntax_toInt256OrNull, arguments_toInt256OrNull, {}, returned_value_toInt256OrNull, examples_toInt256OrNull, introduced_in_toInt256OrNull, category_toInt256OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToInt256OrNull>(documentation_toInt256OrNull));
+    factory.registerFunction<detail::FunctionToInt256OrNull>(documentation_toInt256OrNull);
 
     /// toBFloat16OrNull documentation
     FunctionDocumentation::Description toBFloat16OrNull_description = R"(
@@ -3436,7 +3436,7 @@ SELECT toBFloat16OrNull('0x5E'), -- unsupported arguments
     FunctionDocumentation::Category toBFloat16OrNull_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation toBFloat16OrNull_documentation = {toBFloat16OrNull_description, toBFloat16OrNull_syntax, toBFloat16OrNull_arguments, {}, toBFloat16OrNull_returned_value, toBFloat16OrNull_examples, toBFloat16OrNull_introduced_in, toBFloat16OrNull_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToBFloat16OrNull>(toBFloat16OrNull_documentation));
+    factory.registerFunction<detail::FunctionToBFloat16OrNull>(toBFloat16OrNull_documentation);
 
     /// toFloat32OrNull documentation
     FunctionDocumentation::Description description_toFloat32OrNull = R"(
@@ -3544,11 +3544,12 @@ toFloat64OrNull('abc'):  \N
     FunctionDocumentation::Description description_toDateOrNull = R"(
 Converts an input value to a value of type `Date` but returns `NULL` if an invalid argument is received.
 The same as [`toDate`](#toDate) but returns `NULL` if an invalid argument is received.
+An integer argument is interpreted the same way as by `toDate` (a number of days since 1970-01-01 if it does not exceed 65535, a Unix timestamp otherwise), and produces `NULL` if it is out of range of the `Date` type.
     )";
     FunctionDocumentation::Syntax syntax_toDateOrNull = "toDateOrNull(x)";
     FunctionDocumentation::Arguments arguments_toDateOrNull =
     {
-        {"x", "A string representation of a date.", {"String"}}
+        {"x", "A string representation of a date, or an integer number of days or a Unix timestamp.", {"String", "(U)Int8/16/32/64"}}
     };
     FunctionDocumentation::ReturnedValue returned_value_toDateOrNull = {"Returns a Date value if successful, otherwise `NULL`.", {"Date", "NULL"}};
     FunctionDocumentation::Examples examples_toDateOrNull = {
@@ -3559,8 +3560,8 @@ SELECT toDateOrNull('2025-12-30'), toDateOrNull('invalid')
         )",
         R"(
 ┌─toDateOrNull('2025-12-30')─┬─toDateOrNull('invalid')─┐
-│                 2025-12-30 │                   ᴺᵁᴸᴸ │
-└────────────────────────────┴────────────────────────┘
+│                 2025-12-30 │                    ᴺᵁᴸᴸ │
+└────────────────────────────┴─────────────────────────┘
         )"
     }
     };
@@ -3672,11 +3673,13 @@ SELECT toTime64OrNull('12:30:45.123'), toTime64OrNull('invalid')
     FunctionDocumentation::Description description_toDateTimeOrNull = R"(
 Converts an input value to a value of type `DateTime` but returns `NULL` if an invalid argument is received.
 The same as [`toDateTime`](#toDateTime) but returns `NULL` if an invalid argument is received.
+An integer argument is interpreted as a Unix timestamp and produces `NULL` if it is out of range of the `DateTime` type.
     )";
-    FunctionDocumentation::Syntax syntax_toDateTimeOrNull = "toDateTimeOrNull(x)";
+    FunctionDocumentation::Syntax syntax_toDateTimeOrNull = "toDateTimeOrNull(x[, timezone])";
     FunctionDocumentation::Arguments arguments_toDateTimeOrNull =
     {
-        {"x", "A string representation of a date with time.", {"String"}}
+        {"x", "A string representation of a date with time, or an integer Unix timestamp.", {"String", "(U)Int8/16/32/64"}},
+        {"timezone", "Optional. Time zone of the returned value.", {"String"}}
     };
     FunctionDocumentation::ReturnedValue returned_value_toDateTimeOrNull = {"Returns a `DateTime` value if successful, otherwise `NULL`.", {"DateTime", "NULL"}};
     FunctionDocumentation::Examples examples_toDateTimeOrNull = {
@@ -3690,6 +3693,17 @@ SELECT toDateTimeOrNull('2025-12-30 13:44:17'), toDateTimeOrNull('invalid')
 │                     2025-12-30 13:44:17 │                        ᴺᵁᴸᴸ │
 └─────────────────────────────────────────┴─────────────────────────────┘
         )"
+    },
+    {
+        "Integer argument with a time zone",
+        R"(
+SELECT toDateTimeOrNull(1583851242, 'Asia/Shanghai'), toDateTimeOrNull(4294967296)
+        )",
+        R"(
+┌─toDateTimeOrNull(1583851242, 'Asia/Shanghai')─┬─toDateTimeOrNull(4294967296)─┐
+│                           2020-03-10 22:40:42 │                         ᴺᵁᴸᴸ │
+└───────────────────────────────────────────────┴──────────────────────────────┘
+        )"
     }
     };
     FunctionDocumentation::IntroducedIn introduced_in_toDateTimeOrNull = {1, 1};
@@ -3702,11 +3716,14 @@ SELECT toDateTimeOrNull('2025-12-30 13:44:17'), toDateTimeOrNull('invalid')
     FunctionDocumentation::Description description_toDateTime64OrNull = R"(
 Converts an input value to a value of type `DateTime64` but returns `NULL` if an invalid argument is received.
 The same as `toDateTime64` but returns `NULL` if an invalid argument is received.
+An integer argument is interpreted as a Unix timestamp in whole seconds and produces `NULL` if it is out of range of the `DateTime64` type.
     )";
-    FunctionDocumentation::Syntax syntax_toDateTime64OrNull = "toDateTime64OrNull(x)";
+    FunctionDocumentation::Syntax syntax_toDateTime64OrNull = "toDateTime64OrNull(x[, precision[, timezone]])";
     FunctionDocumentation::Arguments arguments_toDateTime64OrNull =
     {
-        {"x", "A string representation of a date with time and subsecond precision.", {"String"}}
+        {"x", "A string representation of a date with time and subsecond precision, or an integer Unix timestamp.", {"String", "(U)Int8/16/32/64"}},
+        {"precision", "Optional. The subsecond precision of the returned value.", {"UInt8"}},
+        {"timezone", "Optional. Time zone of the returned value.", {"String"}}
     };
     FunctionDocumentation::ReturnedValue returned_value_toDateTime64OrNull = {"Returns a DateTime64 value if successful, otherwise `NULL`.", {"DateTime64", "NULL"}};
     FunctionDocumentation::Examples examples_toDateTime64OrNull = {
@@ -3717,8 +3734,8 @@ SELECT toDateTime64OrNull('2025-12-30 13:44:17.123'), toDateTime64OrNull('invali
         )",
         R"(
 ┌─toDateTime64OrNull('2025-12-30 13:44:17.123')─┬─toDateTime64OrNull('invalid')─┐
-│                         2025-12-30 13:44:17.123 │                          ᴺᵁᴸᴸ │
-└─────────────────────────────────────────────────┴───────────────────────────────┘
+│                       2025-12-30 13:44:17.123 │                          ᴺᵁᴸᴸ │
+└───────────────────────────────────────────────┴───────────────────────────────┘
         )"
     }
     };
@@ -3860,7 +3877,7 @@ SELECT toDecimal128OrNull('42.7', 2), toDecimal128OrNull('invalid', 2)
     FunctionDocumentation::Category category_toDecimal128OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toDecimal128OrNull = {description_toDecimal128OrNull, syntax_toDecimal128OrNull, arguments_toDecimal128OrNull, {}, returned_value_toDecimal128OrNull, examples_toDecimal128OrNull, introduced_in_toDecimal128OrNull, category_toDecimal128OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal128OrNull>(documentation_toDecimal128OrNull));
+    factory.registerFunction<detail::FunctionToDecimal128OrNull>(documentation_toDecimal128OrNull);
 
     /// toDecimal256OrNull documentation
     FunctionDocumentation::Description description_toDecimal256OrNull = R"(
@@ -3905,7 +3922,7 @@ SELECT toDecimal256OrNull('42.7', 2), toDecimal256OrNull('invalid', 2)
     FunctionDocumentation::Category category_toDecimal256OrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_toDecimal256OrNull = {description_toDecimal256OrNull, syntax_toDecimal256OrNull, arguments_toDecimal256OrNull, {}, returned_value_toDecimal256OrNull, examples_toDecimal256OrNull, introduced_in_toDecimal256OrNull, category_toDecimal256OrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionToDecimal256OrNull>(documentation_toDecimal256OrNull));
+    factory.registerFunction<detail::FunctionToDecimal256OrNull>(documentation_toDecimal256OrNull);
 
     /// toUUIDOrNull documentation
     FunctionDocumentation::Description description_toUUIDOrNull = R"(
@@ -4141,7 +4158,7 @@ SELECT parseDateTimeBestEffortOrZero('23/10/2025 12:12:57') AS valid,
     FunctionDocumentation::Category parseDateTimeBestEffortOrZero_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTimeBestEffortOrZero_documentation = {parseDateTimeBestEffortOrZero_description, parseDateTimeBestEffortOrZero_syntax, parseDateTimeBestEffortOrZero_arguments, {}, parseDateTimeBestEffortOrZero_returned_value, parseDateTimeBestEffortOrZero_examples, parseDateTimeBestEffortOrZero_introduced_in, parseDateTimeBestEffortOrZero_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTimeBestEffortOrZero>(parseDateTimeBestEffortOrZero_documentation));
+    factory.registerFunction<detail::FunctionParseDateTimeBestEffortOrZero>(parseDateTimeBestEffortOrZero_documentation);
 
     /// parseDateTimeBestEffortOrNull documentation
     FunctionDocumentation::Description parseDateTimeBestEffortOrNull_description = R"(
@@ -4185,7 +4202,7 @@ SELECT parseDateTimeBestEffortOrNull('23/10/2025 12:12:57') AS valid,
     FunctionDocumentation::Category parseDateTimeBestEffortOrNull_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTimeBestEffortOrNull_documentation = {parseDateTimeBestEffortOrNull_description, parseDateTimeBestEffortOrNull_syntax, parseDateTimeBestEffortOrNull_arguments, {}, parseDateTimeBestEffortOrNull_returned_value, parseDateTimeBestEffortOrNull_examples, parseDateTimeBestEffortOrNull_introduced_in, parseDateTimeBestEffortOrNull_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTimeBestEffortOrNull>(parseDateTimeBestEffortOrNull_documentation));
+    factory.registerFunction<detail::FunctionParseDateTimeBestEffortOrNull>(parseDateTimeBestEffortOrNull_documentation);
 
     /// parseDateTimeBestEffortUS documentation
     FunctionDocumentation::Description parseDateTimeBestEffortUS_description = R"(
@@ -4219,7 +4236,7 @@ SELECT parseDateTimeBestEffortUS('02/10/2025') AS us_format,
     FunctionDocumentation::Category parseDateTimeBestEffortUS_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTimeBestEffortUS_documentation = {parseDateTimeBestEffortUS_description, parseDateTimeBestEffortUS_syntax, parseDateTimeBestEffortUS_arguments, {}, parseDateTimeBestEffortUS_returned_value, parseDateTimeBestEffortUS_examples, parseDateTimeBestEffortUS_introduced_in, parseDateTimeBestEffortUS_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTimeBestEffortUS>(parseDateTimeBestEffortUS_documentation));
+    factory.registerFunction<detail::FunctionParseDateTimeBestEffortUS>(parseDateTimeBestEffortUS_documentation);
 
     /// parseDateTimeBestEffortUSOrZero documentation
     FunctionDocumentation::Description parseDateTimeBestEffortUSOrZero_description = R"(
@@ -4253,7 +4270,7 @@ SELECT parseDateTimeBestEffortUSOrZero('02/10/2025') AS valid_us,
     FunctionDocumentation::Category parseDateTimeBestEffortUSOrZero_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTimeBestEffortUSOrZero_documentation = {parseDateTimeBestEffortUSOrZero_description, parseDateTimeBestEffortUSOrZero_syntax, parseDateTimeBestEffortUSOrZero_arguments, {}, parseDateTimeBestEffortUSOrZero_returned_value, parseDateTimeBestEffortUSOrZero_examples, parseDateTimeBestEffortUSOrZero_introduced_in, parseDateTimeBestEffortUSOrZero_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTimeBestEffortUSOrZero>(parseDateTimeBestEffortUSOrZero_documentation));
+    factory.registerFunction<detail::FunctionParseDateTimeBestEffortUSOrZero>(parseDateTimeBestEffortUSOrZero_documentation);
 
     /// parseDateTimeBestEffortUSOrNull documentation
     FunctionDocumentation::Description parseDateTimeBestEffortUSOrNull_description = R"(
@@ -4287,7 +4304,7 @@ SELECT parseDateTimeBestEffortUSOrNull('02/10/2025') AS valid_us,
     FunctionDocumentation::Category parseDateTimeBestEffortUSOrNull_category = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTimeBestEffortUSOrNull_documentation = {parseDateTimeBestEffortUSOrNull_description, parseDateTimeBestEffortUSOrNull_syntax, parseDateTimeBestEffortUSOrNull_arguments, {}, parseDateTimeBestEffortUSOrNull_returned_value, parseDateTimeBestEffortUSOrNull_examples, parseDateTimeBestEffortUSOrNull_introduced_in, parseDateTimeBestEffortUSOrNull_category};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTimeBestEffortUSOrNull>(parseDateTimeBestEffortUSOrNull_documentation));
+    factory.registerFunction<detail::FunctionParseDateTimeBestEffortUSOrNull>(parseDateTimeBestEffortUSOrNull_documentation);
 
     /// parseDateTime32BestEffort documentation
     FunctionDocumentation::Description description_parseDateTime32BestEffort = R"(
@@ -4378,7 +4395,7 @@ SELECT
     FunctionDocumentation::Category category_parseDateTime32BestEffortOrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_parseDateTime32BestEffortOrZero = {description_parseDateTime32BestEffortOrZero, syntax_parseDateTime32BestEffortOrZero, arguments_parseDateTime32BestEffortOrZero, {}, returned_value_parseDateTime32BestEffortOrZero, examples_parseDateTime32BestEffortOrZero, introduced_in_parseDateTime32BestEffortOrZero, category_parseDateTime32BestEffortOrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime32BestEffortOrZero>(documentation_parseDateTime32BestEffortOrZero));
+    factory.registerFunction<detail::FunctionParseDateTime32BestEffortOrZero>(documentation_parseDateTime32BestEffortOrZero);
 
     /// parseDateTime32BestEffortOrNull documentation
     FunctionDocumentation::Description description_parseDateTime32BestEffortOrNull = R"(
@@ -4411,7 +4428,7 @@ SELECT
     FunctionDocumentation::Category category_parseDateTime32BestEffortOrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation documentation_parseDateTime32BestEffortOrNull = {description_parseDateTime32BestEffortOrNull, syntax_parseDateTime32BestEffortOrNull, arguments_parseDateTime32BestEffortOrNull, {}, returned_value_parseDateTime32BestEffortOrNull, examples_parseDateTime32BestEffortOrNull, introduced_in_parseDateTime32BestEffortOrNull, category_parseDateTime32BestEffortOrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime32BestEffortOrNull>(documentation_parseDateTime32BestEffortOrNull));
+    factory.registerFunction<detail::FunctionParseDateTime32BestEffortOrNull>(documentation_parseDateTime32BestEffortOrNull);
 
     /// parseDateTime64BestEffort documentation
     FunctionDocumentation::Description description_parseDateTime64BestEffort = R"(
@@ -4486,7 +4503,7 @@ SELECT parseDateTime64BestEffortOrZero('2025-01-01 01:01:00.123') AS valid,
     FunctionDocumentation::Category category_parseDateTime64BestEffortOrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64BestEffortOrZero_documentation = {description_parseDateTime64BestEffortOrZero, syntax_parseDateTime64BestEffortOrZero, arguments_parseDateTime64BestEffortOrZero, {}, returned_value_parseDateTime64BestEffortOrZero, examples_parseDateTime64BestEffortOrZero, introduced_in_parseDateTime64BestEffortOrZero, category_parseDateTime64BestEffortOrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime64BestEffortOrZero>(parseDateTime64BestEffortOrZero_documentation));
+    factory.registerFunction<detail::FunctionParseDateTime64BestEffortOrZero>(parseDateTime64BestEffortOrZero_documentation);
 
     /// parseDateTime64BestEffortOrNull documentation
     FunctionDocumentation::Description description_parseDateTime64BestEffortOrNull = R"(
@@ -4519,7 +4536,7 @@ SELECT parseDateTime64BestEffortOrNull('2025-01-01 01:01:00.123') AS valid,
     FunctionDocumentation::Category category_parseDateTime64BestEffortOrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64BestEffortOrNull_documentation = {description_parseDateTime64BestEffortOrNull, syntax_parseDateTime64BestEffortOrNull, arguments_parseDateTime64BestEffortOrNull, {}, returned_value_parseDateTime64BestEffortOrNull, examples_parseDateTime64BestEffortOrNull, introduced_in_parseDateTime64BestEffortOrNull, category_parseDateTime64BestEffortOrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime64BestEffortOrNull>(parseDateTime64BestEffortOrNull_documentation));
+    factory.registerFunction<detail::FunctionParseDateTime64BestEffortOrNull>(parseDateTime64BestEffortOrNull_documentation);
 
     /// parseDateTime64BestEffortUS documentation
     FunctionDocumentation::Description description_parseDateTime64BestEffortUS = R"(
@@ -4552,7 +4569,7 @@ SELECT parseDateTime64BestEffortUS('02/10/2025 12:30:45.123') AS us_format,
     FunctionDocumentation::Category category_parseDateTime64BestEffortUS = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64BestEffortUS_documentation = {description_parseDateTime64BestEffortUS, syntax_parseDateTime64BestEffortUS, arguments_parseDateTime64BestEffortUS, {}, returned_value_parseDateTime64BestEffortUS, examples_parseDateTime64BestEffortUS, introduced_in_parseDateTime64BestEffortUS, category_parseDateTime64BestEffortUS};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime64BestEffortUS>(parseDateTime64BestEffortUS_documentation));
+    factory.registerFunction<detail::FunctionParseDateTime64BestEffortUS>(parseDateTime64BestEffortUS_documentation);
 
     /// parseDateTime64BestEffortUSOrZero documentation
     FunctionDocumentation::Description description_parseDateTime64BestEffortUSOrZero = R"(
@@ -4585,7 +4602,7 @@ SELECT parseDateTime64BestEffortUSOrZero('02/10/2025 12:30:45.123') AS valid_us,
     FunctionDocumentation::Category category_parseDateTime64BestEffortUSOrZero = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64BestEffortUSOrZero_documentation = {description_parseDateTime64BestEffortUSOrZero, syntax_parseDateTime64BestEffortUSOrZero, arguments_parseDateTime64BestEffortUSOrZero, {}, returned_value_parseDateTime64BestEffortUSOrZero, examples_parseDateTime64BestEffortUSOrZero, introduced_in_parseDateTime64BestEffortUSOrZero, category_parseDateTime64BestEffortUSOrZero};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime64BestEffortUSOrZero>(parseDateTime64BestEffortUSOrZero_documentation));
+    factory.registerFunction<detail::FunctionParseDateTime64BestEffortUSOrZero>(parseDateTime64BestEffortUSOrZero_documentation);
 
     /// parseDateTime64BestEffortUSOrNull documentation
     FunctionDocumentation::Description description_parseDateTime64BestEffortUSOrNull = R"(
@@ -4618,7 +4635,7 @@ SELECT parseDateTime64BestEffortUSOrNull('02/10/2025 12:30:45.123') AS valid_us,
     FunctionDocumentation::Category category_parseDateTime64BestEffortUSOrNull = FunctionDocumentation::Category::TypeConversion;
     FunctionDocumentation parseDateTime64BestEffortUSOrNull_documentation = {description_parseDateTime64BestEffortUSOrNull, syntax_parseDateTime64BestEffortUSOrNull, arguments_parseDateTime64BestEffortUSOrNull, {}, returned_value_parseDateTime64BestEffortUSOrNull, examples_parseDateTime64BestEffortUSOrNull, introduced_in_parseDateTime64BestEffortUSOrNull, category_parseDateTime64BestEffortUSOrNull};
 
-    CHDB_LITE_CONV(factory.registerFunction<detail::FunctionParseDateTime64BestEffortUSOrNull>(parseDateTime64BestEffortUSOrNull_documentation));
+    factory.registerFunction<detail::FunctionParseDateTime64BestEffortUSOrNull>(parseDateTime64BestEffortUSOrNull_documentation);
 
     /// toIntervalSecond documentation
     FunctionDocumentation::Description description_toIntervalSecond = R"(

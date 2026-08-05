@@ -2,6 +2,7 @@
 
 #include <Common/SettingsChanges.h>
 #include <Access/AuthenticationData.h>
+#include <Interpreters/ClientCertificateInfo.h>
 #include <Interpreters/ClientInfo.h>
 #include <Interpreters/Context_fwd.h>
 #include <Interpreters/SessionTracker.h>
@@ -15,13 +16,6 @@
 
 namespace Poco::Net { class SocketAddress; }
 
-#if USE_PYTHON
-namespace CHDB
-{
-class PythonTableCache;
-}
-#endif
-
 namespace DB
 {
 class Credentials;
@@ -31,6 +25,7 @@ class NamedSessionsStorage;
 struct User;
 using UserPtr = std::shared_ptr<const User>;
 class SessionLog;
+class X509Certificate;
 
 /** Represents user-session from the server perspective,
  *  basically it is just a smaller subset of Context API, simplifies Context management.
@@ -72,6 +67,10 @@ public:
     /// Writes a row about login failure into session log (if enabled)
     void onAuthenticationFailure(const std::optional<String> & user_name, const Poco::Net::SocketAddress & address_, const Exception & e);
 
+    /// Remembers the TLS client certificate presented on this connection (if any), so that
+    /// session_log records it for the login/logout events of this session.
+    void setClientCertificate(const X509Certificate & certificate);
+
     /// Returns a reference to the session's ClientInfo.
     const ClientInfo & getClientInfo() const;
 
@@ -111,14 +110,6 @@ public:
 
     /// Closes and removes session
     void closeSession(const String & session_id);
-
-#if USE_PYTHON
-    bool isJSONSupported() const { return is_json_supported; }
-    void setJSONSupport(bool support) { is_json_supported = support; }
-    std::shared_ptr<CHDB::PythonTableCache> & getPythonTableCache() { return py_table_cache; }
-    void setPythonTableCache(std::shared_ptr<CHDB::PythonTableCache> py_table_cache_) { py_table_cache = py_table_cache_; }
-#endif
-
 private:
     std::shared_ptr<SessionLog> getSessionLog() const;
     ContextMutablePtr makeQueryContextImpl(const ClientInfo * client_info_to_copy, ClientInfo * client_info_to_move) const;
@@ -136,6 +127,9 @@ private:
     std::vector<UUID> external_roles;
     AuthenticationData user_authenticated_with;
 
+    /// TLS client certificate presented on this connection, if any.
+    std::optional<ClientCertificateInfo> certificate_info;
+
     ContextMutablePtr session_context;
     mutable bool query_context_created = false;
 
@@ -149,11 +143,6 @@ private:
     SettingsChanges settings_from_auth_server;
 
     LoggerPtr log = nullptr;
-
-#if USE_PYTHON
-    bool is_json_supported = true;
-    std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
-#endif
 };
 
 }

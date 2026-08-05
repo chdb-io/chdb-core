@@ -10,6 +10,9 @@
 #include <Common/noexcept_scope.h>
 #include <Common/logger_useful.h>
 #include <Common/LockGuardWithStopWatch.h>
+#include <Common/CurrentThread.h>
+#include <Common/ThreadStatus.h>
+#include <Common/FailPoint.h>
 
 
 namespace CurrentMetrics
@@ -21,6 +24,11 @@ namespace CurrentMetrics
 
 namespace DB
 {
+
+namespace FailPoints
+{
+    extern const char merge_tree_background_task_marked_for_deletion[];
+}
 
 namespace ErrorCodes
 {
@@ -59,8 +67,8 @@ MergeTreeBackgroundExecutor<Queue>::MergeTreeBackgroundExecutor(
     , pool(std::make_unique<ThreadPool>(
           CurrentMetrics::MergeTreeBackgroundExecutorThreads, CurrentMetrics::MergeTreeBackgroundExecutorThreadsActive, CurrentMetrics::MergeTreeBackgroundExecutorThreadsScheduled))
 {
-    // if (max_tasks_count == 0)
-    //     throw Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "Task count for MergeTreeBackgroundExecutor must not be zero");
+    if (max_tasks_count == 0)
+        throw Exception(ErrorCodes::INVALID_CONFIG_PARAMETER, "Task count for MergeTreeBackgroundExecutor must not be zero");
 
     task_events.execute_ms = execute_profile_event_;
     task_events.cancel_ms = cancel_profile_event_;
@@ -167,43 +175,39 @@ bool MergeTreeBackgroundExecutor<Queue>::trySchedule(ExecutableTaskPtr task)
     return true;
 }
 
-void printExceptionWithRespectToAbort(LoggerPtr log, const String & query_id)
+static void printExceptionWithRespectToAbort(LoggerPtr log, const String & query_id)
 {
     std::exception_ptr ex = std::current_exception();
 
     if (ex == nullptr)
         return;
 
-    NOEXCEPT_SCOPE({
-        ALLOW_ALLOCATIONS_IN_SCOPE;
-        tryLogCurrentException(log, "Exception while executing background task {" + query_id + "}");
-    });
-    // try
-    // {
-    //     std::rethrow_exception(ex);
-    // }
-    // catch (const TestException &) // NOLINT
-    // {
-    //     /// Exception from a unit test, ignore it.
-    // }
-    // catch (Exception & e)
-    // {
-    //     NOEXCEPT_SCOPE({
-    //         ALLOW_ALLOCATIONS_IN_SCOPE;
-    //         /// Cancelled merging parts is not an error - log normally.
-    //         if (e.code() == ErrorCodes::ABORTED)
-    //             LOG_DEBUG(log, getExceptionMessageAndPattern(e, /* with_stacktrace */ false));
-    //         else
-    //             tryLogCurrentException(log, "Exception while executing background task {" + query_id + "}");
-    //     });
-    // }
-    // catch (...)
-    // {
-    //     NOEXCEPT_SCOPE({
-    //         ALLOW_ALLOCATIONS_IN_SCOPE;
-    //         tryLogCurrentException(log, "Exception while executing background task {" + query_id + "}");
-    //     });
-    // }
+    try
+    {
+        std::rethrow_exception(ex);
+    }
+    catch (const TestException &) // NOLINT
+    {
+        /// Exception from a unit test, ignore it.
+    }
+    catch (const Exception & e)
+    {
+        NOEXCEPT_SCOPE({
+            ALLOW_ALLOCATIONS_IN_SCOPE;
+            /// Cancelled merging parts is not an error - log normally.
+            if (e.code() == ErrorCodes::ABORTED)
+                LOG_DEBUG(log, getExceptionMessageAndPattern(e, /* with_stacktrace */ false));
+            else
+                tryLogCurrentException(log, "Exception while executing background task {" + query_id + "}");
+        });
+    }
+    catch (...)
+    {
+        NOEXCEPT_SCOPE({
+            ALLOW_ALLOCATIONS_IN_SCOPE;
+            tryLogCurrentException(log, "Exception while executing background task {" + query_id + "}");
+        });
+    }
 }
 
 template <class Queue>
@@ -229,6 +233,14 @@ void MergeTreeBackgroundExecutor<Queue>::removeTasksCorrespondingToStorage(Stora
             }
         }
     }
+
+    /// At this point every active task for this storage is flagged is_currently_deleting, so when
+    /// it resumes it is guaranteed to take the destruction path (cancel + destroy) rather than
+    /// being requeued and finalized normally. A test can synchronize here to be sure a paused
+    /// task will be torn down while still holding its resources (e.g. a zero-copy lock). Pause only
+    /// when this executor actually owns a task being deleted, and outside the mutex.
+    if (!tasks_to_wait.empty())
+        FailPointInjection::pauseFailPoint(FailPoints::merge_tree_background_task_marked_for_deletion);
 
     for (auto & item : tasks_to_cancel)
     {

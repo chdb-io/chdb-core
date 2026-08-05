@@ -11,6 +11,7 @@
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
 #include <Common/quoteString.h>
 #include <Storages/IStorage.h>
+#include <Core/UUID.h>
 
 namespace DB
 {
@@ -22,20 +23,8 @@ namespace ErrorCodes
 }
 
 DatabaseMemory::DatabaseMemory(const String & name_, ContextPtr context_)
-: DatabaseMemory(
-    name_,
-    /// TEMPORARY_DATABASE must have Nil UUID (this is expected by the codebase)
-    /// Other databases get a generated UUID to satisfy the assertion in DatabaseWithOwnTablesBase::shutdown()
-    name_ == DatabaseCatalog::TEMPORARY_DATABASE ? UUIDHelpers::Nil : UUIDHelpers::generateV4(),
-    context_)
-{
-}
-
-
-DatabaseMemory::DatabaseMemory(const String & name_, UUID uuid, ContextPtr context_)
     : DatabaseWithOwnTablesBase(name_, "DatabaseMemory(" + name_ + ")", context_)
     , data_path(DatabaseCatalog::getDataDirPath(name_) / "")
-    , db_uuid(uuid)
 {
     auto component_guard = Coordination::setCurrentComponent("DatabaseMemory::DatabaseMemory");
     /// Temporary database should not have any data at the moment of its creation.
@@ -248,6 +237,7 @@ std::vector<std::pair<ASTPtr, StoragePtr>> DatabaseMemory::getTablesForBackup(co
     return res;
 }
 
+void registerDatabaseMemory(DatabaseFactory & factory);
 void registerDatabaseMemory(DatabaseFactory & factory)
 {
     auto create_fn = [](const DatabaseFactory::Arguments & args)
@@ -256,7 +246,10 @@ void registerDatabaseMemory(DatabaseFactory & factory)
             args.database_name,
             args.context);
     };
-    factory.registerDatabase("Memory", create_fn);
+    factory.registerDatabase("Memory", create_fn, {}, Documentation{
+        .description = "An in-memory database whose metadata is not persisted and is lost on restart; tables and data live only for the duration of the server session.",
+        .syntax = "ENGINE = Memory",
+        .related = {"Atomic"}});
 }
 
 }

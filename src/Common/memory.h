@@ -27,27 +27,6 @@ void memoryGuardRemove(void *addr, size_t len);
 
 namespace Memory
 {
-#if USE_JEMALLOC
-extern thread_local bool disable_memory_check;
-
-class MemoryCheckScope
-{
-public:
-    MemoryCheckScope() noexcept
-        : old_value(disable_memory_check)
-    {
-        disable_memory_check = false;
-    }
-
-    ~MemoryCheckScope() noexcept { disable_memory_check = old_value; }
-
-    MemoryCheckScope(const MemoryCheckScope &) = delete;
-    MemoryCheckScope & operator=(const MemoryCheckScope &) = delete;
-
-private:
-    bool old_value;
-};
-#endif
 
 inline ALWAYS_INLINE size_t alignToSizeT(std::align_val_t align) noexcept
 {
@@ -59,62 +38,6 @@ inline ALWAYS_INLINE size_t alignUp(size_t size, size_t align) noexcept
     return (size + align - 1) / align * align;
 }
 
-
-#if USE_JEMALLOC
-template <std::same_as<std::align_val_t>... TAlign>
-requires DB::OptionalArgument<TAlign...>
-inline ALWAYS_INLINE void * newImpl(std::size_t size, TAlign... align)
-{
-    void * ptr = nullptr;
-    if constexpr (sizeof...(TAlign) == 1)
-        ptr = je_aligned_alloc(alignToSizeT(align...), size);
-    else
-        ptr = je_malloc(size);
-
-    if (likely(ptr != nullptr))
-        return ptr;
-
-    /// @note no std::get_new_handler logic implemented
-    throw std::bad_alloc{};
-}
-
-#else
-template <std::same_as<std::align_val_t>... TAlign>
-requires DB::OptionalArgument<TAlign...>
-inline ALWAYS_INLINE void * newImpl(std::size_t size, TAlign... align)
-{
-    void * ptr = nullptr;
-    if constexpr (sizeof...(TAlign) == 1)
-        ptr = __real_aligned_alloc(alignToSizeT(align...), alignUp(size, alignToSizeT(align...)));
-    else
-        ptr = __real_malloc(size);
-
-    if (likely(ptr != nullptr))
-        return ptr;
-
-    /// @note no std::get_new_handler logic implemented
-    throw std::bad_alloc{};
-}
-#endif
-
-#if USE_JEMALLOC
-inline ALWAYS_INLINE void * newNoExcept(std::size_t size) noexcept
-{
-    return je_malloc(size);
-}
-
-inline ALWAYS_INLINE void * newNoExcept(std::size_t size, std::align_val_t align) noexcept
-{
-    return je_aligned_alloc(static_cast<size_t>(align), size);
-}
-
-inline ALWAYS_INLINE void deleteImpl(void * ptr) noexcept
-{
-    je_free(ptr);
-}
-
-#else
-
 inline ALWAYS_INLINE void * newNoExcept(std::size_t size) noexcept
 {
     return __real_malloc(size);
@@ -122,15 +45,20 @@ inline ALWAYS_INLINE void * newNoExcept(std::size_t size) noexcept
 
 inline ALWAYS_INLINE void * newNoExcept(std::size_t size, std::align_val_t align) noexcept
 {
-    return __real_aligned_alloc(static_cast<size_t>(align), alignUp(size, static_cast<size_t>(align)));
+    size_t alignment = static_cast<size_t>(align);
+#if !USE_JEMALLOC
+    /// POSIX `aligned_alloc` requires alignment >= `sizeof(void *)` (strictly enforced on macOS).
+    /// Mirror libc++'s `operator_new_aligned_impl` in `contrib/llvm-project/libcxx/src/new.cpp`.
+    if (alignment < sizeof(void *))
+        alignment = sizeof(void *);
+#endif
+    return __real_aligned_alloc(alignment, alignUp(size, alignment));
 }
 
 inline ALWAYS_INLINE void deleteImpl(void * ptr) noexcept
 {
     __real_free(ptr);
 }
-#endif
-
 
 #if USE_JEMALLOC
 
@@ -140,6 +68,7 @@ inline ALWAYS_INLINE void deleteSized(void * ptr, std::size_t size, TAlign... al
 {
     if (ptr == nullptr) [[unlikely]]
         return;
+
     if constexpr (sizeof...(TAlign) == 1)
         je_sdallocx(ptr, size, MALLOCX_ALIGN(alignToSizeT(align...)));
     else
@@ -183,9 +112,24 @@ inline ALWAYS_INLINE size_t getActualAllocationSize(size_t size, TAlign... align
     return actual_size;
 }
 
+/// Throwing variant — used by the throwing `operator new` overloads. The
+/// tracker may raise `MEMORY_LIMIT_EXCEEDED` when the allocation size is at
+/// least `min_allocation_size_to_throw_on_memory_limit`.
 template <std::same_as<std::align_val_t>... TAlign>
 requires DB::OptionalArgument<TAlign...>
 inline ALWAYS_INLINE size_t trackMemory(std::size_t size, AllocationTrace & trace, TAlign... align)
+{
+    std::size_t actual_size = getActualAllocationSize(size, align...);
+    trace = CurrentMemoryTracker::allocThrow(actual_size);
+    return actual_size;
+}
+
+/// Nothrow variant — call sites spell it out via `std::nothrow`, matching the
+/// standard `operator new(..., std::nothrow_t)` convention. The tracker never
+/// raises through this path.
+template <std::same_as<std::align_val_t>... TAlign>
+requires DB::OptionalArgument<TAlign...>
+inline ALWAYS_INLINE size_t trackMemory(std::size_t size, AllocationTrace & trace, std::nothrow_t, TAlign... align)
 {
     std::size_t actual_size = getActualAllocationSize(size, align...);
     trace = CurrentMemoryTracker::allocNoThrow(actual_size);
@@ -224,7 +168,7 @@ inline ALWAYS_INLINE size_t untrackMemory(void * ptr [[maybe_unused]], Allocatio
 #else
         if (size)
             actual_size = size;
-#    if defined(_GNU_SOURCE) && !defined(OS_WASM)
+#    if defined(_GNU_SOURCE)
         /// It's innaccurate resource free for sanitizers. malloc_usable_size() result is greater or equal to allocated size.
         else
             actual_size = malloc_usable_size(ptr);

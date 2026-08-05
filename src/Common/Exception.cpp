@@ -29,9 +29,7 @@
 
 #include <Poco/String.h>
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
 static_assert(STD_EXCEPTION_HAS_STACK_TRACE == 1);
-#endif
 
 namespace fs = std::filesystem;
 
@@ -72,22 +70,6 @@ bool terminate_on_any_exception = false;
 std::atomic_bool abort_on_logical_error = false;
 static int terminate_status_code = 128 + SIGABRT;
 std::function<void(std::string_view format_string, int code, bool remote, const Exception::Trace & trace)> Exception::callback = {};
-
-/// Global flag to indicate that the process is shutting down.
-/// When this is set, logging operations are skipped to avoid crashes
-/// when Poco::Logger's internal data structures have already been destroyed
-/// (which can happen during Python interpreter exit).
-static std::atomic<bool> g_is_shutting_down{false};
-
-void setShuttingDown(bool value)
-{
-    g_is_shutting_down.store(value, std::memory_order_release);
-}
-
-bool isShuttingDown()
-{
-    return g_is_shutting_down.load(std::memory_order_acquire);
-}
 
 constexpr bool debug_or_sanitizer_build =
 #ifdef DEBUG_OR_SANITIZER_BUILD
@@ -170,12 +152,10 @@ Exception::Exception(CreateFromPocoTag, const Poco::Exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
-#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = exc.get_stack_trace_frames();
     auto stack_trace_size = exc.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     set_stack_trace(stack_trace_frames, stack_trace_size);
-#endif
 }
 
 static int getCodeForSTDException(const std::exception & exc)
@@ -193,12 +173,10 @@ Exception::Exception(CreateFromSTDTag, const std::exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
-#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = exc.get_stack_trace_frames();
     auto stack_trace_size = exc.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     set_stack_trace(stack_trace_frames, stack_trace_size);
-#endif
 }
 
 void Exception::addMessage(const MessageMasked & msg_masked)
@@ -214,14 +192,10 @@ std::string getExceptionStackTraceString(const std::exception & e)
     /// Explicitly block MEMORY_LIMIT_EXCEEDED
     LockMemoryExceptionInThread lock(VariableContext::Global);
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
     auto * stack_trace_frames = e.get_stack_trace_frames();
     auto stack_trace_size = e.get_stack_trace_size();
     __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     return StackTrace::toString(stack_trace_frames, 0, stack_trace_size);
-#else
-    return {};
-#endif
 }
 
 std::string getExceptionStackTraceString(std::exception_ptr e)
@@ -243,6 +217,9 @@ std::string getExceptionStackTraceString(std::exception_ptr e)
 
 std::string Exception::getStackTraceString() const
 {
+    auto * stack_trace_frames = get_stack_trace_frames();
+    auto stack_trace_size = get_stack_trace_size();
+    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     String thread_stack_trace;
     std::for_each(capture_thread_frame_pointers.rbegin(), capture_thread_frame_pointers.rend(),
         [&thread_stack_trace](FramePointers & frame_pointers)
@@ -253,27 +230,18 @@ std::string Exception::getStackTraceString() const
         }
     );
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    auto * stack_trace_frames = get_stack_trace_frames();
-    auto stack_trace_size = get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
     return StackTrace::toString(stack_trace_frames, 0, stack_trace_size) + thread_stack_trace;
-#else
-    return thread_stack_trace;
-#endif
 }
 
 Exception::Trace Exception::getStackFramePointers() const
 {
     Trace frame_pointers;
-#if STD_EXCEPTION_HAS_STACK_TRACE
     frame_pointers.resize(get_stack_trace_size());
     for (size_t i = 0; i < frame_pointers.size(); ++i)
     {
         frame_pointers[i] = get_stack_trace_frames()[i];
     }
     __msan_unpoison(frame_pointers.data(), frame_pointers.size() * sizeof(frame_pointers[0]));
-#endif
     return frame_pointers;
 }
 
@@ -474,6 +442,16 @@ std::string getExtraExceptionInfo(const std::exception & e)
     return msg;
 }
 
+/// Formats the trailing ", Stack trace (...)\n\n<trace>" section of an exception message.
+/// Returns an empty string when there is no stack trace, so that the message never ends with the
+/// "always include the lines below" promise without any lines following it.
+static std::string formatStackTraceSection(const std::string & stack_trace)
+{
+    if (stack_trace.empty())
+        return {};
+    return ", Stack trace (when copying this message, always include the lines below):\n\n" + stack_trace;
+}
+
 std::string getCurrentExceptionMessage(
     bool with_stacktrace,
     bool check_embedded_stacktrace /*= false*/,
@@ -515,7 +493,7 @@ PreformattedMessage getCurrentExceptionMessageAndPattern(
         {
             stream << "Poco::Exception. Code: " << ErrorCodes::POCO_EXCEPTION << ", e.code() = " << e.code()
                 << ", " << e.displayText()
-                << (with_stacktrace ? ", Stack trace (when copying this message, always include the lines below):\n\n" + getExceptionStackTraceString(e) : "")
+                << (with_stacktrace ? formatStackTraceSection(getExceptionStackTraceString(e)) : "")
                 << (with_extra_info ? getExtraExceptionInfo(e) : "");
             if (with_version)
                 stream << " (version " << VERSION_STRING << VERSION_OFFICIAL << ")";
@@ -533,7 +511,7 @@ PreformattedMessage getCurrentExceptionMessageAndPattern(
                 name += " (demangling status: " + toString(status) + ")";
 
             stream << "std::exception. Code: " << ErrorCodes::STD_EXCEPTION << ", type: " << name << ", e.what() = " << e.what()
-                << (with_stacktrace ? ", Stack trace (when copying this message, always include the lines below):\n\n" + getExceptionStackTraceString(e) : "")
+                << (with_stacktrace ? formatStackTraceSection(getExceptionStackTraceString(e)) : "")
                 << (with_extra_info ? getExtraExceptionInfo(e) : "");
             if (with_version)
                 stream << " (version " << VERSION_STRING << VERSION_OFFICIAL << ")";
@@ -694,7 +672,7 @@ PreformattedMessage getExceptionMessageAndPattern(const Exception & e, bool with
         stream << " (" << ErrorCodes::getName(e.code()) << ")";
 
         if (with_stacktrace && !has_embedded_stack_trace)
-            stream << ", Stack trace (when copying this message, always include the lines below):\n\n" << e.getStackTraceString();
+            stream << formatStackTraceSection(e.getStackTraceString());
     }
     catch (...) {} // NOLINT(bugprone-empty-catch) Ok: best-effort exception formatting, must not throw
 
@@ -729,15 +707,20 @@ void ExecutionStatus::deserializeText(const std::string & data)
 
 bool ExecutionStatus::tryDeserializeText(const std::string & data)
 {
+    /// Parse into a temporary and commit only on success: deserializeText reads `code` before it can
+    /// fail on the rest of the payload, so parsing in place would leave a partially-overwritten status
+    /// on failure (e.g. "0garbage" sets code=0 then throws). Callers rely on *this being untouched then.
+    ExecutionStatus tmp;
     try
     {
-        deserializeText(data);
+        tmp.deserializeText(data);
     }
     catch (...) // Ok: tryDeserializeText is a try-pattern, failure is expected
     {
         return false;
     }
 
+    *this = std::move(tmp);
     return true;
 }
 

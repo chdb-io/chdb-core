@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Loggers/OwnSplitChannel.h>
 #include <Poco/AutoPtr.h>
 #include <Poco/FileChannel.h>
 #include <Poco/Util/Application.h>
@@ -7,13 +8,12 @@
 #include <optional>
 #include <string>
 
-#include "OwnSplitChannel.h"
-
 namespace DB
 {
+class OwnSplitChannelBase;
 
 using AsyncLogQueueSize = std::pair<std::string, size_t>;
-using AsyncLogQueueSizes = std::vector<AsyncLogQueueSize>;
+using AsyncLogQueueSizes = VectorWithMemoryTracking<AsyncLogQueueSize>;
 }
 
 namespace Poco::Util

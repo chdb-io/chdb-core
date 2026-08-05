@@ -11,15 +11,8 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 # Control maximum size of stack frames. It can be important if the code is run in fibers with small stack size.
 # Only in release build because debug has too large stack frames.
-# chdb-core-lite uses MinSizeRel (-Os) + heavy trim flags, some TUs cross the
-# upstream 65536 threshold; relax to 131072 only for lite, keep upstream default
-# for the regular chdb-core build.
 if ((NOT CMAKE_BUILD_TYPE_UC STREQUAL "DEBUG") AND (NOT SANITIZE))
-    if (CHDB_LITE)
-        add_warning(frame-larger-than=131072)
-    else()
-        add_warning(frame-larger-than=65536)
-    endif()
+    add_warning(frame-larger-than=65536)
 endif ()
 
 # Add some warnings that are not available even with -Wall -Wextra -Wpedantic.
@@ -32,20 +25,20 @@ no_warning(c++98-compat-pedantic) # We don't care about C++98 compatibility (We 
 no_warning(c++20-compat) # Use C++20 features incompatible with older standards (consteval, constinit, implicit typename...)
 no_warning(sign-conversion) # TODO: Fix the code and enable it
 no_warning(deprecated-declarations) # TODO: Fix the code and enable it
-no_warning(disabled-macro-expansion)
-no_warning(documentation-unknown-command)
-no_warning(double-promotion)
-no_warning(exit-time-destructors)
-no_warning(float-equal)
-no_warning(global-constructors)
-no_warning(missing-prototypes)
-no_warning(missing-variable-declarations)
-no_warning(padded)
-no_warning(switch-enum)
-no_warning(undefined-func-template)
-no_warning(unused-template)
-no_warning(weak-template-vtables)
-no_warning(weak-vtables)
+# -Wdisabled-macro-expansion is enabled
+no_warning(documentation-unknown-command) # Too many false positives from contrib headers (zstd) and backslashes in comments
+# -Wdouble-promotion is enabled: avoid implicit float-to-double conversions
+no_warning(exit-time-destructors) # We intentionally use global objects with non-trivial destructors (singletons, registries)
+no_warning(float-equal) # Exact float comparison is intentional in many places (hash functions, serialization, NaN checks)
+no_warning(global-constructors) # We intentionally use global constructors for registration and initialization
+# -Wmissing-prototypes is enabled
+no_warning(missing-variable-declarations) # TODO: Fix the code and enable it
+no_warning(padded) # Padding is a micro-optimization; not actionable as a global warning
+no_warning(switch-enum) # Conflicts with having a default case in switches; we prefer explicit defaults
+no_warning(undefined-func-template) # Too many template instantiations across TU boundaries to fix; also triggers in contrib
+no_warning(unused-template) # Triggers on static template functions in headers included by multiple TUs
+no_warning(weak-template-vtables) # Same as weak-vtables but for templates
+no_warning(weak-vtables) # Requires out-of-line virtual methods; too many classes across codebase and contrib to fix
 no_warning(thread-safety-negative) # experimental flag, too many false positives
 no_warning(unsafe-buffer-usage) # too aggressive
 no_warning(switch-default) # conflicts with "defaults in a switch covering all enum values"
@@ -56,6 +49,11 @@ no_warning(missing-noreturn) # too aggressive with no clear benefit, see https:/
 if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 23)
     no_warning(lifetime-safety-intra-tu-suggestions)
     no_warning(lifetime-safety-cross-tu-suggestions)
+    # Too many false positives: it treats mutation of a container captured by
+    # reference in a lambda (e.g. `push_back`, `clear`, `+=`) as invalidating the
+    # captured reference to the container variable itself, while in reality only
+    # references to the container's elements would be invalidated.
+    no_warning(lifetime-safety-invalidation)
 endif ()
 if (ARCH_E2K)
     # disable "use of GNU statement expression extension from macro expansion" warning
@@ -65,26 +63,3 @@ endif ()
 # Note: right now cmake 4.2.1 does not recognize "set (CMAKE_C_STANDARD 2y)"
 no_warning(c2y-extensions)
 no_warning(c23-extensions) # For #embed
-no_warning(unique-object-duplication) # Static locals in inline/static fns with hidden visibility; linker deduplicates via comdat
-
-# Apple Clang can treat /usr/local/include as poisoned when mixed with -isystem (e.g. bundled PCRE in Poco).
-if (OS_DARWIN)
-    no_warning (poison-system-directories)
-endif ()
-
-# WebAssembly can target wasm32 (32-bit ILP32) or wasm64 (Memory64, 64-bit size_t /
-# pointers — the default here, WASM_MEMORY64=ON). ClickHouse's codebase assumes a
-# 64-bit size_t in many places, so -Weverything -Werror flags 64->32 narrowings and
-# constants that overflow 32-bit types. These are pervasive on a wasm32 build
-# (WASM_MEMORY64=OFF) and still present on wasm64 (e.g. size_t -> int through some
-# Emscripten APIs). They are ABI/port artifacts, not real defects here, so relax them
-# for the experimental WASM port. (Genuine 32-bit truncation bugs would need an audit,
-# out of scope for bring-up.)
-if (OS_WASM)
-    no_warning (shorten-64-to-32)
-    no_warning (integer-overflow)
-    no_warning (tautological-constant-out-of-range-compare)
-    no_warning (c++11-narrowing)
-    no_warning (c++11-narrowing-const-reference)
-    no_warning (constant-conversion)
-endif ()

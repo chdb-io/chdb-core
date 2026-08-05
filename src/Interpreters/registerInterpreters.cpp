@@ -1,10 +1,7 @@
-#include <mutex>
 #include <Interpreters/InterpreterFactory.h>
 
 namespace DB
 {
-
-std::once_flag global_register_once_flag;
 
 void registerInterpreterSelectQuery(InterpreterFactory & factory);
 void registerInterpreterSelectQueryAnalyzer(InterpreterFactory & factory);
@@ -63,12 +60,14 @@ void registerInterpreterDropResourceQuery(InterpreterFactory & factory);
 void registerInterpreterCreateIndexQuery(InterpreterFactory & factory);
 void registerInterpreterCreateNamedCollectionQuery(InterpreterFactory & factory);
 void registerInterpreterDropIndexQuery(InterpreterFactory & factory);
+void registerInterpreterHypotheticalIndexQuery(InterpreterFactory & factory);
 void registerInterpreterBackupQuery(InterpreterFactory & factory);
 void registerInterpreterDeleteQuery(InterpreterFactory & factory);
 void registerInterpreterUpdateQuery(InterpreterFactory & factory);
 void registerInterpreterParallelWithQuery(InterpreterFactory & factory);
 void registerInterpreterExecuteAsQuery(InterpreterFactory & factory);
 
+void registerInterpreters();
 void registerInterpreters()
 {
     auto & factory = InterpreterFactory::instance();
@@ -130,6 +129,7 @@ void registerInterpreters()
     registerInterpreterCreateIndexQuery(factory);
     registerInterpreterCreateNamedCollectionQuery(factory);
     registerInterpreterDropIndexQuery(factory);
+    registerInterpreterHypotheticalIndexQuery(factory);
     registerInterpreterBackupQuery(factory);
     registerInterpreterDeleteQuery(factory);
     registerInterpreterUpdateQuery(factory);

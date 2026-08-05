@@ -1,6 +1,7 @@
 #include <base/phdr_cache.h>
 #include <base/scope_guard.h>
 #include <base/defines.h>
+#include <base/sanitizer_options.h>
 
 #include <Common/EnvironmentChecks.h>
 #include <Common/Exception.h>
@@ -22,75 +23,75 @@
 #include <utility> /// pair
 #include <vector>
 
-#ifdef SANITIZER
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wreserved-identifier"
-extern "C" {
-#ifdef ADDRESS_SANITIZER
-const char * __asan_default_options()
-{
-    return "halt_on_error=1 abort_on_error=1";
-}
-const char * __lsan_default_options()
-{
-    return "max_allocation_size_mb=32768";
-}
-const char * __lsan_default_suppressions()
-{
-    /// OpenSSL intentionally does not free all global state at exit.
-    /// These are known false positives from OpenSSL provider and EVP initialization.
-    return "leak:ossl_provider_new\n"
-           "leak:OSSL_PROVIDER_try_load_ex\n"
-           "leak:ossl_rand_ctx_new\n"
-           "leak:OSSL_LIB_CTX_new\n"
-           "leak:ossl_legacy_provider_init\n"
-           /// OpenSSL EVP method objects are cached globally and never freed at exit.
-           /// Triggered when S3 client initializes HMAC (AWS SDK -> OpenSSL HMAC_Init_ex).
-           "leak:evp_md_new\n"
-           "leak:construct_evp_method\n"
-           "leak:CRYPTO_THREAD_lock_new\n";
-}
-#endif
-
-#ifdef MEMORY_SANITIZER
-const char * __msan_default_options()
-{
-    return "abort_on_error=1 poison_in_dtor=1 max_allocation_size_mb=32768";
-}
-#endif
-
-#ifdef THREAD_SANITIZER
-const char * __tsan_default_options()
-{
-    return "halt_on_error=1 abort_on_error=1 history_size=7 second_deadlock_stack=1 max_allocation_size_mb=32768";
-}
-#endif
-
-#ifdef UNDEFINED_BEHAVIOR_SANITIZER
-const char * __ubsan_default_options()
-{
-    return "print_stacktrace=1 max_allocation_size_mb=32768";
-}
-#endif
-}
-#pragma clang diagnostic pop
-#endif
-
-// chdb_spec
-#if defined(USE_MUSL) && defined(__aarch64__)
-void main_musl_compile_stub(int arg)
-{
-    jmp_buf buf1;
-    sigjmp_buf buf2;
-
-    setjmp(buf1);
-    sigsetjmp(buf2, arg);
-}
-#endif
-// chdb_spec
-
 /// Universal executable for various clickhouse applications
+int mainEntryClickHouseBenchmark(int argc, char ** argv);
+int mainEntryClickHouseCheckMarks(int argc, char ** argv);
+int mainEntryClickHouseChecksumForCompressedBlock(int, char **);
+int mainEntryClickHouseClient(int argc, char ** argv);
+int mainEntryClickHouseCompressor(int argc, char ** argv);
+int mainEntryClickHouseDisks(int argc, char ** argv);
+int mainEntryClickHouseExtractFromConfig(int argc, char ** argv);
+int mainEntryClickHouseFormat(int argc, char ** argv);
+int mainEntryClickHouseFstDumpTree(int argc, char ** argv);
+int mainEntryClickHouseGitImport(int argc, char ** argv);
 int mainEntryClickHouseLocal(int argc, char ** argv);
+int mainEntryClickHouseObfuscator(int argc, char ** argv);
+int mainEntryClickHouseOomCanary(int argc, char ** argv);
+int mainEntryClickHouseSU(int argc, char ** argv);
+int mainEntryClickHouseDockerInit(int argc, char ** argv);
+int mainEntryClickHouseServer(int argc, char ** argv);
+int mainEntryClickHouseStaticFilesDiskUploader(int argc, char ** argv);
+int mainEntryClickHouseZooKeeperDumpTree(int argc, char ** argv);
+int mainEntryClickHouseZooKeeperRemoveByList(int argc, char ** argv);
+
+int mainEntryClickHouseHashBinary(int argc, char ** argv);
+int mainEntryClickHouseHashBinary(int argc, char ** argv)
+{
+    if (argc > 1 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0))
+    {
+        std::cout << "Usage: clickhouse hash-binary\n"
+                     "Prints hash of ClickHouse binary.\n"
+                     "  -h, --help   Print this message\n"
+                     "Result is intentionally without newline. So you can run:\n"
+                     "objcopy --add-section .clickhouse.hash=<(./clickhouse hash-binary) clickhouse\n\n"
+                     "Current binary hash: ";
+    }
+    std::cout << getHashOfLoadedBinaryHex();
+    return 0;
+}
+
+#if ENABLE_CLICKHOUSE_KEEPER
+int mainEntryClickHouseKeeper(int argc, char ** argv);
+#endif
+#if ENABLE_CLICKHOUSE_KEEPER_CONVERTER
+int mainEntryClickHouseKeeperConverter(int argc, char ** argv);
+#endif
+#if ENABLE_CLICKHOUSE_KEEPER_CLIENT
+int mainEntryClickHouseKeeperClient(int argc, char ** argv);
+#endif
+#if USE_RAPIDJSON && USE_NURAFT
+int mainEntryClickHouseKeeperBench(int argc, char ** argv);
+#endif
+#if USE_NURAFT
+int mainEntryClickHouseKeeperDataDumper(int argc, char ** argv);
+int mainEntryClickHouseKeeperUtils(int argc, char ** argv);
+#endif
+
+#if USE_CHDIG
+extern "C" int chdig_main(int argc, char ** argv);
+int mainEntryClickHouseChdig(int argc, char ** argv);
+int mainEntryClickHouseChdig(int argc, char ** argv)
+{
+    return chdig_main(argc, argv);
+}
+#endif
+
+// install
+int mainEntryClickHouseInstall(int argc, char ** argv);
+int mainEntryClickHouseStart(int argc, char ** argv);
+int mainEntryClickHouseStop(int argc, char ** argv);
+int mainEntryClickHouseStatus(int argc, char ** argv);
+int mainEntryClickHouseRestart(int argc, char ** argv);
 
 /// Private-only programs
 #if CLICKHOUSE_CLOUD
@@ -130,16 +131,74 @@ int printHelpOnError(int, char **)
 /// Currently we will prefer the latter option.
 std::pair<std::string_view, MainFunc> clickhouse_applications[] =
 {
-    // chdb_spec
-    {"local", mainEntryClickHouseLocal}
-    // chdb_spec
+    {"local", mainEntryClickHouseLocal},
+    {"client", mainEntryClickHouseClient},
+#if USE_CHDIG
+    {"chdig", mainEntryClickHouseChdig},
+    {"dig", mainEntryClickHouseChdig},
+#endif
+    {"benchmark", mainEntryClickHouseBenchmark},
+    {"server", mainEntryClickHouseServer},
+    {"extract-from-config", mainEntryClickHouseExtractFromConfig},
+    {"compressor", mainEntryClickHouseCompressor},
+    {"format", mainEntryClickHouseFormat},
+    {"obfuscator", mainEntryClickHouseObfuscator},
+    {"oom-canary", mainEntryClickHouseOomCanary},
+    {"git-import", mainEntryClickHouseGitImport},
+    {"static-files-disk-uploader", mainEntryClickHouseStaticFilesDiskUploader},
+    {"su", mainEntryClickHouseSU},
+    {"docker-init", mainEntryClickHouseDockerInit},
+    {"hash-binary", mainEntryClickHouseHashBinary},
+    {"disks", mainEntryClickHouseDisks},
+    {"check-marks", mainEntryClickHouseCheckMarks},
+    {"checksum-for-compressed-block", mainEntryClickHouseChecksumForCompressedBlock},
+    {"zookeeper-dump-tree", mainEntryClickHouseZooKeeperDumpTree},
+    {"zookeeper-remove-by-list", mainEntryClickHouseZooKeeperRemoveByList},
+
+    // keeper
+#if ENABLE_CLICKHOUSE_KEEPER
+    {"keeper", mainEntryClickHouseKeeper},
+#endif
+#if ENABLE_CLICKHOUSE_KEEPER_CONVERTER
+    {"keeper-converter", mainEntryClickHouseKeeperConverter},
+#endif
+#if ENABLE_CLICKHOUSE_KEEPER_CLIENT
+    {"keeper-client", mainEntryClickHouseKeeperClient},
+#endif
+#if USE_RAPIDJSON && USE_NURAFT
+    {"keeper-bench", mainEntryClickHouseKeeperBench},
+#endif
+#if USE_NURAFT
+    {"keeper-data-dumper", mainEntryClickHouseKeeperDataDumper},
+    {"keeper-utils", mainEntryClickHouseKeeperUtils},
+#endif
+    // install
+    {"install", mainEntryClickHouseInstall},
+    {"start", mainEntryClickHouseStart},
+    {"stop", mainEntryClickHouseStop},
+    {"status", mainEntryClickHouseStatus},
+    {"restart", mainEntryClickHouseRestart},
+    // help
+    {"help", mainEntryHelp},
+
+/// Private-only programs
+#if CLICKHOUSE_CLOUD
+    {"shared-merge-tree-garbage-cleaner", mainEntryClickHouseSharedMergeTreeGarbageCleaner},
+    {"clear-zookeeper-locks", mainEntryClickHouseClearZooKeeperLocks},
+    {"shared-catalog-util", mainEntryClickHouseSharedCatalogUtil},
+    {"packed-io", mainEntryClickHousePackedIO},
+    {"mangler", mainEntryClickHouseMangler},
+#if ENABLE_DISTRIBUTED_CACHE
+    {"distributed-cache", mainEntryClickHouseDistributedCache}
+#endif
+#endif
 };
 
 void printHelp(std::ostream & out)
 {
-    // chdb_spec
-    (void)out;
-    // chdb_spec
+    out << "Use one of the following commands:" << std::endl;
+    for (const auto & application : clickhouse_applications)
+        out << "clickhouse " << application.first << " [args] " << std::endl;
 }
 
 /// Add an item here to register a new short name
@@ -154,7 +213,7 @@ std::pair<std::string_view, std::string_view> clickhouse_short_names[] =
 
 }
 
-bool isClickhouseApp(std::string_view app_suffix, std::vector<char *> & argv)
+static bool isClickhouseApp(std::string_view app_suffix, std::vector<char *> & argv)
 {
     for (const auto & [alias, name] : clickhouse_short_names)
         if (app_suffix == name
@@ -180,50 +239,55 @@ bool isClickhouseApp(std::string_view app_suffix, std::vector<char *> & argv)
     return !argv.empty() && (app_name == argv[0] || endsWith(argv[0], "/" + app_name));
 }
 
-// chdb_spec
-// /// Don't allow dlopen in the main ClickHouse binary, because it is harmful and insecure.
-// /// We don't use it. But it can be used by some libraries for implementation of "plugins".
-// /// We absolutely discourage the ancient technique of loading
-// /// 3rd-party uncontrolled dangerous libraries into the process address space,
-// /// because it is insane.
+/// Don't allow dlopen in the main ClickHouse binary, because it is harmful and insecure.
+/// We don't use it. But it can be used by some libraries for implementation of "plugins".
+/// We absolutely discourage the ancient technique of loading
+/// 3rd-party uncontrolled dangerous libraries into the process address space,
+/// because it is insane.
+///
+/// We do allow `dlopen()` in case of OpenSSL FIPS build,
+/// because it requires a FIPS provider (i.e. fips.so), which is loaded dynamically.
+#if !(defined(USE_MUSL) || USE_OPENSSL_FIPS)
+extern "C"
+{
+    void * dlopen(const char *, int);
+    void * dlmopen(long, const char *, int); // NOLINT
+    int dlclose(void *);
+    const char * dlerror();
 
-// #if !defined(USE_MUSL)
-// extern "C"
-// {
-//     void * dlopen(const char *, int)
-//     {
-//         return nullptr;
-//     }
+    void * dlopen(const char *, int)
+    {
+        return nullptr;
+    }
 
-//     void * dlmopen(long, const char *, int) // NOLINT
-//     {
-//         return nullptr;
-//     }
+    void * dlmopen(long, const char *, int) // NOLINT
+    {
+        return nullptr;
+    }
 
-//     int dlclose(void *)
-//     {
-//         return 0;
-//     }
+    int dlclose(void *)
+    {
+        return 0;
+    }
 
-//     const char * dlerror()
-//     {
-//         return "ClickHouse does not allow dynamic library loading";
-//     }
-// }
-// #endif
-// chdb_spec
+    const char * dlerror()
+    {
+        return "ClickHouse does not allow dynamic library loading";
+    }
+}
+#endif
 
 /// Prevent messages from JeMalloc in the release build.
 /// Some of these messages are non-actionable for the users, such as:
 /// <jemalloc>: Number of CPUs detected is not deterministic. Per-CPU arena disabled.
 #if USE_JEMALLOC && defined(NDEBUG) && !defined(SANITIZER)
-extern "C" void (*je_malloc_message)(void *, const char * s);
-__attribute__((constructor(0))) void init_je_malloc_message() { je_malloc_message = [](void *, const char *){}; }
+extern "C" void (*je_malloc_message)(void *, const char *s);
+static __attribute__((constructor(0))) void init_je_malloc_message() { je_malloc_message = [](void *, const char *){}; }
 #elif USE_JEMALLOC
 #include <unordered_set>
 /// Ignore messages which can be safely ignored, e.g. EAGAIN on pthread_create
 extern "C" void (*je_malloc_message)(void *, const char * s);
-__attribute__((constructor(0))) void init_je_malloc_message()
+static __attribute__((constructor(0))) void init_je_malloc_message()
 {
     je_malloc_message = [](void *, const char * str)
     {
@@ -247,9 +311,9 @@ __attribute__((constructor(0))) void init_je_malloc_message()
 /// OpenSSL early initialization.
 /// See also EnvironmentChecks.cpp for other static initializers.
 /// Must be ran after EnvironmentChecks.cpp, as OpenSSL uses SSE4.1 and POPCNT.
-__attribute__((constructor(202))) static void init_ssl()
+static __attribute__((constructor(202))) void init_ssl()
 {
-    DB::OpenSSLInitializer::initialize();
+    DB::OpenSSLInitializer::instance();
 }
 
 /// This allows to implement assert to forbid initialization of a class in static constructors.
@@ -257,12 +321,12 @@ __attribute__((constructor(202))) static void init_ssl()
 ///
 /// extern bool inside_main;
 /// class C { C() { assert(inside_main); } };
-// bool inside_main = false;
+bool inside_main = false;
 
 int main(int argc_, char ** argv_)
 {
-    // inside_main = true;
-    // SCOPE_EXIT({ inside_main = false; });
+    inside_main = true;
+    SCOPE_EXIT({ inside_main = false; });
 
     /// PHDR cache is required for query profiler to work reliably
     /// It also speed up exception handling, but exceptions from dynamically loaded libraries (dlopen)
@@ -307,6 +371,22 @@ int main(int argc_, char ** argv_)
         std::string_view arg(argv[1]);
         if (arg == "--help" || arg == "-h" || arg == "-?")
             main_func = mainEntryHelp;
+    }
+
+    /// If host/port arguments are passed to clickhouse/ch shortcuts,
+    /// interpret it as clickhouse-client invocation for usability.
+    if (main_func == printHelpOnError && argv.size() >= 2)
+    {
+        for (size_t i = 1, num_args = argv.size(); i < num_args; ++i)
+        {
+            if ((i + 1 < num_args && argv[i] == std::string_view("--host")) || startsWith(argv[i], "--host=")
+                || (i + 1 < num_args && argv[i] == std::string_view("--port")) || startsWith(argv[i], "--port=")
+                || startsWith(argv[i], "-h"))
+            {
+                main_func = mainEntryClickHouseClient;
+                break;
+            }
+        }
     }
 
     /// Interpret binary without argument or with arguments starts with dash

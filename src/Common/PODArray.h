@@ -1,7 +1,5 @@
 #pragma once
 
-#include "config.h"
-
 #include <base/getPageSize.h>
 #include <boost/noncopyable.hpp>
 #include <Common/Allocator.h>
@@ -10,7 +8,6 @@
 #include <Common/memcpySmall.h>
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -79,7 +76,7 @@ void protectMemoryRegion(void * addr, size_t len, int prot);
 /// The amount of memory occupied by the num_elements of the elements.
 inline size_t byte_size(size_t num_elements, size_t element_size)
 {
-    size_t amount;
+    size_t amount = 0;
     if (__builtin_mul_overflow(num_elements, element_size, &amount))
         throw_alloc_error();
     return amount;
@@ -88,7 +85,7 @@ inline size_t byte_size(size_t num_elements, size_t element_size)
 /// Minimum amount of memory to allocate for num_elements, including padding.
 inline size_t minimum_memory_for_elements(size_t num_elements, size_t element_size, size_t pad_left, size_t pad_right)
 {
-    size_t amount;
+    size_t amount = 0;
     if (__builtin_add_overflow(byte_size(num_elements, element_size), pad_left + pad_right, &amount))
         throw_alloc_error();
     return amount;
@@ -292,18 +289,6 @@ public:
         c_end += ELEMENT_SIZE;
     }
 
-    template <typename... TAllocatorParams>
-    void append_raw(const void * ptr, size_t count, TAllocatorParams &&... allocator_params) /// NOLINT
-    {
-        size_t bytes_to_copy = PODArrayDetails::byte_size(count, ELEMENT_SIZE);
-        size_t required_capacity = size() + bytes_to_copy;
-        if (unlikely(required_capacity > capacity()))
-            reserve(required_capacity, std::forward<TAllocatorParams>(allocator_params)...);
-
-        memcpy(c_end, ptr, bytes_to_copy);
-        c_end += bytes_to_copy;
-    }
-
     void protect()
     {
 #ifndef NDEBUG
@@ -329,7 +314,7 @@ public:
         const char * ptr_end = reinterpret_cast<const char *>(&*from_end);
 
         /// Also it's safe if the range is empty.
-        assert(!((ptr_begin >= c_start && ptr_begin < c_end) || (ptr_end > c_start && ptr_end <= c_end)) || (ptr_begin == ptr_end));
+        chassert(!((ptr_begin >= c_start && ptr_begin < c_end) || (ptr_end > c_start && ptr_end <= c_end)) || (ptr_begin == ptr_end));
 #endif
     }
 
@@ -409,13 +394,13 @@ public:
     T & operator[] (ssize_t n)
     {
         /// <= size, because taking address of one element past memory range is Ok in C++ (expression like &arr[arr.size()] is perfectly valid).
-        assert((n >= (static_cast<ssize_t>(pad_left_) ? -1 : 0)) && (n <= static_cast<ssize_t>(this->size())));
+        chassert((n >= (static_cast<ssize_t>(pad_left_) ? -1 : 0)) && (n <= static_cast<ssize_t>(this->size())));
         return t_start()[n];
     }
 
     const T & operator[] (ssize_t n) const
     {
-        assert((n >= (static_cast<ssize_t>(pad_left_) ? -1 : 0)) && (n <= static_cast<ssize_t>(this->size())));
+        chassert((n >= (static_cast<ssize_t>(pad_left_) ? -1 : 0)) && (n <= static_cast<ssize_t>(this->size())));
         return t_start()[n];
     }
 
@@ -506,8 +491,8 @@ public:
     {
         static_assert(memcpy_can_be_used_for_assignment<std::decay_t<T>, std::decay_t<decltype(rhs.front())>>);
 
-        assert(from_end >= from_begin);
-        assert(from_end <= rhs.size());
+        chassert(from_end >= from_begin);
+        chassert(from_end <= rhs.size());
 
         size_t required_capacity = this->size() + (from_end - from_begin);
         if (required_capacity > this->capacity())
@@ -565,7 +550,7 @@ public:
         size_t end_index = from_end - begin();
         size_t copy_size = end_index - start_index;
 
-        assert(start_index <= end_index);
+        chassert(start_index <= end_index);
 
         size_t required_capacity = this->size() + copy_size;
         if (required_capacity > this->capacity())
