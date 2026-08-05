@@ -110,8 +110,8 @@ if (OS_WASM)
     # No libunwind on WASM; rely on the host engine for stack traces.
     set (USE_UNWIND OFF CACHE INTERNAL "")
 
-    # The bundle is a download, so default to size (-Os). Only fills in an unset build
-    # type: an explicit -DCMAKE_BUILD_TYPE=Release is honoured.
+    # The bundle is a download, so default to size (-Os) unless -DCMAKE_BUILD_TYPE=Release
+    # has been passed in.
     if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None")
         set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
     endif ()
