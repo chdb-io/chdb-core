@@ -110,16 +110,13 @@ if (OS_WASM)
     # No libunwind on WASM; rely on the host engine for stack traces.
     set (USE_UNWIND OFF CACHE INTERNAL "")
 
-    # WASM does NOT use the chdb-core-lite trim set: the single bundle ships the
-    # complete function/aggregate registry (chdb-core#159). The trim saved ~6 MiB
-    # gzip on a ~21 MiB download while dropping ~70 aggregates, among them
-    # quantileExactInclusive and largestTriangleThreeBuckets/lttb.
-    #
-    # The two things lite provided that the WASM build still wants are replaced here:
-    # -Os, and the optional libs lite opted back in over ENABLE_LIBRARIES=0.
+    # The bundle is a download: build for size (-Os) unless asked otherwise.
     if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None" OR CMAKE_BUILD_TYPE STREQUAL "Release")
         set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
     endif ()
+
+    # JSON parsing, Brotli and Unicode normalization: WASM needs these, and
+    # build-wasm.sh configures with ENABLE_LIBRARIES=0, so opt them back in.
     set (ENABLE_RAPIDJSON ON CACHE INTERNAL "")
     set (ENABLE_SIMDJSON ON CACHE INTERNAL "")
     set (ENABLE_BROTLI ON CACHE INTERNAL "")
