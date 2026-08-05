@@ -115,12 +115,10 @@ if (OS_WASM)
         set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
     endif ()
 
-    # JSON parsing, Brotli and Unicode normalization: WASM needs these, and
-    # build-wasm.sh configures with ENABLE_LIBRARIES=0, so opt them back in.
-    set (ENABLE_RAPIDJSON ON CACHE INTERNAL "")
+    # Fast JSON parser. Not required to build (RapidJSON below is the fallback that
+    # FunctionsJSON picks up), but without either one JSONExtract* silently degrades
+    # to DummyJSONParser, which fails every parse and returns defaults.
     set (ENABLE_SIMDJSON ON CACHE INTERNAL "")
-    set (ENABLE_BROTLI ON CACHE INTERNAL "")
-    set (ENABLE_UTF8PROC ON CACHE INTERNAL "")
 
     # Libs that WASM can't use at all (native protoc bootstrap, networked object
     # stores, heavy columnar formats).
@@ -136,6 +134,12 @@ if (OS_WASM)
     set (ENABLE_PARQUET ON CACHE INTERNAL "")
     set (ENABLE_THRIFT ON CACHE INTERNAL "")
     set (ENABLE_ORC OFF CACHE INTERNAL "")
+    # Hard requirements of the Parquet/Arrow build above, not optional features:
+    # _arrow links ch_contrib::brotli and _parquet links ch_contrib::rapidjson
+    # unconditionally, so with build-wasm.sh's ENABLE_LIBRARIES=0 and these off the
+    # configure fails outright with "target was not found".
+    set (ENABLE_BROTLI ON CACHE INTERNAL "")
+    set (ENABLE_RAPIDJSON ON CACHE INTERNAL "")
 
     # Emscripten's libc++ is not the chdb-patched libcxx, so the exception ABI
     # has no embedded stack trace. base/src expect this macro to be defined.
