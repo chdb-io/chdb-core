@@ -39,7 +39,7 @@ void ChunkCollectorOutputFormat::finalizeImpl()
 }
 
 /// Create ChunkCollectorOutputFormat for use with function pointer
-std::shared_ptr<IOutputFormat> createDataFrameOutputFormat(SharedHeader header, std::vector<Chunk> & chunks_storage)
+static std::shared_ptr<IOutputFormat> createDataFrameOutputFormat(SharedHeader header, std::vector<Chunk> & chunks_storage)
 {
     return std::make_shared<ChunkCollectorOutputFormat>(header, chunks_storage);
 }

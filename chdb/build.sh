@@ -84,17 +84,9 @@ elif [ "$(uname)" == "Linux" ]; then
     # -DENABLE_WASMTIME=1 enables the WebAssembly UDF runtime; it must be set
     # explicitly because ENABLE_LIBRARIES=0 would otherwise leave it OFF.
     RUST_FEATURES="-DENABLE_RUST=1 -DENABLE_DELTA_KERNEL_RS=1 -DENABLE_WASMTIME=1"
-    CORROSION_CMAKE_FILE="${PROJ_DIR}/contrib/corrosion-cmake/CMakeLists.txt"
-    if [ -f "${CORROSION_CMAKE_FILE}" ]; then
-        if ! grep -q 'OPENSSL_NO_DEPRECATED_3_0' "${CORROSION_CMAKE_FILE}"; then
-            echo "Modifying corrosion CMakeLists.txt for Linux x86_64..."
-            ${SED_INPLACE} 's/corrosion_set_env_vars(${target_name} "RUSTFLAGS=${RUSTFLAGS}")/corrosion_set_env_vars(${target_name} "RUSTFLAGS=${RUSTFLAGS} --cfg osslconf=\\\"OPENSSL_NO_DEPRECATED_3_0\\\"")/g' "${CORROSION_CMAKE_FILE}"
-        else
-            echo "corrosion CMakeLists.txt already modified, skipping..."
-        fi
-    else
-        echo "Warning: corrosion CMakeLists.txt not found at ${CORROSION_CMAKE_FILE}"
-    fi
+    # The historical osslconf=OPENSSL_NO_DEPRECATED_3_0 RUSTFLAGS injection into
+    # corrosion-cmake is gone: contrib libcrypto ships the deprecated symbols, and
+    # v26.7's vendored openssl 0.10.80 fails to compile with that cfg set.
 else
     echo "OS not supported"
     exit 1

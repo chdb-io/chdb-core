@@ -689,7 +689,7 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
         }
     };
 
-    auto consume_double = [&](const std::string & target, double DB::AIConfiguration::* field)
+    auto consume_double = [&](const std::string & target, std::optional<double> DB::AIConfiguration::* field)
     {
         for (auto it = params.begin(); it != params.end();)
         {

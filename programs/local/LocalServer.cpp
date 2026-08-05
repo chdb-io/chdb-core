@@ -1974,6 +1974,7 @@ void LocalServer::readArguments(int argc, char ** argv, Arguments & common_argum
 
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wmissing-declarations"
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
 
 
 /**

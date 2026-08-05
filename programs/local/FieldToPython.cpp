@@ -462,8 +462,8 @@ py::object convertFieldToPython(
             try
             {
                 const auto & enum_type = typeid_cast<const DataTypeEnum8 &>(*type);
-                auto it = enum_type.findByValue(static_cast<Int8>(field.safeGet<Int64>()));
-                String enum_name(it->second.data(), it->second.size());
+                auto enum_name_view = enum_type.getNameForValue(static_cast<Int8>(field.safeGet<Int64>()));
+                String enum_name(enum_name_view.data(), enum_name_view.size());
                 return py::cast(enum_name);
             }
             catch (...)
@@ -478,8 +478,8 @@ py::object convertFieldToPython(
             try
             {
                 const auto & enum_type = typeid_cast<const DataTypeEnum16 &>(*type);
-                auto it = enum_type.findByValue(static_cast<Int16>(field.safeGet<Int64>()));
-                String enum_name(it->second.data(), it->second.size());
+                auto enum_name_view = enum_type.getNameForValue(static_cast<Int16>(field.safeGet<Int64>()));
+                String enum_name(enum_name_view.data(), enum_name_view.size());
                 return py::cast(enum_name);
             }
             catch (...)
@@ -952,8 +952,8 @@ py::object convertColumnValueForUDF(
         try
         {
             const auto & enum_type = typeid_cast<const DataTypeEnum8 &>(*type);
-            auto it = enum_type.findByValue(static_cast<Int8>(field.safeGet<Int64>()));
-            String enum_name(it->second.data(), it->second.size());
+            auto enum_name_view = enum_type.getNameForValue(static_cast<Int8>(field.safeGet<Int64>()));
+            String enum_name(enum_name_view.data(), enum_name_view.size());
             return py::cast(enum_name);
         }
         catch (...)
@@ -968,8 +968,8 @@ py::object convertColumnValueForUDF(
         try
         {
             const auto & enum_type = typeid_cast<const DataTypeEnum16 &>(*type);
-            auto it = enum_type.findByValue(static_cast<Int16>(field.safeGet<Int64>()));
-            String enum_name(it->second.data(), it->second.size());
+            auto enum_name_view = enum_type.getNameForValue(static_cast<Int16>(field.safeGet<Int64>()));
+            String enum_name(enum_name_view.data(), enum_name_view.size());
             return py::cast(enum_name);
         }
         catch (...)
