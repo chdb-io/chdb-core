@@ -18,6 +18,10 @@ build_type="${BUILD_TYPE:-MinSizeRel}"
 # must be cross-origin isolated. WASM_THREADS=OFF: single-threaded build with no
 # SharedArrayBuffer dependency, runs on non-isolated pages.
 wasm_threads="${WASM_THREADS:-ON}"
+# CHDB_LITE=ON builds the chdb-core-lite trim set instead of the full function
+# registry. Off by default; the chdb-cloudflare bundle needs it to fit the 10 MiB
+# gzipped Workers limit.
+chdb_lite="${CHDB_LITE:-OFF}"
 
 if ! command -v emcmake >/dev/null 2>&1; then
     echo "emcmake not found. Run: source ~/code/emsdk/emsdk_env.sh" >&2
@@ -44,7 +48,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_UTILS=0 -DENABLE_EXAMPLES=0 -DENABLE_BENCHMARKS=0 \
     -DENABLE_FUZZING=OFF -DENABLE_BUZZHOUSE=OFF -DENABLE_FUZZER_TEST=OFF \
     -DENABLE_LIBRARIES=0 \
-    -DCHDB_LITE=OFF \
+    -DCHDB_LITE=${chdb_lite} \
     -DENABLE_PYTHON=0 \
     -DUSE_STATIC_LIBRARIES=1 -DSPLIT_SHARED_LIBRARIES=0 \
     -DENABLE_JEMALLOC=0 -DENABLE_ICU=0 \
