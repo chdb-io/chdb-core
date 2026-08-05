@@ -245,7 +245,8 @@ namespace FailPoints
     extern const char trigger_sanitizer_error[];
 }
 
-static TSA_NO_THREAD_SAFETY_ANALYSIS void triggerSanitizerError()
+/// Unused when libfiu is disabled (fiu_do_on expands to nothing), e.g. the macOS lite build.
+[[maybe_unused]] static TSA_NO_THREAD_SAFETY_ANALYSIS void triggerSanitizerError()
 {
 #if defined(ADDRESS_SANITIZER)
     const auto data = std::make_unique_for_overwrite<char[]>(16);
