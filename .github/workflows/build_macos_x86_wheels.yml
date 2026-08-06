@@ -431,7 +431,7 @@ jobs:
               echo "Testing chdb on Python $version with $PANDAS_CONSTRAINT"
               echo "=============================================="
               pyenv shell $version
-              python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" --force-reinstall
+              python -m pip install dist/*.whl "$PANDAS_CONSTRAINT" "pyarrow<25" --force-reinstall
               # ADBC driver tests (tests/test_adbc_driver.py) load libchdb via the standard driver manager
               python -c "import adbc_driver_manager" 2>/dev/null || python -m pip install -q adbc-driver-manager==1.8.0
               echo "Installed pandas version:"
@@ -502,7 +502,7 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
-          python -m pip install dist/*.whl --force-reinstall
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           python -m pip install pytest
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pytest tests/test_torch_compatibility.py -v
@@ -517,7 +517,7 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
-          python -m pip install dist/*.whl --force-reinstall
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           pyenv shell --unset
         continue-on-error: false
@@ -527,7 +527,7 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.9
-          python -m pip install dist/*.whl --force-reinstall
+          python -m pip install dist/*.whl "pyarrow<25" --force-reinstall
           jupyter nbconvert --to notebook --execute tests/test_data_insertion.ipynb --output test_data_insertion_output.ipynb
           pyenv shell --unset
         continue-on-error: false
