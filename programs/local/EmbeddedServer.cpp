@@ -244,6 +244,12 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         (void)std::atexit([]
         {
             g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+            /// If the embedded server is still alive at interpreter exit (connection left
+            /// open), its MemoryWorker thread must stop before the global pool teardown:
+            /// v26.7's worker loop logs through machinery that shutdown() destroys.
+            /// global_instance's own static destructor runs later (LIFO), too late.
+            if (global_instance && global_instance->memory_worker)
+                global_instance->memory_worker.reset();
             GlobalThreadPool::shutdown();
         });
 
