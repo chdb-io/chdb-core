@@ -65,10 +65,10 @@ if (CHDB_LITE)
         TimeSeries/AggregateFunctionTimeseriesHelpers.cpp
         TimeSeries/AggregateFunctionLast2Samples.cpp
         TimeSeries/AggregateFunctionTimeSeriesGroupArray.cpp
-        # uniqCombined precision variants: keep 17 (default), drop 12-16 and 18-20.
+        # uniqCombined precision variants: keep 17 (default) and 12 (v26.7 column
+        # statistics build uniqCombined64(12) during merges/mutations); drop the rest.
         # The switch in AggregateFunctionUniqCombined.cpp is gated by CHDB_LITE
-        # to throw at runtime if a non-17 precision is requested.
-        AggregateFunctionUniqCombined12.cpp
+        # to throw at runtime if another precision is requested.
         AggregateFunctionUniqCombined13.cpp
         AggregateFunctionUniqCombined14.cpp
         AggregateFunctionUniqCombined15.cpp
@@ -150,7 +150,6 @@ if (CHDB_LITE)
         registerAggregateFunctionLast2Samples
         registerAggregateFunctionTimeseriesGroupArray
         # UniqCombined precision drops have no register fns — emit dummy unused stubs
-        _chdb_unused_uniqcombined_12_stub
         _chdb_unused_uniqcombined_13_stub
         _chdb_unused_uniqcombined_14_stub
         _chdb_unused_uniqcombined_15_stub
