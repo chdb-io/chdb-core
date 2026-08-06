@@ -163,6 +163,7 @@ extern const ServerSettingsString primary_index_cache_policy;
 extern const ServerSettingsUInt64 primary_index_cache_size;
 extern const ServerSettingsDouble primary_index_cache_size_ratio;
 extern const ServerSettingsString query_condition_cache_policy;
+extern const ServerSettingsString unique_key_bitmap_cache_policy;
 extern const ServerSettingsUInt64 query_condition_cache_size;
 extern const ServerSettingsDouble query_condition_cache_size_ratio;
 extern const ServerSettingsUInt64 max_prefixes_deserialization_thread_pool_size;
@@ -920,6 +921,18 @@ void EmbeddedServer::processConfig()
 
     /// Initialize a dummy query result cache.
     global_context->setQueryResultCache(0, 0, 0, 0);
+
+    /// Initialize a dummy UNIQUE KEY delete-bitmap cache.
+    global_context->setDeleteBitmapCache(server_settings[ServerSetting::unique_key_bitmap_cache_policy], 0, 0);
+
+    /// Initialize a dummy encryption header cache (0 size disables it; still needed because
+    /// system.server_settings dereferences its getter without a null check).
+    global_context->setEncryptionHeaderCache(DEFAULT_ENCRYPTION_HEADER_CACHE_POLICY, 0, 0);
+
+#if USE_AVRO
+    /// Initialize a dummy Paimon metadata files cache.
+    global_context->setPaimonMetadataFilesCache(DEFAULT_PAIMON_METADATA_CACHE_POLICY, 0, 0, 0);
+#endif
 
     /// Initialize allowed tiers
     global_context->getAccessControl().setAllowTierSettings(server_settings[ServerSetting::allow_feature_tier]);

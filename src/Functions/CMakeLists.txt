@@ -155,6 +155,8 @@ if (CHDB_LITE)
         "#include <cstddef>\n"
         "namespace DB\n"
         "{\n"
+        "void setPointInPolygonCacheMaxSizeInBytes(size_t);\n"
+        "void clearPointInPolygonCache();\n"
         "void setPointInPolygonCacheMaxSizeInBytes(size_t) {}\n"
         "void clearPointInPolygonCache() {}\n"
         "}\n")
