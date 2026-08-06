@@ -2280,6 +2280,37 @@ static ColumnWithTypeAndName readNonNullableColumnFromArrowColumn(
                 }
             }
 
+            /// ClickHouse cannot store Nullable(Tuple), so when the struct itself has NULL
+            /// rows, propagate the outer validity into every nullable element: a NULL
+            /// struct reads back as a tuple of NULL fields rather than default values
+            /// (the elements' own bitmaps only cover non-NULL parents; Arrow leaves child
+            /// slots under a NULL parent unspecified, typically defaults). Map entries go
+            /// through this branch too but their parent bitmap stays with the Map column.
+            if (!is_map_nested_column && !tuple_elements.empty() && arrow_column->null_count() > 0)
+            {
+                PaddedPODArray<UInt8> parent_null_mask;
+                parent_null_mask.reserve(arrow_column->length());
+                for (int chunk_i = 0, num_chunks = arrow_column->num_chunks(); chunk_i < num_chunks; ++chunk_i)
+                {
+                    const auto & chunk = *arrow_column->chunk(chunk_i);
+                    for (int64_t row = 0; row < chunk.length(); ++row)
+                        parent_null_mask.push_back(chunk.IsNull(row));
+                }
+                for (auto & element : tuple_elements)
+                {
+                    const auto * nullable = checkAndGetColumn<ColumnNullable>(element.get());
+                    if (!nullable)
+                        continue;
+                    auto new_null_map = ColumnUInt8::create();
+                    const auto & old_null_map = nullable->getNullMapData();
+                    auto & new_data = new_null_map->getData();
+                    new_data.resize(old_null_map.size());
+                    for (size_t row = 0; row < old_null_map.size(); ++row)
+                        new_data[row] = old_null_map[row] | parent_null_mask[row];
+                    element = ColumnNullable::create(nullable->getNestedColumnPtr(), std::move(new_null_map));
+                }
+            }
+
             ColumnPtr tuple_column;
             if (tuple_elements.empty())
                 tuple_column = ColumnTuple::create(arrow_column->length());

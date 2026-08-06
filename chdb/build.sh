@@ -261,6 +261,9 @@ fi
 if [ "${CHDB_FREE_THREADING}" == "1" ]; then
     cmake ${CMAKE_ARGS} ${FREE_THREADING_CMAKE} -DENABLE_PYTHON=1 ${PROJ_DIR}
 else
+    # Drop Python paths a previous pybind11-shim configure may have cached in this
+    # build dir (the shim loop reuses it); stale entries break the exact-3.9 check.
+    cmake -U "*Python*" -U "*PYTHON*" . > /dev/null 2>&1 || true
     cmake ${CMAKE_ARGS} -DENABLE_PYTHON=1 -DPYBIND11_NONLIMITEDAPI_PYTHON_HEADERS_VERSION=${py_version} ${PROJ_DIR}
 fi
 ninja -d keeprsp || true
