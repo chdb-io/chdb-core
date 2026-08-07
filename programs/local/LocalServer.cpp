@@ -134,6 +134,7 @@ namespace Setting
     extern const SettingsSeconds receive_timeout;
     extern const SettingsSeconds send_timeout;
     extern const SettingsLocalFSReadMethod storage_file_read_method;
+    extern const SettingsBool output_format_arrow_use_native_writer;
 }
 
 namespace ServerSetting
@@ -301,6 +302,10 @@ void applySettingsOverridesForLocal(ContextMutablePtr context)
     settings[Setting::allow_introspection_functions] = true;
     settings[Setting::storage_file_read_method] = LocalFSReadMethod::mmap;
     settings[Setting::implicit_select] = true;
+    /// v26.7's native Arrow IPC writer emits corrupt date32 buffers in the macOS
+    /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
+    /// libarrow writer until that is root-caused. Users can still opt in.
+    settings[Setting::output_format_arrow_use_native_writer] = false;
 
     context->setSettings(settings);
 }
