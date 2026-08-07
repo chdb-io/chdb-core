@@ -180,7 +180,9 @@ if (CHDB_LITE)
         list(GET _chdb_drop_files ${i} _file)
         list(GET _chdb_drop_regs ${i} _reg)
         list(REMOVE_ITEM clickhouse_aggregate_functions_sources ${_file})
-        set(_chdb_stub_decls "${_chdb_stub_decls}    void ${_reg}(AggregateFunctionFactory &) {}\n")
+        # Declare before defining; registerAggregateFunctions.cpp prototypes are not
+        # visible here and -Wmissing-prototypes is an error
+        set(_chdb_stub_decls "${_chdb_stub_decls}    void ${_reg}(AggregateFunctionFactory &);\n    void ${_reg}(AggregateFunctionFactory &) {}\n")
     endforeach()
     set(_chdb_stub_decls "${_chdb_stub_decls}}\n")
     set(_chdb_stub_file "${CMAKE_CURRENT_BINARY_DIR}/chdbAggregateStubs.cpp")

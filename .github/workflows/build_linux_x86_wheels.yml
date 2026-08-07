@@ -26,6 +26,12 @@ on:
       - '**/*.md'
 
 
+concurrency:
+  # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
+  # starving later runs. Never cancel main or release runs.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
@@ -164,7 +170,7 @@ jobs:
           sudo apt-get -o DPkg::Lock::Timeout=600 update
           sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Update submodules
@@ -184,7 +190,7 @@ jobs:
           echo "Version files updated to $TAG_NAME"
           pyenv shell --unset
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: ubuntu-22.04-x86_64
           max-size: 5G
@@ -311,7 +317,7 @@ jobs:
           # The capability matrix is rendered from the run, not maintained by hand.
           "$VENV/bin/python" -m tests.generate_documentation \
             --output "$RUNNER_TEMP/adbc-docs"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adbc-capability-matrix
           path: ${{ runner.temp }}/adbc-docs/chdb.md
@@ -660,7 +666,7 @@ jobs:
           done
       - name: Upload core files artifact
         if: always() && env.CORE_FILES_FOUND == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-files-linux-x86_64
           path: core-files-linux-x86_64.tar.gz
@@ -706,7 +712,7 @@ jobs:
           gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: chdb-artifacts-linux-x86_64
           path: |

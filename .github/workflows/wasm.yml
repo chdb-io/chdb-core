@@ -65,7 +65,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -77,11 +77,11 @@ jobs:
       # emcmake needs a recent cmake on PATH; the self-hosted runner does not provide
       # one for this job, so install a pinned cmake (+ninja) ourselves.
       - name: Setup CMake + Ninja
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@v4.4.2
 
       # Caches the installed emsdk between runs (keyed by EMSDK_VERSION).
       - name: Setup Emscripten ${{ env.EMSDK_VERSION }} (cached)
-        uses: mymindstorm/setup-emsdk@v14
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache-${{ env.EMSDK_VERSION }}
@@ -89,7 +89,7 @@ jobs:
       # Node >= 23 to RUN the wasm. Set up AFTER emsdk so this node wins on PATH
       # over the (older) node bundled with emsdk.
       - name: Setup Node ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'  # needed for `npm publish` auth on tags
@@ -236,7 +236,7 @@ jobs:
 
       # Keep the artifact for download/inspection (kept short to save storage).
       - name: Upload wasm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chdb-wasm
           path: |
@@ -283,7 +283,7 @@ jobs:
         run: node packages/chdb-wasm/test/split.test.mjs
 
       - name: Upload split wasm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chdb-wasm-split
           path: |
@@ -335,7 +335,7 @@ jobs:
           node test/matrix.test.mjs
 
       - name: Upload lite artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chdb-cloudflare
           path: packages/chdb-cloudflare/dist
