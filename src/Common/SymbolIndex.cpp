@@ -477,8 +477,18 @@ int collectSymbols(DynamicLinkingProgramHeaderInfo * info, size_t, void * data_p
 {
     SymbolIndex::Data & data = *reinterpret_cast<SymbolIndex::Data *>(data_ptr);
 
-    collectSymbolsFromProgramHeaders(info, data.symbols);
-    collectSymbolsFromELF(info, data.symbols, data.objects, data.self_build_id);
+    /// Must not escape: unwinding glibc's dl_iterate_phdr frame runs its cleanup through
+    /// libgcc __gcc_personality_v0, which segfaults on a bundled LLVM libunwind context,
+    /// leaving dl_load_write_lock held. Elf() mmaps a whole object, throwing when address
+    /// space runs short. Symbol index is best-effort.
+    try
+    {
+        collectSymbolsFromProgramHeaders(info, data.symbols);
+        collectSymbolsFromELF(info, data.symbols, data.objects, data.self_build_id);
+    }
+    catch (...) // NOLINT(bugprone-empty-catch)
+    {
+    }
 
     /* Continue iterations */
     return 0;
