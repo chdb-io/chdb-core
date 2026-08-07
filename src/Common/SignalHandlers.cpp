@@ -46,6 +46,7 @@ using namespace DB;
 
 
 std::atomic<bool> HandledSignals::disable_signal_handlers = false;
+std::atomic<HandledSignals *> HandledSignals::instance_ptr = nullptr;
 
 static std::atomic_bool is_crashed = false;
 static_assert(std::atomic_bool::is_always_lock_free, "is_crashed must be lock-free for use in signal handlers");
@@ -698,6 +699,7 @@ HandledSignals::HandledSignals()
 {
     signal_pipe.setNonBlockingWrite();
     signal_pipe.tryIncreaseSize(1 << 20);
+    instance_ptr.store(this, std::memory_order_release);
 }
 
 void HandledSignals::reset(bool close_pipe)
@@ -728,6 +730,7 @@ void HandledSignals::reset(bool close_pipe)
 
 HandledSignals::~HandledSignals()
 {
+    instance_ptr.store(nullptr, std::memory_order_release);
     try
     {
         reset();
@@ -742,6 +745,11 @@ HandledSignals & HandledSignals::instance()
 {
     static HandledSignals res;
     return res;
+}
+
+HandledSignals * HandledSignals::tryGetInstance()
+{
+    return instance_ptr.load(std::memory_order_acquire);
 }
 
 void HandledSignals::setupTerminateHandler()

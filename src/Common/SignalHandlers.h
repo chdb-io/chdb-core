@@ -142,4 +142,8 @@ struct HandledSignals
     void reset(bool close_pipe = true);
 
     static HandledSignals & instance();
+    static HandledSignals * tryGetInstance();
+
+private:
+    static std::atomic<HandledSignals *> instance_ptr;
 };
