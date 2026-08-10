@@ -821,8 +821,22 @@ size_t ColumnString::getEqualRangeEndAssumeSorted(size_t begin, size_t end, int 
 
 void ColumnString::protect()
 {
-    getChars().protect();
+    if (!borrow_guard)
+        getChars().protect();
     getOffsets().protect();
+}
+
+void ColumnString::materializeBorrowedStorage()
+{
+    if (!borrow_guard)
+        return;
+    const char * borrowed = reinterpret_cast<const char *>(chars.data());
+    const size_t bytes = chars.size();
+    chars.release_external_storage();
+    chars.resize_exact(bytes);
+    if (bytes)
+        memcpy(chars.data(), borrowed, bytes);
+    borrow_guard.reset();
 }
 
 void ColumnString::validate() const

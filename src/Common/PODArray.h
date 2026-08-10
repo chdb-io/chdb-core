@@ -143,6 +143,9 @@ protected:
         if (c_start == null)
             return;
 
+#ifndef NDEBUG
+        chassert(!borrowed_external);
+#endif
         unprotect();
 
         TAllocator::free(c_start - pad_left, allocated_bytes());
@@ -157,6 +160,9 @@ protected:
             return;
         }
 
+#ifndef NDEBUG
+        chassert(!borrowed_external);
+#endif
         unprotect();
 
         ptrdiff_t end_diff = c_end - c_start;
@@ -222,6 +228,8 @@ protected:
 
     /// Restore memory protection in destructor or realloc for further reuse by allocator.
     bool mprotected = false;
+    /// Storage aliases externally-owned memory (see borrow_external_storage).
+    bool borrowed_external = false;
 #endif
 
 public:
@@ -301,9 +309,41 @@ public:
         c_end += bytes_to_copy;
     }
 
+    /// Point the array at externally-owned memory (e.g. Arrow/numpy buffers)
+    /// without copying. Constraints the owner (a column) must uphold:
+    /// - the external owner outlives the array's use of the memory;
+    /// - at least 63 readable bytes follow `ptr + bytes` (pad_right contract);
+    /// - the memory is never written through this array: any mutation path
+    ///   must materialize an owned copy first (IColumn::mutate hook), and
+    ///   release_external_storage() must be called before destruction.
+    void borrow_external_storage(char * ptr, size_t bytes) /// NOLINT
+    {
+        dealloc();
+        c_start = ptr;
+        c_end = ptr + bytes;
+        c_end_of_storage = ptr + bytes;
+#ifndef NDEBUG
+        borrowed_external = true;
+#endif
+    }
+
+    /// Forget borrowed pointers; the array becomes empty. Must only be called
+    /// while the storage is borrowed (owned storage would leak).
+    void release_external_storage() /// NOLINT
+    {
+#ifndef NDEBUG
+        chassert(borrowed_external || c_start == null);
+        borrowed_external = false;
+#endif
+        c_start = null;
+        c_end = null;
+        c_end_of_storage = null;
+    }
+
     void protect()
     {
 #ifndef NDEBUG
+        chassert(!borrowed_external);
         protectImpl(PROT_READ);
         mprotected = true;
 #endif

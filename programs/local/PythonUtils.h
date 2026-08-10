@@ -58,6 +58,11 @@ struct ColumnWrapper
     bool arrow_large_offsets = false;
     std::vector<ArrowStringChunkView> arrow_string_chunks;
 
+    /// Keeps the Python owner of `buf`/chunk buffers alive for columns that
+    /// mount the memory zero-copy; copied into each borrowed column. Created
+    /// under the GIL, releasable from any thread (deferred decref).
+    std::shared_ptr<void> borrow_guard;
+
     ~ColumnWrapper()
     {
         py::gil_scoped_acquire acquire;

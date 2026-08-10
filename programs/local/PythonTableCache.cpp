@@ -1,4 +1,6 @@
 #include "PythonTableCache.h"
+#include "NumpyType.h"
+#include "PyBorrowGuard.h"
 #include "PybindWrapper.h"
 #include "PythonArrowStream.h"
 #include "PythonUtils.h"
@@ -6,6 +8,69 @@
 #include <Common/re2.h>
 
 namespace CHDB {
+
+static bool pandasMetaCacheEnabled()
+{
+    static const bool enabled = []
+    {
+        const char * env = getenv("CHDB_PANDAS_META_CACHE"); // NOLINT(concurrency-mt-unsafe)
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
+PandasTableMeta::~PandasTableMeta()
+{
+    if (!Py_IsInitialized())
+    {
+        /// Interpreter is gone: decref / GIL are unusable. Leak the Python
+        /// references (and the wrappers, whose destructors take the GIL)
+        /// instead of crashing at teardown.
+        weak_ref.release();
+        columns_index.release();
+        for (auto & dtype_obj : dtype_objs)
+            dtype_obj.release();
+        for (auto & sb : str_backings)
+        {
+            sb.label.release();
+            sb.chunked.release();
+        }
+        auto * leaked = new std::unordered_map<std::string, std::shared_ptr<DB::ColumnWrapper>>(std::move(arrow_wrappers));
+        (void)leaked;
+        return;
+    }
+    try
+    {
+        py::gil_scoped_acquire acquire;
+        weak_ref.release().dec_ref();
+        columns_index.release().dec_ref();
+        dtype_objs.clear();
+        str_backings.clear();
+        arrow_wrappers.clear();
+    }
+    catch (...)
+    {
+    }
+}
+
+PythonTableCache::~PythonTableCache()
+{
+    if (!Py_IsInitialized())
+    {
+        auto * leaked = new std::list<PandasTableMetaPtr>(std::move(meta_lru));
+        (void)leaked;
+        return;
+    }
+    try
+    {
+        py::gil_scoped_acquire acquire;
+        meta_lru.clear();
+        drainPyBorrowGuardQueue();
+    }
+    catch (...)
+    {
+    }
+}
 
 /// Function to find instance of PyReader, pandas DataFrame, or PyArrow Table, filtered by variable name
 static py::object findQueryableObj(const String & var_name)
@@ -69,6 +134,24 @@ void PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 
     py::gil_assert();
 
+    /// New query: cached-metadata witnesses must be re-checked once per query.
+    ++query_epoch;
+    drainPyBorrowGuardQueue();
+
+    /// Evict entries whose DataFrame died, so cached backing arrays (string
+    /// payloads) are not kept alive longer than one query boundary.
+    meta_lru.remove_if([](const PandasTableMetaPtr & e)
+    {
+        try
+        {
+            return e->weak_ref.ptr() != nullptr && e->weak_ref().is_none();
+        }
+        catch (...)
+        {
+            return false;
+        }
+    });
+
     // RE2 pattern to match Python()/python() patterns with single/double quotes or no quotes
     static const RE2 pattern(R"([Pp]ython\s*\(\s*(?:['"]([^'"]+)['"]|([a-zA-Z_][a-zA-Z0-9_]*))\s*\))");
 
@@ -106,10 +189,156 @@ void PythonTableCache::clear()
 	{
         py::gil_scoped_acquire acquire;
         py_table_cache.clear();
+        drainPyBorrowGuardQueue();
 	}
 	catch (...)
 	{
 	}
+}
+
+void PythonTableCache::dropMeta(PyObject * df_ptr)
+{
+    meta_lru.remove_if([&](const PandasTableMetaPtr & e) { return e->df_ptr == df_ptr; });
+}
+
+PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & df)
+{
+    if (!pandasMetaCacheEnabled())
+        return nullptr;
+
+    py::gil_assert();
+
+    auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e->df_ptr == df.ptr(); });
+    if (it == meta_lru.end())
+        return nullptr;
+
+    auto entry = *it;
+    if (entry->validated_epoch == query_epoch)
+    {
+        meta_lru.splice(meta_lru.begin(), meta_lru, it);
+        return entry;
+    }
+
+    bool valid = false;
+    try
+    {
+        do
+        {
+            py::object alive = entry->weak_ref();
+            if (!alive.is(df))
+                break;
+            if (static_cast<size_t>(py::len(df)) != entry->row_count)
+                break;
+            py::object columns = df.attr("columns");
+            if (columns.ptr() != entry->columns_index.ptr())
+                break;
+            py::list dtypes = py::list(df.attr("dtypes"));
+            if (dtypes.size() != entry->dtype_objs.size())
+                break;
+            bool dtypes_match = true;
+            for (size_t i = 0; i < entry->dtype_objs.size(); ++i)
+            {
+                py::object cur = dtypes[i];
+                if (cur.ptr() != entry->dtype_objs[i].ptr())
+                {
+                    dtypes_match = false;
+                    break;
+                }
+            }
+            if (!dtypes_match)
+                break;
+            bool backings_match = true;
+            for (const auto & sb : entry->str_backings)
+            {
+                py::object series = df[sb.label];
+                py::object arr = series.attr("array");
+                if (!py::hasattr(arr, "_pa_array") || arr.attr("_pa_array").ptr() != sb.chunked.ptr())
+                {
+                    backings_match = false;
+                    break;
+                }
+            }
+            if (!backings_match)
+                break;
+            valid = true;
+        } while (false);
+    }
+    catch (...)
+    {
+        valid = false;
+    }
+
+    if (!valid)
+    {
+        meta_lru.erase(it);
+        return nullptr;
+    }
+
+    entry->validated_epoch = query_epoch;
+    meta_lru.splice(meta_lru.begin(), meta_lru, it);
+    return entry;
+}
+
+void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsDescription & schema)
+{
+    if (!pandasMetaCacheEnabled())
+        return;
+
+    py::gil_assert();
+
+    try
+    {
+        auto entry = std::make_shared<PandasTableMeta>();
+        entry->df_ptr = df.ptr();
+        entry->schema = schema;
+        entry->row_count = py::len(df);
+        entry->columns_index = df.attr("columns");
+        py::list names = py::list(entry->columns_index);
+        py::list dtypes = py::list(df.attr("dtypes"));
+        if (names.size() != dtypes.size())
+            return;
+
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            py::object name_obj = names[i];
+            py::object dtype_obj = dtypes[i];
+            auto numpy_type = ConvertNumpyType(dtype_obj);
+            switch (numpy_type.type)
+            {
+                case NumpyNullableType::OBJECT:
+                case NumpyNullableType::CATEGORY:
+                    return; /// value-derived schema / per-query wrapper side effects: not cacheable
+                case NumpyNullableType::STRING:
+                {
+                    py::object series = df[name_obj];
+                    py::object arr = series.attr("array");
+                    if (py::hasattr(arr, "_pa_array"))
+                        entry->str_backings.push_back({i, name_obj, arr.attr("_pa_array").cast<py::object>()});
+                    break;
+                }
+                default:
+                    break;
+            }
+            entry->dtype_objs.emplace_back(std::move(dtype_obj));
+        }
+
+        static py::handle weakref_ref = []
+        {
+            py::object ref_fn = py::module_::import("weakref").attr("ref");
+            return ref_fn.release();
+        }();
+        entry->weak_ref = weakref_ref(df);
+        entry->validated_epoch = query_epoch;
+
+        dropMeta(df.ptr());
+        meta_lru.push_front(std::move(entry));
+        while (meta_lru.size() > max_meta_entries)
+            meta_lru.pop_back();
+    }
+    catch (...)
+    {
+        /// Building the witness set failed: skip caching, behavior stays per-query.
+    }
 }
 
 } // namespace CHDB

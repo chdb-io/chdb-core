@@ -763,6 +763,13 @@ public:
     /// Same as above but assumes every entry in the list is non-null
     virtual void fillFromBlocksAndRowNumbers(size_t source_column_index_in_block, const ColumnsWithRowNumbers & columns_with_row_numbers);
 
+    /// Whether the column's storage aliases externally-owned memory (e.g.
+    /// Python buffers mounted zero-copy by chdb). Such columns are read-only;
+    /// IColumn::mutate materializes them into owned storage before handing
+    /// out a mutable reference.
+    virtual bool hasBorrowedStorage() const { return false; }
+    virtual void materializeBorrowedStorage() {}
+
     /// Some columns may require finalization before using of other operations.
     virtual void finalize() {}
     virtual bool isFinalized() const { return true; }
@@ -779,6 +786,8 @@ public:
         MutablePtr res = ptr->shallowMutate(); /// Now use_count is 2.
         ptr.reset(); /// Reset use_count to 1.
         res->forEachMutableSubcolumn([](WrappedPtr & subcolumn) { subcolumn = IColumn::mutate(std::move(subcolumn).detach()); });
+        if (res->hasBorrowedStorage())
+            res->materializeBorrowedStorage();
         return res;
     }
 

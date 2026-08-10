@@ -1,5 +1,6 @@
 #include "PandasDataFrame.h"
 #include "NumpyType.h"
+#include "PyBorrowGuard.h"
 
 #include <functional>
 #include <set>
@@ -296,6 +297,8 @@ static bool tryFillArrowStringColumn(DB::ColumnWrapper & column, const py::objec
     column.buf = chunked.ptr(); /// non-null sentinel, never dereferenced on this path
     column.tmp = chunked;       /// keep the ChunkedArray (and its buffers) alive
     column.tmp.inc_ref();
+    if (zeroCopyEnabled())
+        column.borrow_guard = makePyBorrowGuard(chunked.ptr());
     return true;
 }
 
@@ -426,6 +429,9 @@ void PandasDataFrame::fillColumn(
     column.stride = array.attr("strides").attr("__getitem__")(0).cast<size_t>();
     column.data = array;
     column.buf = const_cast<void *>(array.data());
+    /// Plain (non-masked) numpy buffers may be mounted zero-copy by the scan.
+    if (zeroCopyEnabled() && !column.registered_array && !column.is_object_type)
+        column.borrow_guard = makePyBorrowGuard(array.ptr());
 }
 
 } // namespace CHDB

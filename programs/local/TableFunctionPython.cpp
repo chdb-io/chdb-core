@@ -142,7 +142,39 @@ ColumnsDescription TableFunctionPython::getActualTableStructure(ContextPtr conte
     const auto & reader = data_source_wrapper->getDataSource();
 
     if (is_pandas_df)
-        return PandasDataFrame::getActualTableStructure(*data_source_wrapper, context);
+    {
+        auto * table_cache = context->getQueryContext() ? context->getQueryContext()->getPythonTableCache() : nullptr;
+        if (table_cache)
+        {
+            if (auto meta = table_cache->findValidatedPandasMeta(reader))
+            {
+                static const bool strict = []
+                {
+                    const char * env = getenv("CHDB_PANDAS_META_CACHE_STRICT"); // NOLINT(concurrency-mt-unsafe)
+                    return env && env[0] == '1';
+                }();
+                if (strict)
+                {
+                    auto fresh = PandasDataFrame::getActualTableStructure(*data_source_wrapper, context);
+                    if (fresh.toString(false) != meta->schema.toString(false))
+                    {
+                        LOG_ERROR(
+                            logger,
+                            "Pandas metadata cache strict check failed, cached schema differs from fresh inference:\n{}\nvs\n{}",
+                            meta->schema.toString(false),
+                            fresh.toString(false));
+                        table_cache->invalidatePandasMeta(reader.ptr());
+                        return fresh;
+                    }
+                }
+                return meta->schema;
+            }
+        }
+        auto columns = PandasDataFrame::getActualTableStructure(*data_source_wrapper, context);
+        if (table_cache)
+            table_cache->storePandasMeta(reader, columns);
+        return columns;
+    }
 
     if (PyArrowTable::isPyArrowTable(reader))
         return PyArrowTable::getActualTableStructure(reader, context);

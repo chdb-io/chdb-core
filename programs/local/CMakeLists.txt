@@ -73,6 +73,7 @@ if (USE_PYTHON)
         ChdbPyType.cpp
         PythonScalarUDF.cpp
         PythonUDFRegistry.cpp
+        PyBorrowGuard.cpp
         PythonArrowStream.cpp
         PythonReader.cpp
         PythonTableCache.cpp

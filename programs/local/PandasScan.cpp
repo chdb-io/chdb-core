@@ -1,4 +1,5 @@
 #include "PandasScan.h"
+#include "PyBorrowGuard.h"
 #include "PythonConversion.h"
 #include "PythonImporter.h"
 #include "ColumnVectorHelper.h"
@@ -660,6 +661,44 @@ void PandasScan::innerScanInterval(
     }
 }
 
+static constexpr size_t BORROW_MIN_BYTES = 16384;
+
+/// Mount the payload of a fully-valid, single-chunk segment as borrowed chars;
+/// offsets are rebuilt (Arrow start-offsets -> ClickHouse cumulative offsets).
+template <typename OffsetT>
+static bool tryBorrowArrowStringSegment(
+    const ArrowStringChunkView & chunk,
+    const size_t local_start,
+    const size_t n,
+    ColumnString & column_string,
+    NullMap * null_map,
+    const std::shared_ptr<void> & guard)
+{
+    if (chunk.validity != nullptr || !column_string.getChars().empty() || !column_string.getOffsets().empty())
+        return false;
+
+    const OffsetT * off = static_cast<const OffsetT *>(chunk.offsets) + chunk.offset + local_start;
+    const size_t total_bytes = static_cast<size_t>(off[n] - off[0]);
+    if (total_bytes < BORROW_MIN_BYTES)
+        return false;
+
+    const char * begin = chunk.data + off[0];
+    if (!CHDB::borrowTailReadable(begin + total_bytes))
+        return false;
+
+    column_string.borrowChars(begin, total_bytes, guard);
+
+    auto & offsets = column_string.getOffsets();
+    offsets.resize_exact(n);
+    const OffsetT base = off[0];
+    for (size_t i = 0; i < n; ++i)
+        offsets[i] = static_cast<size_t>(off[i + 1] - base);
+
+    if (null_map)
+        null_map->resize_fill(null_map->size() + n, 0);
+    return true;
+}
+
 template <typename OffsetT>
 static void scanArrowStringSegment(
     const ArrowStringChunkView & chunk,
@@ -766,6 +805,22 @@ void PandasScan::innerScanArrowString(
             lo = mid + 1;
         else
             hi = mid;
+    }
+
+    /// Zero-copy: a block that lies entirely inside one fully-valid chunk
+    /// mounts the Arrow payload instead of copying it.
+    if (col_wrap.borrow_guard && lo < chunks.size())
+    {
+        const auto & chunk = chunks[lo];
+        const size_t local_start = cursor - chunk.row_start;
+        if (local_start + count <= chunk.length)
+        {
+            const bool borrowed = col_wrap.arrow_large_offsets
+                ? tryBorrowArrowStringSegment<Int64>(chunk, local_start, count, *column_string, null_map, col_wrap.borrow_guard)
+                : tryBorrowArrowStringSegment<Int32>(chunk, local_start, count, *column_string, null_map, col_wrap.borrow_guard);
+            if (borrowed)
+                return;
+        }
     }
 
     size_t row = cursor;

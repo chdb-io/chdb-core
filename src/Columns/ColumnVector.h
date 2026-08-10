@@ -133,7 +133,40 @@ public:
 
     void protect() override
     {
-        data.protect();
+        if (!borrow_guard)
+            data.protect();
+    }
+
+    ~ColumnVector() override
+    {
+        if (borrow_guard)
+            data.release_external_storage();
+    }
+
+    /// Mount an externally-owned, contiguous value buffer without copying.
+    /// The guard keeps the owner alive; `ptr + n * sizeof(T)` must have >= 63
+    /// readable bytes after it. The column must be empty. Any mutation
+    /// materializes an owned copy via IColumn::mutate.
+    void borrowData(const void * ptr, size_t n, std::shared_ptr<void> guard)
+    {
+        chassert(data.empty());
+        data.borrow_external_storage(const_cast<char *>(static_cast<const char *>(ptr)), n * sizeof(T));
+        borrow_guard = std::move(guard);
+    }
+
+    bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
+
+    void materializeBorrowedStorage() override
+    {
+        if (!borrow_guard)
+            return;
+        const char * borrowed = data.raw_data();
+        const size_t n = data.size();
+        data.release_external_storage();
+        data.resize_exact(n);
+        if (n)
+            memcpy(data.data(), borrowed, n * sizeof(T));
+        borrow_guard.reset();
     }
 
     void insertValue(const T value)
@@ -381,6 +414,10 @@ public:
 
 protected:
     Container data;
+
+private:
+    /// When set, `data` aliases externally-owned memory kept alive by this guard.
+    std::shared_ptr<void> borrow_guard;
 };
 
 template <class TCol>
