@@ -154,6 +154,7 @@ public:
 
     void insert(const Field & x) override
     {
+        materializeBorrowedStorage();
         const String & s = x.safeGet<String>();
         const size_t old_size = chars.size();
         const size_t size_to_append = s.size();
@@ -179,6 +180,7 @@ public:
     void doInsertFrom(const IColumn & src_, size_t n) override
 #endif
     {
+        materializeBorrowedStorage();
         const ColumnString & src = assert_cast<const ColumnString &>(src_);
         const size_t size_to_append = src.sizeAt(n);
 
@@ -207,6 +209,7 @@ public:
 
     void insertData(const char * pos, size_t length) override
     {
+        materializeBorrowedStorage();
         const size_t old_size = chars.size();
         const size_t new_size = old_size + length;
 
