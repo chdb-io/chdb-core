@@ -294,5 +294,32 @@ class TestZeroCopyEscapeHatch(unittest.TestCase):
         self.assertEqual(on, off)
 
 
+class TestBorrowReleaseWithoutNextQuery(unittest.TestCase):
+    def test_dataframe_result_settles_guards_in_call(self):
+        import weakref
+
+        conn = chdb.connect(":memory:")
+        try:
+            df = pd.DataFrame({"x": np.arange(300_000, dtype=np.int64)})
+            view = df["x"].to_numpy(copy=False)
+            block = view.base if view.base is not None else view
+            wr = weakref.ref(block)
+            globals()["lifec_df"] = df
+            try:
+                res = conn.query("SELECT x FROM Python(lifec_df)", "dataframe")
+                self.assertEqual(len(res), 300_000)
+            finally:
+                del globals()["lifec_df"]
+            del df, view, block, res
+            gc.collect()
+            self.assertIsNone(
+                wr(),
+                "borrowed numeric buffer must be released by the query call itself, "
+                "not deferred to the next query",
+            )
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
