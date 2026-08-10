@@ -48,6 +48,7 @@ void ColumnString::insertManyFrom(const IColumn & src, size_t position, size_t l
 void ColumnString::doInsertManyFrom(const IColumn & src, size_t position, size_t length)
 #endif
 {
+    materializeBorrowedStorage();
     /// Inserting zero copies is a no-op regardless of `position`. Returning early avoids
     /// eagerly reading `offsets[position - 1]` below, which would go out of bounds on
     /// a caller-side garbage `position` (e.g. from a `size_t` underflow).
@@ -137,6 +138,8 @@ void ColumnString::doInsertRangeFrom(const IColumn & src, size_t start, size_t l
 {
     if (length == 0)
         return;
+
+    materializeBorrowedStorage();
 
     const ColumnString & src_concrete = assert_cast<const ColumnString &>(src);
 
@@ -361,6 +364,7 @@ void ColumnString::batchSerializeValueIntoMemory(VectorWithMemoryTracking<char *
 
 void ColumnString::deserializeAndInsertFromArena(ReadBuffer & in, const IColumn::SerializationSettings * settings)
 {
+    materializeBorrowedStorage();
     size_t string_size = 0;
     readBinaryLittleEndian<size_t>(string_size, in);
 
@@ -627,6 +631,7 @@ size_t ColumnString::capacity() const
 
 void ColumnString::prepareForSquashing(const VectorWithMemoryTracking<ColumnPtr> & source_columns, size_t factor)
 {
+    materializeBorrowedStorage();
     size_t new_size = size();
     size_t new_chars_size = chars.size();
     for (const auto & source_column : source_columns)
@@ -642,6 +647,7 @@ void ColumnString::prepareForSquashing(const VectorWithMemoryTracking<ColumnPtr>
 
 void ColumnString::shrinkToFit()
 {
+    materializeBorrowedStorage();
     chars.shrink_to_fit();
     offsets.shrink_to_fit();
 }

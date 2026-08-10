@@ -64,6 +64,7 @@ public:
     void doInsertFrom(const IColumn & src, size_t n) override
 #endif
     {
+        materializeBorrowedStorage();
         data.push_back(assert_cast<const Self &>(src).getData()[n]);
     }
 
@@ -73,27 +74,32 @@ public:
     void doInsertManyFrom(const IColumn & src, size_t position, size_t length) override
 #endif
     {
+        materializeBorrowedStorage();
         ValueType v = assert_cast<const Self &>(src).getData()[position];
         data.resize_fill(data.size() + length, v);
     }
 
     void insertMany(const Field & field, size_t length) override
     {
+        materializeBorrowedStorage();
         data.resize_fill(data.size() + length, static_cast<T>(field.safeGet<T>()));
     }
 
     void insertData(const char * pos, size_t) override
     {
+        materializeBorrowedStorage();
         data.emplace_back(unalignedLoad<T>(pos));
     }
 
     void insertDefault() override
     {
+        materializeBorrowedStorage();
         data.push_back(T());
     }
 
     void insertManyDefaults(size_t length) override
     {
+        materializeBorrowedStorage();
         data.resize_fill(data.size() + length, T());
     }
 
@@ -245,6 +251,7 @@ public:
 
     void reserve(size_t n) override
     {
+        materializeBorrowedStorage();
         data.reserve_exact(n);
     }
 
@@ -255,6 +262,7 @@ public:
 
     void shrinkToFit() override
     {
+        materializeBorrowedStorage();
         data.shrink_to_fit();
     }
 
@@ -310,6 +318,7 @@ public:
 
     void insert(const Field & x) override
     {
+        materializeBorrowedStorage();
         data.push_back(static_cast<T>(x.safeGet<T>()));
     }
 
