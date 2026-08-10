@@ -25,21 +25,37 @@ struct PandasTableMeta
     py::object weak_ref;
     py::object columns_index;
     std::vector<py::object> dtype_objs;
-    /// (column position, original label object, backing ChunkedArray) per
-    /// string column. The label is kept as a Python object so validation
-    /// indexes the frame correctly for non-string labels too.
+    /// (column position, original label object, weakref to the backing
+    /// ChunkedArray) per string column. The label is kept as a Python object
+    /// so validation indexes the frame correctly for non-string labels too.
+    /// The backing is held only through a weakref: identity validation needs
+    /// to know whether the old object DIED, not to keep it alive — a dead
+    /// weakref invalidates the entry before any pointer is compared, and a
+    /// live one makes the identity check exact. This way the cache never
+    /// pins the string payload of a deleted DataFrame.
     struct StrBacking
     {
         size_t pos;
         py::object label;
-        py::object chunked;
+        py::object chunked_wr;
     };
     std::vector<StrBacking> str_backings;
     size_t row_count = 0;
     DB::ColumnsDescription schema;
     bool has_column_sizes = false;
     DB::IStorage::ColumnSizeByName column_sizes;
-    std::unordered_map<std::string, std::shared_ptr<DB::ColumnWrapper>> arrow_wrappers;
+    /// Cached per-chunk buffer tables for Arrow string columns: plain PODs
+    /// plus the identity of the backing ChunkedArray. No Python references —
+    /// validity is re-established per query from the live column (whose
+    /// identity the str_backings witness already verified).
+    struct ArrowWrapperMaster
+    {
+        std::vector<DB::ArrowStringChunkView> chunks;
+        bool large_offsets = false;
+        size_t row_count = 0;
+        uintptr_t chunked_ptr = 0;
+    };
+    std::unordered_map<std::string, ArrowWrapperMaster> arrow_wrappers;
     UInt64 validated_epoch = 0;
 
     ~PandasTableMeta();

@@ -148,22 +148,25 @@ static bool detectArrowStringPredicate(
     return false;
 }
 
-/// Reuse a session-cached Arrow string wrapper: copies the chunk-view table
+/// Reuse a session-cached Arrow string chunk table: copies the chunk views
 /// (plain PODs) instead of re-walking every pyarrow chunk's buffers() under
-/// the GIL. Validity is guaranteed by the metadata-cache witness check (the
-/// backing ChunkedArray identity was verified for the current query).
-static void transplantArrowWrapper(const ColumnWrapper & src, ColumnWrapper & dst)
+/// the GIL. The master holds no Python references; `chunked` is the live
+/// backing fetched from the DataFrame this query, whose identity the
+/// metadata-cache witness already verified for the current epoch.
+static void mountCachedArrowWrapper(
+    const CHDB::PandasTableMeta::ArrowWrapperMaster & master, const py::object & chunked, ColumnWrapper & dst)
 {
-    dst.arrow_string_chunks = src.arrow_string_chunks;
-    dst.arrow_large_offsets = src.arrow_large_offsets;
+    dst.arrow_string_chunks = master.chunks;
+    dst.arrow_large_offsets = master.large_offsets;
     dst.is_arrow_string = true;
     dst.is_object_type = false;
-    dst.data = src.data;
-    dst.buf = src.buf;
-    dst.row_count = src.row_count;
-    dst.tmp = src.data;
+    dst.data = chunked;
+    dst.buf = chunked.ptr();
+    dst.row_count = master.row_count;
+    dst.tmp = chunked;
     dst.tmp.inc_ref();
-    dst.borrow_guard = src.borrow_guard;
+    if (CHDB::zeroCopyEnabled())
+        dst.borrow_guard = CHDB::makePyBorrowGuard(chunked.ptr());
 }
 
 /// Block boundaries for the pandas scan: the fixed max_block_size grid, cut
@@ -709,27 +712,41 @@ void StoragePython::prepareColumnCache(
             {
                 if (is_pandas_df)
                 {
-                    std::shared_ptr<ColumnWrapper> cached_master;
+                    bool mounted = false;
                     if (meta)
                     {
                         auto found = meta->arrow_wrappers.find(col_name);
                         if (found != meta->arrow_wrappers.end())
-                            cached_master = found->second;
+                        {
+                            py::object series = data_source[py::str(col_name)];
+                            if (py::hasattr(series, "array"))
+                            {
+                                py::object underlying = series.attr("array");
+                                if (py::hasattr(underlying, "_pa_array"))
+                                {
+                                    py::object chunked = underlying.attr("_pa_array");
+                                    if (reinterpret_cast<uintptr_t>(chunked.ptr()) == found->second.chunked_ptr)
+                                    {
+                                        mountCachedArrowWrapper(found->second, chunked, col);
+                                        mounted = true;
+                                    }
+                                }
+                            }
+                            if (!mounted)
+                                meta->arrow_wrappers.erase(found);
+                        }
                     }
-                    if (cached_master)
-                    {
-                        transplantArrowWrapper(*cached_master, col);
-                    }
-                    else
+                    if (!mounted)
                     {
                         CHDB::PandasDataFrame::fillColumn(data_source, col_name, col, *data_source_wrapper);
                         if (meta && col.is_arrow_string)
-                        {
-                            auto master = std::make_shared<ColumnWrapper>();
-                            transplantArrowWrapper(col, *master);
-                            master->name = col_name;
-                            meta->arrow_wrappers.emplace(col_name, std::move(master));
-                        }
+                            meta->arrow_wrappers.emplace(
+                                col_name,
+                                CHDB::PandasTableMeta::ArrowWrapperMaster{
+                                    col.arrow_string_chunks,
+                                    col.arrow_large_offsets,
+                                    col.row_count,
+                                    reinterpret_cast<uintptr_t>(col.data.ptr())});
                     }
                 }
                 else
