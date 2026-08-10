@@ -995,6 +995,8 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
 template <typename T>
 void ColumnVector<T>::filter(const IColumn::Filter & filt)
 {
+    materializeBorrowedStorage();
+
     const auto size = data.size();
     const auto filter_size = filt.size();
 
@@ -1033,6 +1035,7 @@ void ColumnVector<T>::filter(const IColumn::Filter & filt)
 template <typename T>
 void ColumnVector<T>::expand(const IColumn::Filter & mask, bool inverted)
 {
+    materializeBorrowedStorage();
     expandDataByMask<T>(data, mask, inverted);
 }
 
