@@ -991,7 +991,8 @@ void EmbeddedServer::processConfig()
         fs::create_directories(fs::path(path));
         status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
 
-        if (fs::exists(fs::path(path) / "metadata"))
+        const bool metadata_exists = fs::exists(fs::path(path) / "metadata");
+        if (metadata_exists)
         {
             LOG_DEBUG(log, "Loading metadata from {}", path);
 
@@ -1014,6 +1015,15 @@ void EmbeddedServer::processConfig()
             }
 
             LOG_DEBUG(log, "Loaded metadata.");
+        }
+
+        /// A fresh persistent path has no metadata directory yet. DDL executed by
+        /// the first session can create it, so start the cleanup tasks even when
+        /// there was no metadata to load. Otherwise DROP ... SYNC waits forever.
+        if (!metadata_exists && !config().has("only-system-tables"))
+        {
+            DatabaseCatalog::instance().createBackgroundTasks();
+            DatabaseCatalog::instance().startupBackgroundTasks();
         }
 
         if (!attached_system_database)
