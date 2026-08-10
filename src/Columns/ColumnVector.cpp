@@ -1334,7 +1334,18 @@ template ColumnPtr ColumnVector<UInt64>::indexImpl<UInt8>(const PaddedPODArray<U
 template ColumnPtr ColumnVector<UInt64>::indexImpl<UInt16>(const PaddedPODArray<UInt16> & indexes, size_t limit) const;
 template ColumnPtr ColumnVector<UInt64>::indexImpl<UInt32>(const PaddedPODArray<UInt32> & indexes, size_t limit) const;
 
-#if defined(OS_DARWIN)
+/// Needed to link a Release (-O3) build: ColumnVariant.cpp references
+/// indexImpl<size_t> (permute -> permuteImpl -> indexImpl, and IColumnPermutation is
+/// PaddedPODArray<size_t>). At -Os this happens to resolve anyway, because
+/// ColumnVector.cpp's own use of it leaves behind a weak definition; -O3 inlines that
+/// use and emits none, so the reference goes unresolved. Instantiate explicitly so the
+/// definition does not depend on the optimization level.
+///
+/// Only needed where size_t and uint64_t are distinct types: on LP64 Linux uint64_t IS
+/// 'unsigned long', so indexImpl<UInt64> above already covers size_t, and repeating it
+/// here would be a duplicate instantiation. Darwin and wasm64 use 'unsigned long long'
+/// for uint64_t and 'unsigned long' for size_t, so they need their own.
+#if defined(OS_DARWIN) || defined(OS_WASM)
 template ColumnPtr ColumnVector<UInt8>::indexImpl<size_t>(const PaddedPODArray<size_t> & indexes, size_t limit) const;
 template ColumnPtr ColumnVector<UInt64>::indexImpl<size_t>(const PaddedPODArray<size_t> & indexes, size_t limit) const;
 #endif
