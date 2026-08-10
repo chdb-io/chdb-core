@@ -204,15 +204,17 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create ChdbClient");
         }
 
-        auto * conn = new chdb_conn();
-        conn->server = client.release();
+        auto conn = std::make_unique<chdb_conn>();
+        conn->server = client.get();
         conn->connected = true;
-        auto ** conn_ptr = new chdb_conn *(conn);
+        auto conn_ptr = std::make_unique<chdb_conn *>(conn.get());
 
         if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
             chdb_reset_signal_handlers();
 
-        return reinterpret_cast<chdb_connection *>(conn_ptr);
+        client.release();
+        conn.release();
+        return reinterpret_cast<chdb_connection *>(conn_ptr.release());
     }
     catch (const DB::Exception & e)
     {
@@ -1332,9 +1334,7 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
 void chdb_reset_signal_handlers(void)
 {
-    static const std::vector<int> deadly_signals = {
-        SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGTSTP, SIGTRAP
-    };
+    static constexpr int deadly_signals[] = {SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGTSTP, SIGTRAP};
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -1345,6 +1345,6 @@ void chdb_reset_signal_handlers(void)
     for (int sig : deadly_signals)
         sigaction(sig, &sa, nullptr);
 
-    auto & instance = HandledSignals::instance();
-    instance.handled_signals.clear();
+    if (auto * instance = HandledSignals::tryGetInstance())
+        instance->handled_signals.clear();
 }
