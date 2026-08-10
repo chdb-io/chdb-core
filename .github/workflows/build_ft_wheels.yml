@@ -22,12 +22,6 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches:
-      - main
-    paths-ignore:
-      - '**/*.md'
 
 concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,

@@ -1,8 +1,7 @@
 name: Pull-CI
 
 on:
-  pull_request:
-    types: [opened, synchronize]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
