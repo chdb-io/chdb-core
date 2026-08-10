@@ -19,6 +19,16 @@ static bool pandasMetaCacheEnabled()
     return enabled;
 }
 
+static py::object makeWeakref(const py::handle & obj)
+{
+    static py::handle weakref_ref = []
+    {
+        py::object ref_fn = py::module_::import("weakref").attr("ref");
+        return ref_fn.release();
+    }();
+    return weakref_ref(obj);
+}
+
 PandasTableMeta::~PandasTableMeta()
 {
     if (!Py_IsInitialized())
@@ -33,10 +43,8 @@ PandasTableMeta::~PandasTableMeta()
         for (auto & sb : str_backings)
         {
             sb.label.release();
-            sb.chunked.release();
+            sb.chunked_wr.release();
         }
-        auto * leaked = new std::unordered_map<std::string, std::shared_ptr<DB::ColumnWrapper>>(std::move(arrow_wrappers));
-        (void)leaked;
         return;
     }
     try
@@ -250,9 +258,15 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
             bool backings_match = true;
             for (const auto & sb : entry->str_backings)
             {
+                py::object alive = sb.chunked_wr();
+                if (alive.is_none())
+                {
+                    backings_match = false;
+                    break;
+                }
                 py::object series = df[sb.label];
                 py::object arr = series.attr("array");
-                if (!py::hasattr(arr, "_pa_array") || arr.attr("_pa_array").ptr() != sb.chunked.ptr())
+                if (!py::hasattr(arr, "_pa_array") || !alive.is(arr.attr("_pa_array")))
                 {
                     backings_match = false;
                     break;
@@ -313,7 +327,7 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
                     py::object series = df[name_obj];
                     py::object arr = series.attr("array");
                     if (py::hasattr(arr, "_pa_array"))
-                        entry->str_backings.push_back({i, name_obj, arr.attr("_pa_array").cast<py::object>()});
+                        entry->str_backings.push_back({i, name_obj, makeWeakref(arr.attr("_pa_array"))});
                     break;
                 }
                 default:
@@ -322,12 +336,7 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
             entry->dtype_objs.emplace_back(std::move(dtype_obj));
         }
 
-        static py::handle weakref_ref = []
-        {
-            py::object ref_fn = py::module_::import("weakref").attr("ref");
-            return ref_fn.release();
-        }();
-        entry->weak_ref = weakref_ref(df);
+        entry->weak_ref = makeWeakref(df);
         entry->validated_epoch = query_epoch;
 
         dropMeta(df.ptr());

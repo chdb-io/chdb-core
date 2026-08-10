@@ -34,6 +34,9 @@ std::shared_ptr<void> makePyBorrowGuard(PyObject * obj)
 
 void drainPyBorrowGuardQueue()
 {
+    if (!Py_IsInitialized())
+        return;
+
     std::vector<PyObject *> drained;
     {
         std::lock_guard lock(pending_decrefs_mutex);

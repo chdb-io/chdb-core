@@ -115,9 +115,6 @@ class TestPandasMetaCache(unittest.TestCase):
         ref = weakref.ref(df)
         self.q("SELECT count() FROM Python(df)")
         del df
-        # The previous query's storage may hold the frame until the next query
-        # flushes it (pre-existing chdb behavior, cache-independent).
-        self.q("SELECT 1")
         gc.collect()
         self.assertIsNone(ref(), "metadata cache must not keep the DataFrame alive")
 
@@ -178,23 +175,20 @@ class TestPandasMetaCache(unittest.TestCase):
         self.assertEqual(len(set(outcomes)), 1, outcomes)
         self.assertEqual(self.q("SELECT count() FROM Python(df)"), "10")
 
-    def test_dead_entry_evicted_on_next_query(self):
+    def test_string_backing_released_immediately(self):
         import weakref
 
         df = make_df(10)
         backing = weakref.ref(df["s"].array._pa_array) if PANDAS3 else None
-        self.q("SELECT count() FROM Python(df)")
+        self.q("SELECT count(), min(s) FROM Python(df)")
         del df
         gc.collect()
-        other = make_df(5)  # noqa: F841
-        # First query releases the prior query's storage (which still holds the
-        # frame); the second query's eviction sweep then sees the dead weakref.
-        self.q("SELECT count() FROM Python(other)")
-        gc.collect()
-        self.q("SELECT count() FROM Python(other)")
-        gc.collect()
         if backing is not None:
-            self.assertIsNone(backing(), "cached string backing must be released after the owner died")
+            self.assertIsNone(
+                backing(),
+                "the metadata cache holds string backings only via weakref; "
+                "deleting the DataFrame must free the payload without any follow-up query",
+            )
 
     def test_two_tables_in_one_query(self):
         left = make_df(10, tag="l")  # noqa: F841
