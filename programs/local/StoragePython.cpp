@@ -1,10 +1,12 @@
 #include "StoragePython.h"
 #include "NumpyType.h"
 #include "PandasDataFrame.h"
+#include "PyBorrowGuard.h"
 #include "PybindWrapper.h"
 #include "PythonArrowStream.h"
 #include "PythonImporter.h"
 #include "PythonSource.h"
+#include "PythonTableCache.h"
 #include "PyArrowTable.h"
 #include "PyArrowStreamFactory.h"
 #include "PythonUtils.h"
@@ -144,6 +146,65 @@ static bool detectArrowStringPredicate(
         }
     }
     return false;
+}
+
+/// Reuse a session-cached Arrow string wrapper: copies the chunk-view table
+/// (plain PODs) instead of re-walking every pyarrow chunk's buffers() under
+/// the GIL. Validity is guaranteed by the metadata-cache witness check (the
+/// backing ChunkedArray identity was verified for the current query).
+static void transplantArrowWrapper(const ColumnWrapper & src, ColumnWrapper & dst)
+{
+    dst.arrow_string_chunks = src.arrow_string_chunks;
+    dst.arrow_large_offsets = src.arrow_large_offsets;
+    dst.is_arrow_string = true;
+    dst.is_object_type = false;
+    dst.data = src.data;
+    dst.buf = src.buf;
+    dst.row_count = src.row_count;
+    dst.tmp = src.data;
+    dst.tmp.inc_ref();
+    dst.borrow_guard = src.borrow_guard;
+}
+
+/// Block boundaries for the pandas scan: the fixed max_block_size grid, cut
+/// additionally at every Arrow chunk start so that blocks do not straddle
+/// chunks (a block inside one fully-valid chunk mounts its payload zero-copy).
+/// Returns nullptr when there is nothing to cut or the chunk layout is so
+/// fragmented that cutting would degenerate the block sizes.
+static PythonSource::BlockBoundsPtr computeBlockBounds(
+    const PyColumnVec & columns, size_t total_rows, size_t max_block_size)
+{
+    if (total_rows == 0)
+        return nullptr;
+
+    std::vector<UInt64> bounds;
+    for (size_t b = 0; b * max_block_size < total_rows; ++b)
+        bounds.push_back(b * max_block_size);
+
+    const size_t grid_blocks = bounds.size();
+    bool has_chunk_cuts = false;
+    for (const auto & col : columns)
+    {
+        if (!col.is_arrow_string || col.arrow_string_chunks.size() <= 1)
+            continue;
+        for (const auto & chunk : col.arrow_string_chunks)
+            if (chunk.row_start != 0 && chunk.row_start < total_rows)
+            {
+                bounds.push_back(chunk.row_start);
+                has_chunk_cuts = true;
+            }
+    }
+    if (!has_chunk_cuts)
+        return nullptr;
+
+    bounds.push_back(total_rows);
+    std::sort(bounds.begin(), bounds.end());
+    bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
+
+    if (bounds.size() - 1 > 4 * (grid_blocks + 1))
+        return nullptr;
+
+    return std::make_shared<const std::vector<UInt64>>(std::move(bounds));
 }
 
 static Block pythonReadSampleBlock(StoragePython & storage, const Names & column_names, const StorageSnapshotPtr & snapshot)
@@ -318,7 +379,7 @@ Pipe StoragePython::readImpl(
     }
 
     if (!arrow_table_reader)
-        prepareColumnCache(column_names, sample_block, this->is_pandas_df, is_virtual_column);
+        prepareColumnCache(column_names, sample_block, this->is_pandas_df, is_virtual_column, context_);
 
     /// PREWHERE: prepare shared expression actions; sources convert the
     /// predicate input columns, filter, and gather the remaining columns.
@@ -477,10 +538,14 @@ Pipe StoragePython::readImpl(
         }
     }
 
+    PythonSource::BlockBoundsPtr block_bounds;
+    if (this->is_pandas_df && !arrow_table_reader && column_cache && CHDB::zeroCopyEnabled())
+        block_bounds = computeBlockBounds(*column_cache, data_source_row_count, max_block_size);
+
     Pipes pipes;
     for (size_t stream = 0; stream < num_streams; ++stream)
         pipes.emplace_back(std::make_shared<PythonSource>(
-            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader, prewhere, topk));
+            data_source_wrapper, false, this->is_pandas_df, sample_block, column_cache, data_source_row_count, max_block_size, stream, num_streams, format_settings, arrow_table_reader, prewhere, topk, block_bounds));
     return Pipe::unitePipes(std::move(pipes));
 }
 
@@ -497,6 +562,19 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
     {
         py::gil_scoped_acquire acquire;
         auto & data_source = data_source_wrapper->getDataSource();
+
+        CHDB::PandasTableMetaPtr meta;
+        if (auto ctx = context.lock())
+            if (auto query_context = ctx->getQueryContext())
+                if (auto * table_cache = query_context->getPythonTableCache())
+                    meta = table_cache->findValidatedPandasMeta(data_source);
+        if (meta && meta->has_column_sizes)
+        {
+            column_sizes = meta->column_sizes;
+            column_sizes_computed = true;
+            return column_sizes;
+        }
+
         /// memory_usage(deep=False) is O(ncols) and counts Arrow buffers for
         /// arrow-backed columns; good enough to order PREWHERE conditions.
         py::object usage = data_source.attr("memory_usage")(py::arg("index") = false, py::arg("deep") = false);
@@ -511,6 +589,11 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
             size.data_compressed = bytes;
             size.data_uncompressed = bytes;
             column_sizes[name] = size;
+        }
+        if (meta)
+        {
+            meta->column_sizes = column_sizes;
+            meta->has_column_sizes = true;
         }
     }
     catch (...)
@@ -568,7 +651,8 @@ void StoragePython::prepareColumnCache(
     const Names & names,
     const Block & sample_block,
     const bool is_pandas_df,
-    const std::vector<bool> & is_virtual_column)
+    const std::vector<bool> & is_virtual_column,
+    const ContextPtr & context_)
 {
     py::gil_scoped_acquire acquire;
 #if USE_JEMALLOC
@@ -603,6 +687,12 @@ void StoragePython::prepareColumnCache(
 
     if (need_rebuild)
     {
+        CHDB::PandasTableMetaPtr meta;
+        if (is_pandas_df && context_)
+            if (auto query_context = context_->getQueryContext())
+                if (auto * table_cache = query_context->getPythonTableCache())
+                    meta = table_cache->findValidatedPandasMeta(data_source);
+
         column_cache = std::make_shared<PyColumnVec>(names.size());
         for (size_t i = 0; i < names.size(); ++i)
         {
@@ -619,7 +709,28 @@ void StoragePython::prepareColumnCache(
             {
                 if (is_pandas_df)
                 {
-                    CHDB::PandasDataFrame::fillColumn(data_source, col_name, col, *data_source_wrapper);
+                    std::shared_ptr<ColumnWrapper> cached_master;
+                    if (meta)
+                    {
+                        auto found = meta->arrow_wrappers.find(col_name);
+                        if (found != meta->arrow_wrappers.end())
+                            cached_master = found->second;
+                    }
+                    if (cached_master)
+                    {
+                        transplantArrowWrapper(*cached_master, col);
+                    }
+                    else
+                    {
+                        CHDB::PandasDataFrame::fillColumn(data_source, col_name, col, *data_source_wrapper);
+                        if (meta && col.is_arrow_string)
+                        {
+                            auto master = std::make_shared<ColumnWrapper>();
+                            transplantArrowWrapper(col, *master);
+                            master->name = col_name;
+                            meta->arrow_wrappers.emplace(col_name, std::move(master));
+                        }
+                    }
                 }
                 else
                 {

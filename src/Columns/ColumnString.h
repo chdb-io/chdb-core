@@ -40,6 +40,10 @@ private:
     /// Bytes of strings, placed contiguously. Note that strings are not zero-terminated and could contain zero bytes in the middle.
     Chars chars;
 
+    /// When set, `chars` aliases externally-owned memory kept alive by this
+    /// guard (offsets stay owned). See borrowChars().
+    std::shared_ptr<void> borrow_guard;
+
     size_t ALWAYS_INLINE offsetAt(ssize_t i) const { return offsets[i - 1]; }
 
     /// Size of i-th element
@@ -69,6 +73,27 @@ private:
     ColumnString(const ColumnString & src);
 
 public:
+    ~ColumnString() override
+    {
+        if (borrow_guard)
+            chars.release_external_storage();
+    }
+
+    /// Mount externally-owned string payload without copying; offsets must be
+    /// filled by the caller (cumulative, relative to `data`). The guard keeps
+    /// the memory owner alive; `data + bytes` must have >= 63 readable bytes
+    /// after it (PaddedPODArray read-overflow contract). The column must be
+    /// empty. Any mutation materializes an owned copy via IColumn::mutate.
+    void borrowChars(const char * data, size_t bytes, std::shared_ptr<void> guard)
+    {
+        chassert(chars.empty() && offsets.empty());
+        chars.borrow_external_storage(const_cast<char *>(data), bytes);
+        borrow_guard = std::move(guard);
+    }
+
+    bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
+    void materializeBorrowedStorage() override;
+
     const char * getFamilyName() const override { return "String"; }
     TypeIndex getDataType() const override { return TypeIndex::String; }
 
