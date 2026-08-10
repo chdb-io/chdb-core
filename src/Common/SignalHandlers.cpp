@@ -50,6 +50,7 @@ using namespace DB;
 
 
 std::atomic<bool> HandledSignals::disable_signal_handlers = false;
+std::atomic<HandledSignals *> HandledSignals::instance_ptr = nullptr;
 
 static std::atomic_bool is_crashed = false;
 static_assert(std::atomic_bool::is_always_lock_free, "is_crashed must be lock-free for use in signal handlers");
@@ -308,7 +309,8 @@ static DISABLE_SANITIZER_INSTRUMENTATION void sanitizerDeathCallback()
     /// but closing the pipe leads to deadlock from death callback, so we will not close it.
     /// Use resetHandledSignals() (idempotent, does not construct the singleton) instead of
     /// HandledSignals::instance().reset() to stay safe when called at process exit.
-    resetHandledSignals();
+    /// `lock` must be false here: taking a std::mutex is not async-signal-safe.
+    resetHandledSignals(/* lock= */ false);
 }
 #endif
 
@@ -354,7 +356,10 @@ void HandledSignals::addSignalHandler(
             throw Poco::Exception("Cannot set signal handler.");
 
     if (register_signal)
+    {
+        std::lock_guard<std::mutex> lock(handled_signals_mutex);
         std::copy(signals.begin(), signals.end(), std::back_inserter(handled_signals));
+    }
 #endif
 }
 
@@ -771,11 +776,19 @@ HandledSignals::HandledSignals()
 {
     signal_pipe.setNonBlockingWrite();
     signal_pipe.tryIncreaseSize(1 << 20);
+    instance_ptr.store(this, std::memory_order_release);
 }
 
-void HandledSignals::reset(bool close_pipe)
+void HandledSignals::reset(bool close_pipe, bool lock)
 {
     handled_signals_were_reset.test_and_set();
+
+    /// `lock` must be false on the async-signal / sanitizer-death-callback path, where
+    /// std::mutex is neither async-signal-safe nor allocation-free. std::unique_lock with
+    /// defer_lock lets us conditionally acquire without duplicating the reset body.
+    std::unique_lock<std::mutex> guard(handled_signals_mutex, std::defer_lock);
+    if (lock)
+        guard.lock();
 
 #if !defined(OS_WASM)
     /// Reset signals to SIG_DFL to avoid trying to write to the signal_pipe that will be closed after.
@@ -801,17 +814,19 @@ void HandledSignals::reset(bool close_pipe)
         signal_pipe.close();
 }
 
-void resetHandledSignals()
+void resetHandledSignals(bool lock)
 {
     /// Already reset: do nothing, and in particular do not touch (or construct) HandledSignals.
     if (handled_signals_were_reset.test())
         return;
 
-    HandledSignals::instance().reset(/* close_pipe= */ false);
+    if (auto * handled_signals_instance = HandledSignals::tryGetInstance())
+        handled_signals_instance->reset(/* close_pipe= */ false, lock);
 }
 
 HandledSignals::~HandledSignals()
 {
+    instance_ptr.store(nullptr, std::memory_order_release);
     try
     {
         reset();
@@ -826,6 +841,11 @@ HandledSignals & HandledSignals::instance()
 {
     static HandledSignals res;
     return res;
+}
+
+HandledSignals * HandledSignals::tryGetInstance()
+{
+    return instance_ptr.load(std::memory_order_acquire);
 }
 
 void HandledSignals::setupTerminateHandler()

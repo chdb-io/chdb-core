@@ -1,5 +1,6 @@
 #pragma once
 #include <csignal>
+#include <mutex>
 
 #include <base/defines.h>
 #include <Common/Logger_fwd.h>
@@ -73,8 +74,9 @@ bool isCrashed();
 void blockSignals(const std::vector<int> & signals);
 
 /// Reset the deadly signal handlers to SIG_DFL (like HandledSignals::reset(false)), idempotently.
-/// Safe to call from the sanitizer death callback: it does not construct HandledSignals.
-void resetHandledSignals();
+/// Safe to call from the sanitizer death callback: it does not construct HandledSignals,
+/// and `lock` must be false there (std::mutex is not async-signal-safe).
+void resetHandledSignals(bool lock = true);
 
 
 /** The thread that read info about signal or std::terminate from pipe.
@@ -126,6 +128,14 @@ private:
 struct HandledSignals
 {
     std::vector<int> handled_signals;
+    /// Serializes all non-signal-context accesses to `handled_signals`.
+    /// chdb appends (addSignalHandler) and clears (reset / chdb_reset_signal_handlers)
+    /// happen from several threads under different outer mutexes (CHDB_MUTEX,
+    /// EmbeddedServer::instance_mutex, or no lock at all), so the vector needs its
+    /// own leaf-level lock. This lock is acquired last and released before returning,
+    /// so it can never participate in a lock-ordering cycle. It is intentionally NOT
+    /// taken on the async-signal / sanitizer-death-callback path (reset(lock=false)).
+    std::mutex handled_signals_mutex;
     DB::PipeFDs signal_pipe;
     std::atomic_flag fatal_error_printed;
 
@@ -149,7 +159,15 @@ struct HandledSignals
         bool register_signal,
         const std::vector<int> & additional_masked_signals = {});
 
-    void reset(bool close_pipe = true);
+    /// `lock` guards `handled_signals` with handled_signals_mutex. It MUST be false
+    /// when called from an async-signal / death-callback context (sanitizerDeathCallback),
+    /// where taking a std::mutex is neither async-signal-safe nor allocation-free and
+    /// could deadlock against a thread interrupted mid-append.
+    void reset(bool close_pipe = true, bool lock = true);
 
     static HandledSignals & instance();
+    static HandledSignals * tryGetInstance();
+
+private:
+    static std::atomic<HandledSignals *> instance_ptr;
 };

@@ -450,10 +450,11 @@ void FailPointInjection::enableFailPoint(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
-// chdb-core-lite drops these: they're orphan stubs (no matching declaration in
-// FailPoint.h), so compiling them under USE_LIBFIU=0 fails. Wrap so the
-// upstream-style source survives rebases; the dead methods never link anywhere.
+/// Upstream defines this and the two stubs below in this branch, but declares none of
+/// them in FailPoint.h, so they cannot compile in any configuration. Upstream never
+/// builds USE_LIBFIU=0 and so never trips over it. Kept verbatim but disabled, so
+/// ClickHouse syncs merge cleanly; the guard must stay unconditionally false.
+#if 0
 void FailPointInjection::enablePauseFailPoint(const String &, UInt64)
 {
 }
@@ -467,7 +468,7 @@ void FailPointInjection::notifyFailPoint(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
+#if 0 /// Orphan stub, see enablePauseFailPoint above.
 void FailPointInjection::wait(const String &)
 {
 }
@@ -481,7 +482,7 @@ void FailPointInjection::waitForResume(const String &)
 {
 }
 
-#if !defined(CHDB_LITE) || !CHDB_LITE
+#if 0 /// Orphan stub, see enablePauseFailPoint above.
 void FailPointInjection::enableFromGlobalConfig(const Poco::Util::AbstractConfiguration & config)
 {
     String root_key = "fail_points_active";
