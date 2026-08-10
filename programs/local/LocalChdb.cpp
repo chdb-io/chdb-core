@@ -1,4 +1,5 @@
 #include "LocalChdb.h"
+#include "PyBorrowGuard.h"
 #include "chdb-internal.h"
 #include "DataFrameQueryResult.h"
 #include "PandasDataFrameBuilder.h"
@@ -486,6 +487,10 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     CHDB::PandasDataFrameBuilder builder(*chunk_result);
     auto df = builder.getDataFrame();
     chdb_destroy_query_result(result);
+    /// The destroyed chunks release their borrow guards after this query's
+    /// drain point; the GIL is held here, so settle the deferred decrefs now
+    /// instead of waiting for the next query.
+    CHDB::drainPyBorrowGuardQueue();
 
     return df;
 }
@@ -579,6 +584,7 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
 
     py::handle df_handle = chunk_result->dataframe;
     chdb_destroy_query_result(result);
+    CHDB::drainPyBorrowGuardQueue();
 
     return py::reinterpret_steal<py::object>(df_handle);
 }
