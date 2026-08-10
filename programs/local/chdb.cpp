@@ -345,6 +345,14 @@ void close_conn(chdb_conn ** conn)
     {
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
     }
+
+    /// Free the outer one-pointer cell itself. `conn` points at the heap cell
+    /// allocated as `new chdb_conn *(...)` in connect_chdb_with_exception(); the
+    /// inner chdb_conn (*conn) is deleted above, but the cell holding that pointer
+    /// was leaked on every connection close before this. The cell is owned solely
+    /// by close_conn's caller and is not reused after close, so deleting it here is
+    /// safe and centralizes the fix for both chdb_close_conn and direct C-API users.
+    delete conn;
 }
 
 struct local_result_v2 * query_conn(chdb_conn * conn, const char * query, const char * format)
@@ -1346,5 +1354,13 @@ void chdb_reset_signal_handlers(void)
         sigaction(sig, &sa, nullptr);
 
     if (auto * instance = HandledSignals::tryGetInstance())
+    {
+        /// Serialize the clear against concurrent appends in addSignalHandler()
+        /// (e.g. the EmbeddedServer connect path, which runs outside CHDB_MUTEX) and
+        /// against other concurrent chdb_reset_signal_handlers() callers. This leaf lock
+        /// is acquired last and released here, so it cannot deadlock with CHDB_MUTEX even
+        /// when this function is called while CHDB_MUTEX is held (pyEntryClickHouseLocal).
+        std::lock_guard<std::mutex> lock(instance->handled_signals_mutex);
         instance->handled_signals.clear();
+    }
 }

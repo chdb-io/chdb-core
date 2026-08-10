@@ -249,7 +249,7 @@ static DISABLE_SANITIZER_INSTRUMENTATION void sanitizerDeathCallback()
     /// Sanitizer errors cannot be handled properly with our signal handlers, because it leads to deadlock.
     /// So we need to reset the signal handlers (this does not lead to deadlock),
     /// but closing the pipe leads to deadlock from death callback, so we will not close it.
-    HandledSignals::instance().reset(/* close_pipe= */ false);
+    HandledSignals::instance().reset(/* close_pipe= */ false, /* lock= */ false);
 }
 #endif
 
@@ -284,7 +284,10 @@ void HandledSignals::addSignalHandler(const std::vector<int> & signals, signal_f
             throw Poco::Exception("Cannot set signal handler.");
 
     if (register_signal)
+    {
+        std::lock_guard<std::mutex> lock(handled_signals_mutex);
         std::copy(signals.begin(), signals.end(), std::back_inserter(handled_signals));
+    }
 #endif
 }
 
@@ -702,8 +705,15 @@ HandledSignals::HandledSignals()
     instance_ptr.store(this, std::memory_order_release);
 }
 
-void HandledSignals::reset(bool close_pipe)
+void HandledSignals::reset(bool close_pipe, bool lock)
 {
+    /// `lock` must be false on the async-signal / sanitizer-death-callback path, where
+    /// std::mutex is neither async-signal-safe nor allocation-free. std::unique_lock with
+    /// defer_lock lets us conditionally acquire without duplicating the reset body.
+    std::unique_lock<std::mutex> guard(handled_signals_mutex, std::defer_lock);
+    if (lock)
+        guard.lock();
+
 #if !defined(OS_WASM)
     /// Reset signals to SIG_DFL to avoid trying to write to the signal_pipe that will be closed after.
     for (int sig : handled_signals)
