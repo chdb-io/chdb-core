@@ -218,6 +218,7 @@ void ColumnString::filter(const Filter & filt)
     if (offsets.empty())
         return;
 
+    materializeBorrowedStorage();
     filterArraysImplInPlace<UInt8>(chars, offsets, filt);
 }
 
