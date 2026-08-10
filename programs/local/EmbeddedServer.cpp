@@ -57,6 +57,9 @@
 #include <Common/Config/ConfigProcessor.h>
 #include <Common/Config/getLocalConfigPath.h>
 #include <Common/CurrentMetrics.h>
+#if USE_JEMALLOC
+#include <Common/Jemalloc.h>
+#endif
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
 #include <Common/Exception.h>
@@ -154,6 +157,8 @@ extern const ServerSettingsDouble max_server_memory_usage_to_ram_ratio;
 extern const ServerSettingsUInt64 max_thread_pool_free_size;
 extern const ServerSettingsUInt64 max_thread_pool_size;
 extern const ServerSettingsUInt64 max_unexpected_parts_loading_thread_pool_size;
+extern const ServerSettingsBool jemalloc_enable_background_threads;
+extern const ServerSettingsUInt64 jemalloc_max_background_threads_num;
 extern const ServerSettingsUInt64 mmap_cache_size;
 extern const ServerSettingsBool show_addresses_in_stack_traces;
 extern const ServerSettingsUInt64 thread_pool_queue_size;
@@ -237,6 +242,18 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     }
 
     server_settings.loadSettingsFromConfig(config());
+
+#if USE_JEMALLOC
+    /// The compiled-in malloc_conf keeps jemalloc background threads OFF
+    /// (spawning them while the module is being dlopen'd crashes; see the
+    /// Linux chdb_spec in contrib/jemalloc-cmake). Enable them at runtime
+    /// instead, mirroring BaseDaemon for clickhouse-server: without them,
+    /// dirty-page purging runs synchronously on query threads and serializes
+    /// allocation-heavy aggregations on many-core machines.
+    Jemalloc::setBackgroundThreads(server_settings[ServerSetting::jemalloc_enable_background_threads]);
+    if (auto max_background_threads = server_settings[ServerSetting::jemalloc_max_background_threads_num])
+        Jemalloc::setMaxBackgroundThreads(max_background_threads);
+#endif
 
     GlobalThreadPool::initialize(
         server_settings[ServerSetting::max_thread_pool_size],
