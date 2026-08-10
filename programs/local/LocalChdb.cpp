@@ -1,5 +1,7 @@
 #include "LocalChdb.h"
 #include "PyBorrowGuard.h"
+
+#include <base/scope_guard.h>
 #include "chdb-internal.h"
 #include "DataFrameQueryResult.h"
 #include "PandasDataFrameBuilder.h"
@@ -461,6 +463,19 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     chdb_result * result = nullptr;
     CHDB::ChunkQueryResult * chunk_result = nullptr;
 
+    /// Destroy the result and settle the deferred decrefs on every exit,
+    /// including exceptions thrown by the pandas conversion (which would
+    /// otherwise leak the chunks and their borrow guards outright). The GIL
+    /// is held at scope exit on all paths: the gil_scoped_release block below
+    /// is destructed before this guard runs.
+    SCOPE_EXIT({
+        if (result)
+        {
+            chdb_destroy_query_result(result);
+            CHDB::drainPyBorrowGuardQueue();
+        }
+    });
+
     const auto parsed_params = parseParametersDict(params);
     auto * client = getChdbClient(*conn);
     QueryParameterGuard guard(client, parsed_params);
@@ -474,11 +489,7 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
 
         const auto & error_msg = CHDB::chdb_result_error_string(result);
         if (!error_msg.empty())
-        {
-            std::string msg_copy(error_msg);
-            chdb_destroy_query_result(result);
-            throw std::runtime_error(msg_copy);
-        }
+            throw std::runtime_error(std::string(error_msg));
 
         if (!(chunk_result = dynamic_cast<CHDB::ChunkQueryResult *>(reinterpret_cast<CHDB::QueryResult *>(result))))
             throw std::runtime_error("Expected ChunkQueryResult for dataframe format");
@@ -486,11 +497,6 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
 
     CHDB::PandasDataFrameBuilder builder(*chunk_result);
     auto df = builder.getDataFrame();
-    chdb_destroy_query_result(result);
-    /// The destroyed chunks release their borrow guards after this query's
-    /// drain point; the GIL is held here, so settle the deferred decrefs now
-    /// instead of waiting for the next query.
-    CHDB::drainPyBorrowGuardQueue();
 
     return df;
 }
@@ -565,6 +571,14 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
     chdb_result * result = nullptr;
     CHDB::DataFrameQueryResult * chunk_result = nullptr;
 
+    SCOPE_EXIT({
+        if (result)
+        {
+            chdb_destroy_query_result(result);
+            CHDB::drainPyBorrowGuardQueue();
+        }
+    });
+
     {
         py::gil_scoped_release release;
 
@@ -572,19 +586,13 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
 
         const auto & error_msg = CHDB::chdb_result_error_string(result);
         if (!error_msg.empty())
-        {
-            std::string msg_copy(error_msg);
-            chdb_destroy_query_result(result);
-            throw std::runtime_error(msg_copy);
-        }
+            throw std::runtime_error(std::string(CHDB::chdb_result_error_string(result)));
 
         if (!(chunk_result = dynamic_cast<CHDB::DataFrameQueryResult *>(reinterpret_cast<CHDB::QueryResult*>(result))))
             throw std::runtime_error("Expected DataFrameQueryResult for dataframe format");
     }
 
     py::handle df_handle = chunk_result->dataframe;
-    chdb_destroy_query_result(result);
-    CHDB::drainPyBorrowGuardQueue();
 
     return py::reinterpret_steal<py::object>(df_handle);
 }
