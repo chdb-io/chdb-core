@@ -664,12 +664,14 @@ jobs:
           gh release upload ${{ github.ref_name }} dist/chdb_core-*.whl --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Upload chdb-core-lite wheel to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          gh release upload ${{ github.ref_name }} dist/chdb_core_lite-*.whl --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # NOTE: chdb-core-lite release-asset upload temporarily disabled (like its PyPI
+      # upload below); the wheel is still built and kept as a CI artifact.
+      # - name: Upload chdb-core-lite wheel to release
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   run: |
+      #     gh release upload ${{ github.ref_name }} dist/chdb_core_lite-*.whl --clobber
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Packege libchdb.so
         run: |
           cp programs/local/chdb.h chdb.h
