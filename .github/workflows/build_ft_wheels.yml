@@ -17,8 +17,6 @@ on:
       TAG_NAME:
         description: 'Release Version Tag'
         required: true
-  release:
-    types: [created]
   push:
     branches:
       - main

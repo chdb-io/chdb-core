@@ -544,7 +544,7 @@ jobs:
       # only _chdb.abi3.so is produced (lite is Python-only).
       # -----------------------------------------------------------------------
       - name: Build chdb-core-lite (_chdb.abi3.so only, skips libchdb.so)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 600
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -558,7 +558,7 @@ jobs:
           CHDB_LITE=1 bash ./chdb/build.sh
         continue-on-error: false
       - name: Build chdb-core-lite wheel
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -568,7 +568,7 @@ jobs:
           CHDB_LITE=1 make wheel
         continue-on-error: false
       - name: Audit chdb-core-lite wheel
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -593,6 +593,7 @@ jobs:
           # echo "OK: $(basename $WHEEL) is $SIZE bytes (${MIB} MiB), under 50 MiB"
         # continue-on-error: false
       - name: Test chdb-core-lite wheel on Python 3.9 and 3.14
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -619,7 +620,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Test chdb-core-lite DataStore tests against upstream chdb (latest tag)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
