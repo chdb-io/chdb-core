@@ -753,6 +753,12 @@ void StoragePython::prepareColumnCache(
                 {
                     py::object col_data = data_source[py::str(col_name)];
                     col.buf = const_cast<void *>(tryGetPyArray(col_data, col.data, col.tmp, col.py_type, col.row_count));
+                    /// stride 0 now means a broadcast view in the scan loops;
+                    /// record the real element stride for array-backed buffers
+                    /// so a future consumer of this path cannot misread an
+                    /// unset default as broadcast.
+                    if (col.buf != nullptr && col.data.ptr() != nullptr && py::hasattr(col.data, "strides"))
+                        col.stride = col.data.attr("strides").attr("__getitem__")(0).cast<size_t>();
                 }
                 if (col.buf == nullptr)
                     throw Exception(
