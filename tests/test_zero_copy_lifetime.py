@@ -15,6 +15,7 @@ Invariants pinned here:
 import gc
 import hashlib
 import threading
+import sys
 import unittest
 import weakref
 
@@ -24,6 +25,15 @@ import pandas as pd
 import chdb
 
 PANDAS3 = int(pd.__version__.split(".")[0]) >= 3
+
+
+def refresh_frame_locals():
+    """chdb's variable lookup walks every stack frame's f_locals; on
+    Python <= 3.12 (pre-PEP 667) that access materializes a cached snapshot
+    dict on the frame which holds strong references and is NOT updated by
+    `del`. Re-reading f_locals refreshes the snapshot and drops deleted
+    entries, so weakref-release assertions see the true liveness."""
+    sys._getframe(1).f_locals  # noqa: B018
 
 
 def make_df(n=100_000, tag=""):
@@ -91,6 +101,7 @@ class TestDDLRetention(unittest.TestCase):
             wr_df = weakref.ref(df)
             conn.query("CREATE TABLE zc_keep ENGINE = Memory AS SELECT * FROM Python(df)", "CSV")
             del df
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_df(), "df itself must not be pinned after the DDL query ends")
             got = str(conn.query(
@@ -111,6 +122,7 @@ class TestDDLRetention(unittest.TestCase):
             wr_pa = weakref.ref(df["s"].array._pa_array)
             conn.query("CREATE TABLE zc_pin ENGINE = Memory AS SELECT * FROM Python(df)", "CSV")
             del df
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_pa(),
                               "table must store owned copies; df backing still pinned")
@@ -203,6 +215,7 @@ class TestReleaseWithoutFutureQuery(unittest.TestCase):
             wr_pa = weakref.ref(df["s"].array._pa_array)
             str(conn.query("SELECT count(), max(s) FROM Python(df)", "CSV"))
             del df
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_pa())
         finally:
@@ -218,6 +231,7 @@ class TestReleaseWithoutFutureQuery(unittest.TestCase):
             next(iter(stream))  # consume one chunk, abandon the rest
             stream.close()
             del stream, df
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_pa(), "abandoned stream must release on close, not on a later query")
         finally:
@@ -232,6 +246,7 @@ class TestReleaseWithoutFutureQuery(unittest.TestCase):
             with self.assertRaises(Exception):
                 conn.query("SELECT throwIf(i64 = 5000, 'boom'), s FROM Python(df)", "CSV")
             del df
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_pa(), "error path must release without a follow-up query")
         finally:

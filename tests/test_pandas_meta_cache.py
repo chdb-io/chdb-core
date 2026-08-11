@@ -14,6 +14,15 @@ import chdb
 PANDAS3 = int(pd.__version__.split(".")[0]) >= 3
 
 
+def refresh_frame_locals():
+    """chdb's variable lookup walks every stack frame's f_locals; on
+    Python <= 3.12 (pre-PEP 667) that access materializes a cached snapshot
+    dict on the frame which holds strong references and is NOT updated by
+    `del`. Re-reading f_locals refreshes the snapshot and drops deleted
+    entries, so weakref-release assertions see the true liveness."""
+    sys._getframe(1).f_locals  # noqa: B018
+
+
 def make_df(nrows=1000, tag=""):
     return pd.DataFrame(
         {
@@ -115,6 +124,7 @@ class TestPandasMetaCache(unittest.TestCase):
         ref = weakref.ref(df)
         self.q("SELECT count() FROM Python(df)")
         del df
+        refresh_frame_locals()
         gc.collect()
         self.assertIsNone(ref(), "metadata cache must not keep the DataFrame alive")
 
@@ -182,6 +192,7 @@ class TestPandasMetaCache(unittest.TestCase):
         backing = weakref.ref(df["s"].array._pa_array) if PANDAS3 else None
         self.q("SELECT count(), min(s) FROM Python(df)")
         del df
+        refresh_frame_locals()
         gc.collect()
         if backing is not None:
             self.assertIsNone(

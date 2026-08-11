@@ -17,6 +17,15 @@ import chdb
 PANDAS3 = int(pd.__version__.split(".")[0]) >= 3
 
 
+def refresh_frame_locals():
+    """chdb's variable lookup walks every stack frame's f_locals; on
+    Python <= 3.12 (pre-PEP 667) that access materializes a cached snapshot
+    dict on the frame which holds strong references and is NOT updated by
+    `del`. Re-reading f_locals refreshes the snapshot and drops deleted
+    entries, so weakref-release assertions see the true liveness."""
+    sys._getframe(1).f_locals  # noqa: B018
+
+
 def big_df(nrows=200_000):
     return pd.DataFrame(
         {
@@ -311,6 +320,7 @@ class TestBorrowReleaseWithoutNextQuery(unittest.TestCase):
             finally:
                 del globals()["lifec_df"]
             del df, view, block, res
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(
                 wr(),
