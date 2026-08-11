@@ -4,7 +4,8 @@
 # tags for now; the per-run CI artifact remains available. To re-enable, restore
 # the original condition noted on each step.
 #
-# Runs on every push to main, pull request, manual dispatch, and v* tags. One
+# Runs on every push to main, pull request, and manual dispatch (not on tags:
+# chdb-wasm is neither distributed nor tested at release time). One
 # Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
 # Requires repo secrets: NPM_TOKEN (npm automation token that can publish
 # chdb-wasm AND chdb-cloudflare — the first chdb-cloudflare release CREATES the
@@ -30,8 +31,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
     paths-ignore:
       - '**/*.md'
   pull_request:

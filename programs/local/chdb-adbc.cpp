@@ -2519,6 +2519,8 @@ extern "C" AdbcStatusCode chdb_adbc_init(int version, void * raw_driver, AdbcErr
 
 /// Default entrypoint name probed by driver managers when none is given, so
 /// `connect(driver=<libchdb path>)` works without an explicit entrypoint.
+extern "C" CHDB_EXPORT AdbcStatusCode AdbcDriverInit(int version, void * raw_driver, AdbcError * error);
+
 extern "C" CHDB_EXPORT AdbcStatusCode AdbcDriverInit(int version, void * raw_driver, AdbcError * error)
 {
     return chdb_adbc_init(version, raw_driver, error);

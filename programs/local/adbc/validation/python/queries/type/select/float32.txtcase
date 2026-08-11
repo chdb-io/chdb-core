@@ -36,5 +36,5 @@ INSERT INTO test_float32 (idx, res) VALUES (6, NULL);
 {"res": 0.0}
 {"res": -3.4e38}
 {"res": 3.4e38}
-{"res": 1.1754942106924411e-38}
+{"res": 1.1754943508222875e-38}
 {"res": null}

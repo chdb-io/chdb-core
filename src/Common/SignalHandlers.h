@@ -73,6 +73,11 @@ bool isCrashed();
 
 void blockSignals(const std::vector<int> & signals);
 
+/// Reset the deadly signal handlers to SIG_DFL (like HandledSignals::reset(false)), idempotently.
+/// Safe to call from the sanitizer death callback: it does not construct HandledSignals,
+/// and `lock` must be false there (std::mutex is not async-signal-safe).
+void resetHandledSignals(bool lock = true);
+
 
 /** The thread that read info about signal or std::terminate from pipe.
   * On HUP, close log files (for new files to be opened later).
@@ -146,7 +151,13 @@ struct HandledSignals
     void setupCommonDeadlySignalHandlers();
     void setupCommonTerminateRequestSignalHandlers();
 
-    void addSignalHandler(const std::vector<int> & signals, signal_function handler, bool register_signal);
+    /// `additional_masked_signals` are blocked while `handler` runs (added to `sa_mask`) but the
+    /// handler is not registered for them.
+    void addSignalHandler(
+        const std::vector<int> & signals,
+        signal_function handler,
+        bool register_signal,
+        const std::vector<int> & additional_masked_signals = {});
 
     /// `lock` guards `handled_signals` with handled_signals_mutex. It MUST be false
     /// when called from an async-signal / death-callback context (sanitizerDeathCallback),

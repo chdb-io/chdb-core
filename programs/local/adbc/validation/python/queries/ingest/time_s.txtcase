@@ -56,7 +56,7 @@ sql-type-name = "TIME"
         },
         {
             "name": "value",
-            "format": "tss:UTC",
+            "format": "tts",
             "flags": ["nullable"]
         }
     ]

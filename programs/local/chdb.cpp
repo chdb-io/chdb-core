@@ -11,6 +11,7 @@
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
+#include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
 #include <Common/SignalHandlers.h>
 #include <Common/ThreadStatus.h>
@@ -191,6 +192,8 @@ const std::string & chdb_streaming_result_error_string(chdb_streaming_result * r
     auto * stream_query_result = reinterpret_cast<StreamQueryResult *>(result);
     return stream_query_result->getError();
 }
+
+chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
 
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
@@ -1346,7 +1349,10 @@ void chdb_reset_signal_handlers(void)
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
     sa.sa_handler = SIG_DFL;
+#pragma clang diagnostic pop
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
