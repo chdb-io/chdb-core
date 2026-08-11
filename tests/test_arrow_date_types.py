@@ -19,6 +19,10 @@ class TestArrowDataTypes(unittest.TestCase):
         test_arrow_date_types_dir = ".tmp_test_arrow_date_types_dir"
         shutil.rmtree(test_arrow_date_types_dir, ignore_errors=True)
         sess = session.Session(test_arrow_date_types_dir)
+        # Leaking this session pins EmbeddedServer to the temp dir, so every later
+        # test in the shard fails to connect to ':memory:'
+        self.addCleanup(shutil.rmtree, test_arrow_date_types_dir, ignore_errors=True)
+        self.addCleanup(sess.close)
 
         sql = """
         SELECT
@@ -52,9 +56,6 @@ class TestArrowDataTypes(unittest.TestCase):
             if hasattr(actual, 'date'):
                 actual = actual.date()
             self.assertEqual(actual, expected, f"{col}: expected {expected}, got {actual}")
-
-        sess.close()
-        shutil.rmtree(test_arrow_date_types_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,12 @@ on:
     paths-ignore:
       - '**/*.md'
 
+concurrency:
+  # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
+  # starving later runs. Never cancel main or release runs.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
@@ -74,14 +80,14 @@ jobs:
           sudo apt-get -o DPkg::Lock::Timeout=600 update
           sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Update submodules
         run: |
           git submodule update --init --recursive --jobs 4
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: ubuntu-24.04-aarch64-cross-compile
           max-size: 5G
@@ -127,7 +133,7 @@ jobs:
             sleep 10; \
           done
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-build-artifacts
           path: |
@@ -163,7 +169,7 @@ jobs:
         continue-on-error: false
       - name: Upload chdb-core-lite build artifact
         if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-build-artifacts-lite
           path: ./chdb/_chdb-lite.abi3.so
@@ -244,7 +250,7 @@ jobs:
           brew update
           brew install go lz4
           go version
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Update version for release
@@ -261,7 +267,7 @@ jobs:
           echo "Version files updated to $TAG_NAME"
           pyenv shell --unset
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-arm64-build-artifacts
           path: ./artifacts
@@ -349,7 +355,7 @@ jobs:
           # The capability matrix is rendered from the run, not maintained by hand.
           "$VENV/bin/python" -m tests.generate_documentation \
             --output "$RUNNER_TEMP/adbc-docs"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adbc-capability-matrix
           path: ${{ runner.temp }}/adbc-docs/chdb.md
@@ -564,7 +570,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Download chdb-core-lite build artifact
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-arm64-build-artifacts-lite
           path: ./artifacts-lite
@@ -655,7 +661,7 @@ jobs:
         continue-on-error: true
       - name: Upload core files artifact
         if: always() && env.CORE_FILES_FOUND == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-files-macos-arm64
           path: core-files-macos-arm64.tar.gz
@@ -706,7 +712,7 @@ jobs:
           gh release upload ${{ github.ref_name }} macos-arm64-debuginfo.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: chdb-artifacts-macos-arm64
           path: |
