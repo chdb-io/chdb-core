@@ -67,13 +67,23 @@ PythonTableCache::~PythonTableCache()
     {
         auto * leaked = new std::list<PandasTableMetaPtr>(std::move(meta_lru));
         (void)leaked;
+        for (auto & [name, entry] : py_table_cache)
+            entry.obj.release();
         return;
     }
     try
     {
         py::gil_scoped_acquire acquire;
-        std::lock_guard lock(state_mutex);
-        meta_lru.clear();
+        std::list<PandasTableMetaPtr> metas;
+        std::unordered_map<String, NamedEntry> bindings;
+        {
+            std::lock_guard lock(state_mutex);
+            metas.swap(meta_lru);
+            bindings.swap(py_table_cache);
+            bound_names_by_token.clear();
+        }
+        metas.clear();
+        bindings.clear();
         drainPyBorrowGuardQueue();
     }
     catch (...)
@@ -126,7 +136,27 @@ static py::object findQueryableObj(const String & var_name)
     return py::none();
 }
 
-void PythonTableCache::findQueryableObjFromQuery(const String & query_str)
+/// Unique Python(...) table names referenced by the query, in match order.
+/// The object name is extracted from the query string, referenced as
+/// Python(var_name) / Python('var_name') / python("var_name").
+static std::vector<String> extractPythonTableNames(const String & query_str)
+{
+    // RE2 pattern to match Python()/python() patterns with single/double quotes or no quotes
+    static const RE2 pattern(R"([Pp]ython\s*\(\s*(?:['"]([^'"]+)['"]|([a-zA-Z_][a-zA-Z0-9_]*))\s*\))");
+
+    std::vector<String> names;
+    re2::StringPiece input(query_str);
+    std::string quoted_match, unquoted_match;
+    while (RE2::FindAndConsume(&input, pattern, &quoted_match, &unquoted_match))
+    {
+        const auto & matched = !quoted_match.empty() ? quoted_match : unquoted_match;
+        if (!matched.empty() && std::find(names.begin(), names.end(), matched) == names.end())
+            names.push_back(matched);
+    }
+    return names;
+}
+
+UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 {
     // Find the queriable object in the Python environment
     // return nullptr if no Python obj is referenced in query string
@@ -143,55 +173,121 @@ void PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 
     py::gil_assert();
 
-    std::lock_guard lock(state_mutex);
+    const auto names = extractPythonTableNames(query_str);
 
-    /// New query: cached-metadata witnesses must be re-checked once per query.
-    ++query_epoch;
+    /// Nothing under state_mutex may run Python bytecode: a query thread can
+    /// block on the mutex while holding the GIL, so a mutex holder yielding
+    /// the GIL mid-bytecode would deadlock. Dead metadata entries are only
+    /// unlinked under the lock (weakref liveness via the C API, no bytecode)
+    /// and destroyed after it is released.
+    std::list<PandasTableMetaPtr> dead_meta;
+    {
+        std::lock_guard lock(state_mutex);
+
+        /// New query: cached-metadata witnesses must be re-checked once per query.
+        ++query_epoch;
+
+        /// Unlink entries whose DataFrame died, so cached backing arrays are
+        /// not kept alive longer than one query boundary.
+        for (auto it = meta_lru.begin(); it != meta_lru.end();)
+        {
+            PyObject * wr = (*it)->weak_ref.ptr();
+            if (wr != nullptr && PyWeakref_GetObject(wr) == Py_None)
+                dead_meta.splice(dead_meta.end(), meta_lru, it++);
+            else
+                ++it;
+        }
+    }
+    dead_meta.clear();
     drainPyBorrowGuardQueue();
 
-    /// Evict entries whose DataFrame died, so cached backing arrays (string
-    /// payloads) are not kept alive longer than one query boundary.
-    meta_lru.remove_if([](const PandasTableMetaPtr & e)
+    if (names.empty())
+        return 0;
+
+    std::vector<String> bound;
+    bound.reserve(names.size());
+    for (const auto & matched : names)
     {
-        try
         {
-            return e->weak_ref.ptr() != nullptr && e->weak_ref().is_none();
+            /// A name another in-flight query already bound is reused (and
+            /// kept alive by its refcount); the expensive inspect frame walk
+            /// only runs for names not currently bound.
+            std::lock_guard lock(state_mutex);
+            if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
+            {
+                ++it->second.refcount;
+                bound.push_back(matched);
+                continue;
+            }
         }
-        catch (...)
-        {
-            return false;
-        }
-    });
 
-    // RE2 pattern to match Python()/python() patterns with single/double quotes or no quotes
-    static const RE2 pattern(R"([Pp]ython\s*\(\s*(?:['"]([^'"]+)['"]|([a-zA-Z_][a-zA-Z0-9_]*))\s*\))");
-
-    re2::StringPiece input(query_str);
-    std::string quoted_match, unquoted_match;
-
-    // Try to match and extract the groups
-    while (RE2::FindAndConsume(&input, pattern, &quoted_match, &unquoted_match))
-    {
-        // Skip the (expensive) inspect frame walk when the name is already cached;
-        // emplace never overwrites an existing entry anyway.
-        const auto & matched = !quoted_match.empty() ? quoted_match : unquoted_match;
-        if (matched.empty() || py_table_cache.contains(matched))
+        auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
+        if (obj.is_none())
             continue;
 
-        auto handle = findQueryableObj(matched);
-        if (!handle.is_none())
-            py_table_cache.emplace(matched, handle);
+        std::lock_guard lock(state_mutex);
+        if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
+            ++it->second.refcount; /// another thread bound it meanwhile
+        else
+            py_table_cache.emplace(matched, NamedEntry{std::move(obj), 1});
+        bound.push_back(matched);
     }
+
+    if (bound.empty())
+        return 0;
+
+    /// Process-global: a stale thread-local token (prefill whose execute never
+    /// ran, e.g. connection closed in between) can be consumed by a later
+    /// query on another connection; distinct values make that a no-op instead
+    /// of releasing an unrelated in-flight query's bindings.
+    static std::atomic<UInt64> global_bind_token{0};
+
+    std::lock_guard lock(state_mutex);
+    const UInt64 token = ++global_bind_token;
+    bound_names_by_token.emplace(token, std::move(bound));
+    return token;
 }
 
-py::handle PythonTableCache::getQueryableObj(const String & table_name)
+void PythonTableCache::releaseQueryableObjs(UInt64 token)
+{
+    if (token == 0)
+        return;
+
+    /// No GIL here: erased references go through the deferred-decref queue,
+    /// so this is safe from any exit path regardless of lock/GIL context.
+    std::vector<py::object> released;
+    {
+        std::lock_guard lock(state_mutex);
+        auto rec = bound_names_by_token.find(token);
+        if (rec == bound_names_by_token.end())
+            return;
+        for (const auto & name : rec->second)
+        {
+            auto it = py_table_cache.find(name);
+            if (it == py_table_cache.end())
+                continue;
+            if (it->second.refcount <= 1)
+            {
+                released.push_back(std::move(it->second.obj));
+                py_table_cache.erase(it);
+            }
+            else
+                --it->second.refcount;
+        }
+        bound_names_by_token.erase(rec);
+    }
+    for (auto & obj : released)
+        enqueuePyDecref(obj.release().ptr());
+}
+
+py::object PythonTableCache::getQueryableObj(const String & table_name)
 {
     std::lock_guard lock(state_mutex);
 
     auto iter = py_table_cache.find(table_name);
 
     if (iter != py_table_cache.end())
-        return iter->second;
+        return iter->second.obj; /// copy increfs under the lock (C API only)
 
     return py::none();
 }
@@ -199,20 +295,36 @@ py::handle PythonTableCache::getQueryableObj(const String & table_name)
 void PythonTableCache::clear()
 {
     try
-	{
+    {
         py::gil_scoped_acquire acquire;
-        std::lock_guard lock(state_mutex);
-        py_table_cache.clear();
+        std::unordered_map<String, NamedEntry> dropped;
+        {
+            std::lock_guard lock(state_mutex);
+            dropped.swap(py_table_cache);
+            bound_names_by_token.clear();
+        }
+        dropped.clear();
         drainPyBorrowGuardQueue();
-	}
-	catch (...)
-	{
-	}
+    }
+    catch (...)
+    {
+    }
 }
 
 void PythonTableCache::dropMeta(PyObject * df_ptr)
 {
-    meta_lru.remove_if([&](const PandasTableMetaPtr & e) { return e->df_ptr == df_ptr; });
+    std::list<PandasTableMetaPtr> dropped;
+    {
+        std::lock_guard lock(state_mutex);
+        for (auto it = meta_lru.begin(); it != meta_lru.end();)
+        {
+            if ((*it)->df_ptr == df_ptr)
+                dropped.splice(dropped.end(), meta_lru, it++);
+            else
+                ++it;
+        }
+    }
+    dropped.clear(); /// entry destructors run outside the lock
 }
 
 PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & df)
@@ -222,19 +334,25 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
 
     py::gil_assert();
 
-    std::lock_guard lock(state_mutex);
-
-    auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e->df_ptr == df.ptr(); });
-    if (it == meta_lru.end())
-        return nullptr;
-
-    auto entry = *it;
-    if (entry->validated_epoch == query_epoch)
+    PandasTableMetaPtr entry;
+    UInt64 epoch_at_validation = 0;
     {
-        meta_lru.splice(meta_lru.begin(), meta_lru, it);
-        return entry;
+        std::lock_guard lock(state_mutex);
+        auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e->df_ptr == df.ptr(); });
+        if (it == meta_lru.end())
+            return nullptr;
+        entry = *it;
+        if (entry->validated_epoch == query_epoch)
+        {
+            meta_lru.splice(meta_lru.begin(), meta_lru, it);
+            return entry;
+        }
+        epoch_at_validation = query_epoch;
     }
 
+    /// Witness checks call into Python (pandas properties), so they must run
+    /// without state_mutex: a mutex holder yielding the GIL mid-bytecode
+    /// would deadlock against a GIL-holding thread blocked on the mutex.
     bool valid = false;
     try
     {
@@ -290,13 +408,19 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
         valid = false;
     }
 
+    std::lock_guard lock(state_mutex);
+    auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e.get() == entry.get(); });
+    if (it == meta_lru.end())
+        return nullptr; /// concurrently invalidated while we validated
     if (!valid)
     {
         meta_lru.erase(it);
         return nullptr;
     }
 
-    entry->validated_epoch = query_epoch;
+    /// Stamp the epoch the witnesses were checked against, not the current
+    /// one: a prefill may have bumped it while validation ran unlocked.
+    entry->validated_epoch = epoch_at_validation;
     meta_lru.splice(meta_lru.begin(), meta_lru, it);
     return entry;
 }
@@ -308,10 +432,10 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
 
     py::gil_assert();
 
-    std::lock_guard lock(state_mutex);
-
     try
     {
+        /// Built entirely outside state_mutex: witness construction calls
+        /// into Python (see findValidatedPandasMeta for the lock rule).
         auto entry = std::make_shared<PandasTableMeta>();
         entry->df_ptr = df.ptr();
         entry->schema = schema;
@@ -347,12 +471,25 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
         }
 
         entry->weak_ref = makeWeakref(df);
-        entry->validated_epoch = query_epoch;
 
-        dropMeta(df.ptr());
-        meta_lru.push_front(std::move(entry));
-        while (meta_lru.size() > max_meta_entries)
-            meta_lru.pop_back();
+        std::list<PandasTableMetaPtr> displaced;
+        {
+            std::lock_guard lock(state_mutex);
+            entry->validated_epoch = query_epoch;
+            for (auto it = meta_lru.begin(); it != meta_lru.end();)
+            {
+                if ((*it)->df_ptr == df.ptr())
+                    displaced.splice(displaced.end(), meta_lru, it++);
+                else
+                    ++it;
+            }
+            meta_lru.push_front(std::move(entry));
+            while (meta_lru.size() > max_meta_entries)
+            {
+                displaced.splice(displaced.end(), meta_lru, std::prev(meta_lru.end()));
+            }
+        }
+        displaced.clear(); /// destroyed outside the lock
     }
     catch (...)
     {

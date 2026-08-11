@@ -18,6 +18,11 @@ bool zeroCopyEnabled();
 /// executor thread and structurally free of GIL deadlocks.
 std::shared_ptr<void> makePyBorrowGuard(PyObject * obj);
 
+/// Queue a reference for a deferred Py_DECREF and schedule a drain on the
+/// interpreter's pending-call queue. Safe to call from any thread, with or
+/// without the GIL.
+void enqueuePyDecref(PyObject * obj);
+
 /// Decref all queued objects. GIL must be held.
 void drainPyBorrowGuardQueue();
 
