@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <mutex>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Core/UUID.h>
@@ -249,12 +250,18 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         (void)std::atexit([]
         {
             g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
-            /// If the embedded server is still alive at interpreter exit (connection left
-            /// open), its MemoryWorker thread must stop before the global pool teardown:
-            /// v26.7's worker loop logs through machinery that shutdown() destroys.
-            /// global_instance's own static destructor runs later (LIFO), too late.
-            if (global_instance && global_instance->memory_worker)
-                global_instance->memory_worker.reset();
+            /// If a connection is still open at interpreter exit, destroy the server
+            /// here, before the global pool teardown, while logging and the statics
+            /// its shutdown touches are still alive. Waiting for global_instance's
+            /// static destructor is too late: it interleaves with unrelated static
+            /// teardown (cross-TU destruction order is unspecified) while worker
+            /// threads are still live - the residual SIGSEGV window seen as the
+            /// DataStore-suite subprocess crashes on v26.7.
+            {
+                std::lock_guard<std::mutex> lock(instance_mutex);
+                client_ref_count = 0;
+                global_instance.reset();
+            }
             GlobalThreadPool::shutdown();
         });
 
