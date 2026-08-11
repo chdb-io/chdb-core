@@ -65,7 +65,9 @@ HTTPHeaderEntries WasmWebObjectStorage::headersFor(const String & method, const 
 std::unique_ptr<ReadBufferFromFileBase> WasmWebObjectStorage::readObject( /// NOLINT
     const StoredObject & object,
     const ReadSettings & read_settings,
-    std::optional<size_t> read_hint) const
+    std::optional<size_t> read_hint,
+    bool /*use_external_buffer*/,
+    bool /*restrict_seek*/) const
 {
     /// Data-lake manifests carry exact file sizes; seeding them here spares a
     /// signed HEAD per file (and works on endpoints that only permit GET).
@@ -77,7 +79,7 @@ std::unique_ptr<ReadBufferFromFileBase> WasmWebObjectStorage::readObject( /// NO
     return std::make_unique<ReadBufferFromWebFetch>(
         url,
         HTTPHeaderEntries{},
-        read_settings.remote_fs_buffer_size,
+        read_settings.remote_fs_settings.buffer_size,
         /* skip_not_found */ false,
         /* headers_provider */ [this, url](const std::string & method) { return headersFor(method, url); },
         known_size);
@@ -233,8 +235,8 @@ ReadSettings WasmWebObjectStorage::patchSettings(const ReadSettings & read_setti
     /// Reads are plain synchronous range fetches: no threadpool reader, no
     /// prefetch (an async wrapper would tie up scarce wasm pthreads).
     auto modified_settings{read_settings};
-    modified_settings.remote_fs_method = RemoteFSReadMethod::read;
-    modified_settings.remote_fs_prefetch = false;
+    modified_settings.remote_fs_settings.method = RemoteFSReadMethod::read;
+    modified_settings.remote_fs_settings.prefetch = false;
     return IObjectStorage::patchSettings(modified_settings);
 }
 

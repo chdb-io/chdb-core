@@ -96,6 +96,7 @@ namespace Setting
 extern const SettingsBool allow_introspection_functions;
 extern const SettingsBool implicit_select;
 extern const SettingsLocalFSReadMethod storage_file_read_method;
+extern const SettingsBool output_format_arrow_use_native_writer;
 }
 
 namespace ServerSetting
@@ -163,6 +164,7 @@ extern const ServerSettingsString primary_index_cache_policy;
 extern const ServerSettingsUInt64 primary_index_cache_size;
 extern const ServerSettingsDouble primary_index_cache_size_ratio;
 extern const ServerSettingsString query_condition_cache_policy;
+extern const ServerSettingsString unique_key_bitmap_cache_policy;
 extern const ServerSettingsUInt64 query_condition_cache_size;
 extern const ServerSettingsDouble query_condition_cache_size_ratio;
 extern const ServerSettingsUInt64 max_prefixes_deserialization_thread_pool_size;
@@ -194,6 +196,10 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
     settings[Setting::allow_introspection_functions] = true;
     settings[Setting::storage_file_read_method] = LocalFSReadMethod::mmap;
     settings[Setting::implicit_select] = true;
+    /// v26.7's native Arrow IPC writer emits corrupt date32 buffers in the macOS
+    /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
+    /// libarrow writer until that is root-caused. Users can still opt in.
+    settings[Setting::output_format_arrow_use_native_writer] = false;
 
     context->setSettings(settings);
 }
@@ -243,6 +249,12 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         (void)std::atexit([]
         {
             g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+            /// If the embedded server is still alive at interpreter exit (connection left
+            /// open), its MemoryWorker thread must stop before the global pool teardown:
+            /// v26.7's worker loop logs through machinery that shutdown() destroys.
+            /// global_instance's own static destructor runs later (LIFO), too late.
+            if (global_instance && global_instance->memory_worker)
+                global_instance->memory_worker.reset();
             GlobalThreadPool::shutdown();
         });
 
@@ -921,6 +933,18 @@ void EmbeddedServer::processConfig()
     /// Initialize a dummy query result cache.
     global_context->setQueryResultCache(0, 0, 0, 0);
 
+    /// Initialize a dummy UNIQUE KEY delete-bitmap cache.
+    global_context->setDeleteBitmapCache(server_settings[ServerSetting::unique_key_bitmap_cache_policy], 0, 0);
+
+    /// Initialize a dummy encryption header cache (0 size disables it; still needed because
+    /// system.server_settings dereferences its getter without a null check).
+    global_context->setEncryptionHeaderCache(DEFAULT_ENCRYPTION_HEADER_CACHE_POLICY, 0, 0);
+
+#if USE_AVRO
+    /// Initialize a dummy Paimon metadata files cache.
+    global_context->setPaimonMetadataFilesCache(DEFAULT_PAIMON_METADATA_CACHE_POLICY, 0, 0, 0);
+#endif
+
     /// Initialize allowed tiers
     global_context->getAccessControl().setAllowTierSettings(server_settings[ServerSetting::allow_feature_tier]);
 
@@ -977,7 +1001,7 @@ void EmbeddedServer::processConfig()
                 waitLoad(TablesLoaderForegroundPoolId, load_system_metadata_tasks);
 
                 attachSystemTablesServer(
-                    global_context, *DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE), false);
+                    global_context, *DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE), false, false);
                 attached_system_database = true;
             }
 
@@ -994,14 +1018,14 @@ void EmbeddedServer::processConfig()
 
         if (!attached_system_database)
             attachSystemTablesServer(
-                global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false);
+                global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
 
         if (fs::exists(fs::path(path) / "user_defined"))
             global_context->getUserDefinedSQLObjectsStorage().loadObjects();
     }
     else if (!config().has("no-system-tables"))
     {
-        attachSystemTablesServer(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false);
+        attachSystemTablesServer(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
         attachInformationSchema(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA));
         attachInformationSchema(
             global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE));

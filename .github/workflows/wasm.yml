@@ -4,7 +4,8 @@
 # tags for now; the per-run CI artifact remains available. To re-enable, restore
 # the original condition noted on each step.
 #
-# Runs on every push to main, pull request, manual dispatch, and v* tags. One
+# Runs on every push to main, pull request, and manual dispatch (not on tags:
+# chdb-wasm is neither distributed nor tested at release time). One
 # Linux x86_64 (self-hosted) runner is enough: the .wasm is host-independent.
 # Requires repo secrets: NPM_TOKEN (npm automation token that can publish
 # chdb-wasm AND chdb-cloudflare — the first chdb-cloudflare release CREATES the
@@ -30,8 +31,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
     paths-ignore:
       - '**/*.md'
   pull_request:
@@ -297,23 +296,35 @@ jobs:
           if-no-files-found: error
 
       # ---- chdb-cloudflare: a single-file bundle sized for Cloudflare Workers
-      # (10 MiB gzipped Worker limit). The st tree is relinked once more with a
-      # 64MB initial memory (a Workers isolate caps total memory at 128MB) and
-      # WASM_JSPI=ON (the async-fetch HTTP bridge — the only transport that
-      # works in workerd, so url()/s3() run inside Workers; requires a
-      # JSPI-capable engine: Chrome 137+, workerd, Node with
-      # --experimental-wasm-jspi, which the split tooling adds to child
-      # processes automatically). Split against the LITE corpus (most-common
-      # SQL only); only the primary ships, with the --lite glue so
-      # out-of-corpus calls throw a clear error. Runs after the full-split
-      # steps because it reuses (and re-links) the buildwasm-st tree; the full
-      # packages stay JSPI-free (their sync-XHR bridge needs no special engine
-      # support).
-      - name: Relink st with 64MB initial memory + JSPI (lite)
+      # (10 MiB gzipped Worker limit). Unlike the npm bundles above, this one is
+      # compiled with CHDB_LITE=ON: the wasm default is the full function registry,
+      # which costs ~1.3 MiB gzipped here and puts the bundle over the Workers
+      # limit, so the trim set is not optional for this artifact. That needs its
+      # own build tree (a different compile, not just a different link) — the
+      # buildwasm-st tree above is full and ships to npm as-is.
+      #
+      # Built single-threaded, with a 64MB initial memory (a Workers isolate caps
+      # total memory at 128MB) and WASM_JSPI=ON (the async-fetch HTTP bridge — the
+      # only transport that works in workerd, so url()/s3() run inside Workers;
+      # requires a JSPI-capable engine: Chrome 137+, workerd, Node with
+      # --experimental-wasm-jspi, which the split tooling adds to child processes
+      # automatically). Split against the LITE corpus (most-common SQL only); only
+      # the primary ships, with the --lite glue so out-of-corpus calls throw a
+      # clear error. The full packages stay JSPI-free (their sync-XHR bridge needs
+      # no special engine support).
+      - name: Configure + build chdb_wasm (lite, for Cloudflare)
         run: |
           source "${EMSDK}/emsdk_env.sh"
-          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB -DWASM_JSPI=ON buildwasm-st >/dev/null
-          ninja -C buildwasm-st chdb_wasm
+          CHDB_LITE=ON WASM_THREADS=OFF BUILD_DIR="${GITHUB_WORKSPACE}/buildwasm-lite" \
+            chdb/build-wasm.sh build
+          grep -q '^CHDB_LITE:BOOL=ON' buildwasm-lite/CMakeCache.txt \
+            || { echo "buildwasm-lite is not a CHDB_LITE build"; exit 1; }
+
+      - name: Relink lite with 64MB initial memory + JSPI
+        run: |
+          source "${EMSDK}/emsdk_env.sh"
+          cmake -DWASM_SPLIT_MODULE=ON -DWASM_INITIAL_MEMORY=64MB -DWASM_JSPI=ON buildwasm-lite >/dev/null
+          ninja -C buildwasm-lite chdb_wasm
 
       - name: Lite split pipeline (lite corpus, primary-only)
         run: |
@@ -322,7 +333,7 @@ jobs:
           # the moto/pyiceberg fixtures (the static HTTP server for url()/s3()
           # still runs).
           CHDB_SKIP_LAKE=1 node packages/chdb-wasm/tools/split/split-wasm.mjs \
-            --build buildwasm-st/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-lite" \
+            --build buildwasm-lite/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-lite" \
             --corpus "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/profile-corpus-lite.sql" \
             --extra-keep "${GITHUB_WORKSPACE}/packages/chdb-wasm/tools/split/keep-lite.txt" \
             --lite-glue

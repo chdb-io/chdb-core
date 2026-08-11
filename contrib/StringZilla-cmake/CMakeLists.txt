@@ -14,6 +14,13 @@ SET(STRINGZILLA_SOURCES
 )
 file(GLOB STRINGZILLA_HEADERS "${STRINGZILLA_SOURCE_DIR}/include/stringzilla/*.h" "${STRINGZILLA_SOURCE_DIR}/include/stringzilla/*.hpp")
 
+# hash.c calls sz_equal() without including compare.h; the C implicit declaration
+# infers the length literal as int, and under wasm64 lld turns the resulting
+# signature-mismatched direct call (i64,i64,i32 vs i64,i64,i64) into a runtime
+# trap stub. Force the real prototype in.
+set_source_files_properties("${STRINGZILLA_SOURCE_DIR}/c/hash.c" PROPERTIES
+    COMPILE_OPTIONS "-include;${STRINGZILLA_SOURCE_DIR}/include/stringzilla/compare.h")
+
 add_library(_stringzilla ${STRINGZILLA_SOURCES} ${STRINGZILLA_HEADERS})
 add_library(ch_contrib::stringzilla ALIAS _stringzilla)
 target_include_directories(_stringzilla SYSTEM PUBLIC "${STRINGZILLA_SOURCE_DIR}/include")
@@ -26,6 +33,7 @@ if (ARCH_AMD64)
             "SZ_USE_HASWELL=1"
             "SZ_USE_SKYLAKE=1"
             "SZ_USE_ICE=1"
+            "SZ_USE_GOLDMONT=1"
             "SZ_USE_NEON=0"
             "SZ_USE_NEON_AES=0"
             "SZ_USE_NEON_SHA=0"
@@ -41,6 +49,7 @@ elseif (ARCH_AARCH64)
             "SZ_USE_HASWELL=0"
             "SZ_USE_SKYLAKE=0"
             "SZ_USE_ICE=0"
+            "SZ_USE_GOLDMONT=0"
             "SZ_USE_NEON=1"
             "SZ_USE_NEON_AES=1"
             "SZ_USE_NEON_SHA=1"

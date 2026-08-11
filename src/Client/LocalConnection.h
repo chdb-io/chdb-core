@@ -6,6 +6,7 @@
 #include <Interpreters/Session.h>
 #include <Interpreters/ProfileEventsExt.h>
 #include <Common/QueryScope.h>
+#include <Common/ThreadStatus.h>
 
 
 namespace DB
@@ -155,7 +156,11 @@ public:
 
     void sendExternalTablesData(ExternalTablesData &) override;
 
+    void sendScalarsData(Scalars & data) override;
+
     void sendMergeTreeReadTaskResponse(const ParallelReadResponse & response) override;
+
+    void sendMergeTreeAllRangesAnnouncementResponse(const InitialAllRangesAnnouncementResponse & response) override;
 
     bool poll(size_t timeout_microseconds/* = 0 */) override;
 

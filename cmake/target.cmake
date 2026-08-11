@@ -117,12 +117,19 @@ if (OS_WASM)
     # No libunwind on WASM; rely on the host engine for stack traces.
     set (USE_UNWIND OFF CACHE INTERNAL "")
 
-    # Build the slim chdb-core-lite feature set on WASM (disables ~30 optional
-    # libs centrally). Set before the CHDB_LITE option()/block below so it sticks.
-    set (CHDB_LITE ON CACHE BOOL "WASM uses the chdb-core-lite trim set" FORCE)
+    # The bundle is a download, so default to size (-Os) unless -DCMAKE_BUILD_TYPE=Release
+    # has been passed in.
+    if (NOT CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "None")
+        set (CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "WASM optimizes for download size" FORCE)
+    endif ()
 
-    # Go further than lite: the libs lite still opts-in but that WASM can't use
-    # (native protoc bootstrap, networked object stores, heavy columnar formats).
+    # Fast JSON parser. Not required to build (RapidJSON below is the fallback that
+    # FunctionsJSON picks up), but without either one JSONExtract* silently degrades
+    # to DummyJSONParser, which fails every parse and returns defaults.
+    set (ENABLE_SIMDJSON ON CACHE INTERNAL "")
+
+    # Libs that WASM can't use at all (native protoc bootstrap, networked object
+    # stores, heavy columnar formats).
     set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
     set (ENABLE_CAPNP OFF CACHE INTERNAL "")
     # Avro ON: pure C++ (boost::iostreams + snappy, both already built for WASM).
@@ -135,6 +142,12 @@ if (OS_WASM)
     set (ENABLE_PARQUET ON CACHE INTERNAL "")
     set (ENABLE_THRIFT ON CACHE INTERNAL "")
     set (ENABLE_ORC OFF CACHE INTERNAL "")
+    # Hard requirements of the Parquet/Arrow build above - _arrow links
+    # ch_contrib::brotli and _parquet links ch_contrib::rapidjson
+    # unconditionally, so with build-wasm.sh's ENABLE_LIBRARIES=0 and these off the
+    # configure fails outright with "target was not found".
+    set (ENABLE_BROTLI ON CACHE INTERNAL "")
+    set (ENABLE_RAPIDJSON ON CACHE INTERNAL "")
 
     # Emscripten's libc++ is not the chdb-patched libcxx, so the exception ABI
     # has no embedded stack trace. base/src expect this macro to be defined.

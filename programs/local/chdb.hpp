@@ -275,6 +275,10 @@ public:
         {
             throw ChdbError(ChdbErrorCode::ConnectionFailed, "Failed to create database connection");
         }
+        /// `conn_ptr` is the heap-allocated outer cell that owns the connection and MUST be
+        /// handed back to chdb_close_conn() so the cell itself is freed. Keep it (previously
+        /// it was dropped here, leaking the cell) and derive the inner handle for queries.
+        conn_owner_ = conn_ptr;
         conn_ = *conn_ptr;
     }
 
@@ -284,8 +288,10 @@ public:
     explicit Connection(const std::string& path) : Connection(std::vector<std::string>{"--path=" + path}) {}
 
     ~Connection() {
-        if (conn_) {
-            chdb_close_conn(&conn_);
+        if (conn_owner_) {
+            chdb_close_conn(conn_owner_);
+            conn_owner_ = nullptr;
+            conn_ = nullptr;
         }
     }
 
@@ -295,17 +301,20 @@ public:
     Connection& operator=(const Connection&) = delete;
 
     /** Move constructor - transfers connection ownership */
-    Connection(Connection&& other) noexcept : conn_(other.conn_) {
+    Connection(Connection&& other) noexcept : conn_owner_(other.conn_owner_), conn_(other.conn_) {
+        other.conn_owner_ = nullptr;
         other.conn_ = nullptr;
     }
 
     /** Move assignment - transfers connection ownership */
     Connection& operator=(Connection&& other) noexcept {
         if (this != &other) {
-            if (conn_) {
-                chdb_close_conn(&conn_);
+            if (conn_owner_) {
+                chdb_close_conn(conn_owner_);
             }
+            conn_owner_ = other.conn_owner_;
             conn_ = other.conn_;
+            other.conn_owner_ = nullptr;
             other.conn_ = nullptr;
         }
         return *this;
@@ -364,7 +373,10 @@ public:
     }
 
 private:
-    chdb_connection conn_;
+    /// Owning outer cell (chdb_connection*), handed to chdb_close_conn() to free both
+    /// the connection and the cell. `conn_` is the non-owning inner handle used for queries.
+    chdb_connection * conn_owner_ = nullptr;
+    chdb_connection conn_ = nullptr;
 };
 
 /** Iterator for streaming query results */

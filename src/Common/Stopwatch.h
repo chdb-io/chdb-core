@@ -4,7 +4,6 @@
 #include <base/types.h>
 #include <base/defines.h>
 
-#include <cassert>
 #include <atomic>
 #include <limits>
 #include <memory>
@@ -25,7 +24,7 @@ static constexpr clockid_t STOPWATCH_DEFAULT_CLOCK = CLOCK_MONOTONIC;
 
 inline UInt64 clock_gettime_ns(clockid_t clock_type = STOPWATCH_DEFAULT_CLOCK)
 {
-    struct timespec ts;
+    struct timespec ts{};
 #if defined(OS_WASM)
     /// Emscripten's clock_gettime supports only a subset of clock ids (essentially
     /// CLOCK_REALTIME / CLOCK_MONOTONIC) and returns EINVAL for the others, e.g.
@@ -57,7 +56,7 @@ inline UInt64 clock_gettime_ns_adjusted(UInt64 prev_time, clockid_t clock_type =
         return current_time;
 
     /// Something probably went completely wrong if time stepped back for more than 1 second.
-    assert(prev_time - current_time <= 1000000000ULL);
+    chassert(prev_time - current_time <= 1000000000ULL);
     return prev_time;
 }
 

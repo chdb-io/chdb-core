@@ -152,8 +152,8 @@ struct Enum8Convert
 
 		try
 		{
-			auto it = enum_type.findByValue(static_cast<Int8>(val));
-			String enum_name(it->second.data(), it->second.size());
+			auto enum_name_view = enum_type.getNameForValue(static_cast<Int8>(val));
+			String enum_name(enum_name_view.data(), enum_name_view.size());
 			return py::str(enum_name).release().ptr();
 		}
 		catch (...)
@@ -178,8 +178,8 @@ struct Enum16Convert
 		const auto & enum_type = typeid_cast<const DataTypeEnum16 &>(*append_data.type);
 		try
 		{
-			auto it = enum_type.findByValue(static_cast<Int16>(val));
-			String enum_name(it->second.data(), it->second.size());
+			auto enum_name_view = enum_type.getNameForValue(static_cast<Int16>(val));
+			String enum_name(enum_name_view.data(), enum_name_view.size());
 			return py::str(enum_name).release().ptr();
 		}
 		catch (...)

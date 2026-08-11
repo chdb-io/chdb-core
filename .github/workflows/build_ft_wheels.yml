@@ -17,8 +17,6 @@ on:
       TAG_NAME:
         description: 'Release Version Tag'
         required: true
-  release:
-    types: [created]
   push:
     branches:
       - main
@@ -153,14 +151,16 @@ jobs:
           export CC=/usr/bin/clang
           export CXX=/usr/bin/clang++
           bash .github/scripts/build_and_test_ft_linux.sh
-      - name: Upload FT wheels to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          for whl in ft_dist/*.whl; do
-            [ -f "$whl" ] && gh release upload ${{ github.ref_name }} "$whl" --clobber
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # NOTE: FT release-asset upload temporarily disabled (like the FT PyPI upload
+      # below); the wheels are still built, tested, and kept as a CI artifact.
+      # - name: Upload FT wheels to release
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   run: |
+      #     for whl in ft_dist/*.whl; do
+      #       [ -f "$whl" ] && gh release upload ${{ github.ref_name }} "$whl" --clobber
+      #     done
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       - uses: actions/upload-artifact@v7
         with:
           name: chdb-ft-linux-x86_64

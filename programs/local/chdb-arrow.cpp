@@ -15,22 +15,17 @@ struct PrivateData
     bool done = false;
 };
 
-void EmptySchemaRelease(ArrowSchema * schema)
+static void EmptySchemaRelease(ArrowSchema * schema)
 {
     schema->release = nullptr;
 }
 
-void EmptyArrayRelease(ArrowArray * array)
+static void EmptyArrayRelease(ArrowArray * array)
 {
     array->release = nullptr;
 }
 
-void EmptyStreamRelease(ArrowArrayStream * stream)
-{
-    stream->release = nullptr;
-}
-
-int GetSchema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
+static int GetSchema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
 {
 	auto * private_data = static_cast<PrivateData *>((stream->private_data));
 	if (private_data->schema == nullptr)
@@ -41,7 +36,7 @@ int GetSchema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
 	return CHDBSuccess;
 }
 
-int GetNext(struct ArrowArrayStream * stream, struct ArrowArray * out)
+static int GetNext(struct ArrowArrayStream * stream, struct ArrowArray * out)
 {
 	auto * private_data = static_cast<PrivateData *>((stream->private_data));
 	*out = *private_data->array;
@@ -58,12 +53,12 @@ int GetNext(struct ArrowArrayStream * stream, struct ArrowArray * out)
 	return CHDBSuccess;
 }
 
-const char * GetLastError(struct ArrowArrayStream * /*stream*/)
+static const char * GetLastError(struct ArrowArrayStream * /*stream*/)
 {
 	return nullptr;
 }
 
-void Release(struct ArrowArrayStream * stream)
+static void Release(struct ArrowArrayStream * stream)
 {
 	if (stream->private_data != nullptr)
 		delete reinterpret_cast<PrivateData *>(stream->private_data);

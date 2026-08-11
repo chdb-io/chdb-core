@@ -11,6 +11,7 @@
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
+#include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
 #include <Common/SignalHandlers.h>
 #include <Common/ThreadStatus.h>
@@ -192,6 +193,8 @@ const std::string & chdb_streaming_result_error_string(chdb_streaming_result * r
     return stream_query_result->getError();
 }
 
+chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
+
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
     try
@@ -204,15 +207,17 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create ChdbClient");
         }
 
-        auto * conn = new chdb_conn();
-        conn->server = client.release();
+        auto conn = std::make_unique<chdb_conn>();
+        conn->server = client.get();
         conn->connected = true;
-        auto ** conn_ptr = new chdb_conn *(conn);
+        auto conn_ptr = std::make_unique<chdb_conn *>(conn.get());
 
         if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
             chdb_reset_signal_handlers();
 
-        return reinterpret_cast<chdb_connection *>(conn_ptr);
+        client.release();
+        conn.release();
+        return reinterpret_cast<chdb_connection *>(conn_ptr.release());
     }
     catch (const DB::Exception & e)
     {
@@ -343,6 +348,14 @@ void close_conn(chdb_conn ** conn)
     {
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
     }
+
+    /// Free the outer one-pointer cell itself. `conn` points at the heap cell
+    /// allocated as `new chdb_conn *(...)` in connect_chdb_with_exception(); the
+    /// inner chdb_conn (*conn) is deleted above, but the cell holding that pointer
+    /// was leaked on every connection close before this. The cell is owned solely
+    /// by close_conn's caller and is not reused after close, so deleting it here is
+    /// safe and centralizes the fix for both chdb_close_conn and direct C-API users.
+    delete conn;
 }
 
 struct local_result_v2 * query_conn(chdb_conn * conn, const char * query, const char * format)
@@ -1332,19 +1345,28 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
 void chdb_reset_signal_handlers(void)
 {
-    static const std::vector<int> deadly_signals = {
-        SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGTSTP, SIGTRAP
-    };
+    static constexpr int deadly_signals[] = {SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGTSTP, SIGTRAP};
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
     sa.sa_handler = SIG_DFL;
+#pragma clang diagnostic pop
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
     for (int sig : deadly_signals)
         sigaction(sig, &sa, nullptr);
 
-    auto & instance = HandledSignals::instance();
-    instance.handled_signals.clear();
+    if (auto * instance = HandledSignals::tryGetInstance())
+    {
+        /// Serialize the clear against concurrent appends in addSignalHandler()
+        /// (e.g. the EmbeddedServer connect path, which runs outside CHDB_MUTEX) and
+        /// against other concurrent chdb_reset_signal_handlers() callers. This leaf lock
+        /// is acquired last and released here, so it cannot deadlock with CHDB_MUTEX even
+        /// when this function is called while CHDB_MUTEX is held (pyEntryClickHouseLocal).
+        std::lock_guard<std::mutex> lock(instance->handled_signals_mutex);
+        instance->handled_signals.clear();
+    }
 }
