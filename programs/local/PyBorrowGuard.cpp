@@ -58,6 +58,11 @@ std::shared_ptr<void> makePyBorrowGuard(PyObject * obj)
         /// background). Schedule a drain on the interpreter's pending-call
         /// queue so the release point is bounded and query-independent;
         /// the drains at query boundaries remain as belt-and-braces.
+        /// During/after finalization the pending-call machinery is gone:
+        /// leave the queued refs intentionally leaked instead of crashing.
+        if (!Py_IsInitialized())
+            return;
+
         if (!drain_scheduled.test_and_set(std::memory_order_acq_rel))
         {
             if (Py_AddPendingCall(drainPendingCallTrampoline, nullptr) != 0)
