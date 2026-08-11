@@ -162,17 +162,14 @@ public:
 
     bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
 
+    NO_INLINE void materializeBorrowedStorageSlow();
+
+    /// Only the null check is inlined into the (hot, per-row) mutators; the
+    /// cold copy-out body stays out of line so their prologues remain minimal.
     void materializeBorrowedStorage() override
     {
-        if (!borrow_guard)
-            return;
-        const char * borrowed = data.raw_data();
-        const size_t n = data.size();
-        data.release_external_storage();
-        data.resize_exact(n);
-        if (n)
-            memcpy(data.data(), borrowed, n * sizeof(T));
-        borrow_guard.reset();
+        if (borrow_guard) [[unlikely]]
+            materializeBorrowedStorageSlow();
     }
 
     void insertValue(const T value)

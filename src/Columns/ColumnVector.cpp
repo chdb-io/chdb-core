@@ -1415,6 +1415,18 @@ ColumnPtr ColumnVector<T>::indexImpl(const PaddedPODArray<Type> & indexes, size_
 }
 
 template <typename T>
+void ColumnVector<T>::materializeBorrowedStorageSlow()
+{
+    const char * borrowed = data.raw_data();
+    const size_t n = data.size();
+    data.release_external_storage();
+    data.resize_exact(n);
+    if (n)
+        memcpy(data.data(), borrowed, n * sizeof(T));
+    borrow_guard.reset();
+}
+
+template <typename T>
 std::span<char> ColumnVector<T>::insertRawUninitialized(size_t count)
 {
     materializeBorrowedStorage();

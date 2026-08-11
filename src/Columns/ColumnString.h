@@ -92,7 +92,15 @@ public:
     }
 
     bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
-    void materializeBorrowedStorage() override;
+    /// Only the null check is inlined into the (hot, per-row) mutators; the
+    /// cold copy-out body stays out of line so their prologues remain minimal.
+    void materializeBorrowedStorage() override
+    {
+        if (borrow_guard) [[unlikely]]
+            materializeBorrowedStorageSlow();
+    }
+
+    NO_INLINE void materializeBorrowedStorageSlow();
 
     const char * getFamilyName() const override { return "String"; }
     TypeIndex getDataType() const override { return TypeIndex::String; }

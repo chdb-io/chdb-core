@@ -833,10 +833,8 @@ void ColumnString::protect()
     getOffsets().protect();
 }
 
-void ColumnString::materializeBorrowedStorage()
+void ColumnString::materializeBorrowedStorageSlow()
 {
-    if (!borrow_guard)
-        return;
     const char * borrowed = reinterpret_cast<const char *>(chars.data());
     const size_t bytes = chars.size();
     chars.release_external_storage();
