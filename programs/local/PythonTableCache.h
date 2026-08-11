@@ -5,6 +5,7 @@
 
 #include <list>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <base/types.h>
 #include <Storages/ColumnsDescription.h>
@@ -76,11 +77,23 @@ public:
     /// Pandas metadata cache. All methods must be called with the GIL held.
     PandasTableMetaPtr findValidatedPandasMeta(const py::handle & df);
     void storePandasMeta(const py::handle & df, const DB::ColumnsDescription & schema);
-    void invalidatePandasMeta(PyObject * df_ptr) { dropMeta(df_ptr); }
+    void invalidatePandasMeta(PyObject * df_ptr)
+    {
+        std::lock_guard lock(state_mutex);
+        dropMeta(df_ptr);
+    }
 
 private:
+    /// Must be called with state_mutex held.
     void dropMeta(PyObject * df_ptr);
 
+    /// Guards py_table_cache, meta_lru and query_epoch. The GIL alone is not
+    /// enough: the pybind-side prefill (before client_mutex is taken) can
+    /// interleave with an in-flight query's storage-side lookups at GIL yield
+    /// points, and on free-threaded builds the GIL is no lock at all. Lock
+    /// order is GIL first, then state_mutex; no Python code that could
+    /// re-enter this object runs while the mutex is held by the same thread.
+    std::mutex state_mutex;
     std::unordered_map<String, py::handle> py_table_cache;
 
     static constexpr size_t max_meta_entries = 4;

@@ -72,6 +72,7 @@ PythonTableCache::~PythonTableCache()
     try
     {
         py::gil_scoped_acquire acquire;
+        std::lock_guard lock(state_mutex);
         meta_lru.clear();
         drainPyBorrowGuardQueue();
     }
@@ -142,6 +143,8 @@ void PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 
     py::gil_assert();
 
+    std::lock_guard lock(state_mutex);
+
     /// New query: cached-metadata witnesses must be re-checked once per query.
     ++query_epoch;
     drainPyBorrowGuardQueue();
@@ -183,6 +186,8 @@ void PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 
 py::handle PythonTableCache::getQueryableObj(const String & table_name)
 {
+    std::lock_guard lock(state_mutex);
+
     auto iter = py_table_cache.find(table_name);
 
     if (iter != py_table_cache.end())
@@ -196,6 +201,7 @@ void PythonTableCache::clear()
     try
 	{
         py::gil_scoped_acquire acquire;
+        std::lock_guard lock(state_mutex);
         py_table_cache.clear();
         drainPyBorrowGuardQueue();
 	}
@@ -215,6 +221,8 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
         return nullptr;
 
     py::gil_assert();
+
+    std::lock_guard lock(state_mutex);
 
     auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e->df_ptr == df.ptr(); });
     if (it == meta_lru.end())
@@ -299,6 +307,8 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
         return;
 
     py::gil_assert();
+
+    std::lock_guard lock(state_mutex);
 
     try
     {
