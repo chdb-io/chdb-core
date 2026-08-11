@@ -262,10 +262,13 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
                 "SELECT s, count() AS c FROM Python(df) GROUP BY s ORDER BY c DESC, s LIMIT 5", "CSV"))
 
             def rss_kb():
+                if sys.platform != "linux":
+                    return None  # /proc is Linux-only; result stability is still checked
                 with open("/proc/self/status") as f:
                     for line in f:
                         if line.startswith("VmRSS:"):
                             return int(line.split()[1])
+                return None
 
             samples = []
             for i in range(100):
@@ -273,9 +276,10 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
                     "SELECT s, count() AS c FROM Python(df) GROUP BY s ORDER BY c DESC, s LIMIT 5", "CSV"))
                 self.assertEqual(got, expected, f"iteration {i} diverged")
                 samples.append(rss_kb())
-            growth_kb = samples[-1] - samples[9]
-            self.assertLess(growth_kb, 200_000,
-                            f"RSS grew {growth_kb} KB over 90 repeated queries")
+            if samples[-1] is not None and samples[9] is not None:
+                growth_kb = samples[-1] - samples[9]
+                self.assertLess(growth_kb, 200_000,
+                                f"RSS grew {growth_kb} KB over 90 repeated queries")
         finally:
             conn.close()
 
