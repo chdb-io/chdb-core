@@ -649,7 +649,7 @@ ColumnsDescription StoragePython::getTableStructureFromData(std::vector<std::pai
     py::gil_assert();
 
     auto * logger = &Poco::Logger::get("StoragePython");
-    if (logger->debug())
+    if (logger->is(Poco::Message::PRIO_DEBUG))
     {
         LOG_DEBUG(logger, "Schema content:");
         for (const auto & item : schema)

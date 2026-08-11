@@ -84,17 +84,9 @@ elif [ "$(uname)" == "Linux" ]; then
     # -DENABLE_WASMTIME=1 enables the WebAssembly UDF runtime; it must be set
     # explicitly because ENABLE_LIBRARIES=0 would otherwise leave it OFF.
     RUST_FEATURES="-DENABLE_RUST=1 -DENABLE_DELTA_KERNEL_RS=1 -DENABLE_WASMTIME=1"
-    CORROSION_CMAKE_FILE="${PROJ_DIR}/contrib/corrosion-cmake/CMakeLists.txt"
-    if [ -f "${CORROSION_CMAKE_FILE}" ]; then
-        if ! grep -q 'OPENSSL_NO_DEPRECATED_3_0' "${CORROSION_CMAKE_FILE}"; then
-            echo "Modifying corrosion CMakeLists.txt for Linux x86_64..."
-            ${SED_INPLACE} 's/corrosion_set_env_vars(${target_name} "RUSTFLAGS=${RUSTFLAGS}")/corrosion_set_env_vars(${target_name} "RUSTFLAGS=${RUSTFLAGS} --cfg osslconf=\\\"OPENSSL_NO_DEPRECATED_3_0\\\"")/g' "${CORROSION_CMAKE_FILE}"
-        else
-            echo "corrosion CMakeLists.txt already modified, skipping..."
-        fi
-    else
-        echo "Warning: corrosion CMakeLists.txt not found at ${CORROSION_CMAKE_FILE}"
-    fi
+    # The historical osslconf=OPENSSL_NO_DEPRECATED_3_0 RUSTFLAGS injection into
+    # corrosion-cmake is gone: contrib libcrypto ships the deprecated symbols, and
+    # v26.7's vendored openssl 0.10.80 fails to compile with that cfg set.
 else
     echo "OS not supported"
     exit 1
@@ -150,12 +142,12 @@ else
     ${ICU} -DENABLE_UTF8PROC=1 ${JEMALLOC} \
     -DENABLE_PARQUET=1 -DENABLE_ROCKSDB=1 -DENABLE_SQLITE=1 -DENABLE_VECTORSCAN=1 \
     -DENABLE_PROTOBUF=1 -DENABLE_THRIFT=1 -DENABLE_MSGPACK=1 \
-    -DENABLE_BROTLI=1 -DENABLE_H3=1 -DENABLE_CURL=1 \
+    -DENABLE_BROTLI=1 -DENABLE_H3=1 \
     -DENABLE_CLICKHOUSE_ALL=0 -DUSE_STATIC_LIBRARIES=1 -DSPLIT_SHARED_LIBRARIES=0 \
     -DENABLE_SIMDJSON=1 -DENABLE_RAPIDJSON=1 \
     ${CPU_FEATURES} \
     -DENABLE_AVX512=0 -DENABLE_AVX512_VBMI=0 \
-    -DENABLE_BASE64=1 \
+    -DENABLE_SIMDUTF=1 \
     -DENABLE_LIBFIU=1 \
     -DCHDB_VERSION=${CHDB_VERSION} \
     "
@@ -269,6 +261,9 @@ fi
 if [ "${CHDB_FREE_THREADING}" == "1" ]; then
     cmake ${CMAKE_ARGS} ${FREE_THREADING_CMAKE} -DENABLE_PYTHON=1 ${PROJ_DIR}
 else
+    # Drop Python paths a previous pybind11-shim configure may have cached in this
+    # build dir (the shim loop reuses it); stale entries break the exact-3.9 check.
+    cmake -U "*Python*" -U "*PYTHON*" . > /dev/null 2>&1 || true
     cmake ${CMAKE_ARGS} -DENABLE_PYTHON=1 -DPYBIND11_NONLIMITEDAPI_PYTHON_HEADERS_VERSION=${py_version} ${PROJ_DIR}
 fi
 ninja -d keeprsp || true

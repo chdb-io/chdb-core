@@ -46,7 +46,16 @@ export function startMockUnityCatalog({ port, descriptor }) {
       return send(200, { schemas: [{ catalog_name: catalog, full_name: `${catalog}.${schema}` }] });
 
     if (path === `${base}/tables`)
-      return send(200, { tables: [{ name: table }] });
+      // v26.7's bulk-listing filter needs storage_location + securable_kind /
+      // data_source_format inline (the real Unity list API returns full TableInfo).
+      return send(200, {
+        tables: [{
+          name: table,
+          storage_location: location,
+          securable_kind: 'TABLE_DELTA_EXTERNAL',
+          data_source_format: 'DELTA',
+        }],
+      });
 
     if (path === `${base}/tables/${catalog}.${schema}.${table}`)
       return send(200, {

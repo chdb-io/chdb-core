@@ -273,6 +273,12 @@ SELECT count() FROM (SELECT toIPv4(concat('10.0.', toString(intDiv(number, 250) 
 SELECT count() FROM (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS k FROM numbers(300)) AS a JOIN (SELECT CAST(if(number % 2 = 0, 'a', 'b') AS Enum('a' = 1, 'b' = 2)) AS k FROM numbers(50)) AS b ON a.k = b.k;
 SELECT count() FROM (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS k FROM numbers(300)) AS a JOIN (SELECT if(number % 7 = 0, NULL, toString(number % 10)) AS k FROM numbers(50)) AS b ON a.k = b.k;
 SELECT count() FROM (SELECT concat('v', toString(number % 50)) AS s, number % 2 AS n FROM numbers(100)) AS a JOIN (SELECT concat('v', toString(number % 50)) AS s, number % 2 AS n FROM numbers(20)) AS b ON a.s = b.s AND a.n = b.n;
+-- v26.7's physical-join planner picks size-dependent specializations; cover the
+-- tiny-table shape the chdb-cloudflare matrix uses so it never goes lite-cold.
+SELECT count() FROM (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 3))) AS k FROM numbers(30)) AS a JOIN (SELECT toUUID(concat('61f0c404-5cb3-11e7-907b-a6006ad3dba', toString(number % 3))) AS k FROM numbers(3)) AS b ON a.k = b.k;
+-- window partition keys specialize per type too: Date / DateTime rank()
+SELECT d, rank() OVER (PARTITION BY d ORDER BY n) FROM (SELECT toDate('2024-01-01') + number % 2 AS d, number AS n FROM numbers(6)) ORDER BY d, n;
+SELECT d, rank() OVER (PARTITION BY d ORDER BY n) FROM (SELECT toDateTime('2024-01-01 00:00:00') + number % 2 AS d, number AS n FROM numbers(6)) ORDER BY d, n;
 -- IN-set membership and DISTINCT specialize per type too:
 SELECT count() FROM (SELECT toDate('2024-01-01') + number % 300 AS v FROM numbers(300)) WHERE v IN (SELECT toDate('2024-01-01') + number % 300 FROM numbers(20));
 SELECT count() FROM (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 AS v FROM numbers(300)) WHERE v IN (SELECT toDateTime('2024-01-01 00:00:00') + number * 7 FROM numbers(20));

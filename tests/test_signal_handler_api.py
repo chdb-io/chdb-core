@@ -15,6 +15,7 @@ import ctypes
 import ctypes.util
 import os
 import signal
+import subprocess
 import sys
 import unittest
 
@@ -202,7 +203,34 @@ class TestSignalHandlerControlAPI(unittest.TestCase):
             self.assertNotEqual(handler, 0,
                 "Handler must be installed after re-enabling (cycle iteration)")
 
-    # Test 6: concurrent enable/disable calls are thread-safe
+    # Test 6: disabling remains non-throwing when signal pipe creation fails
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX file descriptors")
+    def test_disable_with_exhausted_file_descriptors(self):
+        script = """
+import os
+import resource
+import chdb
+
+_, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+limit = 64 if hard_limit == resource.RLIM_INFINITY else min(64, hard_limit)
+resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))
+fds = []
+while True:
+    try:
+        fds.append(os.open('/dev/null', os.O_RDONLY))
+    except OSError:
+        break
+chdb._chdb.set_signal_handlers_enabled(0)
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    # Test 7: concurrent enable/disable calls are thread-safe
     def test_concurrent_enable_disable_no_crash(self):
         """Calling set_signal_handlers_enabled from multiple threads must not crash."""
         import threading

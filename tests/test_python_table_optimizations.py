@@ -317,12 +317,13 @@ class TestNonNullInferenceAndPrewhere(_Base):
 
 
 class TestRegexpReplaceAnchoredExtract(_Base):
-    """REGEXP_REPLACE anchored capture-then-truncate fast path (ported from ClickHouse PR #108270).
+    """REGEXP_REPLACE anchored capture-then-truncate extraction.
 
-    For `^...(group)/.*$` with replacement `\\N`, the trailing `.*$` is stripped and the captured
-    group is emitted directly. Must be result-identical to the full regexp, including the newline
-    fallback: in non-dotall mode `.*$` won't span a newline, so a row whose discarded tail contains
-    '\\n' must return the original string (no match). Expected values are hardcoded re2 semantics.
+    chdb's port of ClickHouse PR #108270 was dropped with the v26.7 upgrade in favor of the
+    upstream implementation. Upstream v26.7 matches a trailing `.*$` across newline tails
+    (no newline fallback), so a row whose discarded tail contains '\\n' now also extracts the
+    captured group. Expected values are hardcoded v26.7 engine semantics (const and non-const
+    pattern paths verified identical).
     """
 
     Q28 = r"^https?://(?:www\.)?([^/]+)/.*$"
@@ -351,8 +352,8 @@ class TestRegexpReplaceAnchoredExtract(_Base):
         ("http://www.x.com/", "x.com"),
         ("http://x/y", "x"),
         ("http://h.com/a\tb", "h.com"),                   # tab in tail (not newline) -> matches
-        ("http://x.com/a\nb", "http://x.com/a\nb"),       # newline in tail -> fallback -> original
-        ("http://h.com/a\n", "http://h.com/a\n"),         # trailing newline -> no re2 $ match -> original
+        ("http://x.com/a\nb", "x.com"),                   # newline in tail -> still matches in v26.7
+        ("http://h.com/a\n", "h.com"),                    # trailing newline -> still matches in v26.7
         ("not-a-url", "not-a-url"),
         ("", ""),
     ]
@@ -369,7 +370,7 @@ class TestRegexpReplaceAnchoredExtract(_Base):
             ("http://www.example.com/p", "www.example.com"),
             ("https://example.org/a/b", "example.org"),
             ("http://example.com", "http://example.com"),
-            ("http://x.com/a\nb", "http://x.com/a\nb"),   # newline tail -> original
+            ("http://x.com/a\nb", "x.com"),               # newline tail -> still matches in v26.7
         ]
         self._check(ARROW_STR, r"^(https?)://([^/]+)/.*$", r"\2", cases)
 

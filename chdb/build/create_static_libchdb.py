@@ -122,6 +122,10 @@ def parse_libchdb_cmd(build_dir_override=None):
     # Convert library files to absolute paths
     abs_lib_files = []
     for lib in lib_files:
+        # v26.7 links base/darwin-compatibility as -Wl,-force_load,<path>.a on
+        # macOS; strip the linker wrapper so the archive path resolves.
+        if lib.startswith('-Wl,'):
+            lib = lib.rsplit(',', 1)[-1]
         abs_path = os.path.join(base_path, lib)
         abs_lib_files.append(abs_path)
         # print(f"Found library file: {abs_path}")

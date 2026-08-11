@@ -9,6 +9,7 @@
 #include <Backups/BackupImpl.h>
 #include <Backups/BackupInfo.h>
 #include <Common/NamedCollections/NamedCollections.h>
+#include <IO/Archives/ArchiveUtils.h>
 #include <IO/Archives/hasRegisteredArchiveFileExtension.h>
 #include <Interpreters/Context.h>
 #include <Storages/ObjectStorage/S3/Configuration.h>
@@ -16,8 +17,21 @@
 
 namespace DB::S3AuthSetting
 {
+    extern const S3AuthSettingsString access_key_id;
+    extern const S3AuthSettingsString secret_access_key;
     extern const S3AuthSettingsString role_arn;
     extern const S3AuthSettingsString role_session_name;
+    extern const S3AuthSettingsString external_id;
+    extern const S3AuthSettingsString session_token;
+    extern const S3AuthSettingsBool use_environment_credentials;
+    extern const S3AuthSettingsBool no_sign_request;
+    extern const S3AuthSettingsString http_client;
+    extern const S3AuthSettingsString service_account;
+    extern const S3AuthSettingsString metadata_service;
+    extern const S3AuthSettingsString request_token_path;
+    extern const S3AuthSettingsString google_adc_client_id;
+    extern const S3AuthSettingsString google_adc_client_secret;
+    extern const S3AuthSettingsString google_adc_refresh_token;
 }
 
 #endif
@@ -55,6 +69,8 @@ namespace
 #endif
 
 
+void registerBackupEngineS3(BackupFactory &);
+
 void registerBackupEngineS3(BackupFactory & factory)
 {
     auto creator_fn = []([[maybe_unused]] const BackupFactory::CreateParams & params) -> std::unique_ptr<IBackup>
@@ -67,6 +83,11 @@ void registerBackupEngineS3(BackupFactory & factory)
         String secret_access_key;
         String role_arn;
         String role_session_name;
+        String external_id;
+        /// Set for named collections (a full override of the server-managed credential mechanisms,
+        /// mirroring `S3StorageParsedArguments::fromNamedCollection`); nullopt for explicit url/key args,
+        /// which keep the server `<s3>` config values.
+        std::optional<S3::S3AuthSettings> named_collection_auth;
 
         if (auto collection = params.backup_info.getNamedCollection(params.context))
         {
@@ -75,6 +96,63 @@ void registerBackupEngineS3(BackupFactory & factory)
             secret_access_key = collection->getOrDefault<String>("secret_access_key", "");
             role_arn = collection->getOrDefault<String>("role_arn", "");
             role_session_name = collection->getOrDefault<String>("role_session_name", "");
+            external_id = collection->getOrDefault<String>("external_id", "");
+
+            /// A query-overridden `role_arn` (`S3(collection, role_arn = ...)`) is honored even under the
+            /// restriction, but it must not be assumed using the collection's operator-provisioned keys as the
+            /// STS base. When the same query did not also override the base key pair, drop the collection keys
+            /// so the assume-role call is signed by the server's ambient identity instead (mirrors
+            /// `S3StorageParsedArguments::fromNamedCollection`). A `role_arn` from the stored collection
+            /// definition is left untouched and keeps the collection's own keys as its base.
+            bool drop_collection_keys_for_query_role = false;
+            if (params.context->shouldRestrictUserQueryS3Credentials() && collection->isQueryOverridden("role_arn")
+                && !(collection->isQueryOverridden("access_key_id") && collection->isQueryOverridden("secret_access_key")))
+            {
+                access_key_id.clear();
+                secret_access_key.clear();
+                drop_collection_keys_for_query_role = true;
+            }
+
+            /// A query that supplies its own key pair but no `session_token` must not inherit the collection's
+            /// token: it was issued for the collection's keys and would be sent with the query's keys instead
+            /// (and would break the STS base when a query-supplied `role_arn` is also present).
+            const bool drop_inherited_token = collection->isQueryOverridden("access_key_id")
+                && collection->isQueryOverridden("secret_access_key") && !collection->isQueryOverridden("session_token");
+
+            /// A query-overridden `role_arn` must not silently inherit the collection's `external_id` (the
+            /// secret half of the STS triple, tied to the collection's own role); drop it unless the query
+            /// supplied its own. Mirrors `S3StorageParsedArguments::fromNamedCollection`.
+            if (params.context->shouldRestrictUserQueryS3Credentials() && collection->isQueryOverridden("role_arn")
+                && !collection->isQueryOverridden("external_id"))
+                external_id.clear();
+
+            /// Take every credential field (mechanisms and the static key pair) from the collection, defaulting
+            /// to empty/0, so none is inherited from the server `<s3>` config: a URL-only backup collection
+            /// stays anonymous and a role-only collection has no base keys to assume the role with (matches
+            /// the s3 table function).
+            named_collection_auth.emplace();
+            auto & auth = *named_collection_auth;
+            auth[S3AuthSetting::access_key_id] = access_key_id;
+            auth[S3AuthSetting::secret_access_key] = secret_access_key;
+            auth[S3AuthSetting::use_environment_credentials]
+                = collection->getOrDefault<bool>("use_environment_credentials", false);
+            auth[S3AuthSetting::no_sign_request] = collection->getOrDefault<bool>("no_sign_request", false);
+            /// Carry the collection's own `session_token` so temporary credentials are signed with it, unless
+            /// the collection keys were dropped above (the token belongs to those keys) or the query supplied
+            /// its own key pair without a token.
+            auth[S3AuthSetting::session_token]
+                = (drop_collection_keys_for_query_role || drop_inherited_token)
+                ? "" : collection->getOrDefault<String>("session_token", "");
+            auth[S3AuthSetting::role_arn] = role_arn;
+            auth[S3AuthSetting::role_session_name] = role_session_name;
+            auth[S3AuthSetting::external_id] = external_id;
+            auth[S3AuthSetting::http_client] = collection->getOrDefault<String>("http_client", "");
+            auth[S3AuthSetting::service_account] = collection->getOrDefault<String>("service_account", "");
+            auth[S3AuthSetting::metadata_service] = collection->getOrDefault<String>("metadata_service", "");
+            auth[S3AuthSetting::request_token_path] = collection->getOrDefault<String>("request_token_path", "");
+            auth[S3AuthSetting::google_adc_client_id] = collection->getOrDefault<String>("google_adc_client_id", "");
+            auth[S3AuthSetting::google_adc_client_secret] = collection->getOrDefault<String>("google_adc_client_secret", "");
+            auth[S3AuthSetting::google_adc_refresh_token] = collection->getOrDefault<String>("google_adc_refresh_token", "");
 
             if (collection->has("filename"))
                 s3_uri = std::filesystem::path(s3_uri) / collection->get<String>("filename");
@@ -107,12 +185,18 @@ void registerBackupEngineS3(BackupFactory & factory)
 
                 role_arn = std::move(auth_settings[S3AuthSetting::role_arn]);
                 role_session_name = std::move(auth_settings[S3AuthSetting::role_session_name]);
+                external_id = std::move(auth_settings[S3AuthSetting::external_id]);
             }
         }
 
         BackupImpl::ArchiveParams archive_params;
         if (hasRegisteredArchiveFileExtension(s3_uri))
         {
+            if (hasSupportedZipExtension(s3_uri))
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Zip archive format is not supported for S3 backups because zip requires seeking which S3 does not support efficiently. "
+                    "Use tar.gz or other tar-based formats instead");
+
             if (params.is_internal_backup)
                 throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "Using archives with backups on clusters is disabled");
 
@@ -136,6 +220,8 @@ void registerBackupEngineS3(BackupFactory & factory)
                 secret_access_key,
                 role_arn,
                 role_session_name,
+                external_id,
+                named_collection_auth,
                 params.allow_s3_native_copy,
                 params.read_settings,
                 params.write_settings,
@@ -155,6 +241,8 @@ void registerBackupEngineS3(BackupFactory & factory)
                 secret_access_key,
                 role_arn,
                 role_session_name,
+                external_id,
+                named_collection_auth,
                 params.allow_s3_native_copy,
                 params.read_settings,
                 params.write_settings,
@@ -174,6 +262,8 @@ void registerBackupEngineS3(BackupFactory & factory)
                     secret_access_key,
                     role_arn,
                     role_session_name,
+                    external_id,
+                    named_collection_auth,
                     params.allow_s3_native_copy,
                     params.read_settings,
                     params.write_settings,
@@ -191,6 +281,8 @@ void registerBackupEngineS3(BackupFactory & factory)
                 secret_access_key,
                 std::move(role_arn),
                 std::move(role_session_name),
+                std::move(external_id),
+                named_collection_auth,
                 params.allow_s3_native_copy,
                 params.s3_storage_class,
                 params.read_settings,
