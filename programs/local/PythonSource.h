@@ -149,10 +149,10 @@ private:
         const MutableColumnPtr & column,
         size_t offset,
         size_t row_count,
-        size_t stride = 0,
+        size_t stride,
         const std::shared_ptr<void> & borrow_guard = nullptr);
 
-    void convert_string_array_to_block(PyObject ** buf, const MutableColumnPtr & column, size_t offset, size_t row_count, size_t stride = 0);
+    void convert_string_array_to_block(PyObject ** buf, const MutableColumnPtr & column, size_t offset, size_t row_count, size_t stride = sizeof(PyObject *));
 
     template <typename T>
     void insert_from_list(const py::list & obj, const MutableColumnPtr & column);

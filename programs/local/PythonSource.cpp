@@ -160,12 +160,14 @@ void PythonSource::convert_string_array_to_block(
     ColumnString::Offsets & offsets = string_column->getOffsets();
     offsets.reserve(row_count);
 
-    const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
+    /// stride == 0 is a numpy broadcast view over a single element: multiplying
+    /// by the raw stride re-reads element 0, which is exactly what broadcast
+    /// semantics require (and is also correct for the row_count <= 1 case).
     const auto * base_ptr = reinterpret_cast<const char *>(buf);
 
     for (size_t i = offset; i < offset + row_count; ++i)
     {
-        auto * obj = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+        auto * obj = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
         if (!PyUnicode_Check(obj))
         {
             insertObjToStringColumn(obj, string_column);
@@ -195,7 +197,11 @@ void PythonSource::insert_from_ptr(
     const void * ptr, const MutableColumnPtr & column, const size_t offset, const size_t row_count, size_t stride,
     const std::shared_ptr<void> & borrow_guard)
 {
-    if (stride == 0 || stride == sizeof(T))
+    /// stride == 0 means a broadcast view backed by a single element; it must
+    /// take the per-element loop below (which re-reads element 0), never the
+    /// contiguous paths that would walk row_count * sizeof(T) bytes of memory
+    /// that does not belong to the array.
+    if (stride == sizeof(T))
     {
         const char * start = static_cast<const char *>(ptr) + offset * sizeof(T);
 
@@ -278,7 +284,7 @@ ColumnPtr PythonSource::convert_and_insert(const py::object & obj, UInt32 scale,
         else if constexpr (std::is_same_v<T, String>)
             insert_string_from_array(py_array, column);
         else
-            insert_from_ptr<T>(data, column, 0, row_count);
+            insert_from_ptr<T>(data, column, 0, row_count, sizeof(T));
         return column;
     }
 
@@ -580,10 +586,12 @@ MutableColumnPtr gatherFromTypedBuffer(
     auto & container = assert_cast<ColumnType &>(*column).getData();
     container.reserve(selected);
     const auto * base = reinterpret_cast<const char *>(buf);
-    const size_t effective_stride = (stride == 0) ? sizeof(ValueT) : stride;
+    /// stride == 0 is a numpy broadcast view over a single element: multiplying
+    /// by the raw stride re-reads element 0, which is exactly what broadcast
+    /// semantics require (and is also correct for the count <= 1 case).
     for (size_t i = 0; i < count; ++i)
         if (mask[i])
-            container.push_back(*reinterpret_cast<const ValueT *>(base + (offset + i) * effective_stride));
+            container.push_back(*reinterpret_cast<const ValueT *>(base + (offset + i) * stride));
     return column;
 }
 
@@ -622,10 +630,9 @@ ColumnPtr wrapGatheredNullable(
     {
         null_map.reserve(selected);
         const auto * mask_base = reinterpret_cast<const char *>(col.registered_array->numpy_array.data());
-        const size_t mask_stride = (col.mask_stride == 0) ? sizeof(bool) : col.mask_stride;
         for (size_t r = 0; r < count; ++r)
             if (mask[r])
-                null_map.push_back(*reinterpret_cast<const bool *>(mask_base + (offset + r) * mask_stride) ? 1 : 0);
+                null_map.push_back(*reinterpret_cast<const bool *>(mask_base + (offset + r) * col.mask_stride) ? 1 : 0);
     }
     else
         fillGatheredNullMap<NullSourceColumn>(*nested, null_map);
