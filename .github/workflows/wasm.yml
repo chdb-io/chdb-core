@@ -244,57 +244,6 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # ---- wasm-split lazy-loading pipeline (tools/split/README.md). Runs AFTER
-      # the npm dist build + artifact upload: the relink turns the build trees'
-      # chdb.wasm into the profiling-INSTRUMENTED module (copy-artifacts refuses
-      # such a tree by design), so dist/ must be final before this point. Sits
-      # before the tag-publish steps on purpose — if split ever regresses, a
-      # release run goes red instead of shipping quietly. Adds ~25min: two
-      # relinks (objects are reused), profiling runs, two wasm-split invocations.
-      - name: Relink with WASM_SPLIT_MODULE=ON (both bundles)
-        run: |
-          source "${EMSDK}/emsdk_env.sh"
-          cmake -DWASM_SPLIT_MODULE=ON buildwasm >/dev/null
-          ninja -C buildwasm chdb_wasm
-          cmake -DWASM_SPLIT_MODULE=ON buildwasm-st >/dev/null
-          ninja -C buildwasm-st chdb_wasm
-          ls -la buildwasm/programs/wasm/chdb.wasm.orig buildwasm-st/programs/wasm/chdb.wasm.orig
-
-      # st first: its single instance sees the whole pipeline execute inline, so
-      # its hot set is complete; the mt split mixes it in via --extra-hot (mt
-      # pool workers park in Atomics.wait and are invisible to profiling).
-      - name: wasm-split pipeline (profile + split, st hot-set -> mt)
-        env:
-          ICEBERG_PY: ${{ github.workspace }}/.iceberg-venv/bin/python
-        run: |
-          export WASM_SPLIT="${EMSDK}/upstream/bin/wasm-split"
-          node packages/chdb-wasm/tools/split/split-wasm.mjs \
-            --build buildwasm-st/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-st" \
-            --emit-hot-names "${GITHUB_WORKSPACE}/split-out-st/hot-names.txt"
-          node packages/chdb-wasm/tools/split/split-wasm.mjs \
-            --build buildwasm/programs/wasm --out "${GITHUB_WORKSPACE}/split-out-mt" \
-            --extra-hot "${GITHUB_WORKSPACE}/split-out-st/hot-names.txt"
-
-      - name: Split bundle tests
-        env:
-          CHDB_SPLIT_MT_DIR: ${{ github.workspace }}/split-out-mt
-          CHDB_SPLIT_ST_DIR: ${{ github.workspace }}/split-out-st
-        run: node packages/chdb-wasm/test/split.test.mjs
-
-      - name: Upload split wasm artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: chdb-wasm-split
-          path: |
-            split-out-mt/chdb.mjs
-            split-out-mt/chdb.wasm
-            split-out-mt/chdb.deferred.wasm
-            split-out-st/chdb.mjs
-            split-out-st/chdb.wasm
-            split-out-st/chdb.deferred.wasm
-          retention-days: 1
-          if-no-files-found: error
-
       # ---- chdb-cloudflare: a single-file bundle sized for Cloudflare Workers
       # (10 MiB gzipped Worker limit). Unlike the npm bundles above, this one is
       # compiled with CHDB_LITE=ON: the wasm default is the full function registry,
