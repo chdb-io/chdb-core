@@ -369,6 +369,9 @@ jobs:
           # pattern against the crashing process's cwd, so cores from test
           # subprocesses (different cwd) were silently dropped.
           sudo mkdir -p /tmp/core && sudo chmod 1777 /tmp/core
+          # Runners are persistent and /tmp/core is shared: drop stale cores
+          # so the collection step only ever reports this run's crashes.
+          sudo rm -f /tmp/core/core.*
           echo "/tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
           ulimit -c unlimited
       - name: Start MinIO for S3 streaming-insert tests
@@ -514,6 +517,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -648,6 +652,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -668,7 +673,7 @@ jobs:
         run: |
           if ls /tmp/core/core.* >/dev/null 2>&1; then
             echo "CORE_FILES_FOUND=true" >> $GITHUB_ENV
-            tar -czvf core-files-linux-aarch64.tar.gz -C /tmp core
+            tar -czvf core-files-linux-aarch64.tar.gz /tmp/core/core.*
             echo "Core files tar created: core-files-linux-aarch64.tar.gz"
             ls -lh core-files-linux-aarch64.tar.gz
           else
