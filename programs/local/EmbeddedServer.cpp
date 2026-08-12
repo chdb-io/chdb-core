@@ -257,11 +257,17 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
             /// teardown (cross-TU destruction order is unspecified) while worker
             /// threads are still live - the residual SIGSEGV window seen as the
             /// DataStore-suite subprocess crashes on v26.7.
+            /// Take ownership under the lock but destroy outside it: the
+            /// teardown must not run under instance_mutex, or a teardown
+            /// path taking the mutex would self-deadlock and a concurrent
+            /// close would block for the whole teardown.
+            std::unique_ptr<EmbeddedServer> instance_to_destroy;
             {
                 std::lock_guard<std::mutex> lock(instance_mutex);
                 client_ref_count = 0;
-                global_instance.reset();
+                instance_to_destroy = std::move(global_instance);
             }
+            instance_to_destroy.reset();
             GlobalThreadPool::shutdown();
         });
 
