@@ -213,9 +213,11 @@ class TestErrorPathStateReset(unittest.TestCase):
             qdf = pd.DataFrame({"x": np.arange(10, dtype=np.int64)})
             wr_df = weakref.ref(qdf)
             stream = conn.send_insert("INSERT INTO ins_t (x)", "CSV")
-            with self.assertRaises(Exception):
-                conn.query("SELECT sum(x) FROM Python(qdf)", "CSV")
-            stream.close()
+            try:
+                with self.assertRaisesRegex(Exception, "streaming insert is active"):
+                    conn.query("SELECT sum(x) FROM Python(qdf)", "CSV")
+            finally:
+                stream.close()
             del qdf
             gc.collect()
             self.assertIsNone(wr_df(), "rejected query leaked its name binding")
@@ -381,7 +383,7 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
                         if got != exp[name]:
                             errors.append(f"{name}: {got} != {exp[name]}")
                     except Exception as e:  # noqa: BLE001
-                        errors.append(f"{name}: {type(e).__name__}")
+                        errors.append(f"{name}: {type(e).__name__}: {str(e)[:200]}")
 
             def joiner():
                 for _ in range(15):
@@ -392,7 +394,7 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
                         if got != str(n2):
                             errors.append(f"join: {got} != {n2}")
                     except Exception as e:  # noqa: BLE001
-                        errors.append(f"join: {type(e).__name__}")
+                        errors.append(f"join: {type(e).__name__}: {str(e)[:200]}")
 
             threads = [threading.Thread(target=worker, args=(n,))
                        for n in ("udf1", "udf2", "udf1", "udf2")] + [threading.Thread(target=joiner)]

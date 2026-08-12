@@ -191,6 +191,11 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
         /// not kept alive longer than one query boundary.
         for (auto it = meta_lru.begin(); it != meta_lru.end();)
         {
+            /// PyWeakref_GetObject is deprecated in favour of PyWeakref_GetRef,
+            /// but the abi3 wheel is built against the 3.9 limited API where
+            /// GetRef (3.13+) does not exist. The borrowed pointer is only
+            /// COMPARED to Py_None under the GIL, never dereferenced, so the
+            /// borrowed-reference hazard does not apply here.
             PyObject * wr = (*it)->weak_ref.ptr();
             if (wr != nullptr && PyWeakref_GetObject(wr) == Py_None)
                 dead_meta.splice(dead_meta.end(), meta_lru, it++);
@@ -206,31 +211,41 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
 
     std::vector<String> bound;
     bound.reserve(names.size());
-    for (const auto & matched : names)
+    try
     {
+        for (const auto & matched : names)
         {
-            /// A name another in-flight query already bound is reused (and
-            /// kept alive by its refcount); the expensive inspect frame walk
-            /// only runs for names not currently bound.
+            {
+                /// A name another in-flight query already bound is reused (and
+                /// kept alive by its refcount); the expensive inspect frame walk
+                /// only runs for names not currently bound.
+                std::lock_guard lock(state_mutex);
+                if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
+                {
+                    ++it->second.refcount;
+                    bound.push_back(matched);
+                    continue;
+                }
+            }
+
+            auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
+            if (obj.is_none())
+                continue;
+
             std::lock_guard lock(state_mutex);
             if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
-            {
-                ++it->second.refcount;
-                bound.push_back(matched);
-                continue;
-            }
+                ++it->second.refcount; /// another thread bound it meanwhile
+            else
+                py_table_cache.emplace(matched, NamedEntry{std::move(obj), 1});
+            bound.push_back(matched);
         }
-
-        auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
-        if (obj.is_none())
-            continue;
-
-        std::lock_guard lock(state_mutex);
-        if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
-            ++it->second.refcount; /// another thread bound it meanwhile
-        else
-            py_table_cache.emplace(matched, NamedEntry{std::move(obj), 1});
-        bound.push_back(matched);
+    }
+    catch (...)
+    {
+        /// A frame-walk failure mid-loop must not strand the bumps already
+        /// made: no token would record them, pinning the objects until close.
+        releaseBoundNames(bound);
+        throw;
     }
 
     if (bound.empty())
@@ -248,20 +263,14 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
     return token;
 }
 
-void PythonTableCache::releaseQueryableObjs(UInt64 token)
+void PythonTableCache::releaseBoundNames(const std::vector<String> & names)
 {
-    if (token == 0)
-        return;
-
-    /// No GIL here: erased references go through the deferred-decref queue,
-    /// so this is safe from any exit path regardless of lock/GIL context.
+    /// No GIL required: erased references go through the deferred-decref
+    /// queue, so this is safe from any exit path regardless of lock/GIL context.
     std::vector<py::object> released;
     {
         std::lock_guard lock(state_mutex);
-        auto rec = bound_names_by_token.find(token);
-        if (rec == bound_names_by_token.end())
-            return;
-        for (const auto & name : rec->second)
+        for (const auto & name : names)
         {
             auto it = py_table_cache.find(name);
             if (it == py_table_cache.end())
@@ -274,20 +283,40 @@ void PythonTableCache::releaseQueryableObjs(UInt64 token)
             else
                 --it->second.refcount;
         }
-        bound_names_by_token.erase(rec);
     }
     for (auto & obj : released)
         enqueuePyDecref(obj.release().ptr());
 }
 
+void PythonTableCache::releaseQueryableObjs(UInt64 token)
+{
+    if (token == 0)
+        return;
+
+    std::vector<String> names;
+    {
+        std::lock_guard lock(state_mutex);
+        auto rec = bound_names_by_token.find(token);
+        if (rec == bound_names_by_token.end())
+            return;
+        names = std::move(rec->second);
+        bound_names_by_token.erase(rec);
+    }
+    releaseBoundNames(names);
+}
+
 py::object PythonTableCache::getQueryableObj(const String & table_name)
 {
+    /// The returned copy increfs, which is only safe under the GIL - the
+    /// state_mutex serializes map access, not refcount manipulation.
+    py::gil_assert();
+
     std::lock_guard lock(state_mutex);
 
     auto iter = py_table_cache.find(table_name);
 
     if (iter != py_table_cache.end())
-        return iter->second.obj; /// copy increfs under the lock (C API only)
+        return iter->second.obj;
 
     return py::none();
 }

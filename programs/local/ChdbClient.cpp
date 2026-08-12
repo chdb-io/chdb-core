@@ -232,7 +232,6 @@ void ChdbClient::clearQueryParameters()
 }
 
 #if USE_PYTHON
-#if USE_PYTHON
 namespace
 {
 /// The prefill (pybind side, GIL held) and the execute call it precedes run
@@ -245,10 +244,13 @@ UInt64 takePythonTablesBindToken()
     return std::exchange(python_tables_bind_token, 0);
 }
 }
-#endif
 
 void ChdbClient::findQueryableObjFromPyCache(const String & query_str) const
 {
+    /// A leftover token means the previous prefill's execute never ran (e.g.
+    /// the connection was invalidated in between); release its bindings
+    /// instead of leaking them until connection close.
+    python_table_cache->releaseQueryableObjs(std::exchange(python_tables_bind_token, 0));
     python_tables_bind_token = python_table_cache->findQueryableObjFromQuery(query_str);
 }
 #endif
@@ -559,8 +561,8 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
             {
                 auto * local_connection = static_cast<LocalConnection *>(connection.get());
                 local_connection->resetQueryContext();
-                local_connection->getSession().getPythonTableCache()->releaseQueryableObjs(py_tables_token);
             }
+            python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         }
         return res;

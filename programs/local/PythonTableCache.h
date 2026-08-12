@@ -95,6 +95,10 @@ private:
     /// Locks state_mutex internally; entry destructors run outside the lock.
     void dropMeta(PyObject * df_ptr);
 
+    /// Decrement/erase the given name bindings (shared by token release and
+    /// the bind-loop exception rollback). GIL not required.
+    void releaseBoundNames(const std::vector<String> & names);
+
     /// Guards py_table_cache, meta_lru and query_epoch. The GIL alone is not
     /// enough: the pybind-side prefill (before client_mutex is taken) can
     /// interleave with an in-flight query's storage-side lookups at GIL yield
