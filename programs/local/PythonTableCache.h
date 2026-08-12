@@ -68,24 +68,36 @@ class PythonTableCache {
 public:
     ~PythonTableCache();
 
-    void findQueryableObjFromQuery(const String & query_str);
+    /// Bind every Python(name) the query references (or bump the refcount of
+    /// a binding another in-flight query already made) and return a token
+    /// identifying exactly the bindings this call created. 0 = nothing bound.
+    UInt64 findQueryableObjFromQuery(const String & query_str);
 
-    py::handle getQueryableObj(const String & table_name);
+    /// Drop the bindings the findQueryableObjFromQuery call that returned
+    /// `token` created (refcounted: a name stays bound while any in-flight
+    /// query on the connection references it). Safe without the GIL - erased
+    /// references are released through the deferred-decref queue. Called from
+    /// every query-exit path; clear() remains the connection-close full wipe.
+    void releaseQueryableObjs(UInt64 token);
+
+    /// Strong reference: the caller's use may outlive a concurrent release
+    /// of the binding (Py_INCREF under state_mutex is C API, no bytecode).
+    py::object getQueryableObj(const String & table_name);
 
     void clear();
 
     /// Pandas metadata cache. All methods must be called with the GIL held.
     PandasTableMetaPtr findValidatedPandasMeta(const py::handle & df);
     void storePandasMeta(const py::handle & df, const DB::ColumnsDescription & schema);
-    void invalidatePandasMeta(PyObject * df_ptr)
-    {
-        std::lock_guard lock(state_mutex);
-        dropMeta(df_ptr);
-    }
+    void invalidatePandasMeta(PyObject * df_ptr) { dropMeta(df_ptr); }
 
 private:
-    /// Must be called with state_mutex held.
+    /// Locks state_mutex internally; entry destructors run outside the lock.
     void dropMeta(PyObject * df_ptr);
+
+    /// Decrement/erase the given name bindings (shared by token release and
+    /// the bind-loop exception rollback). GIL not required.
+    void releaseBoundNames(const std::vector<String> & names);
 
     /// Guards py_table_cache, meta_lru and query_epoch. The GIL alone is not
     /// enough: the pybind-side prefill (before client_mutex is taken) can
@@ -94,7 +106,25 @@ private:
     /// order is GIL first, then state_mutex; no Python code that could
     /// re-enter this object runs while the mutex is held by the same thread.
     std::mutex state_mutex;
-    std::unordered_map<String, py::handle> py_table_cache;
+
+    /// Strong reference plus the number of in-flight queries that bound it.
+    /// A query must not clear another query's bindings: with one connection
+    /// shared by several threads, thread B's prefill runs while thread A's
+    /// query is still executing, and A's exit used to wipe B's entry. The
+    /// reference is owned so a binding reused by a later overlapping query
+    /// can never dangle when the user rebinds the Python variable meanwhile.
+    struct NamedEntry
+    {
+        py::object obj;
+        size_t refcount = 0;
+    };
+    std::unordered_map<String, NamedEntry> py_table_cache;
+
+    /// Names each outstanding findQueryableObjFromQuery call actually bound,
+    /// keyed by its token. Exact pairing: releasing one query can neither
+    /// under- nor over-release names bound by a concurrent query, even for
+    /// identical query texts with different per-thread name visibility.
+    std::unordered_map<UInt64, std::vector<String>> bound_names_by_token;
 
     static constexpr size_t max_meta_entries = 4;
     std::list<PandasTableMetaPtr> meta_lru;

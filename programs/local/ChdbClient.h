@@ -74,6 +74,9 @@ public:
     void clearQueryParameters();
 
 #if USE_PYTHON
+    /// Prefill Python(name) bindings for a query issued on this thread; the
+    /// returned token is stashed thread-locally and consumed by the execute
+    /// call that follows on the same thread (takePythonTablesBindToken).
     void findQueryableObjFromPyCache(const String & query_str) const;
 #endif
 

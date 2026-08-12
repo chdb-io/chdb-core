@@ -106,6 +106,11 @@ struct StreamingQueryContext
     /// concurrent streams on one client can differ.
     bool dataframe_over_chunks = true;
 
+    /// Token pairing this stream with the Python(name) bindings its prefill
+    /// created (chdb); released when the stream finishes, errors, or is
+    /// cancelled or abandoned.
+    UInt64 python_tables_bind_token = 0;
+
     StreamingQueryContext() = default;
 };
 

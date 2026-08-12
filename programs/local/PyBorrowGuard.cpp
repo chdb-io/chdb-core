@@ -43,32 +43,32 @@ static int drainPendingCallTrampoline(void *)
     return 0;
 }
 
+/// The caller may run on a server thread with no GIL and no upcoming chdb
+/// API call (e.g. a table with borrowed columns dropped in the background).
+/// Schedule a drain on the interpreter's pending-call queue so the release
+/// point is bounded and query-independent; the drains at query boundaries
+/// remain as belt-and-braces.
+void enqueuePyDecref(PyObject * obj)
+{
+    {
+        std::lock_guard lock(pendingDecrefsMutex());
+        pendingDecrefs().push_back(obj);
+    }
+    if (!Py_IsInitialized())
+        return; /// finalization: queued refs are intentionally leaked
+
+    if (!drain_scheduled.test_and_set(std::memory_order_acq_rel))
+    {
+        if (Py_AddPendingCall(drainPendingCallTrampoline, nullptr) != 0)
+            drain_scheduled.clear(std::memory_order_release);
+    }
+}
+
 std::shared_ptr<void> makePyBorrowGuard(PyObject * obj)
 {
     py::gil_assert();
     Py_INCREF(obj);
-    return {static_cast<void *>(obj), [](void * ptr)
-    {
-        {
-            std::lock_guard lock(pendingDecrefsMutex());
-            pendingDecrefs().push_back(static_cast<PyObject *>(ptr));
-        }
-        /// The deleter may run on a server thread with no GIL and no upcoming
-        /// chdb API call (e.g. a table with borrowed columns dropped in the
-        /// background). Schedule a drain on the interpreter's pending-call
-        /// queue so the release point is bounded and query-independent;
-        /// the drains at query boundaries remain as belt-and-braces.
-        /// During/after finalization the pending-call machinery is gone:
-        /// leave the queued refs intentionally leaked instead of crashing.
-        if (!Py_IsInitialized())
-            return;
-
-        if (!drain_scheduled.test_and_set(std::memory_order_acq_rel))
-        {
-            if (Py_AddPendingCall(drainPendingCallTrampoline, nullptr) != 0)
-                drain_scheduled.clear(std::memory_order_release);
-        }
-    }};
+    return {static_cast<void *>(obj), [](void * ptr) { enqueuePyDecref(static_cast<PyObject *>(ptr)); }};
 }
 
 void drainPyBorrowGuardQueue()

@@ -183,6 +183,51 @@ class TestZeroCopyEligibility(unittest.TestCase):
 
 
 class TestErrorPathStateReset(unittest.TestCase):
+    @unittest.skipUnless(PANDAS3, "arrow-backed str dtype requires pandas 3")
+    def test_abandoned_stream_replaced_releases_bindings(self):
+        # Starting a new stream implicitly abandons an unfinished one; the old
+        # stream's name bindings must be released with it, not leak until close.
+        conn = chdb.connect(":memory:")
+        try:
+            global adf
+            adf = make_df(50_000)
+            wr_pa = weakref.ref(adf["s"].array._pa_array)
+            s1 = conn.send_query("SELECT i64, s FROM Python(adf)", "CSV")
+            next(iter(s1))  # consume one chunk, abandon without close
+            s2 = conn.send_query("SELECT count() FROM Python(adf)", "CSV")
+            list(s2)  # drain second stream to completion
+            del s1, s2, adf
+            gc.collect()
+            self.assertIsNone(wr_pa(), "abandoned stream leaked its name binding")
+        finally:
+            globals().pop("adf", None)
+            conn.close()
+
+    def test_query_rejected_during_insert_stream_releases_binding(self):
+        # A query rejected because a streaming insert is active must still
+        # release its prefilled binding (early-return path).
+        conn = chdb.connect(":memory:")
+        try:
+            conn.query("CREATE TABLE ins_t (x Int64) ENGINE = Memory", "CSV")
+            global qdf
+            qdf = pd.DataFrame({"x": np.arange(10, dtype=np.int64)})
+            wr_df = weakref.ref(qdf)
+            stream = conn.send_insert("INSERT INTO ins_t (x)", "CSV")
+            try:
+                with self.assertRaisesRegex(Exception, "streaming insert is active"):
+                    conn.query("SELECT sum(x) FROM Python(qdf)", "CSV")
+            finally:
+                stream.close()
+            del qdf
+            gc.collect()
+            self.assertIsNone(wr_df(), "rejected query leaked its name binding")
+            got = str(conn.query("SELECT count() FROM ins_t", "CSV")).strip()
+            self.assertEqual(got, "0")
+            conn.query("DROP TABLE ins_t", "CSV")
+        finally:
+            globals().pop("qdf", None)
+            conn.close()
+
     def test_streaming_init_error_then_rebind(self):
         # A failed send_query must not leave a stale df handle: rebinding the
         # name serves the new data, deleting it raises instead of hanging.
@@ -318,19 +363,17 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
             del tdf1, tdf2
             conn.close()
 
-    def test_unsynchronized_threads_never_return_wrong_data(self):
-        """True concurrent submission on one connection is a pre-existing
-        weak spot (the stock 26.5 wheel fails most such queries with
-        PY_OBJECT_NOT_FOUND). Pin the safety property that matters: a query
-        either returns the exact correct result or raises - it must never
-        return wrong data, crash, or hang."""
+    def test_unsynchronized_threads_all_succeed(self):
+        """Concurrent submission on one connection: bindings are refcounted
+        per query, so one query's exit no longer clears another in-flight
+        query's name binding. Every query must return the exact result."""
         conn = chdb.connect(":memory:")
         try:
             n1, n2 = 50_000, 30_000
             global udf1, udf2
             udf1, udf2 = make_df(n1, "a"), make_df(n2, "b")
             exp = {"udf1": f"{n1},{(n1 - 1) * n1 // 2}", "udf2": f"{n2},{(n2 - 1) * n2 // 2}"}
-            wrong = []
+            errors = []
 
             def worker(name):
                 for _ in range(20):
@@ -338,17 +381,28 @@ class TestRepeatedAndConcurrent(unittest.TestCase):
                         got = str(conn.query(
                             f"SELECT count(), sum(i64) FROM Python({name})", "CSV")).strip()
                         if got != exp[name]:
-                            wrong.append(f"{name}: {got} != {exp[name]}")
-                    except Exception:  # noqa: BLE001 - acceptable failure mode
-                        pass
+                            errors.append(f"{name}: {got} != {exp[name]}")
+                    except Exception as e:  # noqa: BLE001
+                        errors.append(f"{name}: {type(e).__name__}: {str(e)[:200]}")
+
+            def joiner():
+                for _ in range(15):
+                    try:
+                        got = str(conn.query(
+                            "SELECT count() FROM Python(udf1) a JOIN Python(udf2) b ON a.i64 = b.i64",
+                            "CSV")).strip()
+                        if got != str(n2):
+                            errors.append(f"join: {got} != {n2}")
+                    except Exception as e:  # noqa: BLE001
+                        errors.append(f"join: {type(e).__name__}: {str(e)[:200]}")
 
             threads = [threading.Thread(target=worker, args=(n,))
-                       for n in ("udf1", "udf2", "udf1", "udf2")]
+                       for n in ("udf1", "udf2", "udf1", "udf2")] + [threading.Thread(target=joiner)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
-            self.assertEqual(wrong, [], "concurrent queries returned WRONG data")
+            self.assertEqual(errors, [])
         finally:
             del udf1, udf2
             conn.close()
