@@ -168,7 +168,8 @@ private:
         const Names & names,
         const Block & sample_block,
         const bool is_pandas_df,
-        const std::vector<bool> & is_virtual_column);
+        const std::vector<bool> & is_virtual_column,
+        const ContextPtr & context_);
     PyColumnVecPtr column_cache;
     bool is_pandas_df;
     CHDB::DataSourceWrapperPtr data_source_wrapper;

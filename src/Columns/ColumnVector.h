@@ -64,6 +64,7 @@ public:
     void doInsertFrom(const IColumn & src, size_t n) override
 #endif
     {
+        materializeBorrowedStorage();
         data.push_back(assert_cast<const Self &>(src).getData()[n]);
     }
 
@@ -73,27 +74,32 @@ public:
     void doInsertManyFrom(const IColumn & src, size_t position, size_t length) override
 #endif
     {
+        materializeBorrowedStorage();
         ValueType v = assert_cast<const Self &>(src).getData()[position];
         data.resize_fill(data.size() + length, v);
     }
 
     void insertMany(const Field & field, size_t length) override
     {
+        materializeBorrowedStorage();
         data.resize_fill(data.size() + length, static_cast<T>(field.safeGet<T>()));
     }
 
     void insertData(const char * pos, size_t) override
     {
+        materializeBorrowedStorage();
         data.emplace_back(unalignedLoad<T>(pos));
     }
 
     void insertDefault() override
     {
+        materializeBorrowedStorage();
         data.push_back(T());
     }
 
     void insertManyDefaults(size_t length) override
     {
+        materializeBorrowedStorage();
         data.resize_fill(data.size() + length, T());
     }
 
@@ -133,7 +139,37 @@ public:
 
     void protect() override
     {
-        data.protect();
+        if (!borrow_guard)
+            data.protect();
+    }
+
+    ~ColumnVector() override
+    {
+        if (borrow_guard)
+            data.release_external_storage();
+    }
+
+    /// Mount an externally-owned, contiguous value buffer without copying.
+    /// The guard keeps the owner alive; `ptr + n * sizeof(T)` must have >= 63
+    /// readable bytes after it. The column must be empty. Any mutation
+    /// materializes an owned copy via IColumn::mutate.
+    void borrowData(const void * ptr, size_t n, std::shared_ptr<void> guard)
+    {
+        chassert(data.empty());
+        data.borrow_external_storage(const_cast<char *>(static_cast<const char *>(ptr)), n * sizeof(T));
+        borrow_guard = std::move(guard);
+    }
+
+    bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
+
+    NO_INLINE void materializeBorrowedStorageSlow();
+
+    /// Only the null check is inlined into the (hot, per-row) mutators; the
+    /// cold copy-out body stays out of line so their prologues remain minimal.
+    void materializeBorrowedStorage() override
+    {
+        if (borrow_guard) [[unlikely]]
+            materializeBorrowedStorageSlow();
     }
 
     void insertValue(const T value)
@@ -212,6 +248,7 @@ public:
 
     void reserve(size_t n) override
     {
+        materializeBorrowedStorage();
         data.reserve_exact(n);
     }
 
@@ -222,6 +259,7 @@ public:
 
     void shrinkToFit() override
     {
+        materializeBorrowedStorage();
         data.shrink_to_fit();
     }
 
@@ -277,6 +315,7 @@ public:
 
     void insert(const Field & x) override
     {
+        materializeBorrowedStorage();
         data.push_back(static_cast<T>(x.safeGet<T>()));
     }
 
@@ -381,6 +420,10 @@ public:
 
 protected:
     Container data;
+
+private:
+    /// When set, `data` aliases externally-owned memory kept alive by this guard.
+    std::shared_ptr<void> borrow_guard;
 };
 
 template <class TCol>

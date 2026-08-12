@@ -232,9 +232,26 @@ void ChdbClient::clearQueryParameters()
 }
 
 #if USE_PYTHON
+namespace
+{
+/// The prefill (pybind side, GIL held) and the execute call it precedes run
+/// on the same thread; the token travels between them thread-locally so
+/// concurrent queries on one connection cannot clobber each other's record.
+thread_local UInt64 python_tables_bind_token = 0;
+
+UInt64 takePythonTablesBindToken()
+{
+    return std::exchange(python_tables_bind_token, 0);
+}
+}
+
 void ChdbClient::findQueryableObjFromPyCache(const String & query_str) const
 {
-    python_table_cache->findQueryableObjFromQuery(query_str);
+    /// A leftover token means the previous prefill's execute never ran (e.g.
+    /// the connection was invalidated in between); release its bindings
+    /// instead of leaking them until connection close.
+    python_table_cache->releaseQueryableObjs(std::exchange(python_tables_bind_token, 0));
+    python_tables_bind_token = python_table_cache->findQueryableObjFromQuery(query_str);
 }
 #endif
 
@@ -275,20 +292,32 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     const char * query, size_t query_len,
     const char * format, size_t format_len)
 {
+#if USE_PYTHON
+    const UInt64 py_tables_token = takePythonTablesBindToken();
+#endif
     std::lock_guard<std::mutex> lock(client_mutex);
 
     String query_str(query, query_len);
     String format_str(format, format_len);
 
     if (streaming_insert_context)
+    {
+#if USE_PYTHON
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
         return std::make_unique<CHDB::MaterializedQueryResult>(
             "Cannot run a query while a streaming insert is active on this connection");
+    }
 
     try
     {
         DB::ThreadStatus thread_status;
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
+#if USE_PYTHON
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+            python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
             return std::make_unique<CHDB::MaterializedQueryResult>(getErrorMsg());
         }
         auto * local_connection = static_cast<LocalConnection *>(connection.get());
@@ -310,7 +339,8 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 rows_written,
                 bytes_written);
 #if USE_PYTHON
-            python_table_cache->clear();
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+            python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
             return res;
         }
@@ -325,21 +355,26 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
             rows_written,
             bytes_written);
 #if USE_PYTHON
-        python_table_cache->clear();
+        (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         return res;
     }
     catch (const Exception & e)
     {
 #if USE_PYTHON
-        python_table_cache->clear();
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
 #if USE_PYTHON
-        python_table_cache->clear();
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
@@ -349,27 +384,48 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const char * query, size_t query_len,
     const char * format, size_t format_len, bool dataframe_over_chunks)
 {
+#if USE_PYTHON
+    const UInt64 py_tables_token = takePythonTablesBindToken();
+#endif
     std::lock_guard<std::mutex> lock(client_mutex);
 
     String query_str(query, query_len);
     String format_str(format, format_len);
 
     if (streaming_insert_context)
+    {
+#if USE_PYTHON
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
         return std::make_unique<CHDB::StreamQueryResult>(
             "Cannot start a streaming query while a streaming insert is active on this connection");
+    }
 
     try
     {
         DB::ThreadStatus thread_status;
 
+#if USE_PYTHON
+        /// Starting a new stream implicitly abandons an unfinished one; its
+        /// bindings must be released with it or they leak until close.
+        if (streaming_query_context)
+            python_table_cache->releaseQueryableObjs(streaming_query_context->python_tables_bind_token);
+#endif
         streaming_query_context = std::make_shared<StreamingQueryContext>();
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
             streaming_query_context.reset();
+#if USE_PYTHON
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+            python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
             return std::make_unique<CHDB::StreamQueryResult>(getErrorMsg());
         }
         streaming_query_context->thread_group = DB::CurrentThread::getGroup();
         streaming_query_context->dataframe_over_chunks = dataframe_over_chunks;
+#if USE_PYTHON
+        streaming_query_context->python_tables_bind_token = py_tables_token;
+#endif
         auto result = std::make_unique<CHDB::StreamQueryResult>();
         streaming_query_context->streaming_result = result.get();
         return result;
@@ -377,11 +433,21 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     catch (const Exception & e)
     {
         streaming_query_context.reset();
+#if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
         return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         streaming_query_context.reset();
+#if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
         return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }
@@ -486,20 +552,26 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         if (is_end)
         {
             // End of stream reached or cancelled, cleanup
+#if USE_PYTHON
+            const UInt64 py_tables_token = streaming_query_context ? streaming_query_context->python_tables_bind_token : 0;
+#endif
             streaming_query_context.reset();
 #if USE_PYTHON
             if (connection)
             {
                 auto * local_connection = static_cast<LocalConnection *>(connection.get());
                 local_connection->resetQueryContext();
-                local_connection->getSession().getPythonTableCache()->clear();
             }
+            python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         }
         return res;
     }
     catch (const Exception & e)
     {
+#if USE_PYTHON
+        const UInt64 py_tables_token = streaming_query_context ? streaming_query_context->python_tables_bind_token : 0;
+#endif
         streaming_query_context.reset();
 #if USE_PYTHON
         if (connection)
@@ -507,12 +579,15 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
             auto * local_connection = static_cast<LocalConnection *>(connection.get());
             local_connection->resetQueryContext();
         }
-        python_table_cache->clear();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
+#if USE_PYTHON
+        const UInt64 py_tables_token = streaming_query_context ? streaming_query_context->python_tables_bind_token : 0;
+#endif
         streaming_query_context.reset();
 #if USE_PYTHON
         if (connection)
@@ -520,7 +595,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
             auto * local_connection = static_cast<LocalConnection *>(connection.get());
             local_connection->resetQueryContext();
         }
-        python_table_cache->clear();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
@@ -549,6 +624,9 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
         }
 
         /// Ensure cleanup happens
+#if USE_PYTHON
+        const UInt64 py_tables_token = streaming_query_context->python_tables_bind_token;
+#endif
         streaming_query_context.reset();
 #if USE_PYTHON
         if (connection)
@@ -556,7 +634,7 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
             auto * local_connection = static_cast<LocalConnection *>(connection.get());
             local_connection->resetQueryContext();
         }
-        python_table_cache->clear();
+        python_table_cache->releaseQueryableObjs(py_tables_token);
 #endif
     }
 }
@@ -887,7 +965,6 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
     if (connection)
     {
         local_connection->resetQueryContext();
-        local_connection->getSession().getPythonTableCache()->clear();
     }
 #endif
 

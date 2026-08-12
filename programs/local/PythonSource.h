@@ -86,6 +86,11 @@ public:
     };
     using TopKActionsPtr = std::shared_ptr<const TopKActions>;
 
+    /// Fixed-grid block boundaries, additionally cut at Arrow chunk starts so
+    /// that (almost) every block lies inside one chunk and its string payload
+    /// can be mounted zero-copy. Shared by all streams of one read.
+    using BlockBoundsPtr = std::shared_ptr<const std::vector<UInt64>>;
+
     PythonSource(
         CHDB::DataSourceWrapperPtr data_source_wrapper_,
         bool isInheritsFromPyReader_,
@@ -99,7 +104,8 @@ public:
         const FormatSettings & format_settings_,
         CHDB::ArrowTableReaderPtr arrow_table_reader_ = nullptr,
         PrewhereActionsPtr prewhere_ = nullptr,
-        TopKActionsPtr topk_ = nullptr);
+        TopKActionsPtr topk_ = nullptr,
+        BlockBoundsPtr block_bounds_ = nullptr);
 
     ~PythonSource() override = default;
 
@@ -138,9 +144,15 @@ private:
     template <typename T>
     ColumnPtr convert_and_insert(const py::object & obj, UInt32 scale = 0, bool is_json = false);
     template <typename T>
-    void insert_from_ptr(const void * ptr, const MutableColumnPtr & column, size_t offset, size_t row_count, size_t stride = 0);
+    void insert_from_ptr(
+        const void * ptr,
+        const MutableColumnPtr & column,
+        size_t offset,
+        size_t row_count,
+        size_t stride,
+        const std::shared_ptr<void> & borrow_guard = nullptr);
 
-    void convert_string_array_to_block(PyObject ** buf, const MutableColumnPtr & column, size_t offset, size_t row_count, size_t stride = 0);
+    void convert_string_array_to_block(PyObject ** buf, const MutableColumnPtr & column, size_t offset, size_t row_count, size_t stride = sizeof(PyObject *));
 
     template <typename T>
     void insert_from_list(const py::list & obj, const MutableColumnPtr & column);
@@ -163,6 +175,7 @@ private:
 
     PrewhereActionsPtr prewhere;
     TopKActionsPtr topk;
+    BlockBoundsPtr block_bounds;
     bool topk_done = false;
 };
 }

@@ -66,8 +66,8 @@ private:
         DB::SerializationPtr & serialization,
         PyObject ** objects,
         DB::MutableColumnPtr & column,
-        DB::WhichDataType which = DB::WhichDataType(DB::TypeIndex::Object),
-        size_t stride = 0);
+        DB::WhichDataType which,
+        size_t stride);
 
     template <typename T>
     static void innerScanFloat(
@@ -75,7 +75,7 @@ private:
         const size_t count,
         const T * ptr,
         DB::MutableColumnPtr & column,
-        size_t stride = 0);
+        size_t stride);
 
     template <typename T>
     static void innerScanNumeric(
@@ -84,22 +84,22 @@ private:
         const T * data_ptr,
         const bool * mask_ptr,
         DB::MutableColumnPtr & column,
-        size_t stride = 0,
-        size_t mask_stride = 0);
+        size_t stride,
+        size_t mask_stride);
 
     static void innerScanDateTime64(
         const size_t cursor,
         const size_t count,
         const Int64 * ptr,
         DB::MutableColumnPtr & column,
-        size_t stride = 0);
+        size_t stride);
 
     static void innerScanInterval(
         const size_t cursor,
         const size_t count,
         const Int64 * ptr,
         DB::MutableColumnPtr & column,
-        size_t stride = 0);
+        size_t stride);
 
     template <typename T, typename IndexType>
     static void innerScanCategory(
@@ -108,7 +108,7 @@ private:
         const T * codes_ptr,
         const DB::ColumnUniquePtr & category_unique,
         DB::MutableColumnPtr & column,
-        size_t stride = 0);
+        size_t stride);
 };
 
 } // namespace CHDB

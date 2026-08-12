@@ -1,4 +1,5 @@
 #include "PandasScan.h"
+#include "PyBorrowGuard.h"
 #include "PythonConversion.h"
 #include "PythonImporter.h"
 #include "ColumnVectorHelper.h"
@@ -226,7 +227,9 @@ ColumnPtr PandasScan::scanObject(
     auto ** object_array = static_cast<PyObject **>(col_wrap.buf);
     auto serialization = data_type->getDefaultSerialization();
 
-    innerScanObject(cursor, count, format_settings, serialization, object_array, column);
+    innerScanObject(
+        cursor, count, format_settings, serialization, object_array, column,
+        WhichDataType(TypeIndex::Object), col_wrap.stride);
 
     return column;
 }
@@ -242,7 +245,9 @@ void PandasScan::scanObject(
     auto data_type = std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
     SerializationPtr serialization = data_type->getDefaultSerialization();
 
-    innerScanObject(cursor, count, format_settings, serialization, object_array, column);
+    innerScanObject(
+        cursor, count, format_settings, serialization, object_array, column,
+        WhichDataType(TypeIndex::Object), sizeof(PyObject *));
 }
 
 void PandasScan::innerScanObject(
@@ -255,7 +260,9 @@ void PandasScan::innerScanObject(
     WhichDataType which,
     size_t stride)
 {
-    const size_t effective_stride = (stride == 0) ? sizeof(PyObject *) : stride;
+    /// stride == 0 is a numpy broadcast view over a single element: multiplying
+    /// by the raw stride re-reads element 0, which is exactly what broadcast
+    /// semantics require (and is also correct for the count <= 1 case).
     const auto * base_ptr = reinterpret_cast<const char *>(objects);
 
     switch (which.idx)
@@ -272,7 +279,7 @@ void PandasScan::innerScanObject(
 
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
                 if (!py::isinstance<py::dict>(handle))
                 {
@@ -316,7 +323,7 @@ void PandasScan::innerScanObject(
                         string_chars_ptr->reserve(reserve_size);
                 }
 
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
                 bool is_null = false;
@@ -356,7 +363,7 @@ void PandasScan::innerScanObject(
 
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
                 if (!py::isinstance<py::int_>(handle) && !py::isinstance<py::float_>(handle))
@@ -402,7 +409,7 @@ void PandasScan::innerScanObject(
 #endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 scanIntegerColumn<Int64>(py::handle(obj_ptr), column);
             }
             break;
@@ -415,7 +422,7 @@ void PandasScan::innerScanObject(
 #endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 scanIntegerColumn<Int32>(py::handle(obj_ptr), column);
             }
             break;
@@ -428,7 +435,7 @@ void PandasScan::innerScanObject(
 #endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 scanIntegerColumn<UInt64>(py::handle(obj_ptr), column);
             }
             break;
@@ -447,7 +454,7 @@ void PandasScan::innerScanObject(
 
             for (size_t i = cursor; i < cursor + count; ++i)
             {
-                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * effective_stride);
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
                 if (isNone(handle) || (isFloat(handle) && std::isnan(PyFloat_AsDouble(handle.ptr()))))
@@ -487,7 +494,7 @@ void PandasScan::innerScanFloat(
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    if (stride == 0 || stride == sizeof(T))
+    if (stride == sizeof(T))
     {
         ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(data_column.get());
         const T * start = ptr + cursor;
@@ -529,8 +536,8 @@ void PandasScan::innerScanNumeric(
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    const bool data_contiguous = (stride == 0 || stride == sizeof(T));
-    const bool mask_contiguous = (mask_stride == 0 || mask_stride == sizeof(bool));
+    const bool data_contiguous = (stride == sizeof(T));
+    const bool mask_contiguous = (mask_stride == sizeof(bool));
 
     if (data_contiguous && mask_contiguous)
     {
@@ -552,19 +559,17 @@ void PandasScan::innerScanNumeric(
     {
         // Slow path: non-contiguous data or mask
         auto & container = assert_cast<ColumnVector<T> &>(*data_column).getData();
-        const size_t effective_stride = (stride == 0) ? sizeof(T) : stride;
-        const size_t effective_mask_stride = (mask_stride == 0) ? sizeof(bool) : mask_stride;
         const auto * data_base = reinterpret_cast<const char *>(data_ptr);
         const auto * mask_base = reinterpret_cast<const char *>(mask_ptr);
 
         for (size_t i = cursor; i < cursor + count; ++i)
         {
-            T value = *reinterpret_cast<const T *>(data_base + i * effective_stride);
+            T value = *reinterpret_cast<const T *>(data_base + i * stride);
             container.push_back(value);
 
             if (mask_ptr != nullptr)
             {
-                bool is_null = *reinterpret_cast<const bool *>(mask_base + i * effective_mask_stride);
+                bool is_null = *reinterpret_cast<const bool *>(mask_base + i * mask_stride);
                 null_map.push_back(is_null ? 1 : 0);
             }
             else
@@ -595,7 +600,7 @@ void PandasScan::innerScanDateTime64(
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    if (stride == 0 || stride == sizeof(Int64))
+    if (stride == sizeof(Int64))
     {
         ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(data_column.get());
         const Int64 * start = ptr + cursor;
@@ -633,7 +638,7 @@ void PandasScan::innerScanInterval(
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    if (stride == 0 || stride == sizeof(Int64))
+    if (stride == sizeof(Int64))
     {
         ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(data_column.get());
         const Int64 * start = ptr + cursor;
@@ -658,6 +663,44 @@ void PandasScan::innerScanInterval(
             null_map.push_back(is_nat ? 1 : 0);
         }
     }
+}
+
+static constexpr size_t BORROW_MIN_BYTES = 16384;
+
+/// Mount the payload of a fully-valid, single-chunk segment as borrowed chars;
+/// offsets are rebuilt (Arrow start-offsets -> ClickHouse cumulative offsets).
+template <typename OffsetT>
+static bool tryBorrowArrowStringSegment(
+    const ArrowStringChunkView & chunk,
+    const size_t local_start,
+    const size_t n,
+    ColumnString & column_string,
+    NullMap * null_map,
+    const std::shared_ptr<void> & guard)
+{
+    if (chunk.validity != nullptr || !column_string.getChars().empty() || !column_string.getOffsets().empty())
+        return false;
+
+    const OffsetT * off = static_cast<const OffsetT *>(chunk.offsets) + chunk.offset + local_start;
+    const size_t total_bytes = static_cast<size_t>(off[n] - off[0]);
+    if (total_bytes < BORROW_MIN_BYTES)
+        return false;
+
+    const char * begin = chunk.data + off[0];
+    if (!CHDB::borrowTailReadable(begin + total_bytes))
+        return false;
+
+    column_string.borrowChars(begin, total_bytes, guard);
+
+    auto & offsets = column_string.getOffsets();
+    offsets.resize_exact(n);
+    const OffsetT base = off[0];
+    for (size_t i = 0; i < n; ++i)
+        offsets[i] = static_cast<size_t>(off[i + 1] - base);
+
+    if (null_map)
+        null_map->resize_fill(null_map->size() + n, 0);
+    return true;
 }
 
 template <typename OffsetT>
@@ -766,6 +809,22 @@ void PandasScan::innerScanArrowString(
             lo = mid + 1;
         else
             hi = mid;
+    }
+
+    /// Zero-copy: a block that lies entirely inside one fully-valid chunk
+    /// mounts the Arrow payload instead of copying it.
+    if (col_wrap.borrow_guard && lo < chunks.size())
+    {
+        const auto & chunk = chunks[lo];
+        const size_t local_start = cursor - chunk.row_start;
+        if (local_start + count <= chunk.length)
+        {
+            const bool borrowed = col_wrap.arrow_large_offsets
+                ? tryBorrowArrowStringSegment<Int64>(chunk, local_start, count, *column_string, null_map, col_wrap.borrow_guard)
+                : tryBorrowArrowStringSegment<Int32>(chunk, local_start, count, *column_string, null_map, col_wrap.borrow_guard);
+            if (borrowed)
+                return;
+        }
     }
 
     size_t row = cursor;
@@ -1014,7 +1073,9 @@ void PandasScan::innerScanCategory(
     MutableColumnPtr & column,
     size_t stride)
 {
-    const size_t effective_stride = (stride == 0) ? sizeof(T) : stride;
+    /// stride == 0 is a numpy broadcast view over a single element: multiplying
+    /// by the raw stride re-reads element 0, which is exactly what broadcast
+    /// semantics require (and is also correct for the count <= 1 case).
     const auto * base_ptr = reinterpret_cast<const char *>(codes_ptr);
 
     auto indexes_column = ColumnVector<IndexType>::create();
@@ -1023,7 +1084,7 @@ void PandasScan::innerScanCategory(
 
     for (size_t i = cursor; i < cursor + count; ++i)
     {
-        T code = *reinterpret_cast<const T *>(base_ptr + i * effective_stride);
+        T code = *reinterpret_cast<const T *>(base_ptr + i * stride);
         indexes_data.push_back(code < 0 ? 0 : static_cast<IndexType>(code + 1));
     }
 
