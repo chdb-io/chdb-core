@@ -349,8 +349,14 @@ jobs:
         shell: bash
       - name: Setup core dump collection
         run: |
-          mkdir -p tmp/core
-          echo "tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
+          # core_pattern must be absolute: the kernel resolves a relative
+          # pattern against the crashing process's cwd, so cores from test
+          # subprocesses (different cwd) were silently dropped.
+          sudo mkdir -p /tmp/core && sudo chmod 1777 /tmp/core
+          # Runners are persistent and /tmp/core is shared: drop stale cores
+          # so the collection step only ever reports this run's crashes.
+          sudo rm -f /tmp/core/core.*
+          echo "/tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
           ulimit -c unlimited
       - name: Start MinIO for S3 streaming-insert tests
         continue-on-error: true
@@ -492,6 +498,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -631,6 +638,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -648,14 +656,14 @@ jobs:
       - name: Check and upload core files if present
         if: always()
         run: |
-          if ls tmp/core/core.* >/dev/null 2>&1; then
+          if ls /tmp/core/core.* >/dev/null 2>&1; then
             echo "CORE_FILES_FOUND=true" >> $GITHUB_ENV
-            tar -czvf core-files-linux-x86_64.tar.gz tmp/core/core.*
+            tar -czvf core-files-linux-x86_64.tar.gz /tmp/core/core.*
             echo "Core files tar created: core-files-linux-x86_64.tar.gz"
             ls -lh core-files-linux-x86_64.tar.gz
           else
             echo "CORE_FILES_FOUND=false" >> $GITHUB_ENV
-            echo "No core files found in tmp/core"
+            echo "No core files found in /tmp/core"
           fi
         continue-on-error: true
       - name: Keep killall ccache and wait for ccache to finish
