@@ -40,6 +40,10 @@ private:
     /// Bytes of strings, placed contiguously. Note that strings are not zero-terminated and could contain zero bytes in the middle.
     Chars chars;
 
+    /// When set, `chars` aliases externally-owned memory kept alive by this
+    /// guard (offsets stay owned). See borrowChars().
+    std::shared_ptr<void> borrow_guard;
+
     size_t ALWAYS_INLINE offsetAt(ssize_t i) const { return offsets[i - 1]; }
 
     /// Size of i-th element
@@ -69,6 +73,35 @@ private:
     ColumnString(const ColumnString & src);
 
 public:
+    ~ColumnString() override
+    {
+        if (borrow_guard)
+            chars.release_external_storage();
+    }
+
+    /// Mount externally-owned string payload without copying; offsets must be
+    /// filled by the caller (cumulative, relative to `data`). The guard keeps
+    /// the memory owner alive; `data + bytes` must have >= 63 readable bytes
+    /// after it (PaddedPODArray read-overflow contract). The column must be
+    /// empty. Any mutation materializes an owned copy via IColumn::mutate.
+    void borrowChars(const char * data, size_t bytes, std::shared_ptr<void> guard)
+    {
+        chassert(chars.empty() && offsets.empty());
+        chars.borrow_external_storage(const_cast<char *>(data), bytes);
+        borrow_guard = std::move(guard);
+    }
+
+    bool hasBorrowedStorage() const override { return borrow_guard != nullptr; }
+    /// Only the null check is inlined into the (hot, per-row) mutators; the
+    /// cold copy-out body stays out of line so their prologues remain minimal.
+    void materializeBorrowedStorage() override
+    {
+        if (borrow_guard) [[unlikely]]
+            materializeBorrowedStorageSlow();
+    }
+
+    NO_INLINE void materializeBorrowedStorageSlow();
+
     const char * getFamilyName() const override { return "String"; }
     TypeIndex getDataType() const override { return TypeIndex::String; }
 
@@ -129,6 +162,7 @@ public:
 
     void insert(const Field & x) override
     {
+        materializeBorrowedStorage();
         const String & s = x.safeGet<String>();
         const size_t old_size = chars.size();
         const size_t size_to_append = s.size();
@@ -154,6 +188,7 @@ public:
     void doInsertFrom(const IColumn & src_, size_t n) override
 #endif
     {
+        materializeBorrowedStorage();
         const ColumnString & src = assert_cast<const ColumnString &>(src_);
         const size_t size_to_append = src.sizeAt(n);
 
@@ -182,6 +217,7 @@ public:
 
     void insertData(const char * pos, size_t length) override
     {
+        materializeBorrowedStorage();
         const size_t old_size = chars.size();
         const size_t new_size = old_size + length;
 

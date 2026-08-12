@@ -55,6 +55,7 @@ namespace ErrorCodes
 template <typename T>
 void ColumnVector<T>::deserializeAndInsertFromArena(ReadBuffer & in, const IColumn::SerializationSettings *)
 {
+    materializeBorrowedStorage();
     T element{};
     readBinaryLittleEndian<T>(element, in);
     data.emplace_back(std::move(element));
@@ -706,6 +707,7 @@ Float32 ColumnVector<T>::getFloat32(size_t n [[maybe_unused]]) const
 template <typename T>
 bool ColumnVector<T>::tryInsert(const DB::Field & x)
 {
+    materializeBorrowedStorage();
     NearestFieldType<T> value;
     if (!x.tryGet<NearestFieldType<T>>(value))
     {
@@ -732,6 +734,7 @@ void ColumnVector<T>::insertRangeFrom(const IColumn & src, size_t start, size_t 
 void ColumnVector<T>::doInsertRangeFrom(const IColumn & src, size_t start, size_t length)
 #endif
 {
+    materializeBorrowedStorage();
     const ColumnVector & src_vec = assert_cast<const ColumnVector &>(src);
 
     if (start + length > src_vec.data.size())
@@ -995,6 +998,8 @@ ColumnPtr ColumnVector<T>::filter(const IColumn::Filter & filt, ssize_t result_s
 template <typename T>
 void ColumnVector<T>::filter(const IColumn::Filter & filt)
 {
+    materializeBorrowedStorage();
+
     const auto size = data.size();
     const auto filter_size = filt.size();
 
@@ -1033,6 +1038,7 @@ void ColumnVector<T>::filter(const IColumn::Filter & filt)
 template <typename T>
 void ColumnVector<T>::expand(const IColumn::Filter & mask, bool inverted)
 {
+    materializeBorrowedStorage();
     expandDataByMask<T>(data, mask, inverted);
 }
 
@@ -1256,6 +1262,7 @@ ColumnPtr ColumnVector<T>::createWithOffsets(const IColumn::Offsets & offsets, c
 template <typename T>
 void ColumnVector<T>::updateAt(const IColumn & src, size_t dst_pos, size_t src_pos)
 {
+    materializeBorrowedStorage();
     const auto & src_data = assert_cast<const Self &>(src).getData();
     data[dst_pos] = src_data[src_pos];
 }
@@ -1408,8 +1415,21 @@ ColumnPtr ColumnVector<T>::indexImpl(const PaddedPODArray<Type> & indexes, size_
 }
 
 template <typename T>
+void ColumnVector<T>::materializeBorrowedStorageSlow()
+{
+    const char * borrowed = data.raw_data();
+    const size_t n = data.size();
+    data.release_external_storage();
+    data.resize_exact(n);
+    if (n)
+        memcpy(data.data(), borrowed, n * sizeof(T));
+    borrow_guard.reset();
+}
+
+template <typename T>
 std::span<char> ColumnVector<T>::insertRawUninitialized(size_t count)
 {
+    materializeBorrowedStorage();
     size_t start = data.size();
     data.resize(start + count);
     return {reinterpret_cast<char *>(data.data() + start), count * sizeof(T)};

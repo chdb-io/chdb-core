@@ -289,6 +289,10 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         DB::ThreadStatus thread_status;
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
+#if USE_PYTHON
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+            python_table_cache->clear();
+#endif
             return std::make_unique<CHDB::MaterializedQueryResult>(getErrorMsg());
         }
         auto * local_connection = static_cast<LocalConnection *>(connection.get());
@@ -310,6 +314,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 rows_written,
                 bytes_written);
 #if USE_PYTHON
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
             python_table_cache->clear();
 #endif
             return res;
@@ -325,6 +330,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
             rows_written,
             bytes_written);
 #if USE_PYTHON
+        (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
         python_table_cache->clear();
 #endif
         return res;
@@ -332,6 +338,8 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     catch (const Exception & e)
     {
 #if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
         python_table_cache->clear();
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getExceptionMessage(e, print_stack_trace));
@@ -339,6 +347,8 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     catch (...)
     {
 #if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
         python_table_cache->clear();
 #endif
         return std::make_unique<CHDB::MaterializedQueryResult>(getCurrentExceptionMessage(print_stack_trace));
@@ -366,6 +376,10 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
             streaming_query_context.reset();
+#if USE_PYTHON
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+            python_table_cache->clear();
+#endif
             return std::make_unique<CHDB::StreamQueryResult>(getErrorMsg());
         }
         streaming_query_context->thread_group = DB::CurrentThread::getGroup();
@@ -377,11 +391,21 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     catch (const Exception & e)
     {
         streaming_query_context.reset();
+#if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->clear();
+#endif
         return std::make_unique<CHDB::StreamQueryResult>(getExceptionMessage(e, print_stack_trace));
     }
     catch (...)
     {
         streaming_query_context.reset();
+#if USE_PYTHON
+        if (connection)
+            (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
+        python_table_cache->clear();
+#endif
         return std::make_unique<CHDB::StreamQueryResult>(getCurrentExceptionMessage(print_stack_trace));
     }
 }

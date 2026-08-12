@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PyBorrowGuard.h"
+
 #include "chdb.h"
 #include "ChdbPyType.h"
 #include "PybindWrapper.h"
@@ -194,6 +196,10 @@ public:
     ~streaming_query_result()
     {
         chdb_destroy_query_result(result);
+        /// Runs on a Python thread with the GIL held; settle borrow-guard
+        /// decrefs from any still-buffered batches instead of leaving them
+        /// queued until the next query.
+        CHDB::drainPyBorrowGuardQueue();
     }
     bool has_error() { return chdb_result_error(result) != nullptr; }
     py::str error_message()
