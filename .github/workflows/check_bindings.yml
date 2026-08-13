@@ -1,0 +1,88 @@
+name: Check language bindings
+
+# A release publishes libchdb; the bindings consume it. Their C ABI is checked
+# nowhere else. chdb-go writes its purego signatures by hand and resolves
+# symbols by name at runtime, so nothing disagrees with a changed struct.
+# chdb-node's addon and chdb-rust's bindgen output only ever see the header
+# they were built against, and each repository builds against the engine it
+# pinned — so all three stay green through any change made here, until someone
+# bumps the pin months later and inherits the whole backlog at once.
+#
+# This asks each binding to run its own suite against the engine just published
+# and to open an issue in its own repository with the verdict. It gates nothing:
+# the release has already shipped by the time this starts. What it buys is
+# knowing on the day.
+#
+# BINDING_DISPATCH_TOKEN is a fine-grained PAT scoped to chdb-go, chdb-node and
+# chdb-rust with Contents: write. GITHUB_TOKEN cannot reach another repository.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      engine_version:
+        description: "chdb-core release tag to test the bindings against, e.g. v26.5.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  wait_for_assets:
+    runs-on: ubuntu-latest
+    # The tarballs are uploaded by the four wheel workflows, which start from
+    # this same release event and build ClickHouse from scratch. Dispatching
+    # before they land sends every binding to a 404. Waiting on the assets
+    # rather than on those workflows also means a manual re-upload counts.
+    timeout-minutes: 330
+    steps:
+      - name: Wait for every platform tarball
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_VERSION: ${{ github.event.release.tag_name || github.event.inputs.engine_version }}
+        run: |
+          set -euo pipefail
+
+          want='linux-x86_64-libchdb.tar.gz linux-aarch64-libchdb.tar.gz macos-arm64-libchdb.tar.gz macos-x86_64-libchdb.tar.gz'
+
+          deadline=$(( $(date +%s) + 5 * 3600 ))
+          while :; do
+            have=$(gh release view "$ENGINE_VERSION" --repo "$GITHUB_REPOSITORY" \
+                     --json assets --jq '.assets[].name' 2>/dev/null || true)
+            missing=$(comm -23 <(printf '%s\n' $want | sort) <(echo "$have" | sort))
+            [ -z "$missing" ] && break
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::$ENGINE_VERSION still missing after five hours:"
+              echo "$missing"
+              exit 1
+            fi
+
+            echo "still missing, waiting:"
+            echo "$missing"
+            sleep 120
+          done
+
+          echo "all four tarballs are on $ENGINE_VERSION"
+
+  dispatch:
+    needs: wait_for_assets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [chdb-go, chdb-node, chdb-rust]
+    steps:
+      - name: Ask ${{ matrix.repo }} to run its suite against this engine
+        env:
+          GH_TOKEN: ${{ secrets.BINDING_DISPATCH_TOKEN }}
+          ENGINE_VERSION: ${{ github.event.release.tag_name || github.event.inputs.engine_version }}
+          REPO: ${{ matrix.repo }}
+        run: |
+          set -euo pipefail
+          gh api "repos/chdb-io/$REPO/dispatches" --input - <<EOF
+          {"event_type": "chdb-core-release", "client_payload": {"tag": "$ENGINE_VERSION"}}
+          EOF
+          echo "dispatched $ENGINE_VERSION to chdb-io/$REPO"
