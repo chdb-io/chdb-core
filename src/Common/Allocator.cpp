@@ -130,8 +130,12 @@ void freeImpl(void * buf)
 #if USE_JEMALLOC
     if (unlikely(buf == nullptr))
         return;
-    int arena_ind = je_mallctl("arenas.lookup", nullptr, nullptr, &buf, sizeof(buf));
-    if (unlikely(arena_ind != 0))
+    /// Distinguish foreign pointers (glibc-internal allocations that bypass
+    /// the interposed malloc) via the lock-free rtree probe. The previous
+    /// mallctl("arenas.lookup") took jemalloc's single global ctl mutex on
+    /// EVERY free, which convoys catastrophically on many-core machines
+    /// (~90% of cycles in the kernel futex path at 192 threads).
+    if (unlikely(je_vsallocx(buf, 0) == 0))
     {
         __real_free(buf);
         return;
