@@ -489,6 +489,12 @@ void chdb_streaming_cancel_query(chdb_conn * conn, chdb_streaming_result * resul
     if (!result)
         return;
 
+    /// Same reason as chdb_stream_cancel_query below: a naturally-finished stream
+    /// has nothing to cancel, and its state is already retired.
+    auto * handle = reinterpret_cast<QueryResult *>(result);
+    if (handle->stream_exhausted.load(std::memory_order_acquire))
+        return;
+
     try
     {
         auto * client = static_cast<DB::ChdbClient *>(conn->server);
@@ -919,6 +925,16 @@ void chdb_stream_cancel_query(chdb_connection conn, chdb_result * result)
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
     if (!checkConnectionValidity(connection))
+        return;
+
+    /// A naturally-finished stream has nothing left to cancel, and the state the
+    /// cancel path walks has already been retired. This is the flag
+    /// chdb_stream_fetch_result checks to make a post-EOF fetch idempotent, honoured
+    /// here for the same reason: draining a stream and then closing it is the
+    /// ordinary shape of a caller's cleanup, and it should not depend on whether
+    /// the last chunk was empty.
+    auto * handle = reinterpret_cast<QueryResult *>(result);
+    if (handle->stream_exhausted.load(std::memory_order_acquire))
         return;
 
     try
