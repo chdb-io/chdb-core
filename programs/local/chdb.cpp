@@ -11,9 +11,11 @@
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
+#include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
 #include <Common/SignalHandlers.h>
+#include <Common/ThreadPool.h>
 #include <Common/ThreadStatus.h>
 
 #if defined(USE_MUSL) && defined(__aarch64__)
@@ -30,6 +32,9 @@ void chdb_musl_compile_stub(int arg)
 #if USE_JEMALLOC
 #    include <Common/memory.h>
 #endif
+
+/// Defined in CurrentMemoryTracker.cpp.
+extern std::atomic<bool> g_memory_tracking_disabled;
 
 #ifdef CHDB_STATIC_LIBRARY_BUILD
 /// Force reference to ensure function registration object is linked
@@ -1357,6 +1362,45 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
     if (!enabled)
         chdb_reset_signal_handlers();
+}
+
+chdb_state chdb_shutdown(void)
+{
+    /// Set only once the engine is fully stopped, so that a call which bailed
+    /// out below can be retried.
+    static std::atomic<bool> stopped{false};
+
+    if (stopped.load(std::memory_order_acquire))
+        return CHDBSuccess;
+
+    if (DB::EmbeddedServer::hasActiveClients())
+        return CHDBError;
+
+    try
+    {
+        /// Order matters: the shared pools run their workers on threads borrowed
+        /// from the global pool, so joining the global pool first would block on
+        /// a worker parked inside a shared pool.
+        DB::StaticThreadPool::shutdownAll();
+
+        /// Declines to join, and logs which pools are to blame, when a job still
+        /// holds a pool thread -- a pool owned by some static-lifetime object we
+        /// cannot reach, such as a filesystem cache. Those threads then outlive
+        /// this call, as they did before it existed, so report the failure.
+        if (!GlobalThreadPool::shutdownAndJoin())
+            return CHDBError;
+    }
+    catch (...)
+    {
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        return CHDBError;
+    }
+
+    /// Nothing is left to account for, and the trackers outlive this call.
+    g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+
+    stopped.store(true, std::memory_order_release);
+    return CHDBSuccess;
 }
 
 void chdb_reset_signal_handlers(void)

@@ -341,5 +341,16 @@ func main() {
 		result.Destroy()
 	}
 
+	// Stop the engine while the Go runtime is still intact. Without this, chDB's
+	// thread pools keep running into the runtime's own exit sequence, and a pool
+	// thread waking up there is a signal delivered on a thread Go does not own.
+	// Close() is idempotent, so the deferred call above turns into a no-op.
+	conn.Close()
+	if C.chdb_shutdown() != C.CHDBSuccess {
+		fmt.Println("❌ chdb_shutdown() failed")
+		os.Exit(1)
+	}
+	fmt.Println("\n✓ Engine shut down")
+
 	fmt.Println("\n=== All examples completed successfully! ===")
 }

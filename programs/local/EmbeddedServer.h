@@ -44,6 +44,10 @@ public:
 
     static void releaseInstance();
 
+    /// True while at least one client still holds the instance, i.e. the engine
+    /// is in use and must not be torn down.
+    static bool hasActiveClients();
+
     std::string getPath() const { return db_path; }
 
 private:

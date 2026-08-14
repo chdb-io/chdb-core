@@ -1251,6 +1251,13 @@ void EmbeddedServer::releaseInstance()
     }
 }
 
+bool EmbeddedServer::hasActiveClients()
+{
+    std::lock_guard<std::mutex> lock(instance_mutex);
+
+    return client_ref_count != 0;
+}
+
 void EmbeddedServer::initializeWithArgs(int argc, char ** argv)
 {
     db_path = ":memory:"; // Default path

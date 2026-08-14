@@ -315,6 +315,18 @@ public:
 
     static GlobalThreadPool & instance();
     static void shutdown();
+
+    /// Joins every pool thread, so that no thread of the pool is alive once this
+    /// returns. shutdown() only abandons the instance, which leaves the idle
+    /// threads parked until the process dies -- fine for a process that is about
+    /// to exit, not fine for a host that runs a teardown sequence of its own.
+    ///
+    /// Call only once the global Context is destroyed and every pool that draws its
+    /// threads from here has been finalized. Any job still holding a pool thread
+    /// would make the join block forever, so in that case this joins nothing,
+    /// reports which pools are still alive and returns false. On true the pool is
+    /// left unusable: scheduling on it throws.
+    static bool shutdownAndJoin();
 };
 
 

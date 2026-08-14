@@ -75,6 +75,9 @@
         chdb_set_signal_handlers_enabled;
         chdb_reset_signal_handlers;
 
+        /* Engine Shutdown */
+        chdb_shutdown;
+
     local:
         *;
 };

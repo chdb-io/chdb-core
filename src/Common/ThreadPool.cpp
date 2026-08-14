@@ -1271,6 +1271,40 @@ void GlobalThreadPool::shutdown()
     }
 }
 
+bool GlobalThreadPool::shutdownAndJoin()
+{
+    if (!the_instance)
+        return true;
+
+    /// A local `ThreadPoolImpl<ThreadFromGlobalPool*>` that still owns workers has
+    /// them parked on its own condition variable, and each one occupies a global-pool
+    /// thread that `finalize` below would try to join -- forever. Same for a bare
+    /// `ThreadFromGlobalPool` whose function has not returned; either way the job is
+    /// still counted by `active`. Name the local pools when there are any, then leave
+    /// the threads to process exit instead of hanging.
+    if (the_instance->active() != 0)
+    {
+        try
+        {
+            LOG_INFO(
+                &Poco::Logger::get("GlobalThreadPool"),
+                "shutdownAndJoin(): not joining, {} job(s) still hold a pool thread; live local pool workers: [{}]",
+                the_instance->active(),
+                snapshotLocalThreadPools());
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) Ok: diagnostic must not change the outcome
+        {
+        }
+        return false;
+    }
+
+    the_instance->finalize();
+    /// Keep the finalized instance reachable. Destroying it would let `instance()`
+    /// lazily build a fresh pool -- with fresh threads -- for any late caller, which
+    /// is exactly what the join was supposed to rule out.
+    return true;
+}
+
 void startThreadFromGlobalPool(
     std::shared_ptr<ThreadFromGlobalPoolState> state,
     std::function<void()> func,
