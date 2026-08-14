@@ -418,6 +418,16 @@ void PandasDataFrame::fillColumn(
         /// DatetimeArray, TimedeltaArray use asi8 to get int64 representation
         array = py::array(underlying_array.attr("asi8"));
     }
+    else if (py::hasattr(underlying_array, "_ndarray"))
+    {
+        /// NumpyExtensionArray (plain numpy-backed int/float/bool columns).
+        /// Its to_numpy() runs an O(n) isna() scan on every call even when it
+        /// returns the underlying buffer unchanged; with a wide DataFrame that
+        /// serial per-column scan dominated SELECT * queries (the columns are
+        /// resolved under the GIL before the parallel scan starts). _ndarray
+        /// is that same underlying buffer without the scan.
+        array = underlying_array.attr("_ndarray");
+    }
     else
     {
         array = underlying_array.attr("to_numpy")();
