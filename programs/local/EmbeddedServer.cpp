@@ -256,7 +256,7 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
     /// core of every socket. Cap the default at one NUMA node's core count;
     /// explicit max_threads settings are untouched.
     if (const size_t node_cpus = getMaxCPUsOfSingleNUMANode();
-        node_cpus > 0 && node_cpus < settings[Setting::max_threads])
+        node_cpus > 0 && !settings[Setting::max_threads].changed && node_cpus < settings[Setting::max_threads])
         settings[Setting::max_threads] = node_cpus;
 #endif
 

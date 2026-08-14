@@ -865,8 +865,8 @@ static void evalArrowPredSegment(
     /// Per-row calls pay the searcher setup on every short haystack, which
     /// makes the scan several times slower than one pass over the buffer.
     /// Hits are attributed to rows through the offsets; a hit straddling a
-    /// row boundary is not a match. Null rows are zero-length and can never
-    /// contain a non-empty needle, so validity needs no separate check.
+    /// row boundary is not a match, and a hit inside a null slot is discarded
+    /// via the validity bitmap (checked only on hits).
     if (predicate == PandasScan::StringPredicate::LikeContains && !needle.empty())
     {
         memset(out, 0, n);
@@ -885,7 +885,12 @@ static void evalArrowPredSegment(
                 break;
             if (pos + static_cast<OffsetT>(needle.size()) <= off[row + 1])
             {
-                out[row] = 1;
+                /// Null slots usually have zero extent, but the Arrow spec only
+                /// requires monotonic offsets: a null slot may span arbitrary
+                /// bytes that could contain the needle. Check validity on hit.
+                const size_t bit = bit_base + row;
+                if (!validity || (validity[bit >> 3] & (1u << (bit & 7))))
+                    out[row] = 1;
                 p = data + off[row + 1];
                 ++row;
             }
