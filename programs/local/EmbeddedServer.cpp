@@ -202,19 +202,25 @@ extern const int UNKNOWN_FORMAT;
 }
 
 #if defined(OS_LINUX)
-/// Number of CPUs in the largest NUMA node, or 0 when the topology is unknown
-/// or there is a single node. Parses /sys cpulist files ("0-47,96-143").
+/// Number of CPUs in the largest CPU-bearing NUMA node, or 0 when the
+/// topology is unknown or only one node has CPUs. Enumerates the node
+/// directories (ids can be sparse) and skips memory-only nodes (CXL/HBM
+/// expanders have an empty cpulist); parses cpulist files ("0-47,96-143").
 static size_t getMaxCPUsOfSingleNUMANode()
 {
     size_t max_cpus = 0;
-    size_t num_nodes = 0;
-    for (size_t node = 0;; ++node)
+    size_t cpu_nodes = 0;
+    std::error_code ec;
+    for (const auto & entry : std::filesystem::directory_iterator("/sys/devices/system/node", ec))
     {
-        std::ifstream f(fmt::format("/sys/devices/system/node/node{}/cpulist", node));
+        const std::string name = entry.path().filename().string();
+        if (name.size() <= 4 || name.compare(0, 4, "node") != 0
+            || name.find_first_not_of("0123456789", 4) != std::string::npos)
+            continue;
+        std::ifstream f(entry.path() / "cpulist");
         std::string line;
         if (!f.is_open() || !std::getline(f, line) || line.empty())
-            break;
-        ++num_nodes;
+            continue;
         size_t cpus = 0;
         std::vector<std::string> ranges;
         boost::split(ranges, line, boost::is_any_of(","));
@@ -228,9 +234,12 @@ static size_t getMaxCPUsOfSingleNUMANode()
             else if (sscanf(range.c_str(), "%zu", &lo) == 1) // NOLINT(cert-err34-c)
                 cpus += 1;
         }
+        if (cpus == 0)
+            continue;
+        ++cpu_nodes;
         max_cpus = std::max(max_cpus, cpus);
     }
-    return num_nodes > 1 ? max_cpus : 0;
+    return cpu_nodes > 1 ? max_cpus : 0;
 }
 #endif
 
@@ -256,8 +265,23 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
     /// core of every socket. Cap the default at one NUMA node's core count;
     /// explicit max_threads settings are untouched.
     if (const size_t node_cpus = getMaxCPUsOfSingleNUMANode();
-        node_cpus > 0 && !settings[Setting::max_threads].changed && node_cpus < settings[Setting::max_threads])
-        settings[Setting::max_threads] = node_cpus;
+        node_cpus > 0 && !settings[Setting::max_threads].changed)
+    {
+        const size_t upstream_default = settings[Setting::max_threads];
+        /// Sub-NUMA clustering (AMD NPS2/NPS4, Intel SNC) splits one socket
+        /// into several nodes; capping to such a slice would over-restrict.
+        /// The validated data point is one socket of a two-socket machine,
+        /// so never cap below half of the upstream default.
+        const size_t cap = std::max(node_cpus, upstream_default / 2);
+        if (cap < upstream_default)
+        {
+            settings[Setting::max_threads] = cap;
+            /// This is an adjusted *default*, not a user choice: leave the
+            /// setting unmarked so it neither propagates to remote servers
+            /// in distributed queries nor masquerades as an explicit value.
+            settings[Setting::max_threads].changed = false;
+        }
+    }
 #endif
 
     context->setSettings(settings);
