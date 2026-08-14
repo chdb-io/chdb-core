@@ -73,13 +73,16 @@ elif [ "$(uname)" == "Linux" ]; then
     JEMALLOC="-DENABLE_JEMALLOC=1"
     ICU="-DENABLE_ICU=1"
     SED_INPLACE="sed -i"
-    # only x86_64, enable AVX, enable embedded compiler
+    # x86_64: AVX + embedded compiler. aarch64: embedded compiler too — the
+    # regexp JIT (min_count_to_compile_regular_expression) and compiled
+    # expressions need LLVM, and official ClickHouse aarch64 builds enable it;
+    # keeping it off left ARM without the regexp JIT entirely.
     if [ "$(uname -m)" == "x86_64" ]; then
         CPU_FEATURES="-DENABLE_AVX=1 -DENABLE_AVX2=0"
         LLVM="-DENABLE_EMBEDDED_COMPILER=1 -DENABLE_DWARF_PARSER=1"
     else
         CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
-        LLVM="-DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0"
+        LLVM="-DENABLE_EMBEDDED_COMPILER=1 -DENABLE_DWARF_PARSER=0"
     fi
     # -DENABLE_WASMTIME=1 enables the WebAssembly UDF runtime; it must be set
     # explicitly because ENABLE_LIBRARIES=0 would otherwise leave it OFF.
