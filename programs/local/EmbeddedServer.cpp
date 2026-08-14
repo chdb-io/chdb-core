@@ -63,6 +63,7 @@
 #include <Common/CurrentMetrics.h>
 #if USE_JEMALLOC
 #include <Common/Jemalloc.h>
+#include <Common/JemallocMergeTreeArena.h>
 #endif
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
@@ -164,6 +165,7 @@ extern const ServerSettingsUInt64 max_thread_pool_size;
 extern const ServerSettingsUInt64 max_unexpected_parts_loading_thread_pool_size;
 extern const ServerSettingsBool jemalloc_enable_background_threads;
 extern const ServerSettingsUInt64 jemalloc_max_background_threads_num;
+extern const ServerSettingsUInt64 jemalloc_merge_tree_arenas;
 extern const ServerSettingsUInt64 mmap_cache_size;
 extern const ServerSettingsBool show_addresses_in_stack_traces;
 extern const ServerSettingsUInt64 thread_pool_queue_size;
@@ -305,6 +307,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     Jemalloc::setBackgroundThreads(server_settings[ServerSetting::jemalloc_enable_background_threads]);
     if (auto max_background_threads = server_settings[ServerSetting::jemalloc_max_background_threads_num])
         Jemalloc::setMaxBackgroundThreads(max_background_threads);
+
+    /// Create the dedicated MergeTree metadata arena pool before any parts are loaded, same as
+    /// clickhouse-server and clickhouse-local. Without this the `jemalloc_merge_tree_arenas`
+    /// server setting is silently ignored in the embedded server.
+    JemallocMergeTreeArena::initialize(server_settings[ServerSetting::jemalloc_merge_tree_arenas]);
 #endif
 
     GlobalThreadPool::initialize(
