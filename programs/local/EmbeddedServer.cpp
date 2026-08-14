@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
@@ -48,6 +49,8 @@
 #include <TableFunctions/registerTableFunctions.h>
 #include <base/argsToConfig.h>
 #include <base/getMemoryAmount.h>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <sys/resource.h>
 #include <Poco/Logger.h>
@@ -101,6 +104,7 @@ extern const SettingsBool allow_introspection_functions;
 extern const SettingsBool implicit_select;
 extern const SettingsLocalFSReadMethod storage_file_read_method;
 extern const SettingsBool output_format_arrow_use_native_writer;
+extern const SettingsMaxThreads max_threads;
 }
 
 namespace ServerSetting
@@ -195,6 +199,39 @@ extern const int FILE_ALREADY_EXISTS;
 extern const int UNKNOWN_FORMAT;
 }
 
+#if defined(OS_LINUX)
+/// Number of CPUs in the largest NUMA node, or 0 when the topology is unknown
+/// or there is a single node. Parses /sys cpulist files ("0-47,96-143").
+static size_t getMaxCPUsOfSingleNUMANode()
+{
+    size_t max_cpus = 0;
+    size_t num_nodes = 0;
+    for (size_t node = 0;; ++node)
+    {
+        std::ifstream f(fmt::format("/sys/devices/system/node/node{}/cpulist", node));
+        std::string line;
+        if (!f.is_open() || !std::getline(f, line) || line.empty())
+            break;
+        ++num_nodes;
+        size_t cpus = 0;
+        std::vector<std::string> ranges;
+        boost::split(ranges, line, boost::is_any_of(","));
+        for (auto & range : ranges)
+        {
+            boost::trim(range);
+            size_t lo = 0;
+            size_t hi = 0;
+            if (sscanf(range.c_str(), "%zu-%zu", &lo, &hi) == 2) // NOLINT(cert-err34-c)
+                cpus += hi - lo + 1;
+            else if (sscanf(range.c_str(), "%zu", &lo) == 1) // NOLINT(cert-err34-c)
+                cpus += 1;
+        }
+        max_cpus = std::max(max_cpus, cpus);
+    }
+    return num_nodes > 1 ? max_cpus : 0;
+}
+#endif
+
 static void applySettingsOverridesForLocal(ContextMutablePtr context)
 {
     Settings settings = context->getSettingsCopy();
@@ -206,6 +243,20 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
     /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
     /// libarrow writer until that is root-caused. Users can still opt in.
     settings[Setting::output_format_arrow_use_native_writer] = false;
+
+#if defined(OS_LINUX)
+    /// On multi-socket machines a default of "one thread per core" backfires:
+    /// per-thread aggregation states multiply the merge work and the merge runs
+    /// across sockets (e.g. COUNT(DISTINCT) GROUP BY is ~5x slower with 192
+    /// threads than with 96 on a 2-socket EPYC, and clickhouse-local shows the
+    /// same). Upstream is shielded on SMT x86 where "physical cores" already
+    /// halves the count, but on no-SMT many-core CPUs the default lands on every
+    /// core of every socket. Cap the default at one NUMA node's core count;
+    /// explicit max_threads settings are untouched.
+    if (const size_t node_cpus = getMaxCPUsOfSingleNUMANode();
+        node_cpus > 0 && node_cpus < settings[Setting::max_threads])
+        settings[Setting::max_threads] = node_cpus;
+#endif
 
     context->setSettings(settings);
 }
