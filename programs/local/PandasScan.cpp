@@ -895,7 +895,13 @@ static void evalArrowPredSegment(
                 ++row;
             }
             else
-                p = hit + 1;
+            {
+                /// A later occurrence starting in this row ends even later and
+                /// cannot fit either; skip straight to the next row. This also
+                /// avoids quadratic re-scanning on repetitive data.
+                p = data + off[row + 1];
+                ++row;
+            }
         }
         return;
     }

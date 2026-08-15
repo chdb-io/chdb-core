@@ -47,6 +47,7 @@ class TestArrowLikePredicate(unittest.TestCase):
         df = pd.DataFrame({"s": np.array(vals, dtype=object),
                            "t": np.arange(n, dtype=np.int64)})
         globals()["_like_df"] = df
+        self.addCleanup(globals().pop, "_like_df", None)
 
         truth = sum("google" in v for v in vals)
         base = "SELECT count() FROM (SELECT * FROM Python(_like_df) WHERE s LIKE '%google%')"
@@ -71,11 +72,11 @@ class TestArrowLikePredicate(unittest.TestCase):
         offsets = pa.py_buffer(np.array([0, 19, 31, 44], dtype=np.int32).tobytes())
         validity = pa.py_buffer(bytes([0b101]))  # rows 0,2 valid; row 1 null
         arr = pa.Array.from_buffers(pa.utf8(), 3, [validity, offsets, pa.py_buffer(values)])
-        from pandas.core.arrays.string_arrow import ArrowStringArray
 
-        df = pd.DataFrame({"URL": ArrowStringArray(pa.chunked_array([arr])),
+        df = pd.DataFrame({"URL": pd.arrays.ArrowStringArray(pa.chunked_array([arr])),
                            "x": np.arange(3, dtype=np.int64)})
         globals()["_null_slot_df"] = df
+        self.addCleanup(globals().pop, "_null_slot_df", None)
 
         self.assertEqual(
             _csv(self.conn, "SELECT count() FROM (SELECT * FROM Python(_null_slot_df) "
@@ -86,10 +87,43 @@ class TestArrowLikePredicate(unittest.TestCase):
                             "WHERE URL LIKE '%google%')"),
             "0")
 
+    def test_sliced_and_multichunk_arrays(self):
+        # Non-zero chunk offsets and multi-chunk layouts stress the validity
+        # bit indexing (bit_base = chunk.offset + local_start) and per-chunk
+        # hit attribution of the buffer-wide scan.
+        vals1 = ["google one", None, "nope", "a google b", "xx"] * 40
+        vals2 = [None, "google tail", "yy", None] * 25
+        arr1 = pa.array(vals1, type=pa.utf8())
+        arr2 = pa.array(vals2, type=pa.utf8())
+        truth = sum(1 for v in vals1 + vals2 if v is not None and "google" in v)
+
+        multi = pd.DataFrame({
+            "s": pd.arrays.ArrowStringArray(pa.chunked_array([arr1, arr2])),
+        })
+        globals()["_multi_df"] = multi
+        self.addCleanup(globals().pop, "_multi_df", None)
+        self.assertEqual(
+            int(_csv(self.conn, "SELECT count() FROM (SELECT * FROM Python(_multi_df) "
+                                "WHERE s LIKE '%google%')")),
+            truth)
+
+        k = 7  # slice off a non-multiple-of-8 prefix so validity bits shift
+        sliced = pd.DataFrame({
+            "s": pd.arrays.ArrowStringArray(pa.chunked_array([arr1.slice(k)])),
+        })
+        globals()["_sliced_df"] = sliced
+        self.addCleanup(globals().pop, "_sliced_df", None)
+        truth_sliced = sum(1 for v in vals1[k:] if v is not None and "google" in v)
+        self.assertEqual(
+            int(_csv(self.conn, "SELECT count() FROM (SELECT * FROM Python(_sliced_df) "
+                                "WHERE s LIKE '%google%')")),
+            truth_sliced)
+
     def test_empty_needle_matches_every_valid_row(self):
         df = pd.DataFrame({"s": pd.array(["a", None, "", "b"], dtype="string[pyarrow]"),
                            "x": np.arange(4, dtype=np.int64)})
         globals()["_empty_needle_df"] = df
+        self.addCleanup(globals().pop, "_empty_needle_df", None)
         self.assertEqual(
             _csv(self.conn, "SELECT count() FROM (SELECT * FROM Python(_empty_needle_df) "
                             "WHERE s LIKE '%%')"),
@@ -118,6 +152,7 @@ class TestPandasColumnResolution(unittest.TestCase):
             "obj": np.array(["x", "y", "z"], dtype=object),
         })
         globals()["_dtype_df"] = df
+        self.addCleanup(globals().pop, "_dtype_df", None)
         got = _csv(self.conn,
                    "SELECT sum(i16), sum(u32), sum(f64), countIf(b), max(dt), "
                    "sum(ni64), max(obj) FROM Python(_dtype_df)")
@@ -131,6 +166,7 @@ class TestPandasColumnResolution(unittest.TestCase):
         data = {f"c{i}": rng.integers(0, 1_000_000, n) for i in range(40)}
         df = pd.DataFrame(data)
         globals()["_wide_df"] = df
+        self.addCleanup(globals().pop, "_wide_df", None)
         expr = " + ".join(f"sum(c{i})" for i in range(40))
         got = int(_csv(self.conn, f"SELECT {expr} FROM Python(_wide_df)"))
         self.assertEqual(got, int(sum(df[c].sum() for c in df.columns)))

@@ -229,7 +229,7 @@ static size_t getLogicalCPUsIfMultiNUMA()
             boost::trim(range);
             size_t lo = 0;
             size_t hi = 0;
-            if (sscanf(range.c_str(), "%zu-%zu", &lo, &hi) == 2) // NOLINT(cert-err34-c)
+            if (sscanf(range.c_str(), "%zu-%zu", &lo, &hi) == 2 && hi >= lo) // NOLINT(cert-err34-c)
                 cpus += hi - lo + 1;
             else if (sscanf(range.c_str(), "%zu", &lo) == 1) // NOLINT(cert-err34-c)
                 cpus += 1;
