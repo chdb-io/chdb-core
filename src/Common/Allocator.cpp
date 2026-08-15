@@ -127,19 +127,17 @@ void * allocImpl(size_t size, size_t alignment)
 
 void freeImpl(void * buf)
 {
-#if USE_JEMALLOC
-    if (unlikely(buf == nullptr))
-        return;
-    int arena_ind = je_mallctl("arenas.lookup", nullptr, nullptr, &buf, sizeof(buf));
-    if (unlikely(arena_ind != 0))
-    {
-        __real_free(buf);
-        return;
-    }
-    je_free(buf);
-#else
+    /// No foreign-pointer probe: Allocator only frees memory it allocated
+    /// itself through __real_malloc & friends, and under jemalloc builds
+    /// __real_free IS je_free (AllocationInterceptors.h), so the old
+    /// mallctl("arenas.lookup") probe called je_free on both branches while
+    /// taking jemalloc's single global ctl mutex on every free — a pure
+    /// overhead that convoyed catastrophically on many-core machines (~90%
+    /// of cycles in the kernel futex path at 192 threads). Foreign pointers
+    /// (glibc-internal allocations bypassing the interposed malloc) are the
+    /// job of the free() interposer in malloc.cpp, which probes with the
+    /// lock-free je_vsallocx.
     __real_free(buf);
-#endif
 }
 
 void checkSize(size_t size)

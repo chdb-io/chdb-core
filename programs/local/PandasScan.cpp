@@ -860,6 +860,52 @@ static void evalArrowPredSegment(
     const UInt8 * validity = chunk.validity;
     const size_t bit_base = chunk.offset + local_start;
 
+    /// Contains with a non-empty needle: one SIMD substring search over the
+    /// segment's contiguous byte range instead of one sz_find call per row.
+    /// Per-row calls pay the searcher setup on every short haystack, which
+    /// makes the scan several times slower than one pass over the buffer.
+    /// Hits are attributed to rows through the offsets; a hit straddling a
+    /// row boundary is not a match, and a hit inside a null slot is discarded
+    /// via the validity bitmap (checked only on hits).
+    if (predicate == PandasScan::StringPredicate::LikeContains && !needle.empty())
+    {
+        memset(out, 0, n);
+        const char * const end = data + off[n];
+        const char * p = data + off[0];
+        size_t row = 0;
+        while (p < end)
+        {
+            const char * hit = sz_find(p, static_cast<size_t>(end - p), needle.data(), needle.size());
+            if (!hit)
+                break;
+            const auto pos = static_cast<OffsetT>(hit - data);
+            while (row < n && off[row + 1] <= pos)
+                ++row;
+            if (row >= n)
+                break;
+            if (pos + static_cast<OffsetT>(needle.size()) <= off[row + 1])
+            {
+                /// Null slots usually have zero extent, but the Arrow spec only
+                /// requires monotonic offsets: a null slot may span arbitrary
+                /// bytes that could contain the needle. Check validity on hit.
+                const size_t bit = bit_base + row;
+                if (!validity || (validity[bit >> 3] & (1u << (bit & 7))))
+                    out[row] = 1;
+                p = data + off[row + 1];
+                ++row;
+            }
+            else
+            {
+                /// A later occurrence starting in this row ends even later and
+                /// cannot fit either; skip straight to the next row. This also
+                /// avoids quadratic re-scanning on repetitive data.
+                p = data + off[row + 1];
+                ++row;
+            }
+        }
+        return;
+    }
+
     for (size_t i = 0; i < n; ++i)
     {
         const bool is_valid = !validity || (validity[(bit_base + i) >> 3] & (1u << ((bit_base + i) & 7)));
@@ -876,9 +922,9 @@ static void evalArrowPredSegment(
                     r = len == 0;
                     break;
                 case PandasScan::StringPredicate::LikeContains:
-                    r = needle.empty()
-                        || (len >= needle.size()
-                            && sz_find(data + off[i], len, needle.data(), needle.size()) != nullptr);
+                    /// Only the empty-needle case reaches here: LIKE '%%'
+                    /// matches every non-null row.
+                    r = 1;
                     break;
             }
         }

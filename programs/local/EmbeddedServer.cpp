@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
@@ -48,6 +49,8 @@
 #include <TableFunctions/registerTableFunctions.h>
 #include <base/argsToConfig.h>
 #include <base/getMemoryAmount.h>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <sys/resource.h>
 #include <Poco/Logger.h>
@@ -60,6 +63,7 @@
 #include <Common/CurrentMetrics.h>
 #if USE_JEMALLOC
 #include <Common/Jemalloc.h>
+#include <Common/JemallocMergeTreeArena.h>
 #endif
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
@@ -101,6 +105,7 @@ extern const SettingsBool allow_introspection_functions;
 extern const SettingsBool implicit_select;
 extern const SettingsLocalFSReadMethod storage_file_read_method;
 extern const SettingsBool output_format_arrow_use_native_writer;
+extern const SettingsMaxThreads max_threads;
 }
 
 namespace ServerSetting
@@ -160,6 +165,7 @@ extern const ServerSettingsUInt64 max_thread_pool_size;
 extern const ServerSettingsUInt64 max_unexpected_parts_loading_thread_pool_size;
 extern const ServerSettingsBool jemalloc_enable_background_threads;
 extern const ServerSettingsUInt64 jemalloc_max_background_threads_num;
+extern const ServerSettingsUInt64 jemalloc_merge_tree_arenas;
 extern const ServerSettingsUInt64 mmap_cache_size;
 extern const ServerSettingsBool show_addresses_in_stack_traces;
 extern const ServerSettingsUInt64 thread_pool_queue_size;
@@ -195,6 +201,48 @@ extern const int FILE_ALREADY_EXISTS;
 extern const int UNKNOWN_FORMAT;
 }
 
+#if defined(OS_LINUX)
+/// Total logical CPUs across NUMA nodes, or 0 when the topology is unknown
+/// or only one node has CPUs. Enumerates the node directories (ids can be
+/// sparse) and skips memory-only nodes (CXL/HBM expanders have an empty
+/// cpulist); parses cpulist files ("0-47,96-143").
+static size_t getLogicalCPUsIfMultiNUMA()
+{
+    size_t total_cpus = 0;
+    size_t cpu_nodes = 0;
+    std::error_code ec;
+    for (const auto & entry : std::filesystem::directory_iterator("/sys/devices/system/node", ec))
+    {
+        const std::string name = entry.path().filename().string();
+        if (name.size() <= 4 || name.compare(0, 4, "node") != 0
+            || name.find_first_not_of("0123456789", 4) != std::string::npos)
+            continue;
+        std::ifstream f(entry.path() / "cpulist");
+        std::string line;
+        if (!f.is_open() || !std::getline(f, line) || line.empty())
+            continue;
+        size_t cpus = 0;
+        std::vector<std::string> ranges;
+        boost::split(ranges, line, boost::is_any_of(","));
+        for (auto & range : ranges)
+        {
+            boost::trim(range);
+            size_t lo = 0;
+            size_t hi = 0;
+            if (sscanf(range.c_str(), "%zu-%zu", &lo, &hi) == 2 && hi >= lo) // NOLINT(cert-err34-c)
+                cpus += hi - lo + 1;
+            else if (sscanf(range.c_str(), "%zu", &lo) == 1) // NOLINT(cert-err34-c)
+                cpus += 1;
+        }
+        if (cpus == 0)
+            continue;
+        ++cpu_nodes;
+        total_cpus += cpus;
+    }
+    return cpu_nodes > 1 ? total_cpus : 0;
+}
+#endif
+
 static void applySettingsOverridesForLocal(ContextMutablePtr context)
 {
     Settings settings = context->getSettingsCopy();
@@ -206,6 +254,37 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
     /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
     /// libarrow writer until that is root-caused. Users can still opt in.
     settings[Setting::output_format_arrow_use_native_writer] = false;
+
+#if defined(OS_LINUX)
+    /// On multi-socket machines a default of "one thread per core" backfires:
+    /// per-thread aggregation states multiply the merge work and the merge runs
+    /// across sockets (e.g. COUNT(DISTINCT) GROUP BY is ~5x slower with 192
+    /// threads than with 96 on a 2-socket EPYC, and clickhouse-local shows the
+    /// same). Upstream is shielded on SMT x86 where "physical cores" already
+    /// halves the count, but on no-SMT many-core CPUs the default lands on every
+    /// core of every socket. Cap the default at one NUMA node's core count;
+    /// explicit max_threads settings are untouched.
+    if (const size_t logical_cpus = getLogicalCPUsIfMultiNUMA();
+        logical_cpus > 0 && !settings[Setting::max_threads].changed)
+    {
+        const size_t upstream_default = settings[Setting::max_threads];
+        /// Half the *logical* CPUs, deliberately not "one node's CPUs": node
+        /// granularity depends on BIOS sub-NUMA settings (AMD NPS2/NPS4,
+        /// Intel SNC), while the measured optimum tracks logical/2 on both
+        /// validated shapes — 2-socket no-SMT 192-core (192 -> 96) and
+        /// 2-socket SMT 96-physical/192-logical (upstream default 96 is
+        /// already logical/2; unchanged).
+        const size_t cap = logical_cpus / 2;
+        if (cap > 0 && cap < upstream_default)
+        {
+            settings[Setting::max_threads] = cap;
+            /// This is an adjusted *default*, not a user choice: leave the
+            /// setting unmarked so it neither propagates to remote servers
+            /// in distributed queries nor masquerades as an explicit value.
+            settings[Setting::max_threads].changed = false;
+        }
+    }
+#endif
 
     context->setSettings(settings);
 }
@@ -254,6 +333,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     Jemalloc::setBackgroundThreads(server_settings[ServerSetting::jemalloc_enable_background_threads]);
     if (auto max_background_threads = server_settings[ServerSetting::jemalloc_max_background_threads_num])
         Jemalloc::setMaxBackgroundThreads(max_background_threads);
+
+    /// Create the dedicated MergeTree metadata arena pool before any parts are loaded, same as
+    /// clickhouse-server and clickhouse-local. Without this the `jemalloc_merge_tree_arenas`
+    /// server setting is silently ignored in the embedded server.
+    JemallocMergeTreeArena::initialize(server_settings[ServerSetting::jemalloc_merge_tree_arenas]);
 #endif
 
     GlobalThreadPool::initialize(
