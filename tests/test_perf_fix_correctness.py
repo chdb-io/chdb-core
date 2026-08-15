@@ -153,10 +153,13 @@ class TestPandasColumnResolution(unittest.TestCase):
         })
         globals()["_dtype_df"] = df
         self.addCleanup(globals().pop, "_dtype_df", None)
+        # toUnixTimestamp keeps the assertion independent of the pandas
+        # datetime64 unit (ns in pandas 2.x, us in 3.x -> DateTime64 scale).
         got = _csv(self.conn,
-                   "SELECT sum(i16), sum(u32), sum(f64), countIf(b), max(dt), "
-                   "sum(ni64), max(obj) FROM Python(_dtype_df)")
-        self.assertEqual(got, '2,6,4.5,2,"1970-01-01 00:00:03",4,"z"')
+                   "SELECT sum(i16), sum(u32), sum(f64), countIf(b), "
+                   "toUnixTimestamp(max(dt)), sum(ni64), max(obj) "
+                   "FROM Python(_dtype_df)")
+        self.assertEqual(got, '2,6,4.5,2,3,4,"z"')
 
     def test_wide_frame_row_integrity(self):
         # Row-aligned values across many plain numpy columns: any dtype or
