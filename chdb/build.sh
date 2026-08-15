@@ -82,11 +82,7 @@ elif [ "$(uname)" == "Linux" ]; then
         LLVM="-DENABLE_EMBEDDED_COMPILER=1 -DENABLE_DWARF_PARSER=1"
     else
         CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
-        if [ "$(uname -m)" == "aarch64" ]; then
-            LLVM="-DENABLE_EMBEDDED_COMPILER=1 -DENABLE_DWARF_PARSER=0"
-        else
-            LLVM="-DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0"
-        fi
+        LLVM="-DENABLE_EMBEDDED_COMPILER=1 -DENABLE_DWARF_PARSER=0"
     fi
     # -DENABLE_WASMTIME=1 enables the WebAssembly UDF runtime; it must be set
     # explicitly because ENABLE_LIBRARIES=0 would otherwise leave it OFF.
