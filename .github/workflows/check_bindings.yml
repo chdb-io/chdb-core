@@ -46,6 +46,20 @@ jobs:
     # rather than on those workflows also means a manual re-upload counts.
     timeout-minutes: 330
     steps:
+      # Checked here as well as in its own workflow, because this is the path by
+      # which a wrong tag escapes the repository: both bindings derive their
+      # published package version by parsing it, so a tag naming a ClickHouse line
+      # this tree was never synced to gets packaged downstream as though it existed.
+      #
+      # Releases only. A manual run names whatever tag it wants to test, usually an
+      # older release on an older line, and that is the point of having the input,
+      # so it is not held against the tree as it stands now.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'release'
+      - name: The tag has to name the ClickHouse line this tree is synced to
+        if: github.event_name == 'release'
+        run: .github/scripts/check-release-tag.sh "${{ github.event.release.tag_name }}"
+
       - name: Wait for every platform tarball
         shell: bash
         env:
