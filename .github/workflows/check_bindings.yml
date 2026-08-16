@@ -16,9 +16,18 @@ name: Check language bindings
 # BINDING_DISPATCH_TOKEN is a fine-grained PAT scoped to chdb-go, chdb-node and
 # chdb-rust with Contents: write. GITHUB_TOKEN cannot reach another repository.
 
+# released rather than published: published fires for a pre-release too, so
+# v26.7.1-rc.1 sent all three bindings a run and each of them opened a pull
+# request moving its pin onto an rc. Adopting a pre-release is a decision someone
+# makes, not something a tag should propose on their behalf. released is the type
+# that means a release and not a pre-release — the documentation's own advice is
+# to subscribe to published only when pre-releases are wanted too.
+#
+# The wheel workflows still build on published, so an rc still ships artifacts.
+# Only this — asking the bindings to adopt it — is held back to full releases.
 on:
   release:
-    types: [published]
+    types: [released]
   workflow_dispatch:
     inputs:
       engine_version:
