@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: 3.11
 
+      - name: CHDB_VERSION follows the ClickHouse line
+        run: .github/scripts/check-abi-version.sh
+
       - name: Install flake8
         run: python -m pip install flake8
 
