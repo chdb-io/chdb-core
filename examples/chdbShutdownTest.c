@@ -10,12 +10,11 @@
  *      after every connection is closed — closing connections is not a shutdown.
  *   2. chdb_shutdown() refuses to run while a connection is still open, and
  *      leaves the engine untouched when it refuses.
- *   3. Once the last connection is closed, chdb_shutdown() succeeds and zero
- *      engine threads remain.
- *   4. A second chdb_shutdown() is a successful no-op.
- *   5. Concurrent chdb_shutdown() calls are serialized: every one of them reports
- *      success, exactly one does the joining, and none of them crashes.
- *   6. chdb_connect() after a shutdown fails instead of handing back a connection
+ *   3. Once the last connection is closed chdb_shutdown() succeeds and zero engine
+ *      threads remain — raced by several threads at once, because the one real
+ *      transition a process gets is the only chance to exercise the contention.
+ *   4. A further chdb_shutdown() is a successful no-op.
+ *   5. chdb_connect() after a shutdown fails instead of handing back a connection
  *      on a dead engine.
  *
  * Build (against an already-built libchdb.so):
@@ -52,8 +51,11 @@ static int g_failed_assertions = 0;
         }                                                                  \
     } while (0)
 
-/* Number of live threads named POOL_THREAD_NAME. Out-params report the total
- * thread count so a failure says how far off the process is. */
+/* Number of live threads named POOL_THREAD_NAME — the assertions are on this.
+ * The out-param reports the process-wide thread count so a failure says how far
+ * off the process is; it is not asserted on, because it also counts this test's
+ * own threads, and a joined pthread can still be visible for a moment while it
+ * finishes exiting. */
 #if defined(__APPLE__)
 static int count_pool_threads(int * total_out)
 {
@@ -186,40 +188,40 @@ int main(void)
     report("after close_conn");
     CHECK(pool_after_close > 0, "closing every connection leaves the engine threads running");
 
-    /* 3. Now it stops the engine. */
-    state = chdb_shutdown();
-    CHECK(state == CHDBSuccess, "chdb_shutdown succeeds once no connection is open");
+    /* 3. Now it stops the engine — and the only real transition this process gets
+     * is the one being raced, so the racers actually contend for beginShutdown()
+     * and the joins rather than returning through the already-stopped fast path. */
+    {
+        enum { RACERS = 4 };
+        pthread_t racers[RACERS];
+        chdb_state states[RACERS];
+        int started = 0;
+        int i;
+
+        for (i = 0; i < RACERS; ++i) {
+            states[i] = CHDBError;
+            if (pthread_create(&racers[i], NULL, shutdown_thread, &states[i]) != 0) {
+                CHECK(0, "pthread_create for the concurrent shutdown");
+                break;
+            }
+            started += 1;
+        }
+        for (i = 0; i < started; ++i) {
+            pthread_join(racers[i], NULL);
+            CHECK(states[i] == CHDBSuccess, "every concurrent chdb_shutdown reports success");
+        }
+        CHECK(started == RACERS, "all racers started");
+    }
     pool_after_shutdown = count_pool_threads(&total);
     report("after chdb_shutdown");
     CHECK(pool_after_shutdown == 0, "no engine thread survives chdb_shutdown");
 
     /* 4. Idempotent. */
     state = chdb_shutdown();
-    CHECK(state == CHDBSuccess, "a second chdb_shutdown is a successful no-op");
-    CHECK(count_pool_threads(&total) == 0, "still no engine thread after the second call");
+    CHECK(state == CHDBSuccess, "a further chdb_shutdown is a successful no-op");
+    CHECK(count_pool_threads(&total) == 0, "still no engine thread after the further call");
 
-    /* 5. Concurrent callers are serialized rather than all joining. */
-    {
-        enum { RACERS = 4 };
-        pthread_t racers[RACERS];
-        chdb_state states[RACERS];
-        int i;
-
-        for (i = 0; i < RACERS; ++i) {
-            states[i] = CHDBError;
-            if (pthread_create(&racers[i], NULL, shutdown_thread, &states[i]) != 0) {
-                CHECK(0, "pthread_create for the concurrent shutdown case");
-                break;
-            }
-        }
-        for (--i; i >= 0; --i) {
-            pthread_join(racers[i], NULL);
-            CHECK(states[i] == CHDBSuccess, "every concurrent chdb_shutdown reports success");
-        }
-        CHECK(count_pool_threads(&total) == 0, "no engine thread after concurrent shutdowns");
-    }
-
-    /* 6. The engine stays closed. */
+    /* 5. The engine stays closed. */
     conn = chdb_connect(2, argv);
     CHECK(conn == NULL, "chdb_connect fails once the engine is shut down");
     if (conn)
