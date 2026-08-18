@@ -11,9 +11,11 @@
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
+#include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
 #include <Common/SignalHandlers.h>
+#include <Common/ThreadPool.h>
 #include <Common/ThreadStatus.h>
 
 #if defined(USE_MUSL) && defined(__aarch64__)
@@ -30,6 +32,9 @@ void chdb_musl_compile_stub(int arg)
 #if USE_JEMALLOC
 #    include <Common/memory.h>
 #endif
+
+/// Defined in CurrentMemoryTracker.cpp.
+extern std::atomic<bool> g_memory_tracking_disabled;
 
 #ifdef CHDB_STATIC_LIBRARY_BUILD
 /// Force reference to ensure function registration object is linked
@@ -1357,6 +1362,54 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
     if (!enabled)
         chdb_reset_signal_handlers();
+}
+
+chdb_state chdb_shutdown(void)
+{
+    /// Serializes the whole transition. Without it two first callers would both
+    /// reach the joins, and a second caller could be told the engine is stopped
+    /// while the first is still joining.
+    static std::mutex shutdown_mutex;
+    /// Set only once the engine is fully stopped, so a call that bailed out below
+    /// can be retried. Guarded by shutdown_mutex.
+    static bool stopped = false;
+
+    std::lock_guard<std::mutex> lock(shutdown_mutex);
+
+    if (stopped)
+        return CHDBSuccess;
+
+    /// Decides and claims under the instance lock, so a connect racing this either
+    /// gets in first and is counted here, or arrives later and is refused. From
+    /// here on the engine is closed for business even if a join below fails.
+    if (!DB::EmbeddedServer::beginShutdown())
+        return CHDBError;
+
+    try
+    {
+        /// Order matters: the shared pools run their workers on threads borrowed
+        /// from the global pool, so joining the global pool first would block on
+        /// a worker parked inside a shared pool.
+        DB::StaticThreadPool::shutdownAll();
+
+        /// Declines to join, and logs which pools are to blame, when a job still
+        /// holds a pool thread -- a pool owned by some static-lifetime object we
+        /// cannot reach, such as a filesystem cache. Those threads then outlive
+        /// this call, as they did before it existed, so report the failure.
+        if (!GlobalThreadPool::shutdownAndJoin())
+            return CHDBError;
+    }
+    catch (...)
+    {
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        return CHDBError;
+    }
+
+    /// Nothing is left to account for, and the trackers outlive this call.
+    g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+
+    stopped = true;
+    return CHDBSuccess;
 }
 
 void chdb_reset_signal_handlers(void)

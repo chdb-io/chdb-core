@@ -65,3 +65,5 @@ _AdbcDriverInit
 
 _chdb_set_signal_handlers_enabled
 _chdb_reset_signal_handlers
+
+_chdb_shutdown

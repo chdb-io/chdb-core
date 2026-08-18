@@ -705,6 +705,41 @@ ThreadPoolImpl<Thread>::~ThreadPoolImpl()
 }
 
 template <typename Thread>
+bool ThreadPoolImpl<Thread>::finalizeIfIdle()
+{
+    {
+        std::lock_guard lock(mutex);
+
+        /// Already shut down, by us earlier or by another caller right now. Either
+        /// way the join below is not ours to run: `threads` belongs to whoever set
+        /// the flag, and joining the same std::thread twice is undefined.
+        if (shutdown)
+            return true;
+
+        /// Deciding this outside the lock is what makes a plain `active() == 0`
+        /// test useless: a job admitted between the test and `shutdown = true`
+        /// would still be there for the join to wait on, possibly forever.
+        if (scheduled_jobs != 0)
+            return false;
+
+        remaining_pool_capacity.store(-MAX_THEORETICAL_THREAD_COUNT, std::memory_order_relaxed);
+        threads_remove_themselves = false;
+        shutdown = true;
+
+        wakeUpAllIdleThreadsNoLock();
+    }
+
+    for (auto & thread_ptr : threads)
+    {
+        if (thread_ptr)
+            thread_ptr->join();
+    }
+
+    threads.clear();
+    return true;
+}
+
+template <typename Thread>
 void ThreadPoolImpl<Thread>::finalize()
 {
     {
@@ -1269,6 +1304,37 @@ void GlobalThreadPool::shutdown()
         /// the_instance->finalize();
         auto * leaked [[maybe_unused]] = the_instance.release();
     }
+}
+
+bool GlobalThreadPool::shutdownAndJoin()
+{
+    if (!the_instance)
+        return true;
+
+    /// Refuses under the same lock that shuts the pool down when a job still
+    /// occupies a thread. That job belongs to a pool we cannot reach -- one owned
+    /// by a static-lifetime object such as a filesystem cache -- and joining its
+    /// parked worker would block forever, so name the pools and leave those
+    /// threads to process exit.
+    if (!the_instance->finalizeIfIdle())
+    {
+        try
+        {
+            LOG_INFO(
+                &Poco::Logger::get("GlobalThreadPool"),
+                "shutdownAndJoin(): not joining, a job still holds a pool thread; live local pool workers: [{}]",
+                snapshotLocalThreadPools());
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) Ok: diagnostic must not change the outcome
+        {
+        }
+        return false;
+    }
+
+    /// Keep the finalized instance reachable. Destroying it would let `instance()`
+    /// lazily build a fresh pool -- with fresh threads -- for any late caller, which
+    /// is exactly what the join was supposed to rule out.
+    return true;
 }
 
 void startThreadFromGlobalPool(

@@ -829,6 +829,37 @@ CHDB_EXPORT void chdb_set_signal_handlers_enabled(int enabled);
  */
 CHDB_EXPORT void chdb_reset_signal_handlers(void);
 
+//===--------------------------------------------------------------------===//
+// Engine Shutdown
+//===--------------------------------------------------------------------===//
+
+/**
+ * Stops the engine: joins every thread chDB started, so that no chDB thread is
+ * alive once this returns. Call it before the host runs a teardown sequence of
+ * its own — global destructors, a finalizing language runtime, a sanitizer exit
+ * handler — which would otherwise race the still-running engine threads.
+ *
+ * Close every connection and destroy every result first. While a connection is
+ * still open this does nothing and returns CHDBError, because tearing the engine
+ * down under a live connection would leave it dangling.
+ *
+ * Once it starts, the library is closed for business for the rest of the process,
+ * whether or not it manages to stop every thread: chdb_connect() then fails and
+ * query_stable() must not be called. Calling this again is harmless -- it returns
+ * CHDBSuccess if the engine is already stopped, and otherwise retries.
+ *
+ * Safe to call from any thread and concurrently with itself and with
+ * chdb_connect(): callers are serialized, and a connect racing a shutdown either
+ * gets in first and is counted, or arrives later and is refused.
+ *
+ * Skipping it stays as safe as it has always been for a process that just exits:
+ * the threads left running are reaped by process exit.
+ *
+ * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
+ *         connection is still open or some thread could not be stopped
+ */
+CHDB_EXPORT chdb_state chdb_shutdown(void);
+
 #ifdef __cplusplus
 }
 #endif

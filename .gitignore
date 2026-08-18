@@ -283,6 +283,7 @@ test_main
 /examples/chdbStreamErrorTest
 /examples/chdbStreamInsertTest
 /examples/chdbStreamQueryEofTest
+/examples/chdbShutdownTest
 libchdb.so
 *.gz
 *.bz2
