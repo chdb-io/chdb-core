@@ -45,7 +45,11 @@ describe=$(sed -n 's/^SET(VERSION_DESCRIBE \(.*\))$/\1/p' "$VERSIONS" | head -1)
 	exit 1
 }
 
-declared_line=$(echo "$declared" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\)\..*$/\1/p')
+# The third field has to be there and be a number, and anything after it has to look
+# like our -rc.N, because this is the only thing standing between a mistyped hand edit
+# and a version the engine reports. Matching .* there would accept 26.7. and 26.7.foo
+# while the error below promises X.Y.Z.
+declared_line=$(echo "$declared" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*\(-[A-Za-z0-9][A-Za-z0-9.]*\)\{0,1\}$/\1/p')
 [ -n "$declared_line" ] || {
 	cat >&2 <<EOF
 ::error::$HEADER declares CHDB_VERSION as $declared, which does not start with X.Y.Z.
