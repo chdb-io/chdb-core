@@ -16,9 +16,18 @@ name: Check language bindings
 # BINDING_DISPATCH_TOKEN is a fine-grained PAT scoped to chdb-go, chdb-node and
 # chdb-rust with Contents: write. GITHUB_TOKEN cannot reach another repository.
 
+# released rather than published: published fires for a pre-release too, so
+# v26.7.1-rc.1 sent all three bindings a run and each of them opened a pull
+# request moving its pin onto an rc. Adopting a pre-release is a decision someone
+# makes, not something a tag should propose on their behalf. released is the type
+# that means a release and not a pre-release — the documentation's own advice is
+# to subscribe to published only when pre-releases are wanted too.
+#
+# The wheel workflows still build on published, so an rc still ships artifacts.
+# Only this — asking the bindings to adopt it — is held back to full releases.
 on:
   release:
-    types: [published]
+    types: [released]
   workflow_dispatch:
     inputs:
       engine_version:
@@ -37,6 +46,20 @@ jobs:
     # rather than on those workflows also means a manual re-upload counts.
     timeout-minutes: 330
     steps:
+      # Checked here as well as in its own workflow, because this is the path by
+      # which a wrong tag escapes the repository: both bindings derive their
+      # published package version by parsing it, so a tag naming a ClickHouse line
+      # this tree was never synced to gets packaged downstream as though it existed.
+      #
+      # Releases only. A manual run names whatever tag it wants to test, usually an
+      # older release on an older line, and that is the point of having the input,
+      # so it is not held against the tree as it stands now.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'release'
+      - name: The tag has to name the ClickHouse line this tree is synced to
+        if: github.event_name == 'release'
+        run: .github/scripts/check-release-tag.sh "${{ github.event.release.tag_name }}"
+
       - name: Wait for every platform tarball
         shell: bash
         env:

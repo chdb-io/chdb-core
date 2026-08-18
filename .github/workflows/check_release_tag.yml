@@ -1,0 +1,44 @@
+name: Check release tag
+
+# A tag's first two fields are the only place a user reads which ClickHouse a chdb
+# release contains, and nothing has been checking that they tell the truth. The
+# third field belongs to this repository and counts its kernel changes on that
+# line, so the check leaves it alone and asks only that the line matches the tree,
+# that the shape is one the bindings can parse, and that the counter fits the two
+# digits they encode it into.
+#
+# The bindings make a wrong line worse than cosmetic. chdb-go and chdb-node both
+# derive their own published version by parsing this tag, so a tag left on the
+# previous line after a sync gets packaged as an engine nobody built. This fails
+# the moment the tag appears, minutes into a build that takes hours, so it can be
+# deleted and redone before anything is published from it.
+#
+# It cannot refuse a push — nothing in Actions can. What it can do is make a wrong
+# tag loud immediately instead of surfacing months later as a version that does not
+# match its contents.
+
+on:
+  release:
+    types: [published]
+  push:
+    tags: ['v*']
+
+# A release created from a new tag produces both events. One run is enough.
+concurrency:
+  group: check-release-tag-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tag_names_the_engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag has to name the ClickHouse line this tree is synced to
+        run: .github/scripts/check-release-tag.sh "${{ github.event.release.tag_name || github.ref_name }}"
+      # always(), so a failure above does not hide an independent failure here.
+      - name: CHDB_VERSION is on this ClickHouse line
+        if: always()
+        run: .github/scripts/check-abi-version.sh
