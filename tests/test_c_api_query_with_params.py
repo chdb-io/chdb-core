@@ -12,9 +12,9 @@ These call the same engine plumbing as Python's ``chdb.query(..., params={...})`
 they're the C-ABI siblings used by chdb-node / chdb-go / chdb-rust.
 
 Loads libchdb.so / libchdb.dylib directly via ctypes (those binaries export the
-C ABI; the Python wheel's ``_chdb.abi3.so`` only exports ``PyInit__chdb``). When
-no standalone library is found (e.g. running against an installed wheel without
-the source tree) the whole suite is skipped.
+full C ABI; the Python wheel's ``_chdb.abi3.so`` is not used for these ctypes
+tests). When no standalone library is found (e.g. running against an installed
+wheel without the source tree) the whole suite is skipped.
 """
 
 import ctypes

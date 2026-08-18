@@ -557,7 +557,11 @@ jobs:
             case "$loc"  in '??:0'|'??:?'|'') echo "FAIL: source location unresolved at $addr"; exit 1 ;; esac
           }
           verify chdb/_chdb.abi3.so PyInit__chdb _chdb.abi3.so.debug
+          verify chdb/_chdb.abi3.so chdb_adbc_init _chdb.abi3.so.debug
+          verify chdb/_chdb.abi3.so AdbcDriverInit _chdb.abi3.so.debug
           verify libchdb.so query_stable libchdb.so.debug
+          verify libchdb.so chdb_adbc_init libchdb.so.debug
+          verify libchdb.so AdbcDriverInit libchdb.so.debug
       - name: Package debug symbols
         run: |
           ls *.debug

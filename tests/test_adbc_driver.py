@@ -1053,5 +1053,41 @@ class TestAdbcPersistence(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+@unittest.skipUnless(_ENABLED, _SKIP_REASON)
+class TestAdbcPythonInterop(unittest.TestCase):
+    def test_adbc_reuses_python_module_for_same_path_connection(self):
+        try:
+            import chdb
+        except Exception as exc:  # noqa: BLE001 - optional package in this suite
+            self.skipTest(f"chdb package not importable: {exc}")
+
+        py_so = getattr(getattr(chdb, "_chdb", None), "__file__", None)
+        if (
+            not py_so
+            or not _LIBCHDB_PATH
+            or os.path.realpath(py_so) != os.path.realpath(_LIBCHDB_PATH)
+        ):
+            self.skipTest("ADBC driver is not the installed chdb Python module")
+
+        tmp = tempfile.mkdtemp(prefix="chdb_adbc_python_")
+        native = None
+        try:
+            _release_memory_keepalive()
+            native = chdb.connect(tmp)
+            native.query(
+                "CREATE TABLE native_events (id UInt64) "
+                "ENGINE = MergeTree ORDER BY id"
+            )
+            native.query("INSERT INTO native_events VALUES (1), (2), (3)")
+
+            with _connect(tmp) as conn, conn.cursor() as cur:
+                cur.execute("SELECT sum(id) FROM native_events")
+                self.assertEqual(cur.fetchone()[0], 6)
+        finally:
+            if native is not None:
+                native.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
