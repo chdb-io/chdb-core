@@ -1366,14 +1366,23 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
 chdb_state chdb_shutdown(void)
 {
-    /// Set only once the engine is fully stopped, so that a call which bailed
-    /// out below can be retried.
-    static std::atomic<bool> stopped{false};
+    /// Serializes the whole transition. Without it two first callers would both
+    /// reach the joins, and a second caller could be told the engine is stopped
+    /// while the first is still joining.
+    static std::mutex shutdown_mutex;
+    /// Set only once the engine is fully stopped, so a call that bailed out below
+    /// can be retried. Guarded by shutdown_mutex.
+    static bool stopped = false;
 
-    if (stopped.load(std::memory_order_acquire))
+    std::lock_guard<std::mutex> lock(shutdown_mutex);
+
+    if (stopped)
         return CHDBSuccess;
 
-    if (DB::EmbeddedServer::hasActiveClients())
+    /// Decides and claims under the instance lock, so a connect racing this either
+    /// gets in first and is counted here, or arrives later and is refused. From
+    /// here on the engine is closed for business even if a join below fails.
+    if (!DB::EmbeddedServer::beginShutdown())
         return CHDBError;
 
     try
@@ -1399,7 +1408,7 @@ chdb_state chdb_shutdown(void)
     /// Nothing is left to account for, and the trackers outlive this call.
     g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
 
-    stopped.store(true, std::memory_order_release);
+    stopped = true;
     return CHDBSuccess;
 }
 

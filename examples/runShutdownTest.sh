@@ -19,7 +19,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd $DIR
 
 echo "Compile and link"
-clang chdbShutdownTest.c -o chdbShutdownTest -I../programs/local/ -L../ -lchdb
+clang chdbShutdownTest.c -o chdbShutdownTest -I../programs/local/ -L../ -lchdb -lpthread
 
 export ${LIB_PATH}=..
 ${LDD} chdbShutdownTest

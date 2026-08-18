@@ -843,15 +843,20 @@ CHDB_EXPORT void chdb_reset_signal_handlers(void);
  * still open this does nothing and returns CHDBError, because tearing the engine
  * down under a live connection would leave it dangling.
  *
- * After a successful call the library is finished for the lifetime of the
- * process: chdb_connect() and query_stable() must not be called again. Calling
- * this twice is harmless and returns CHDBSuccess.
+ * Once it starts, the library is closed for business for the rest of the process,
+ * whether or not it manages to stop every thread: chdb_connect() then fails and
+ * query_stable() must not be called. Calling this again is harmless -- it returns
+ * CHDBSuccess if the engine is already stopped, and otherwise retries.
+ *
+ * Safe to call from any thread and concurrently with itself and with
+ * chdb_connect(): callers are serialized, and a connect racing a shutdown either
+ * gets in first and is counted, or arrives later and is refused.
  *
  * Skipping it stays as safe as it has always been for a process that just exits:
  * the threads left running are reaped by process exit.
  *
- * @return CHDBSuccess once the engine is stopped, CHDBError if a connection is
- *         still open or the shutdown itself failed
+ * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
+ *         connection is still open or some thread could not be stopped
  */
 CHDB_EXPORT chdb_state chdb_shutdown(void);
 

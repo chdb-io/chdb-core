@@ -1183,10 +1183,18 @@ void EmbeddedServer::applyCmdOptions(ContextMutablePtr context)
 std::unique_ptr<EmbeddedServer> EmbeddedServer::global_instance;
 std::mutex EmbeddedServer::instance_mutex;
 size_t EmbeddedServer::client_ref_count = 0;
+bool EmbeddedServer::engine_stopped = false;
 
 EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
+
+    /// The pools this instance needs have been joined and cannot be rebuilt, so a
+    /// new client would run on a dead engine. Refusing here is also what makes the
+    /// shutdown refusal contract hold under a concurrent connect: whichever of the
+    /// two takes this lock first, the other sees a decided state.
+    if (engine_stopped)
+        throw DB::Exception(ErrorCodes::BAD_ARGUMENTS, "chDB has been shut down and cannot be used again in this process");
 
     if (global_instance)
     {
@@ -1251,11 +1259,15 @@ void EmbeddedServer::releaseInstance()
     }
 }
 
-bool EmbeddedServer::hasActiveClients()
+bool EmbeddedServer::beginShutdown()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
 
-    return client_ref_count != 0;
+    if (client_ref_count != 0)
+        return false;
+
+    engine_stopped = true;
+    return true;
 }
 
 void EmbeddedServer::initializeWithArgs(int argc, char ** argv)

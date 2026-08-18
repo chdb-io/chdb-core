@@ -260,6 +260,14 @@ private:
     void wakeUpExcessIdleThreadsNoLock();
 
     void finalize();
+
+    /// finalize(), but it refuses when a job still occupies a thread instead of
+    /// joining it, and it decides that under the same lock that sets `shutdown`
+    /// so no job can be admitted in between. Returns false only in that case.
+    /// A caller that finds the pool already shut down returns true without
+    /// joining: the join runs once, on whoever set the flag.
+    bool finalizeIfIdle();
+
     void onDestroy();
 };
 
@@ -326,6 +334,10 @@ public:
     /// would make the join block forever, so in that case this joins nothing,
     /// reports which pools are still alive and returns false. On true the pool is
     /// left unusable: scheduling on it throws.
+    ///
+    /// Concurrent callers do not all join: the first one to win the pool lock does
+    /// the joining and the rest return true immediately, so a caller that needs
+    /// "no pool thread is alive now" must serialize the calls itself.
     static bool shutdownAndJoin();
 };
 

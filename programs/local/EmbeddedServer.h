@@ -44,9 +44,11 @@ public:
 
     static void releaseInstance();
 
-    /// True while at least one client still holds the instance, i.e. the engine
-    /// is in use and must not be torn down.
-    static bool hasActiveClients();
+    /// Claims the engine for teardown: succeeds only when no client holds the
+    /// instance, and then refuses every later getInstance() for the lifetime of
+    /// the process. Deciding and claiming under one lock is what keeps a
+    /// concurrent connect from slipping in behind the check.
+    static bool beginShutdown();
 
     std::string getPath() const { return db_path; }
 
@@ -60,6 +62,8 @@ private:
     static std::unique_ptr<EmbeddedServer> global_instance;
     static std::mutex instance_mutex;
     static size_t client_ref_count;
+    /// Set by beginShutdown(); guarded by instance_mutex.
+    static bool engine_stopped;
     std::string db_path;
     ServerSettings server_settings;
     std::optional<StatusFile> status;
