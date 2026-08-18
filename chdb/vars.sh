@@ -29,12 +29,21 @@ pushd ${PROJ_DIR} > /dev/null
 # On a raise the helper prints its error to stdout before exiting non-zero, so
 # reset to empty on failure (|| ...) to keep that text out of CHDB_VERSION and
 # let the fallbacks fire.
-CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null) || CHDB_VERSION=""
-if [ -z "${CHDB_VERSION}" ] || [ "${CHDB_VERSION}" = "None" ]; then
-    CHDB_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-fi
-if [ -z "${CHDB_VERSION}" ]; then
-    CHDB_VERSION="0.0.0"
+# An already-set CHDB_VERSION wins, because the caller knows something this cannot:
+# which tag is being built. get_latest_git_tag() asks for the newest tag in the
+# repository by commit date, which is a different question and answers it wrongly
+# whenever the release being built is not the newest tag — cutting v26.7.0 while
+# v26.7.1-rc.1 exists would compile and package 26.7.1. The release workflows export
+# the tag they are building; everything below is the fallback for a build that has
+# no tag to be told about.
+if [ -z "${CHDB_VERSION:-}" ]; then
+    CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null) || CHDB_VERSION=""
+    if [ -z "${CHDB_VERSION}" ] || [ "${CHDB_VERSION}" = "None" ]; then
+        CHDB_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+    fi
+    if [ -z "${CHDB_VERSION}" ]; then
+        CHDB_VERSION="0.0.0"
+    fi
 fi
 popd > /dev/null
 

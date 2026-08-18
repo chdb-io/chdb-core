@@ -39,6 +39,6 @@ jobs:
       - name: The tag has to name the ClickHouse line this tree is synced to
         run: .github/scripts/check-release-tag.sh "${{ github.event.release.tag_name || github.ref_name }}"
       # always(), so a failure above does not hide an independent failure here.
-      - name: The library has to report the version being released
+      - name: CHDB_VERSION is on this ClickHouse line
         if: always()
-        run: .github/scripts/check-abi-version.sh "${{ github.event.release.tag_name || github.ref_name }}"
+        run: .github/scripts/check-abi-version.sh

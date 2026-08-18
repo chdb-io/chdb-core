@@ -100,6 +100,23 @@ jobs:
           sudo ln -s /usr/bin/clang++-21 /usr/bin/clang++
           which clang++
           clang++ --version
+      # The engine reports the release it was built as, and that has to come from
+      # the tag being built. chdb/vars.sh already writes it into both places that
+      # matter — chdb.h's CHDB_VERSION, which chdb_version() returns and a C caller
+      # reads out of the shipped header, and -DCHDB_VERSION, which is the only thing
+      # that compiles chdbVersion() in at all (without it src/Functions/chdbVersion.cpp
+      # is #if'd out of the build entirely). What it could not do is know which tag
+      # this is: it asked git for the newest tag in the repository, which is a
+      # different question, so cutting a release that is not the newest tag baked in
+      # the wrong number. Telling it here is the whole fix; vars.sh keeps an
+      # inherited value and falls back to asking git only for builds with no tag.
+      - name: Name the release this build reports as
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          V=${GITHUB_REF#refs/tags/v}
+          echo "CHDB_VERSION=$V" >> "$GITHUB_ENV"
+
       - name: Run chdb/build_mac_on_linux.sh
         timeout-minutes: 600
         run: |
