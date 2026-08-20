@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """C-ABI tests for the streaming INSERT surface (chdb_stream_insert family).
 
-Loads libchdb.so directly via ctypes (the standalone library exports the C ABI;
-the Python wheel's _chdb.abi3.so only exports PyInit__chdb). Skipped when no
-standalone library is found; set CHDB_LIB_PATH to point at one.
+Loads libchdb.so directly via ctypes (the standalone library exports the full C
+ABI; the Python wheel's _chdb.abi3.so is not used for these ctypes tests).
+Skipped when no standalone library is found; set CHDB_LIB_PATH to point at one.
 
 Exercises: full lifecycle (insert -> append -> done -> rows_written -> destroy),
 binary-safe length-respecting append, init error reporting, and cancel + safe

@@ -308,7 +308,9 @@ if [ "$(uname)" == "Darwin" ]; then
     PYCHDB_CMD="${PYCHDB_CMD} -Wl,-exported_symbols_list,${CHDB_DIR}/pychdb_export_macos.txt"
 else
     PYCHDB_CMD=$(echo ${PYCHDB_CMD} | sed 's|-Wl,-rpath,/[^[:space:]]*/pybind11-cmake|-Wl,-rpath,\$ORIGIN|g')
-    PYCHDB_CMD="${PYCHDB_CMD} -Wl,--undefined=PyInit__chdb -Wl,--version-script=${CHDB_DIR}/pychdb_export.map"
+    # The version script exports these names; --undefined keeps their objects
+    # linked into the Python module when they come from static archives.
+    PYCHDB_CMD="${PYCHDB_CMD} -Wl,--undefined=PyInit__chdb -Wl,--undefined=chdb_adbc_init -Wl,--undefined=AdbcDriverInit -Wl,--version-script=${CHDB_DIR}/pychdb_export.map"
 fi
 
 # save the command to a file for debug
@@ -402,11 +404,15 @@ echo -e "\nPyInit in PYCHDB: ${PYCHDB}"
 ${NM} ${PYCHDB} | grep PyInit || true
 echo -e "\nquery_stable in PYCHDB: ${PYCHDB}"
 ${NM} ${PYCHDB} | grep query_stable || true
+echo -e "\nADBC entrypoints in PYCHDB: ${PYCHDB}"
+${NM} ${PYCHDB} | grep -E 'chdb_adbc_init|AdbcDriverInit' || true
 if [ "${CHDB_LITE}" != "1" ]; then
     echo -e "\nPyInit in LIBCHDB: ${LIBCHDB}"
     ${NM} ${LIBCHDB} | grep PyInit || echo "PyInit not found in ${LIBCHDB}, it's OK"
     echo -e "\nquery_stable in LIBCHDB: ${LIBCHDB}"
     ${NM} ${LIBCHDB} | grep query_stable || true
+    echo -e "\nADBC entrypoints in LIBCHDB: ${LIBCHDB}"
+    ${NM} ${LIBCHDB} | grep -E 'chdb_adbc_init|AdbcDriverInit' || true
 fi
 
 echo -e "\nAfter copy:"
