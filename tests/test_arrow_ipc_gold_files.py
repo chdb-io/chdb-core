@@ -23,12 +23,16 @@ bytes. ``.arrow_file`` uses the ``Arrow`` (IPC file) format; ``.stream`` uses
 
 Comparison is representation-tolerant on purpose: chDB maps Arrow ``binary`` to
 ``string`` and materializes dictionaries, so values are normalized (dictionaries
-decoded, binary/string compared as bytes) before comparison. Only genuine value
-differences fail — not type-label differences.
+decoded, binary/string compared as bytes) before comparison. It is also
+order-insensitive (the multiset of rows is compared) because chDB may read
+record batches in parallel. Only genuine value differences fail — not type-label
+or row-order differences.
 
 One test is generated per (version, file, framing). Types that chDB reads wrong
-today (chdb-io/chdb#625) are ``@unittest.skip``-ped so the suite is green; the
-correct ones run. Written in unittest so ``tests/run_all.py`` collects it.
+today (chdb-io/chdb#625) are marked ``@unittest.expectedFailure`` so they still
+run and the suite stays green; when chDB fixes one it shows up as an unexpected
+success (prompting removal of the marker). Written in unittest so
+``tests/run_all.py`` collects it.
 Fixtures are fetched on first use and cached; the network being unavailable
 skips (never fails) the affected case, matching ``hits_dataset.py``.
 """
@@ -79,9 +83,10 @@ VERSION_CASES = {
 FORMATS = {"arrow_file": "Arrow", "stream": "ArrowStream"}
 
 # Type cases known to be broken in chDB today, keyed by generated-file name.
-# Established empirically against chdb 4.3.0 (engine 26.7.2.1). Skipped so the
-# suite stays green while chdb-io/chdb#625 is open; drop an entry once fixed
-# (switch to unittest.expectedFailure if a regression signal is wanted instead).
+# Established empirically against chdb 4.3.0 (engine 26.7.2.1). Marked
+# expectedFailure so they still run and the suite stays green while
+# chdb-io/chdb#625 is open; a fix surfaces as an unexpected success -> drop the
+# entry. The string is used as the generated test's docstring.
 KNOWN_ISSUES = {
     # --- read fails outright (query raises) ---
     "null": "#625: Arrow null type -> Code 636 CANNOT_EXTRACT_TABLE_STRUCTURE",
@@ -171,6 +176,12 @@ def _normalize(col):
         return col.cast(pa.binary()).to_pylist()
 
 
+def _rows(table):
+    """The table's normalized rows as tuples (used for value comparison)."""
+    cols = [_normalize(table.column(i)) for i in range(table.num_columns)]
+    return [tuple(col[r] for col in cols) for r in range(table.num_rows)]
+
+
 @unittest.skipUnless(HAVE_PYARROW, "pyarrow not installed")
 class TestArrowIpcGoldFiles(unittest.TestCase):
     """One generated method per (version, file, framing). See module docstring."""
@@ -191,11 +202,13 @@ def _make_case(version, name, ext, fmt):
         self.assertEqual(got.num_rows, reference.num_rows, "row count mismatch")
         self.assertEqual(got.num_columns, reference.num_columns, "column count mismatch")
         self.assertEqual(got.column_names, reference.column_names, "column names mismatch")
-        for i in range(reference.num_columns):
-            self.assertEqual(
-                _normalize(got.column(i)), _normalize(reference.column(i)),
-                f"value mismatch in column {i} ({reference.column_names[i]!r})",
-            )
+        # chDB may read Arrow record batches in parallel, so row order is not
+        # guaranteed; compare the multiset of normalized rows, not their order.
+        self.assertEqual(
+            sorted(map(repr, _rows(got))),
+            sorted(map(repr, _rows(reference))),
+            "row values mismatch (order-insensitive)",
+        )
     return test
 
 
@@ -207,7 +220,8 @@ def _install_cases():
                 method = _make_case(version, name, ext, fmt)
                 method.__name__ = f"test_{slug_v}__{name}__{ext}"
                 if name in KNOWN_ISSUES:
-                    method = unittest.skip(KNOWN_ISSUES[name])(method)
+                    method.__doc__ = KNOWN_ISSUES[name]
+                    method = unittest.expectedFailure(method)
                 setattr(TestArrowIpcGoldFiles, method.__name__, method)
 
 
