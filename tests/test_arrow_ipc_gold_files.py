@@ -26,6 +26,9 @@ Comparison is representation-tolerant on purpose: chDB maps Arrow ``binary`` to
 decoded, binary/string compared as bytes) before comparison. Only genuine value
 differences fail — not type-label differences.
 
+One test is generated per (version, file, framing). Types that chDB reads wrong
+today (chdb-io/chdb#625) are ``@unittest.skip``-ped so the suite is green; the
+correct ones run. Written in unittest so ``tests/run_all.py`` collects it.
 Fixtures are fetched on first use and cached; the network being unavailable
 skips (never fails) the affected case, matching ``hits_dataset.py``.
 """
@@ -33,15 +36,19 @@ skips (never fails) the affected case, matching ``hits_dataset.py``.
 import os
 import tempfile
 import time
+import unittest
 import urllib.error
 import urllib.request
 
-import pytest
+try:
+    import pyarrow as pa
+    import pyarrow.ipc  # noqa: F401
+    import pyarrow.types as pt
+    HAVE_PYARROW = True
+except ImportError:  # pragma: no cover - pyarrow is normally present in CI
+    HAVE_PYARROW = False
 
-pa = pytest.importorskip("pyarrow")
-import pyarrow.ipc  # noqa: E402
-import pyarrow.types as pt  # noqa: E402
-import chdb  # noqa: E402
+import chdb
 
 # --- Fixture source, pinned for reproducibility -----------------------------
 ARROW_TESTING_COMMIT = "9ff285c88565f0f6abc855918c6a342e70e4909c"
@@ -51,31 +58,30 @@ BASE_URL = (
 )
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "chdb_arrow_ipc_gold_cache")
 
-# Gold-file version directories to exercise. Big-endian dirs are omitted: pyarrow
-# cannot decode cross-endian IPC on a little-endian host, so there is no
-# reference to validate against. More dirs (0.14.1, 0.17.1) can be appended.
-VERSIONS = ["1.0.0-littleendian", "2.0.0-compression"]
-
-# Generated type cases (superset across versions). A (version, name) that does
-# not exist is skipped automatically when the download 404s.
-CASES = [
-    # 1.0.0-littleendian
-    "primitive", "primitive_large_offsets", "primitive_no_batches",
-    "primitive_zerolength", "null", "null_trivial", "decimal", "decimal256",
-    "datetime", "interval", "map", "map_non_canonical", "nested",
-    "nested_large_offsets", "dictionary", "dictionary_unsigned",
-    "nested_dictionary", "custom_metadata", "duplicate_fieldnames", "extension",
-    # 2.0.0-compression
-    "lz4", "zstd", "uncompressible_lz4", "uncompressible_zstd",
-]
+# Gold-file cases per version directory (only files that actually exist there).
+# Big-endian dirs are omitted: pyarrow cannot decode cross-endian IPC on a
+# little-endian host, so there is no reference to validate against. More dirs
+# (0.14.1, 0.17.1) can be appended. A file that later disappears upstream is
+# skipped automatically when the download 404s.
+VERSION_CASES = {
+    "1.0.0-littleendian": [
+        "primitive", "primitive_large_offsets", "primitive_no_batches",
+        "primitive_zerolength", "null", "null_trivial", "decimal", "decimal256",
+        "datetime", "interval", "map", "map_non_canonical", "nested",
+        "nested_large_offsets", "dictionary", "dictionary_unsigned",
+        "nested_dictionary", "custom_metadata", "duplicate_fieldnames",
+        "extension",
+    ],
+    "2.0.0-compression": ["lz4", "zstd", "uncompressible_lz4", "uncompressible_zstd"],
+}
 
 # .arrow_file -> IPC file format; .stream -> IPC streaming format.
 FORMATS = {"arrow_file": "Arrow", "stream": "ArrowStream"}
 
 # Type cases known to be broken in chDB today, keyed by generated-file name.
-# Established empirically against chdb 4.3.0 (engine 26.7.2.1). Kept as
-# xfail(strict=False) so the suite stays green while chdb-io/chdb#625 is open and
-# so a future fix surfaces as XPASS (prompting removal of the marker).
+# Established empirically against chdb 4.3.0 (engine 26.7.2.1). Skipped so the
+# suite stays green while chdb-io/chdb#625 is open; drop an entry once fixed
+# (switch to unittest.expectedFailure if a regression signal is wanted instead).
 KNOWN_ISSUES = {
     # --- read fails outright (query raises) ---
     "null": "#625: Arrow null type -> Code 636 CANNOT_EXTRACT_TABLE_STRUCTURE",
@@ -101,7 +107,8 @@ _RETRY_DELAYS = (2, 8)
 
 def _download(url, dest, retries=_RETRY_DELAYS):
     """Fetch ``url`` to ``dest``. Returns the path, ``None`` on HTTP 404 (file
-    absent for this version), or ``pytest.skip`` if the network stays down."""
+    absent for this version), or raises ``SkipTest`` if the network stays down
+    (an unreachable CDN skips rather than fails, matching ``hits_dataset.py``)."""
     last = None
     for attempt, delay in enumerate((0,) + tuple(retries)):
         if delay:
@@ -127,7 +134,7 @@ def _download(url, dest, retries=_RETRY_DELAYS):
             os.remove(dest + ".part")
         except OSError:
             pass
-    pytest.skip(f"{url} unreachable: {last}")
+    raise unittest.SkipTest(f"{url} unreachable: {last}")
 
 
 def _ensure_gold_file(version, name, ext):
@@ -138,7 +145,7 @@ def _ensure_gold_file(version, name, ext):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     result = _download(f"{BASE_URL}/{version}/{fname}", dest)
     if result is None:
-        pytest.skip(f"{version}/{fname} not present in arrow-testing")
+        raise unittest.SkipTest(f"{version}/{fname} not present in arrow-testing")
     return result
 
 
@@ -164,42 +171,48 @@ def _normalize(col):
         return col.cast(pa.binary()).to_pylist()
 
 
-def _params():
-    for version in VERSIONS:
-        for name in CASES:
-            marks = []
-            if name in KNOWN_ISSUES:
-                marks = [pytest.mark.xfail(reason=KNOWN_ISSUES[name], strict=False)]
+@unittest.skipUnless(HAVE_PYARROW, "pyarrow not installed")
+class TestArrowIpcGoldFiles(unittest.TestCase):
+    """One generated method per (version, file, framing). See module docstring."""
+
+
+def _make_case(version, name, ext, fmt):
+    def test(self):
+        path = _ensure_gold_file(version, name, ext)
+        # Reference decode of the identical bytes. If pyarrow itself cannot read
+        # the file there is nothing to validate against, so skip.
+        try:
+            reference = _read_reference(path, ext)
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"pyarrow cannot decode reference {path}: {exc}")
+
+        got = chdb.query(f"SELECT * FROM file('{path}', '{fmt}')", "ArrowTable")
+
+        self.assertEqual(got.num_rows, reference.num_rows, "row count mismatch")
+        self.assertEqual(got.num_columns, reference.num_columns, "column count mismatch")
+        self.assertEqual(got.column_names, reference.column_names, "column names mismatch")
+        for i in range(reference.num_columns):
+            self.assertEqual(
+                _normalize(got.column(i)), _normalize(reference.column(i)),
+                f"value mismatch in column {i} ({reference.column_names[i]!r})",
+            )
+    return test
+
+
+def _install_cases():
+    for version, names in VERSION_CASES.items():
+        slug_v = version.replace(".", "_").replace("-", "_")
+        for name in names:
             for ext, fmt in FORMATS.items():
-                yield pytest.param(
-                    version, name, ext, fmt,
-                    id=f"{version}-{name}.{ext}", marks=marks,
-                )
+                method = _make_case(version, name, ext, fmt)
+                method.__name__ = f"test_{slug_v}__{name}__{ext}"
+                if name in KNOWN_ISSUES:
+                    method = unittest.skip(KNOWN_ISSUES[name])(method)
+                setattr(TestArrowIpcGoldFiles, method.__name__, method)
 
 
-@pytest.mark.parametrize("version,name,ext,fmt", list(_params()))
-def test_arrow_ipc_gold_file(version, name, ext, fmt):
-    path = _ensure_gold_file(version, name, ext)
-
-    # Reference decode of the identical bytes. If pyarrow itself cannot read the
-    # file there is nothing to validate against, so skip rather than fail.
-    try:
-        reference = _read_reference(path, ext)
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"pyarrow cannot decode reference {path}: {exc}")
-
-    # chDB read (raises on the hard read failures tracked in KNOWN_ISSUES).
-    got = chdb.query(f"SELECT * FROM file('{path}', '{fmt}')", "ArrowTable")
-
-    assert got.num_rows == reference.num_rows, "row count mismatch"
-    assert got.num_columns == reference.num_columns, "column count mismatch"
-    assert got.column_names == reference.column_names, "column names mismatch"
-    for i in range(reference.num_columns):
-        assert _normalize(got.column(i)) == _normalize(reference.column(i)), (
-            f"value mismatch in column {i} ({reference.column_names[i]!r})"
-        )
+_install_cases()
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(pytest.main([__file__, "-v"]))
+    unittest.main(verbosity=2)
