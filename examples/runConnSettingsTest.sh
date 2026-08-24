@@ -25,4 +25,6 @@ export ${LIB_PATH}=..
 ${LDD} chdbConnSettingsTest
 
 echo "Run it:"
+rm -rf chdb_conn_settings_test_db
 ./chdbConnSettingsTest
+rm -rf chdb_conn_settings_test_db
