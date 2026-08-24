@@ -33,6 +33,15 @@ void chdb_destroy_arrow_stream(ArrowArrayStream * arrow_stream);
 
 void chdb_stream_result_set_arrow_uuid_as_fixed(chdb_result * result, bool enabled);
 void chdb_stream_result_set_arrow_variant_as_string(chdb_result * result, bool enabled);
+chdb_result * chdb_query_arrow_with_settings_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    chdb_arrow_stream out_stream,
+    const chdb_arrow_options * options,
+    bool output_uuid_as_fixed_byte_array,
+    bool output_variant_as_string,
+    const DB::NameToNameMap & params);
 
 /// Sentinel error texts shared by producers and consumers so fallback
 /// detection can't drift with a reword.

@@ -33,7 +33,8 @@ constexpr const char * kArrowConverterFormatName = "Arrow";
 
 CHColumnToArrowColumn::Settings buildConverterSettings(
     const chdb_arrow_options * options,
-    bool output_uuid_as_fixed_byte_array = false)
+    bool output_uuid_as_fixed_byte_array = false,
+    bool output_variant_as_string = false)
 {
     CHColumnToArrowColumn::Settings settings;
     /// Defaults align with the Layer-1 type contract (string_as_string=1,
@@ -51,7 +52,7 @@ CHColumnToArrowColumn::Settings buildConverterSettings(
     settings.use_64_bit_indexes_for_dictionary = false;
     settings.output_date_as_uint16 = false;
     settings.output_uuid_as_fixed_byte_array = output_uuid_as_fixed_byte_array;
-    settings.output_variant_as_string = false;
+    settings.output_variant_as_string = output_variant_as_string;
     settings.output_unsupported_types_as_binary = false;
 
     if (options)
@@ -186,8 +187,8 @@ void ensureConverterInitialized(
         return;
 
     state.header_columns = header;
-    auto settings = buildConverterSettings(&state.options, state.output_uuid_as_fixed_byte_array);
-    settings.output_variant_as_string = state.output_variant_as_string;
+    auto settings = buildConverterSettings(
+        &state.options, state.output_uuid_as_fixed_byte_array, state.output_variant_as_string);
     state.converter = std::make_unique<CHColumnToArrowColumn>(
         state.header_columns,
         kArrowConverterFormatName,
@@ -204,7 +205,9 @@ chdb_result * runMaterializedArrowQuery(
     const char * query,
     size_t query_len,
     ArrowArrayStream * out_stream,
-    const chdb_arrow_options * options)
+    const chdb_arrow_options * options,
+    bool output_uuid_as_fixed_byte_array = false,
+    bool output_variant_as_string = false)
 {
     if (!out_stream)
         return makeErrorResult("Unexpected null out_stream");
@@ -234,7 +237,7 @@ chdb_result * runMaterializedArrowQuery(
 
     const auto & header_columns = chunk_result->header->getColumnsWithTypeAndName();
 
-    auto settings = buildConverterSettings(options);
+    auto settings = buildConverterSettings(options, output_uuid_as_fixed_byte_array, output_variant_as_string);
     auto converter = std::make_unique<CHColumnToArrowColumn>(
         header_columns,
         kArrowConverterFormatName,
@@ -329,6 +332,51 @@ void chdb_stream_result_set_arrow_variant_as_string(chdb_result * result, bool e
         return;
     std::lock_guard<std::mutex> lock(state->mutex);
     state->output_variant_as_string = enabled;
+}
+
+chdb_result * chdb_query_arrow_with_settings_n(
+    chdb_connection conn,
+    const char * query,
+    size_t query_len,
+    chdb_arrow_stream out_stream,
+    const chdb_arrow_options * options,
+    bool output_uuid_as_fixed_byte_array,
+    bool output_variant_as_string,
+    const DB::NameToNameMap & params)
+{
+    if (!conn)
+        return makeErrorResult("Unexpected null connection");
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return makeErrorResult("Invalid or closed connection");
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        CApiQueryParameterGuard guard(client, params);
+        auto * raw_stream = reinterpret_cast<ArrowArrayStream *>(out_stream);
+        return runMaterializedArrowQuery(
+            connection,
+            query,
+            query_len,
+            raw_stream,
+            options,
+            output_uuid_as_fixed_byte_array,
+            output_variant_as_string);
+    }
+    catch (const Exception & e)
+    {
+        return makeErrorResult(getExceptionMessage(e, false));
+    }
+    catch (const std::exception & e)
+    {
+        return makeErrorResult(e.what());
+    }
+    catch (...)
+    {
+        return makeErrorResult(DB::getCurrentExceptionMessage(true));
+    }
 }
 }
 

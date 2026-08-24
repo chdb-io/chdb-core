@@ -618,6 +618,40 @@ class TestAdbcParameters(unittest.TestCase):
             result = pa.RecordBatchReader._import_from_c(handle.address).read_all()
         self.assertEqual(result.column("v").to_pylist(), [2, 3, 4, 5])
 
+    def test_multi_row_bind_honors_arrow_compat_options(self):
+        params = pa.RecordBatch.from_pydict(
+            {
+                "0": pa.array([0, 1], pa.int64()),
+                "1": pa.array([0, 1], pa.int64()),
+            }
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_statement.set_options(
+                output_format_arrow_uuid_as_fixed_byte_array="true",
+                output_format_arrow_variant_as_string="true",
+            )
+            cur.adbc_statement.set_sql_query(
+                """
+                SELECT
+                    toUUID(if(
+                        ? = 0,
+                        '61f0c404-5cb3-11e7-907b-a6006ad3dba0',
+                        '61f0c404-5cb3-11e7-907b-a6006ad3dba1')) AS u,
+                    if(
+                        ? = 0,
+                        CAST(toUInt64(1), 'Variant(UInt64, String)'),
+                        CAST('abc', 'Variant(UInt64, String)')) AS v
+                """
+            )
+            cur.adbc_statement.bind(params)
+            handle, _ = cur.adbc_statement.execute_query()
+            result = pa.RecordBatchReader._import_from_c(handle.address).read_all()
+
+        self.assertEqual(result.schema.field("u").type, pa.binary(16))
+        self.assertNotIn(b"ARROW:extension:name", result.schema.field("u").metadata or {})
+        self.assertEqual(result.schema.field("v").type, pa.string())
+        self.assertEqual(result.column("v").to_pylist(), ["1", '"abc"'])
+
     def test_param_injection_is_inert(self):
         with _connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT ? AS s", ("'; DROP TABLE x; --",))
