@@ -26,9 +26,14 @@ class EmbeddedServer;
 class ChdbClient : public ClientBase
 {
 public:
-    static std::unique_ptr<ChdbClient> create(EmbeddedServer & server_ref);
+    /// argc/argv are the connection's command-line style arguments. Arguments
+    /// naming a query-level setting (--max_threads=4, --final, ...) are applied
+    /// to this client's session only, so concurrent connections to the same
+    /// path keep isolated settings; server-level options are consumed once by
+    /// EmbeddedServer when it boots.
+    static std::unique_ptr<ChdbClient> create(EmbeddedServer & server_ref, int argc = 0, char ** argv = nullptr);
 
-    explicit ChdbClient(EmbeddedServer & server_ref);
+    explicit ChdbClient(EmbeddedServer & server_ref, int argc = 0, char ** argv = nullptr);
     ~ChdbClient() override;
 
     CHDB::QueryResultPtr executeMaterializedQuery(const char * query, size_t query_len, const char * format, size_t format_len);
@@ -96,6 +101,7 @@ protected:
 
 private:
     void cleanup();
+    void applyCmdSettings(int argc, char ** argv);
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
     void cancelStreamingQueryWithoutLock(void * streaming_result);
 

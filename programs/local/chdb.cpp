@@ -206,7 +206,21 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
     {
         DB::ThreadStatus thread_status;
         auto & server = DB::EmbeddedServer::getInstance(argc, argv);
-        auto client = DB::ChdbClient::create(server);
+        std::unique_ptr<DB::ChdbClient> client;
+        try
+        {
+            client = DB::ChdbClient::create(server, argc, argv);
+        }
+        catch (...)
+        {
+            /// getInstance() already counted this connection, and only a fully
+            /// constructed ChdbClient releases it from its destructor — without
+            /// this release a failed connect (e.g. an invalid --setting value)
+            /// would pin the engine alive forever, blocking any later connect
+            /// with a different path.
+            DB::EmbeddedServer::releaseInstance();
+            throw;
+        }
         if (!client)
         {
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create ChdbClient");
