@@ -48,7 +48,8 @@ entrypoint = chdb_adbc_init
 For languages without a binding above, ADBC is the recommended path for
 standard database access; per-language bindings remain the home for
 chDB-specific features. See `examples/chdbAdbcTest.c` for the raw C-ABI
-contract and `tests/test_adbc_driver.py` for end-to-end usage.
+contract, `tests/test_adbc_driver.py` for end-to-end usage, and
+[`docs/adbc.rst`](docs/adbc.rst) for compatibility options.
 
 > **Legend:** ✅ Supported  |  Blank = not yet implemented
 

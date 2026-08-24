@@ -20,6 +20,7 @@ Contents
    installation
    quickstart
    api
+   adbc
    examples
    session
    streaming
