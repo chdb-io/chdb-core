@@ -181,13 +181,15 @@ static void test_memory_path(void)
     chdb_connection * c = chdb_connect(2, argv_c);
     CHECK(c == NULL, "invalid setting value is rejected at connect time");
 
-    /// ...without harming live connections or pinning the engine's refcount
-    /// (a later connect must still succeed and inherit nothing).
+    /// ...without harming live connections; a later same-path connect must
+    /// succeed and inherit nothing. (A same-path connect cannot detect a
+    /// leaked engine reference — the discriminating check is phase 2's
+    /// different-path connect after full shutdown.)
     query_into(*a, "SELECT 1", "CSV", buf, sizeof(buf));
     CHECK(strcmp(buf, "1") == 0, "A still works after the rejected connect");
     char * argv_d[] = {"clickhouse"};
     chdb_connection * d = chdb_connect(1, argv_d);
-    CHECK(d != NULL, "a later plain connect succeeds (no refcount leak from the failure)");
+    CHECK(d != NULL, "a later plain connect succeeds while A/B stay open");
     if (d)
     {
         setting_row(*d, "max_threads", buf, sizeof(buf));
@@ -220,9 +222,13 @@ static void test_readonly_file_path(void)
     char buf[512];
     static const char * dir = "chdb_conn_settings_test_db"; /// cleaned by runConnSettingsTest.sh
 
+    /// This different-path connect doubles as the refcount-leak regression
+    /// check: phase 1's rejected connect (--max_threads=bogus) must have
+    /// released its engine reference, otherwise the engine is still pinned
+    /// to ':memory:' and connecting to this path throws BAD_ARGUMENTS.
     char * argv_rw[] = {"clickhouse", "--path=chdb_conn_settings_test_db"};
     chdb_connection * rw = chdb_connect(2, argv_rw);
-    CHECK(rw != NULL, "file-backed rw connection connects");
+    CHECK(rw != NULL, "different-path connect succeeds: the failed connect did not pin the engine");
     if (!rw)
         return;
     (void)dir;
