@@ -94,10 +94,24 @@ class TestConnectionArgvSettings(unittest.TestCase):
             conn_b.close()
 
     def test_experimental_setting_via_connection_arg(self):
+        # Without the setting, Nullable(Tuple(...)) is rejected outright.
+        plain = connect(":memory:")
+        try:
+            with self.assertRaisesRegex(Exception, "Nullable Tuple type is not allowed"):
+                plain.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")
+        finally:
+            plain.close()
         conn = connect(":memory:?allow_experimental_nullable_tuple_type=1")
         try:
             self.assertEqual(
                 setting_row(conn, "allow_experimental_nullable_tuple_type"), ("1", 1)
+            )
+            # And the gated type actually works on this connection.
+            self.assertEqual(
+                str(
+                    conn.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")
+                ).strip(),
+                "\\N",
             )
         finally:
             conn.close()
