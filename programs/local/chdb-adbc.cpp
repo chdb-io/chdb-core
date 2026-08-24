@@ -43,11 +43,15 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace
 {
+
+constexpr const char * kArrowUuidAsFixedByteArrayOption = "output_format_arrow_uuid_as_fixed_byte_array";
+constexpr const char * kArrowVariantAsStringOption = "output_format_arrow_variant_as_string";
 
 /// ---------------------------------------------------------------------
 /// Error helpers
@@ -80,6 +84,22 @@ AdbcStatusCode setError(AdbcError * error, AdbcStatusCode code, const std::strin
 AdbcStatusCode notImplemented(AdbcError * error, const std::string & what)
 {
     return setError(error, ADBC_STATUS_NOT_IMPLEMENTED, "[chdb] " + what + " is not implemented");
+}
+
+AdbcStatusCode parseBoolOption(const char * value, bool & out, AdbcError * error, const char * key)
+{
+    std::string v(value ? value : "");
+    if (v == "1" || v == "true" || v == "TRUE" || v == ADBC_OPTION_VALUE_ENABLED)
+    {
+        out = true;
+        return ADBC_STATUS_OK;
+    }
+    if (v == "0" || v == "false" || v == "FALSE" || v == ADBC_OPTION_VALUE_DISABLED)
+    {
+        out = false;
+        return ADBC_STATUS_OK;
+    }
+    return setError(error, ADBC_STATUS_INVALID_ARGUMENT, "[chdb] option '" + std::string(key) + "' expects a boolean value");
 }
 
 /// Engine errors name their ClickHouse error class, e.g. "... (UNKNOWN_TABLE)".
@@ -155,6 +175,8 @@ struct ConnectionImpl
     /// a different statement or metadata call is rejected while it is live).
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
+    bool arrow_uuid_as_fixed_byte_array = false;
+    bool arrow_variant_as_string = false;
 };
 
 std::atomic<uint64_t> statement_id_counter{1};
@@ -179,6 +201,8 @@ struct StatementImpl
     /// statement (C Data Interface move semantics).
     ArrowArrayStream bound_stream;
     bool has_bound_stream = false;
+    std::optional<bool> arrow_uuid_as_fixed_byte_array;
+    std::optional<bool> arrow_variant_as_string;
 
     void releaseBoundStream()
     {
@@ -190,6 +214,16 @@ struct StatementImpl
 };
 
 std::atomic<uint64_t> ingest_name_counter{0};
+
+bool outputUuidAsFixedByteArray(const StatementImpl * impl)
+{
+    return impl->arrow_uuid_as_fixed_byte_array.value_or(impl->connection->arrow_uuid_as_fixed_byte_array);
+}
+
+bool outputVariantAsString(const StatementImpl * impl)
+{
+    return impl->arrow_variant_as_string.value_or(impl->connection->arrow_variant_as_string);
+}
 
 /// Streaming result adapter: exposes chdb's pull-one-batch streaming
 /// (chdb_stream_query_arrow + chdb_stream_fetch_arrow, where each fetch
@@ -963,6 +997,16 @@ AdbcStatusCode chdbConnectionSetOption(
             return ADBC_STATUS_OK; /// autocommit is the only supported mode
         return notImplemented(error, "disabling autocommit (ClickHouse has no classic transactions)");
     }
+    if (std::strcmp(key, kArrowUuidAsFixedByteArrayOption) == 0)
+    {
+        auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+        return parseBoolOption(value, impl->arrow_uuid_as_fixed_byte_array, error, key);
+    }
+    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    {
+        auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+        return parseBoolOption(value, impl->arrow_variant_as_string, error, key);
+    }
     return notImplemented(error, std::string("connection option '") + key + "'");
 }
 
@@ -1707,6 +1751,22 @@ AdbcStatusCode chdbStatementSetOption(
         impl->ingest_mode = mode;
         return ADBC_STATUS_OK;
     }
+    if (std::strcmp(key, kArrowUuidAsFixedByteArrayOption) == 0)
+    {
+        bool parsed = false;
+        if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
+            return status;
+        impl->arrow_uuid_as_fixed_byte_array = parsed;
+        return ADBC_STATUS_OK;
+    }
+    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    {
+        bool parsed = false;
+        if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
+            return status;
+        impl->arrow_variant_as_string = parsed;
+        return ADBC_STATUS_OK;
+    }
     return notImplemented(error, std::string("statement option '") + key + "'");
 }
 
@@ -2088,6 +2148,8 @@ AdbcStatusCode executeBoundQuery(
                 names.size());
             if (!stream_result)
                 return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
+            CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
+            CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
             if (const char * err = chdb_result_error(stream_result))
             {
                 std::string message(err);
@@ -2344,6 +2406,8 @@ AdbcStatusCode executeStreamingSelect(
         = chdb_stream_query_arrow_n(conn, impl->query.c_str(), impl->query.size(), nullptr);
     if (!stream_result)
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
+    CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
+    CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
     if (const char * err = chdb_result_error(stream_result))
     {
         std::string message(err);

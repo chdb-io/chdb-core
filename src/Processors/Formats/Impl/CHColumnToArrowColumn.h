@@ -33,6 +33,10 @@ public:
         bool use_64_bit_indexes_for_dictionary = false;
         /// Output Date as UInt16 instead of Arrow DATE32 for backward compatibility.
         bool output_date_as_uint16 = false;
+        /// Output UUID as plain FixedSizeBinary(16), without Arrow extension metadata.
+        bool output_uuid_as_fixed_byte_array = false;
+        /// Output Variant as Arrow String containing JSON text instead of Arrow DenseUnion.
+        bool output_variant_as_string = false;
         /// Output types having no conversion as raw binary data. If false - such types would raise UNKNOWN_TYPE exception.
         bool output_unsupported_types_as_binary = false;
     };

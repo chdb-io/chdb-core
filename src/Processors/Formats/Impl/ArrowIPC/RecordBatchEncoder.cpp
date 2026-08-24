@@ -23,7 +23,9 @@
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeVariant.h>
 #include <DataTypes/IDataType.h>
+#include <DataTypes/Serializations/ISerialization.h>
 #include <IO/NetUtils.h>
+#include <IO/WriteBufferFromString.h>
 #include <Core/UUID.h>
 #include <Common/assert_cast.h>
 #include <base/arithmeticOverflow.h>
@@ -94,17 +96,25 @@ void RecordBatchEncoder::appendEmptyBuffer()
 Int64 RecordBatchEncoder::appendValidity(const IColumn * null_map_column, size_t num_rows)
 {
     if (!null_map_column)
+        return appendValidityMap(nullptr, num_rows);
+
+    const auto & null_map = assert_cast<const ColumnUInt8 &>(*null_map_column).getData();
+    return appendValidityMap(&null_map, num_rows);
+}
+
+Int64 RecordBatchEncoder::appendValidityMap(const PaddedPODArray<UInt8> * null_map, size_t num_rows)
+{
+    if (!null_map)
     {
         /// Non-nullable: emit a zero-length validity buffer (the slot still exists in the layout).
         appendEmptyBuffer();
         return 0;
     }
 
-    const auto & null_map = assert_cast<const ColumnUInt8 &>(*null_map_column).getData();
     PODArray<char> bitmap((num_rows + 7) / 8, 0);
-    packBytesToBits(null_map.data(), num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
+    packBytesToBits(null_map->data(), num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
     appendBuffer(bitmap.data(), bitmap.size());
-    return countBytesInFilter(null_map.data(), 0, num_rows);
+    return countBytesInFilter(null_map->data(), 0, num_rows);
 }
 
 void RecordBatchEncoder::appendOffsets(const IColumn::Offsets & ch_offsets, size_t num_rows)
@@ -397,6 +407,13 @@ void RecordBatchEncoder::encodeValues(
             return;
         }
         case TypeIndex::IPv4: appendFixedWidth<ColumnVector<IPv4>>(*this, column, num_rows); return;
+        case TypeIndex::Object:
+        case TypeIndex::Dynamic:
+        {
+            const auto * null_map = null_map_column ? &assert_cast<const ColumnUInt8 &>(*null_map_column).getData() : nullptr;
+            encodeAsJSONText(column, type, num_rows, null_map);
+            return;
+        }
         case TypeIndex::Int128: appendFixedWidth<ColumnVector<Int128>>(*this, column, num_rows); return;
         case TypeIndex::UInt128: appendFixedWidth<ColumnVector<UInt128>>(*this, column, num_rows); return;
         case TypeIndex::Int256: appendFixedWidth<ColumnVector<Int256>>(*this, column, num_rows); return;
@@ -494,6 +511,33 @@ void RecordBatchEncoder::encodeAsBinary(const IColumn & column, size_t num_rows,
     appendBuffer(data.data(), data.size());
 }
 
+void RecordBatchEncoder::encodeAsJSONText(
+    const IColumn & column, const DataTypePtr & type, size_t num_rows, const PaddedPODArray<UInt8> * null_map)
+{
+    PODArray<Int32> arrow_offsets(num_rows + 1);
+    arrow_offsets[0] = 0;
+    PODArray<char> data;
+    size_t total = 0;
+    const auto serialization = type->getDefaultSerialization();
+    const FormatSettings json_settings;
+    for (size_t i = 0; i < num_rows; ++i)
+    {
+        if (!(null_map && (*null_map)[i]))
+        {
+            WriteBufferFromOwnString out;
+            serialization->serializeTextJSON(column, i, out, json_settings);
+            const String value = out.str();
+            total += value.size();
+            if (total > static_cast<size_t>(std::numeric_limits<Int32>::max()))
+                throw Exception(ErrorCodes::TOO_LARGE_ARRAY_SIZE, "Arrow IPC string offset exceeds 32 bits");
+            data.insert(data.end(), value.data(), value.data() + value.size());
+        }
+        arrow_offsets[i + 1] = static_cast<Int32>(total);
+    }
+    appendBuffer(arrow_offsets.data(), (num_rows + 1) * sizeof(Int32));
+    appendBuffer(data.data(), data.size());
+}
+
 void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr & type, size_t num_rows)
 {
     if (isColumnConst(column))
@@ -523,10 +567,22 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
         return;
     }
 
+    if (settings.arrow.output_variant_as_string && isVariant(removeNullable(type)))
+    {
+        encodeVariantAsJSONText(column, type, num_rows);
+        return;
+    }
+
     /// Variant maps to an Arrow dense union, which (unlike every other type) has no validity buffer.
     if (isVariant(type))
     {
         encodeVariant(column, type, num_rows);
+        return;
+    }
+
+    if (isNothing(removeNullable(type)))
+    {
+        nodes.emplace_back(static_cast<Int64>(num_rows), static_cast<Int64>(num_rows));
         return;
     }
 
@@ -545,6 +601,34 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
     const Int64 null_count = appendValidity(null_map_column, num_rows);
     nodes.emplace_back(static_cast<Int64>(num_rows), null_count);
     encodeValues(*nested, nested_type, num_rows, null_map_column);
+}
+
+void RecordBatchEncoder::encodeVariantAsJSONText(const IColumn & column, const DataTypePtr & type, size_t num_rows)
+{
+    const IColumn * nested = &column;
+    DataTypePtr nested_type = type;
+    const NullMap * outer_null_map = nullptr;
+    if (type->isNullable())
+    {
+        const auto & nullable = assert_cast<const ColumnNullable &>(column);
+        outer_null_map = &nullable.getNullMapData();
+        nested = &nullable.getNestedColumn();
+        nested_type = removeNullable(type);
+    }
+
+    const auto & variant = assert_cast<const ColumnVariant &>(*nested);
+    PaddedPODArray<UInt8> null_map(num_rows);
+    bool has_nulls = false;
+    for (size_t i = 0; i < num_rows; ++i)
+    {
+        const UInt8 is_null = static_cast<UInt8>((outer_null_map && (*outer_null_map)[i]) || variant.isNullAt(i));
+        null_map[i] = is_null;
+        has_nulls |= is_null != 0;
+    }
+
+    const auto * null_map_ptr = has_nulls ? &null_map : nullptr;
+    nodes.emplace_back(static_cast<Int64>(num_rows), appendValidityMap(null_map_ptr, num_rows));
+    encodeAsJSONText(variant, nested_type, num_rows, null_map_ptr);
 }
 
 void RecordBatchEncoder::encodeVariant(const IColumn & column, const DataTypePtr & type, size_t num_rows)

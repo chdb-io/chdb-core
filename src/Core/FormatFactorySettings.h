@@ -1470,6 +1470,12 @@ must be shared across batches.
     DECLARE(Bool, output_format_arrow_date_as_uint16, false, R"(
 Write Date values as plain 16-bit numbers (read back as UInt16), instead of converting to a 32-bit Arrow DATE32 type (read back as Date32).
 )", 0) \
+    DECLARE(Bool, output_format_arrow_uuid_as_fixed_byte_array, false, R"(
+Write UUID values as plain FixedSizeBinary(16), without Arrow UUID extension metadata.
+)", 0) \
+    DECLARE(Bool, output_format_arrow_variant_as_string, false, R"(
+Write Variant values as Arrow String containing JSON text instead of Arrow DenseUnion.
+)", 0) \
     DECLARE(Bool, output_format_arrow_unsupported_types_as_binary, true, R"(
 Output types having no conversion as raw binary data. If false - such types would raise UNKNOWN_TYPE exception.
 )", 0) \

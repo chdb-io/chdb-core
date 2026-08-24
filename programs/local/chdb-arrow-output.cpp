@@ -31,7 +31,9 @@ namespace
 /// src/Client/ClientBase.h as DB::CHUNK_COLLECT_FORMAT_NAME.
 constexpr const char * kArrowConverterFormatName = "Arrow";
 
-CHColumnToArrowColumn::Settings buildConverterSettings(const chdb_arrow_options * options)
+CHColumnToArrowColumn::Settings buildConverterSettings(
+    const chdb_arrow_options * options,
+    bool output_uuid_as_fixed_byte_array = false)
 {
     CHColumnToArrowColumn::Settings settings;
     /// Defaults align with the Layer-1 type contract (string_as_string=1,
@@ -48,6 +50,8 @@ CHColumnToArrowColumn::Settings buildConverterSettings(const chdb_arrow_options 
     settings.use_signed_indexes_for_dictionary = false;
     settings.use_64_bit_indexes_for_dictionary = false;
     settings.output_date_as_uint16 = false;
+    settings.output_uuid_as_fixed_byte_array = output_uuid_as_fixed_byte_array;
+    settings.output_variant_as_string = false;
     settings.output_unsupported_types_as_binary = false;
 
     if (options)
@@ -161,6 +165,8 @@ void initOneBatchStream(ArrowArrayStream * stream, std::unique_ptr<OneBatchPriva
 struct ArrowStreamingState
 {
     chdb_arrow_options options;
+    bool output_uuid_as_fixed_byte_array = false;
+    bool output_variant_as_string = false;
     std::unique_ptr<CHColumnToArrowColumn> converter;
     std::shared_ptr<arrow::Schema> schema;
     ColumnsWithTypeAndName header_columns;
@@ -180,7 +186,8 @@ void ensureConverterInitialized(
         return;
 
     state.header_columns = header;
-    auto settings = buildConverterSettings(&state.options);
+    auto settings = buildConverterSettings(&state.options, state.output_uuid_as_fixed_byte_array);
+    settings.output_variant_as_string = state.output_variant_as_string;
     state.converter = std::make_unique<CHColumnToArrowColumn>(
         state.header_columns,
         kArrowConverterFormatName,
@@ -291,6 +298,39 @@ chdb_result * runMaterializedArrowQuery(
 }
 
 } // namespace
+
+namespace CHDB
+{
+void chdb_stream_result_set_arrow_uuid_as_fixed(chdb_result * result, bool enabled)
+{
+    if (!result)
+        return;
+    auto * generic_result = reinterpret_cast<CHDB::QueryResult *>(result);
+    if (generic_result->getType() != CHDB::QueryResultType::RESULT_TYPE_STREAMING)
+        return;
+    auto * stream = static_cast<CHDB::StreamQueryResult *>(generic_result);
+    auto state = std::static_pointer_cast<ArrowStreamingState>(stream->private_data);
+    if (!state)
+        return;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->output_uuid_as_fixed_byte_array = enabled;
+}
+
+void chdb_stream_result_set_arrow_variant_as_string(chdb_result * result, bool enabled)
+{
+    if (!result)
+        return;
+    auto * generic_result = reinterpret_cast<CHDB::QueryResult *>(result);
+    if (generic_result->getType() != CHDB::QueryResultType::RESULT_TYPE_STREAMING)
+        return;
+    auto * stream = static_cast<CHDB::StreamQueryResult *>(generic_result);
+    auto state = std::static_pointer_cast<ArrowStreamingState>(stream->private_data);
+    if (!state)
+        return;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->output_variant_as_string = enabled;
+}
+}
 
 extern "C" {
 
@@ -553,19 +593,28 @@ chdb_state chdb_stream_fetch_arrow(
         std::shared_ptr<arrow::Table> table;
         state->converter->chChunkToArrowTable(table, batch_chunks, state->header_columns.size());
         if (!table)
+        {
+            stream->setError("Arrow conversion returned no table");
             return CHDBError;
+        }
 
         /// Combine into a single record batch for one fetch == one batch.
         auto batches_result = table->CombineChunksToBatch();
         if (!batches_result.ok())
+        {
+            stream->setError(batches_result.status().ToString());
             return CHDBError;
+        }
         auto batch = std::move(batches_result).ValueOrDie();
 
         auto priv = std::make_unique<OneBatchPrivate>();
         priv->schema = state->schema;
         auto status = arrow::ExportRecordBatch(*batch, &priv->array, nullptr);
         if (!status.ok())
+        {
+            stream->setError(status.ToString());
             return CHDBError;
+        }
         /// Keep the batch alive so the exported buffers stay valid until the
         /// caller releases the one-batch stream. ExportRecordBatch already
         /// keeps the underlying buffers alive via the array release callback,
@@ -575,8 +624,21 @@ chdb_state chdb_stream_fetch_arrow(
         initOneBatchStream(raw_out, std::move(priv));
         return CHDBSuccess;
     }
+    catch (const Exception & e)
+    {
+        stream->setError(getExceptionMessage(e, false));
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        return CHDBError;
+    }
+    catch (const std::exception & e)
+    {
+        stream->setError(e.what());
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        return CHDBError;
+    }
     catch (...)
     {
+        stream->setError(DB::getCurrentExceptionMessage(true));
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
         return CHDBError;
     }
