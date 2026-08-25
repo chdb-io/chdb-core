@@ -43,11 +43,15 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace
 {
+
+constexpr const char * kArrowUuidAsFixedByteArrayOption = "output_format_arrow_uuid_as_fixed_byte_array";
+constexpr const char * kArrowVariantAsStringOption = "output_format_arrow_variant_as_string";
 
 /// ---------------------------------------------------------------------
 /// Error helpers
@@ -80,6 +84,22 @@ AdbcStatusCode setError(AdbcError * error, AdbcStatusCode code, const std::strin
 AdbcStatusCode notImplemented(AdbcError * error, const std::string & what)
 {
     return setError(error, ADBC_STATUS_NOT_IMPLEMENTED, "[chdb] " + what + " is not implemented");
+}
+
+AdbcStatusCode parseBoolOption(const char * value, bool & out, AdbcError * error, const char * key)
+{
+    std::string v(value ? value : "");
+    if (v == "1" || v == "true" || v == "TRUE" || v == ADBC_OPTION_VALUE_ENABLED)
+    {
+        out = true;
+        return ADBC_STATUS_OK;
+    }
+    if (v == "0" || v == "false" || v == "FALSE" || v == ADBC_OPTION_VALUE_DISABLED)
+    {
+        out = false;
+        return ADBC_STATUS_OK;
+    }
+    return setError(error, ADBC_STATUS_INVALID_ARGUMENT, "[chdb] option '" + std::string(key) + "' expects a boolean value");
 }
 
 /// Engine errors name their ClickHouse error class, e.g. "... (UNKNOWN_TABLE)".
@@ -155,6 +175,8 @@ struct ConnectionImpl
     /// a different statement or metadata call is rejected while it is live).
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
+    bool arrow_uuid_as_fixed_byte_array = false;
+    bool arrow_variant_as_string = false;
 };
 
 std::atomic<uint64_t> statement_id_counter{1};
@@ -179,6 +201,8 @@ struct StatementImpl
     /// statement (C Data Interface move semantics).
     ArrowArrayStream bound_stream;
     bool has_bound_stream = false;
+    std::optional<bool> arrow_uuid_as_fixed_byte_array;
+    std::optional<bool> arrow_variant_as_string;
 
     void releaseBoundStream()
     {
@@ -190,6 +214,16 @@ struct StatementImpl
 };
 
 std::atomic<uint64_t> ingest_name_counter{0};
+
+bool outputUuidAsFixedByteArray(const StatementImpl * impl)
+{
+    return impl->arrow_uuid_as_fixed_byte_array.value_or(impl->connection->arrow_uuid_as_fixed_byte_array);
+}
+
+bool outputVariantAsString(const StatementImpl * impl)
+{
+    return impl->arrow_variant_as_string.value_or(impl->connection->arrow_variant_as_string);
+}
 
 /// Streaming result adapter: exposes chdb's pull-one-batch streaming
 /// (chdb_stream_query_arrow + chdb_stream_fetch_arrow, where each fetch
@@ -662,27 +696,14 @@ std::string scalarToParamString(const std::shared_ptr<arrow::Scalar> & scalar)
     }
 }
 
-/// Wraps a chdb_result buffer as an arrow::Buffer, tying the result's
-/// lifetime to the buffer (used for zero-copy IPC import).
-class ChdbResultBuffer : public arrow::Buffer
+void releaseArrowStream(ArrowArrayStream * stream)
 {
-public:
-    explicit ChdbResultBuffer(chdb_result * result)
-        : arrow::Buffer(
-              reinterpret_cast<const uint8_t *>(chdb_result_buffer(result)),
-              static_cast<int64_t>(chdb_result_length(result)))
-        , result_(result)
-    {
-    }
-    ~ChdbResultBuffer() override { chdb_destroy_query_result(result_); }
+    if (stream && stream->release)
+        stream->release(stream);
+}
 
-private:
-    chdb_result * result_;
-};
-
-/// Exposes an ArrowStream-format (IPC) chdb_result through the caller's
-/// ArrowArrayStream. Takes ownership of the result.
-AdbcStatusCode exportIpcResult(chdb_result * result, ArrowArrayStream * out, AdbcError * error)
+AdbcStatusCode consumeArrowCDataResult(
+    chdb_result * result, ArrowArrayStream * out, int64_t * rows_affected, AdbcError * error, bool is_insert = false)
 {
     if (!result)
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] query returned no result handle");
@@ -691,33 +712,21 @@ AdbcStatusCode exportIpcResult(chdb_result * result, ArrowArrayStream * out, Adb
     {
         std::string message(err);
         chdb_destroy_query_result(result);
+        if (message == CHDB::kErrorMissingResultHeader)
+        {
+            auto schema = arrow::schema(arrow::FieldVector{});
+            auto batch = arrow::RecordBatch::Make(schema, 0, std::vector<std::shared_ptr<arrow::Array>>{});
+            return exportBatch(schema, batch, out, error);
+        }
+        releaseArrowStream(out);
         return setError(error, statusForEngineError(message), "[chdb] " + message);
     }
-    if (chdb_result_length(result) == 0)
-    {
-        /// No result bytes: a statement without a result set (DDL, ...) —
-        /// hand back an empty zero-column stream instead of failing to
-        /// parse an empty IPC payload.
-        chdb_destroy_query_result(result);
-        auto schema = arrow::schema(arrow::FieldVector{});
-        auto batch = arrow::RecordBatch::Make(schema, 0, std::vector<std::shared_ptr<arrow::Array>>{});
-        return exportBatch(schema, batch, out, error);
-    }
-    auto buffer = std::make_shared<ChdbResultBuffer>(result);
-    auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
-    if (!reader.ok())
-        return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + reader.status().ToString());
-    auto status = arrow::ExportRecordBatchReader(reader.ValueUnsafe(), out);
-    if (!status.ok())
-        return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + status.ToString());
-    return ADBC_STATUS_OK;
+    return consumeResult(result, rows_affected, error, is_insert);
 }
 
-/// Materializes an IPC result's batches (the batches keep the underlying
-/// chdb buffer alive through their shared_ptr chain). A result without bytes
-/// contributes nothing: the statement executed but had no result set.
-AdbcStatusCode ipcResultToBatches(
+AdbcStatusCode arrowCDataResultToBatches(
     chdb_result * result,
+    ArrowArrayStream * stream,
     std::shared_ptr<arrow::Schema> & schema,
     std::vector<std::shared_ptr<arrow::RecordBatch>> & batches,
     AdbcError * error)
@@ -729,17 +738,27 @@ AdbcStatusCode ipcResultToBatches(
     {
         std::string message(err);
         chdb_destroy_query_result(result);
+        releaseArrowStream(stream);
+        if (message == CHDB::kErrorMissingResultHeader)
+            return ADBC_STATUS_OK;
         return setError(error, statusForEngineError(message), "[chdb] " + message);
     }
-    if (chdb_result_length(result) == 0)
+    AdbcStatusCode status = consumeResult(result, nullptr, error);
+    if (status != ADBC_STATUS_OK)
     {
-        chdb_destroy_query_result(result);
-        return ADBC_STATUS_OK;
+        releaseArrowStream(stream);
+        return status;
     }
-    auto buffer = std::make_shared<ChdbResultBuffer>(result);
-    auto reader = arrow::ipc::RecordBatchStreamReader::Open(std::make_shared<arrow::io::BufferReader>(buffer));
+
+    if (!stream || !stream->release)
+        return ADBC_STATUS_OK;
+
+    auto reader = arrow::ImportRecordBatchReader(stream);
     if (!reader.ok())
+    {
+        releaseArrowStream(stream);
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + reader.status().ToString());
+    }
     if (!schema)
         schema = reader.ValueUnsafe()->schema();
     while (true)
@@ -962,6 +981,16 @@ AdbcStatusCode chdbConnectionSetOption(
         if (value && std::strcmp(value, ADBC_OPTION_VALUE_ENABLED) == 0)
             return ADBC_STATUS_OK; /// autocommit is the only supported mode
         return notImplemented(error, "disabling autocommit (ClickHouse has no classic transactions)");
+    }
+    if (std::strcmp(key, kArrowUuidAsFixedByteArrayOption) == 0)
+    {
+        auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+        return parseBoolOption(value, impl->arrow_uuid_as_fixed_byte_array, error, key);
+    }
+    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    {
+        auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+        return parseBoolOption(value, impl->arrow_variant_as_string, error, key);
     }
     return notImplemented(error, std::string("connection option '") + key + "'");
 }
@@ -1707,6 +1736,22 @@ AdbcStatusCode chdbStatementSetOption(
         impl->ingest_mode = mode;
         return ADBC_STATUS_OK;
     }
+    if (std::strcmp(key, kArrowUuidAsFixedByteArrayOption) == 0)
+    {
+        bool parsed = false;
+        if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
+            return status;
+        impl->arrow_uuid_as_fixed_byte_array = parsed;
+        return ADBC_STATUS_OK;
+    }
+    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    {
+        bool parsed = false;
+        if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
+            return status;
+        impl->arrow_variant_as_string = parsed;
+        return ADBC_STATUS_OK;
+    }
     return notImplemented(error, std::string("statement option '") + key + "'");
 }
 
@@ -2055,18 +2100,20 @@ AdbcStatusCode executeBoundQuery(
 
         if (concat_rows)
         {
-            chdb_result * result = chdb_query_with_params_n(
+            ArrowArrayStream row_stream;
+            std::memset(&row_stream, 0, sizeof(row_stream));
+            const auto params = CHDB::buildParameterMap(
+                name_ptrs.data(), name_lens.data(), value_ptrs.data(), value_lens.data(), names.size());
+            chdb_result * result = CHDB::chdb_query_arrow_with_settings_n(
                 *impl->connection->conn,
                 rewritten.c_str(),
                 rewritten.size(),
-                "ArrowStream",
-                11,
-                name_ptrs.data(),
-                name_lens.data(),
-                value_ptrs.data(),
-                value_lens.data(),
-                names.size());
-            AdbcStatusCode status = ipcResultToBatches(result, concat_schema, concat_batches, error);
+                reinterpret_cast<chdb_arrow_stream>(&row_stream),
+                nullptr,
+                outputUuidAsFixedByteArray(impl),
+                outputVariantAsString(impl),
+                params);
+            AdbcStatusCode status = arrowCDataResultToBatches(result, &row_stream, concat_schema, concat_batches, error);
             if (status != ADBC_STATUS_OK)
                 return status;
             continue;
@@ -2088,6 +2135,8 @@ AdbcStatusCode executeBoundQuery(
                 names.size());
             if (!stream_result)
                 return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
+            CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
+            CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
             if (const char * err = chdb_result_error(stream_result))
             {
                 std::string message(err);
@@ -2095,19 +2144,19 @@ AdbcStatusCode executeBoundQuery(
                 if (message.find(CHDB::kErrorStreamingNotSupportedPrefix) == std::string::npos)
                     return setError(error, statusForEngineError(message), "[chdb] " + message);
                 /// Statement the engine refuses to stream (rejected before
-                /// executing): run it materialized over the IPC format.
-                chdb_result * result = chdb_query_with_params_n(
+                /// executing): run it through the materialized Arrow path.
+                const auto params = CHDB::buildParameterMap(
+                    name_ptrs.data(), name_lens.data(), value_ptrs.data(), value_lens.data(), names.size());
+                chdb_result * result = CHDB::chdb_query_arrow_with_settings_n(
                     *impl->connection->conn,
                     rewritten.c_str(),
                     rewritten.size(),
-                    "ArrowStream",
-                    11,
-                    name_ptrs.data(),
-                    name_lens.data(),
-                    value_ptrs.data(),
-                    value_lens.data(),
-                    names.size());
-                return exportIpcResult(result, out, error);
+                    reinterpret_cast<chdb_arrow_stream>(out),
+                    nullptr,
+                    outputUuidAsFixedByteArray(impl),
+                    outputVariantAsString(impl),
+                    params);
+                return consumeArrowCDataResult(result, out, rows_affected, error, statementIsInsert(rewritten));
             }
             return wireStreamingResult(impl->connection, /*owner_statement=*/impl->id, stream_result, out, error);
         }
@@ -2199,24 +2248,16 @@ int streamingGetNextImpl(StreamingResultState & state, ArrowArray * out)
 AdbcStatusCode executeMaterializedSelect(
     StatementImpl * impl, ArrowArrayStream * out, int64_t * rows_affected, AdbcError * error)
 {
-    chdb_result * result = chdb_query_arrow_n(
+    chdb_result * result = CHDB::chdb_query_arrow_with_settings_n(
         *impl->connection->conn,
         impl->query.c_str(),
         impl->query.size(),
         reinterpret_cast<chdb_arrow_stream>(out),
-        nullptr);
-    if (result)
-    {
-        const char * err = chdb_result_error(result);
-        if (err && std::strcmp(err, CHDB::kErrorMissingResultHeader) == 0)
-        {
-            chdb_destroy_query_result(result);
-            auto schema = arrow::schema(arrow::FieldVector{});
-            auto batch = arrow::RecordBatch::Make(schema, 0, std::vector<std::shared_ptr<arrow::Array>>{});
-            return exportBatch(schema, batch, out, error);
-        }
-    }
-    return consumeResult(result, rows_affected, error, statementIsInsert(impl->query));
+        nullptr,
+        outputUuidAsFixedByteArray(impl),
+        outputVariantAsString(impl),
+        DB::NameToNameMap{});
+    return consumeArrowCDataResult(result, out, rows_affected, error, statementIsInsert(impl->query));
 }
 
 /// Takes ownership of a freshly initialized streaming query handle and wires
@@ -2344,6 +2385,8 @@ AdbcStatusCode executeStreamingSelect(
         = chdb_stream_query_arrow_n(conn, impl->query.c_str(), impl->query.size(), nullptr);
     if (!stream_result)
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
+    CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
+    CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
     if (const char * err = chdb_result_error(stream_result))
     {
         std::string message(err);

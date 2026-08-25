@@ -12,6 +12,7 @@ Validates that:
 """
 
 import io
+import json
 import os
 import unittest
 
@@ -19,6 +20,20 @@ import pyarrow as pa
 import chdb
 
 _LITE = os.environ.get("CHDB_LITE") == "1"
+
+
+def _extension_name(field):
+    if hasattr(field.type, "extension_name"):
+        return field.type.extension_name
+    value = (field.metadata or {}).get(b"ARROW:extension:name")
+    return value.decode() if value else None
+
+
+def _json_value(value):
+    value = value.as_py() if hasattr(value, "as_py") else value
+    if isinstance(value, bytes):
+        value = value.decode()
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def _query_arrow(
@@ -122,6 +137,71 @@ class TestArrowParallelEncoding(unittest.TestCase):
             "FROM numbers(20000)"
         )
         self._assert_parallel_matches_serial(sql, fmt="ArrowStream")
+
+    def test_null_literal_arrow_stream(self):
+        for native_writer in (0, 1):
+            tbl = _query_arrow(
+                "SELECT NULL AS v",
+                parallel=False,
+                fmt="ArrowStream",
+                extra_settings=f"output_format_arrow_use_native_writer = {native_writer}",
+            )
+            self.assertTrue(pa.types.is_null(tbl.schema.field("v").type))
+            self.assertEqual(tbl.column("v").to_pylist(), [None])
+
+    def test_json_dynamic_arrow_json(self):
+        sql = (
+            "SELECT CAST(concat('{\"n\":', toString(number), '}'), 'JSON') AS j, "
+            "CAST(number, 'Dynamic') AS d FROM numbers(3)"
+        )
+        for native_writer in (0, 1):
+            tbl = _query_arrow(
+                sql,
+                parallel=False,
+                fmt="ArrowStream",
+                extra_settings=f"output_format_arrow_use_native_writer = {native_writer}",
+            )
+            self.assertEqual(_extension_name(tbl.schema.field("j")), "arrow.json")
+            self.assertEqual(_extension_name(tbl.schema.field("d")), "arrow.json")
+            self.assertEqual([_json_value(v) for v in tbl.column("j")], [{"n": 0}, {"n": 1}, {"n": 2}])
+            self.assertEqual([_json_value(v) for v in tbl.column("d")], [0, 1, 2])
+
+    def test_uuid_extension_metadata_opt_out(self):
+        sql = "SELECT toUUID('61f0c404-5cb3-11e7-907b-a6006ad3dba0') AS u"
+        for native_writer in (0, 1):
+            tbl = _query_arrow(
+                sql,
+                parallel=False,
+                fmt="ArrowStream",
+                extra_settings=(
+                    "output_format_arrow_uuid_as_fixed_byte_array = 1, "
+                    f"output_format_arrow_use_native_writer = {native_writer}"
+                ),
+            )
+            field = tbl.schema.field("u")
+            self.assertEqual(field.type, pa.binary(16))
+            self.assertNotIn(b"ARROW:extension:name", field.metadata or {})
+
+    def test_variant_as_string_option(self):
+        sql = (
+            "SELECT multiIf("
+            "number = 0, CAST(toUInt64(1), 'Variant(UInt64, String)'), "
+            "number = 1, CAST('abc', 'Variant(UInt64, String)'), "
+            "CAST(NULL, 'Variant(UInt64, String)')) AS v "
+            "FROM numbers(3)"
+        )
+        for native_writer in (0, 1):
+            tbl = _query_arrow(
+                sql,
+                parallel=False,
+                fmt="ArrowStream",
+                extra_settings=(
+                    "output_format_arrow_variant_as_string = 1, "
+                    f"output_format_arrow_use_native_writer = {native_writer}"
+                ),
+            )
+            self.assertEqual(tbl.schema.field("v").type, pa.string())
+            self.assertEqual(tbl.column("v").to_pylist(), ["1", '"abc"', None])
 
     # --- LowCardinality fallback -------------------------------------------
 

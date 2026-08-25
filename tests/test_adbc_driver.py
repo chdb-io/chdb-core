@@ -5,6 +5,7 @@ consumer uses. Works against libchdb.so or the Python module's _chdb.abi3.so;
 CHDB_LIB_PATH overrides discovery. Skips when dependencies are missing."""
 
 import contextlib
+import json
 import os
 import shutil
 import tempfile
@@ -16,6 +17,11 @@ try:
 except ImportError:  # pragma: no cover - optional test dependency
     pa = None
     adbc_dbapi = None
+
+try:
+    import polars as pl
+except ImportError:  # pragma: no cover - optional test dependency
+    pl = None
 
 
 @contextlib.contextmanager
@@ -168,6 +174,20 @@ def _connect(path=":memory:"):
     return _raw_connect({"path": path})
 
 
+def _extension_name(field):
+    if hasattr(field.type, "extension_name"):
+        return field.type.extension_name
+    value = (field.metadata or {}).get(b"ARROW:extension:name")
+    return value.decode() if value else None
+
+
+def _json_value(value):
+    value = value.as_py() if hasattr(value, "as_py") else value
+    if isinstance(value, bytes):
+        value = value.decode()
+    return json.loads(value) if isinstance(value, str) else value
+
+
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
 class TestAdbcQuery(unittest.TestCase):
     def test_select_arrow_result(self):
@@ -180,6 +200,80 @@ class TestAdbcQuery(unittest.TestCase):
         self.assertEqual(table.column_names, ["n", "s"])
         self.assertEqual(table.column("n").to_pylist(), [0, 1, 2, 3, 4])
         self.assertEqual(table.column("s").to_pylist(), ["0", "1", "2", "3", "4"])
+
+    def test_select_null_literal_streams(self):
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT NULL AS v")
+            table = cur.fetch_arrow_table()
+        self.assertTrue(pa.types.is_null(table.schema.field("v").type))
+        self.assertEqual(table.column("v").to_pylist(), [None])
+
+    def test_json_dynamic_streams_as_arrow_json(self):
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    CAST('{"a":1,"b":[2,3]}', 'JSON') AS j,
+                    CAST(1, 'Dynamic') AS d
+                """
+            )
+            table = cur.fetch_arrow_table()
+
+        self.assertEqual(_extension_name(table.schema.field("j")), "arrow.json")
+        self.assertEqual(_extension_name(table.schema.field("d")), "arrow.json")
+        self.assertEqual(_json_value(table.column("j")[0]), {"a": 1, "b": [2, 3]})
+        self.assertEqual(_json_value(table.column("d")[0]), 1)
+
+    def test_uuid_as_fixed_binary_option(self):
+        from adbc_driver_manager import AdbcConnection, AdbcDatabase, AdbcStatement
+
+        db = AdbcDatabase(driver=_LIBCHDB_PATH, entrypoint="chdb_adbc_init")
+        conn = AdbcConnection(db)
+        stmt = AdbcStatement(conn)
+        try:
+            stmt.set_options(output_format_arrow_uuid_as_fixed_byte_array="true")
+            stmt.set_sql_query("SELECT toUUID('61f0c404-5cb3-11e7-907b-a6006ad3dba0') AS u")
+            handle, _ = stmt.execute_query()
+            table = pa.RecordBatchReader._import_from_c(handle.address).read_all()
+        finally:
+            stmt.close()
+            conn.close()
+            db.close()
+
+        field = table.schema.field("u")
+        self.assertEqual(field.type, pa.binary(16))
+        self.assertNotIn(b"ARROW:extension:name", field.metadata or {})
+
+    def test_variant_as_string_option(self):
+        from adbc_driver_manager import AdbcConnection, AdbcDatabase, AdbcStatement
+
+        db = AdbcDatabase(driver=_LIBCHDB_PATH, entrypoint="chdb_adbc_init")
+        conn = AdbcConnection(db)
+        stmt = AdbcStatement(conn)
+        try:
+            stmt.set_options(output_format_arrow_variant_as_string="true")
+            stmt.set_sql_query(
+                """
+                SELECT multiIf(
+                    number = 0, CAST(toUInt64(1), 'Variant(UInt64, String)'),
+                    number = 1, CAST('abc', 'Variant(UInt64, String)'),
+                    CAST(NULL, 'Variant(UInt64, String)')) AS v
+                FROM numbers(3)
+                """
+            )
+            handle, _ = stmt.execute_query()
+            table = pa.RecordBatchReader._import_from_c(handle.address).read_all()
+        finally:
+            stmt.close()
+            conn.close()
+            db.close()
+
+        self.assertEqual(table.schema.field("v").type, pa.string())
+        self.assertEqual(table.column("v").to_pylist(), ["1", '"abc"', None])
+        if pl is not None:
+            df = pl.from_arrow(table)
+            self.assertEqual(df.schema["v"], pl.String)
+            self.assertEqual(df["v"].to_list(), ["1", '"abc"', None])
 
     def test_empty_stream_outlives_connection(self):
         # A schema-only (empty) streaming result must stay safe to read and
@@ -523,6 +617,40 @@ class TestAdbcParameters(unittest.TestCase):
             handle, _ = cur.adbc_statement.execute_query()
             result = pa.RecordBatchReader._import_from_c(handle.address).read_all()
         self.assertEqual(result.column("v").to_pylist(), [2, 3, 4, 5])
+
+    def test_multi_row_bind_honors_arrow_compat_options(self):
+        params = pa.RecordBatch.from_pydict(
+            {
+                "0": pa.array([0, 1], pa.int64()),
+                "1": pa.array([0, 1], pa.int64()),
+            }
+        )
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_statement.set_options(
+                output_format_arrow_uuid_as_fixed_byte_array="true",
+                output_format_arrow_variant_as_string="true",
+            )
+            cur.adbc_statement.set_sql_query(
+                """
+                SELECT
+                    toUUID(if(
+                        ? = 0,
+                        '61f0c404-5cb3-11e7-907b-a6006ad3dba0',
+                        '61f0c404-5cb3-11e7-907b-a6006ad3dba1')) AS u,
+                    if(
+                        ? = 0,
+                        CAST(toUInt64(1), 'Variant(UInt64, String)'),
+                        CAST('abc', 'Variant(UInt64, String)')) AS v
+                """
+            )
+            cur.adbc_statement.bind(params)
+            handle, _ = cur.adbc_statement.execute_query()
+            result = pa.RecordBatchReader._import_from_c(handle.address).read_all()
+
+        self.assertEqual(result.schema.field("u").type, pa.binary(16))
+        self.assertNotIn(b"ARROW:extension:name", result.schema.field("u").metadata or {})
+        self.assertEqual(result.schema.field("v").type, pa.string())
+        self.assertEqual(result.column("v").to_pylist(), ["1", '"abc"'])
 
     def test_param_injection_is_inert(self):
         with _connect() as conn, conn.cursor() as cur:

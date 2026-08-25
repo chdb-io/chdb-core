@@ -73,6 +73,11 @@ void requireSingleChild(const ArrowType & type, const char * what)
             "Arrow IPC {} type must have exactly one child, got {}", what, type.children.size());
 }
 
+bool isJSONLikeType(const DataTypePtr & type)
+{
+    return isObject(type) || isDynamic(type);
+}
+
 ArrowFields parseChildren(const flatbuffers::Vector<flatbuffers::Offset<flatbuf::Field>> * children)
 {
     ArrowFields result;
@@ -531,7 +536,7 @@ buildField(
     }
 
     DataTypePtr t = removeLowCardinality(type);
-    const bool nullable = t->isNullable();
+    bool nullable = t->isNullable();
     t = removeNullable(t);
 
     flatbuf::Type type_type = flatbuf::Type_NONE;
@@ -554,6 +559,10 @@ buildField(
         const WhichDataType which(t);
         switch (which.idx)
         {
+            case TypeIndex::Nothing:
+                type_type = flatbuf::Type_Null;
+                type_offset = flatbuf::CreateNull(b).Union();
+                break;
             case TypeIndex::UInt8: make_int(8, false); break;
             case TypeIndex::UInt16: make_int(16, false); break;
             case TypeIndex::UInt32: make_int(32, false); break;
@@ -637,6 +646,11 @@ buildField(
                     type_offset = flatbuf::CreateBinary(b).Union();
                 }
                 break;
+            case TypeIndex::Object:
+            case TypeIndex::Dynamic:
+                type_type = flatbuf::Type_Utf8;
+                type_offset = flatbuf::CreateUtf8(b).Union();
+                break;
             case TypeIndex::FixedString:
                 if (settings.arrow.output_fixed_string_as_fixed_byte_array)
                 {
@@ -714,6 +728,14 @@ buildField(
             }
             case TypeIndex::Variant:
             {
+                if (settings.arrow.output_variant_as_string)
+                {
+                    nullable = true;
+                    type_type = flatbuf::Type_Utf8;
+                    type_offset = flatbuf::CreateUtf8(b).Union();
+                    break;
+                }
+
                 /// Mirror the library writer: a dense union with one child per variant (in global order)
                 /// plus a trailing `null`-typed child that NULL rows refer to.
                 const auto & variant_type = assert_cast<const DataTypeVariant &>(*t);
@@ -761,15 +783,20 @@ buildField(
         }
     }
 
-    /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata.
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::KeyValue>>> custom_metadata_off = 0;
-    if (isUUID(t))
+    VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
+    if (!settings.arrow.output_uuid_as_fixed_byte_array && isUUID(t))
     {
-        VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.uuid")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
-        custom_metadata_off = b.CreateVector(kvs);
     }
+    if (isJSONLikeType(t))
+    {
+        kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.json")));
+        kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
+    }
+    if (!kvs.empty())
+        custom_metadata_off = b.CreateVector(kvs);
 
     auto name_off = b.CreateString(name);
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::Field>>> children_off = 0;

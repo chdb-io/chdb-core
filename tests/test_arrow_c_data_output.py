@@ -12,6 +12,7 @@ skipped.
 """
 
 import ctypes
+import json
 import os
 import shutil
 import unittest
@@ -20,6 +21,8 @@ import pyarrow as pa
 
 
 def _candidate_libchdb_paths():
+    if os.environ.get("CHDB_LIB_PATH"):
+        yield os.environ["CHDB_LIB_PATH"]
     here = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(here)
     names = ["libchdb.so", "libchdb.dylib"]
@@ -38,6 +41,20 @@ def _find_libchdb_path():
 
 
 _LIBCHDB_PATH = _find_libchdb_path()
+
+
+def _extension_name(field):
+    if hasattr(field.type, "extension_name"):
+        return field.type.extension_name
+    value = (field.metadata or {}).get(b"ARROW:extension:name")
+    return value.decode() if value else None
+
+
+def _json_value(value):
+    value = value.as_py() if hasattr(value, "as_py") else value
+    if isinstance(value, bytes):
+        value = value.decode()
+    return json.loads(value) if isinstance(value, str) else value
 
 
 class ArrowArrayStruct(ctypes.Structure):
@@ -169,6 +186,19 @@ class TestArrowCDataOutput(unittest.TestCase):
         opts = ChdbArrowOptions(0, 0, 0)  # string_as_string=0
         tbl = self._query_arrow_table("SELECT 'hello' AS s", opts)
         self.assertEqual(tbl.schema.field(0).type, pa.binary())
+
+    def test_json_dynamic_export_as_arrow_json(self):
+        tbl = self._query_arrow_table(
+            """
+            SELECT
+                CAST('{"a":1,"b":[2,3]}', 'JSON') AS j,
+                CAST(1, 'Dynamic') AS d
+            """
+        )
+        self.assertEqual(_extension_name(tbl.schema.field("j")), "arrow.json")
+        self.assertEqual(_extension_name(tbl.schema.field("d")), "arrow.json")
+        self.assertEqual(_json_value(tbl.column("j")[0]), {"a": 1, "b": [2, 3]})
+        self.assertEqual(_json_value(tbl.column("d")[0]), 1)
 
     def test_datetime_is_uint32(self):
         # The new C ABI matches ClickHouse format="ArrowStream" — DateTime

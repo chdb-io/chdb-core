@@ -24,8 +24,10 @@
 #include <DataTypes/DataTypeFixedString.h>
 #include <DataTypes/DataTypeVariant.h>
 #include <DataTypes/DataTypeInterval.h>
+#include <DataTypes/Serializations/ISerialization.h>
 #include <Common/IntervalKind.h>
 #include <DataTypes/DataTypeUUID.h>
+#include <IO/WriteBufferFromString.h>
 #include <Processors/Formats/IOutputFormat.h>
 #include <Processors/Formats/Impl/ArrowBufferedStreams.h>
 #include <Processors/Port.h>
@@ -117,6 +119,33 @@ namespace DB
         std::string Serialize() const override { return ""; }
     };
 
+    class ArrowJSONExtensionType : public arrow::ExtensionType
+    {
+    public:
+        ArrowJSONExtensionType() : arrow::ExtensionType(arrow::utf8()) {}
+
+        std::string extension_name() const override { return "arrow.json"; }
+
+        bool ExtensionEquals(const arrow::ExtensionType& other) const override
+        {
+            return other.extension_name() == this->extension_name();
+        }
+
+        std::shared_ptr<arrow::Array> MakeArray(std::shared_ptr<arrow::ArrayData> data) const override
+        {
+            return std::make_shared<arrow::ExtensionArray>(data);
+        }
+
+        arrow::Result<std::shared_ptr<arrow::DataType>> Deserialize(
+            std::shared_ptr<arrow::DataType> /* storage_type */,
+            const std::string& /* serialized_data */) const override
+        {
+            return std::make_shared<ArrowJSONExtensionType>();
+        }
+
+        std::string Serialize() const override { return ""; }
+    };
+
     static const std::initializer_list<std::pair<String, std::shared_ptr<arrow::DataType>>> internal_type_to_arrow_type =
     {
         {"UInt8", arrow::uint8()},
@@ -147,6 +176,10 @@ namespace DB
         {"UInt256", arrow::fixed_size_binary(sizeof(UInt256))},
     };
 
+    static bool isJSONLikeType(const DataTypePtr & type)
+    {
+        return isObject(type) || isDynamic(type);
+    }
 
     static void checkStatus(const arrow::Status & status, const String & column_name, const String & format_name)
     {
@@ -199,6 +232,37 @@ namespace DB
                 status = builder.AppendNull();
             else
                 status = builder.Append(write_column->getDataAt(value_i));
+            checkStatus(status, write_column->getName(), format_name);
+        }
+    }
+
+    static void fillArrowArrayWithJSONColumnData(
+        ColumnPtr write_column,
+        const DataTypePtr & column_type,
+        const PaddedPODArray<UInt8> * null_bytemap,
+        const String & format_name,
+        arrow::ArrayBuilder* array_builder,
+        size_t start,
+        size_t end,
+        bool use_column_nulls = false)
+    {
+        arrow::StringBuilder & builder = assert_cast<arrow::StringBuilder &>(*array_builder);
+        const auto serialization = column_type->getDefaultSerialization();
+        const FormatSettings json_settings;
+
+        for (size_t value_i = start; value_i < end; ++value_i)
+        {
+            arrow::Status status;
+            if ((null_bytemap && (*null_bytemap)[value_i]) || (use_column_nulls && write_column->isNullAt(value_i)))
+            {
+                status = builder.AppendNull();
+            }
+            else
+            {
+                WriteBufferFromOwnString out;
+                serialization->serializeTextJSON(*write_column, value_i, out, json_settings);
+                status = builder.Append(out.str());
+            }
             checkStatus(status, write_column->getName(), format_name);
         }
     }
@@ -1369,9 +1433,16 @@ namespace DB
             }
             case TypeIndex::Variant:
             {
-                const auto & column_variant = assert_cast<const ColumnVariant &>(*column);
-                const auto & column_variant_type = assert_cast<const DataTypeVariant &>(*column_type);
-                arrow_array = buildArrowDenseUnionArrayWithVariantColumnData(
+                if (settings.output_variant_as_string)
+                {
+                    fillArrowArrayWithJSONColumnData(
+                        column, column_type, null_bytemap, format_name, array_builder, start, end, true);
+                }
+                else
+                {
+                    const auto & column_variant = assert_cast<const ColumnVariant &>(*column);
+                    const auto & column_variant_type = assert_cast<const DataTypeVariant &>(*column_type);
+                    arrow_array = buildArrowDenseUnionArrayWithVariantColumnData(
                         column_variant,
                         column_variant_type,
                         null_bytemap,
@@ -1380,8 +1451,13 @@ namespace DB
                         end,
                         settings,
                         dictionary_values);
+                }
                 break;
             }
+            case TypeIndex::Object:
+            case TypeIndex::Dynamic:
+                fillArrowArrayWithJSONColumnData(column, column_type, null_bytemap, format_name, array_builder, start, end);
+                break;
             case TypeIndex::Decimal32:
                 fillArrowArrayWithDecimalColumnData<DataTypeDecimal32, Int128, arrow::Decimal128, arrow::Decimal128Builder>(column, null_bytemap, array_builder, format_name, start, end);
                 break;
@@ -1428,6 +1504,9 @@ namespace DB
                 break;
             case TypeIndex::UUID:
                 fillArrowArrayWithUUIDColumnData(column, null_bytemap, format_name, array_builder, start, end);
+                break;
+            case TypeIndex::Nothing:
+                checkStatus(array_builder->AppendNulls(static_cast<int64_t>(end - start)), column_name, format_name);
                 break;
 #define DISPATCH(CPP_NUMERIC_TYPE, ARROW_BUILDER_TYPE) \
             case TypeIndex::CPP_NUMERIC_TYPE: \
@@ -1665,6 +1744,12 @@ namespace DB
 
         if (isVariant(column_type))
         {
+            if (settings.output_variant_as_string)
+            {
+                *out_is_column_nullable = true;
+                return arrow::utf8();
+            }
+
             const auto * column_variant = column ? &assert_cast<const ColumnVariant &>(*column) : nullptr;
             const auto & column_variant_type = assert_cast<const DataTypeVariant &>(*column_type);
 
@@ -1707,6 +1792,12 @@ namespace DB
             return arrow::dense_union(fields);
         }
 
+        if (isNothing(column_type))
+            return arrow::null();
+
+        if (isJSONLikeType(column_type))
+            return for_builder ? arrow::utf8() : std::make_shared<ArrowJSONExtensionType>();
+
         if (isInterval(column_type))
         {
             const auto * interval_type = assert_cast<const DataTypeInterval *>(column_type.get());
@@ -1721,7 +1812,9 @@ namespace DB
         }
 
         if (isUUID(column_type))
-            return for_builder ? arrow::fixed_size_binary(sizeof(UUID)) : std::make_shared<ArrowUUIDExtensionType>();
+            return (for_builder || settings.output_uuid_as_fixed_byte_array)
+                ? arrow::fixed_size_binary(sizeof(UUID))
+                : std::make_shared<ArrowUUIDExtensionType>();
 
         if (isDate(column_type) && settings.output_date_as_uint16)
             return arrow::uint16();
@@ -1788,12 +1881,20 @@ namespace DB
                 field_metadata = arrow::key_value_metadata({"PARQUET:field_id"}, {std::to_string(field_id)});
             }
 
-            // Inject our UUID metadata if it's a root UUID column
-            if (isUUID(removeNullable(header_column.type)))
+            if (!settings.output_uuid_as_fixed_byte_array && isUUID(removeNullable(header_column.type)))
             {
                 auto ext_metadata = arrow::key_value_metadata(
                     {"ARROW:extension:name", "ARROW:extension:metadata", "PARQUET:logical_type"},
                     {"arrow.uuid", "", "UUID"}
+                );
+                field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
+            }
+
+            if (isJSONLikeType(removeNullable(column_type)))
+            {
+                auto ext_metadata = arrow::key_value_metadata(
+                    {"ARROW:extension:name", "ARROW:extension:metadata"},
+                    {"arrow.json", ""}
                 );
                 field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
             }
