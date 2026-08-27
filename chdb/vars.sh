@@ -54,6 +54,10 @@ popd > /dev/null
 CHDB_HEADER="${PROJ_DIR}/programs/local/chdb.h"
 if [ -n "${CHDB_VERSION}" ] && [ -f "${CHDB_HEADER}" ]; then
     CHDB_HEADER_TMP=$(mktemp)
+    # mktemp creates the file 0600 and mv preserves that mode, which would leak
+    # a root-only chdb.h into the release tarballs (and onto users' machines
+    # via sudo installs). Restore world-readable perms before the rename.
+    chmod 0644 "${CHDB_HEADER_TMP}"
     sed -E 's|^#define CHDB_VERSION ".*"|#define CHDB_VERSION "'"${CHDB_VERSION}"'"|' \
         "${CHDB_HEADER}" > "${CHDB_HEADER_TMP}" && mv "${CHDB_HEADER_TMP}" "${CHDB_HEADER}"
 fi
