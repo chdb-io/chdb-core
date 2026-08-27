@@ -12,6 +12,7 @@
 #include <Common/Config/ConfigHelper.h>
 #include <Common/CurrentThread.h>
 #include <Common/Exception.h>
+#include <Common/SettingsChanges.h>
 #include <Core/Settings.h>
 #include <Core/Block.h>
 #include <Formats/FormatFactory.h>
@@ -47,7 +48,7 @@ namespace Setting
     extern const SettingsUInt64 min_insert_block_size_bytes;
 }
 
-ChdbClient::ChdbClient(EmbeddedServer & server_ref)
+ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
     : ClientBase()
     , server(server_ref)
 {
@@ -72,6 +73,7 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref)
     global_context = session->makeSessionContext();
     global_context->setCurrentDatabase("default");
     global_context->setApplicationType(Context::ApplicationType::LOCAL);
+    applyCmdSettings(argc, argv);
     initClientContext(global_context);
     server_display_name = "chDB-embedded";
     query_processing_stage = QueryProcessingStage::Enum::Complete;
@@ -86,9 +88,69 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref)
     initKeystrokeInterceptor();
 }
 
-std::unique_ptr<ChdbClient> ChdbClient::create(EmbeddedServer & server_ref)
+std::unique_ptr<ChdbClient> ChdbClient::create(EmbeddedServer & server_ref, int argc, char ** argv)
 {
-    return std::make_unique<ChdbClient>(server_ref);
+    return std::make_unique<ChdbClient>(server_ref, argc, argv);
+}
+
+/// Forward every connection argument that names a query-level setting into
+/// this client's session context — the same place a `SET` statement writes —
+/// giving clickhouse-local's `--setting=value` semantics per connection.
+/// EmbeddedServer is a process-wide singleton that only reads argv when the
+/// first connection boots it, so without this, settings passed to
+/// chdb_connect() were silently swallowed into its config layer (#191); with
+/// it, every connection (not just the first) gets its own isolated settings,
+/// because each session context is a copy of the server context.
+/// Recognized forms mirror argsToConfig: --key=value, --key value, and bare
+/// --key meaning "1". Keys that are not built-in settings are left to the
+/// config layer (server options like --path); an invalid value for a known
+/// setting throws, failing the connection like clickhouse-local would.
+void ChdbClient::applyCmdSettings(int argc, char ** argv)
+{
+    if (argc <= 1 || !argv)
+        return;
+
+    SettingsChanges changes;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i])
+            continue;
+        std::string_view arg = argv[i];
+        if (!arg.starts_with("--") || arg.size() <= 2)
+            continue;
+        arg.remove_prefix(2);
+
+        String key;
+        String value;
+        if (auto pos = arg.find('='); pos != std::string_view::npos)
+        {
+            key = String(arg.substr(0, pos));
+            value = String(arg.substr(pos + 1));
+        }
+        else
+        {
+            key = String(arg);
+            /// Space-separated value; do not advance i — the value token is
+            /// harmless to re-scan since it does not start with "--".
+            /// A dash-leading token counts as the value only when it is a
+            /// negative number (e.g. --max_partitions_to_read -1); any other
+            /// dash-leading token is the next option, making this key a bare
+            /// boolean flag.
+            if (i + 1 < argc && argv[i + 1]
+                && (argv[i + 1][0] != '-'
+                    || (argv[i + 1][1] >= '0' && argv[i + 1][1] <= '9')
+                    || argv[i + 1][1] == '.'))
+                value = argv[i + 1];
+            else
+                value = "1";
+        }
+
+        if (!key.empty() && Settings::hasBuiltin(key))
+            changes.emplace_back(key, value);
+    }
+
+    if (!changes.empty())
+        global_context->applySettingsChanges(changes);
 }
 
 ChdbClient::~ChdbClient()

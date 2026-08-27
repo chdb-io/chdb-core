@@ -1485,7 +1485,7 @@ def connect(connection_string: str = ":memory:") -> Connection:
             Query parameters are passed to ClickHouse engine as startup arguments.
             Special parameter handling:
 
-            - "mode=ro" becomes "--readonly=1" (read-only mode)
+            - "mode=ro" becomes "--readonly=2" (read-only: writes and DDL rejected, per-query settings still allowed)
             - "progress=tty" enables progress bar (TTY output)
             - "progress=err" enables progress bar (stderr output)
             - "progress=off" disables progress bar
@@ -1495,6 +1495,21 @@ def connect(connection_string: str = ":memory:") -> Connection:
             - "progress-table=off" disables progress table
             - "verbose" enables verbose logging
             - "log-level=test" sets logging level
+
+            **Query-level settings:**
+
+            Any parameter naming a ClickHouse query-level setting is applied to
+            this connection's session only, exactly as if the connection had
+            executed ``SET <setting> = <value>`` right after connecting:
+
+            - ":memory:?max_threads=4" - this connection uses at most 4 threads
+            - ":memory:?output_format_json_quote_denormals=1" - quote nan/inf
+              in this connection's JSON output
+            - ":memory:?final" - bare flags set boolean settings to 1
+
+            Connections to the same path do not share these settings — each
+            keeps its own. An invalid value for a known setting makes the
+            connection fail.
 
             For complete parameter list, see ``clickhouse local --help --verbose``
 

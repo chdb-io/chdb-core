@@ -339,6 +339,7 @@ jobs:
           bash -x ./examples/runStreamInsertTest.sh
           bash -x ./examples/runVersionHeaderTest.sh
           bash -x ./examples/runVersionTest.sh
+          bash -x ./examples/runConnSettingsTest.sh
           bash -x ./examples/runStackTraceTest.sh
           bash -x ./examples/runStreamErrorTest.sh
           bash -x ./examples/runQueryParamsTest.sh

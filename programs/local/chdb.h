@@ -136,6 +136,14 @@ CHDB_EXPORT void free_result_v2(struct local_result_v2 * result);
  * same path may be open at once. Connecting with a different path requires
  * closing all existing connections first.
  *
+ * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
+ * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
+ * this connection only, exactly as if it had executed SET <setting> = <value>:
+ * concurrent connections to the same path each keep their own settings.
+ * An invalid value for a known setting fails the connection. Server-level
+ * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
+ * the connection that boots the engine and ignored afterwards.
+ *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)
  * @return Pointer to connection pointer, or NULL on failure
@@ -254,6 +262,14 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
  * The engine uses one storage path per process: multiple connections to that
  * same path may be open at once. Connecting with a different path requires
  * closing all existing connections first.
+ *
+ * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
+ * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
+ * this connection only, exactly as if it had executed SET <setting> = <value>:
+ * concurrent connections to the same path each keep their own settings.
+ * An invalid value for a known setting fails the connection. Server-level
+ * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
+ * the connection that boots the engine and ignored afterwards.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)

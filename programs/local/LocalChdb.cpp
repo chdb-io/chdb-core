@@ -306,7 +306,11 @@ connection_wrapper::build_clickhouse_args(const std::string & path, const std::m
             if (value == "ro")
             {
                 is_readonly = true;
-                argv.push_back("--readonly=1");
+                /// readonly=2, not 1: writes and DDL are rejected, but the
+                /// connection may still tune per-query settings (SET /
+                /// SETTINGS clauses), matching what a SQLite-style mode=ro
+                /// promises. readonly=1 would reject those too.
+                argv.push_back("--readonly=2");
             }
         }
         else if (key == "--")
