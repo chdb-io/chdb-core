@@ -283,6 +283,16 @@ ExceptionHandling = _chdb.ExceptionHandling
 
 from . import dbapi, session, udf, utils  # noqa: E402
 from .udf import func  # noqa: E402
+
+# The chdb wrapper wheel (PyPI package `chdb`) may ship chdb/deploy.py into
+# this same package directory, extending the decorator with remote-deploy
+# support (`@func(deploy=..., permanent=...)`). Prefer it when present; a
+# plain chdb-core install falls back to the decorator imported above.
+try:
+    from .deploy import func  # noqa: E402, F811
+except ImportError:
+    pass
+
 from .state import connect  # noqa: E402
 
 __all__ = [
