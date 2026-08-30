@@ -43,6 +43,24 @@ target_compile_options(unwind PRIVATE -Wno-unused-but-set-variable)
 # Example: DwarfInstructions.hpp: register unsigned long long x16 __asm("x16") = cfa;
 target_compile_options(unwind PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wno-register>")
 
+# The module is included from the root CMakeLists.txt before the default_libs.cmake dispatch
+# that adds this directory. If that ordering ever breaks, `if (HIDE_BUNDLED_RUNTIME)` would
+# silently read an undefined variable as false and the hardening would vanish without a
+# single warning, so check explicitly instead.
+if (NOT COMMAND hide_bundled_runtime)
+    message (FATAL_ERROR "cmake/bundled_runtime_visibility.cmake must be included before "
+        "this directory is added; see the include in the root CMakeLists.txt.")
+endif ()
+
+# Keep the bundled runtime out of the static library's exported surface. The macro applies
+# to every language including ASM - libunwind's assembly.h emits `.private_extern` for it -
+# while hide_bundled_runtime() keeps -fvisibility off the .S sources.
+# See cmake/bundled_runtime_visibility.cmake.
+if (HIDE_BUNDLED_RUNTIME)
+    target_compile_definitions(unwind PRIVATE -D_LIBUNWIND_HIDE_SYMBOLS)
+    hide_bundled_runtime(unwind)
+endif ()
+
 if (USE_MUSL)
     add_dependencies(unwind musl-headers)
     # The arch dirs are not in the toolchain flags to avoid include order issues in musl's own build.

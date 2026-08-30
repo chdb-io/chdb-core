@@ -106,3 +106,19 @@ target_compile_definitions(cxx PUBLIC -D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS
 
 target_link_libraries(cxx PUBLIC cxx-headers)
 target_link_libraries(cxx PUBLIC cxxabi)
+
+# The module is included from the root CMakeLists.txt before the default_libs.cmake dispatch
+# that adds this directory. If that ordering ever breaks, `if (HIDE_BUNDLED_RUNTIME)` would
+# silently read an undefined variable as false and the hardening would vanish without a
+# single warning, so check explicitly instead.
+if (NOT COMMAND hide_bundled_runtime)
+    message (FATAL_ERROR "cmake/bundled_runtime_visibility.cmake must be included before "
+        "this directory is added; see the include in the root CMakeLists.txt.")
+endif ()
+
+# Keep the bundled runtime out of the static library's exported surface.
+# See cmake/bundled_runtime_visibility.cmake.
+if (HIDE_BUNDLED_RUNTIME)
+    target_compile_definitions(cxx PRIVATE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
+    hide_bundled_runtime(cxx)
+endif ()

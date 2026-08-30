@@ -55,3 +55,22 @@ if (USE_MUSL)
         "${ClickHouse_SOURCE_DIR}/contrib/musl/arch/generic"
     )
 endif()
+
+# The module is included from the root CMakeLists.txt before the default_libs.cmake dispatch
+# that adds this directory. If that ordering ever breaks, `if (HIDE_BUNDLED_RUNTIME)` would
+# silently read an undefined variable as false and the hardening would vanish without a
+# single warning, so check explicitly instead.
+if (NOT COMMAND hide_bundled_runtime)
+    message (FATAL_ERROR "cmake/bundled_runtime_visibility.cmake must be included before "
+        "this directory is added; see the include in the root CMakeLists.txt.")
+endif ()
+
+# Keep the bundled runtime out of the static library's exported surface. Both macros are
+# needed: cxxabi's own headers carry _LIBCXXABI_* annotations, its sources also pull in
+# libc++ headers. See cmake/bundled_runtime_visibility.cmake.
+if (HIDE_BUNDLED_RUNTIME)
+    target_compile_definitions(cxxabi PRIVATE
+        -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS
+        -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
+    hide_bundled_runtime(cxxabi)
+endif ()

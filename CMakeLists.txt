@@ -703,6 +703,11 @@ endif ()
 
 include(cmake/dbms_glob_sources.cmake)
 
+# Must precede the default_libs.cmake dispatch below: that is what pulls in
+# cmake/unwind.cmake and cmake/cxx.cmake, which add_subdirectory() the libcxx, libcxxabi and
+# libunwind configurations. Those call hide_bundled_runtime(), so it has to exist by then.
+include (cmake/bundled_runtime_visibility.cmake)
+
 add_library(global-group INTERFACE)
 if (OS_LINUX OR OS_ANDROID)
     include(cmake/linux/default_libs.cmake)
