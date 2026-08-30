@@ -104,7 +104,10 @@ echo "Copied chdb.h and libchdb.a to cpp-example directory"
 echo "Compiling chdb_example.cpp..."
 if [ "$(uname)" == "Darwin" ]; then
     CLANG_CMD="$(brew --prefix llvm@21)/bin/clang"
-    ${CLANG_CMD} chdb_example.cpp -o chdb_example -mmacosx-version-min=10.15 -L. -lchdb -liconv -framework CoreFoundation -framework Security -Wl,-map,chdb_example.map
+    # 12.0 is the first deployment target for which ld emits chained fixups. Below it the
+    # example links with none at all, which is what kept bundled-runtime symbol
+    # coalescing invisible on this path; check_static_lib_hermetic.sh uses the same floor.
+    ${CLANG_CMD} chdb_example.cpp -o chdb_example -mmacosx-version-min=12.0 -L. -lchdb -liconv -framework CoreFoundation -framework Security -Wl,-map,chdb_example.map
 else
     CLANG_CMD="clang"
     ${CLANG_CMD} chdb_example.cpp -o chdb_example -L. -lchdb -lpthread -ldl -lc -lm -lrt -Wl,-Map=chdb_example.map -Wl,--allow-multiple-definition
@@ -159,3 +162,9 @@ echo "Final libchdb.a created at ${PROJ_DIR}/libchdb.a"
 # Print final library size
 echo "Final libchdb.a size:"
 ls -lh ${PROJ_DIR}/libchdb.a
+
+# Symbol gate for the archive: the bundled runtime must stay hidden and the C API must stay
+# reachable. macOS only - see chdb/build/check_static_lib_hermetic.sh.
+if [ "$(uname)" == "Darwin" ]; then
+    bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb.a ${PROJ_DIR}/programs/local/chdb.h
+fi

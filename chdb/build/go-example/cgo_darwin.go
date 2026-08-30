@@ -11,6 +11,10 @@ package main
 // whose symbols are not directly referenced by Go cgo code, even though dyld
 // would otherwise run the static initializer at library load. Symbol-level
 // dead-strip still runs, so binary size grows by only ~40 KB.
-#cgo LDFLAGS: -mmacosx-version-min=10.15 -L. -Wl,-force_load,./libchdb.a -liconv -framework CoreFoundation -framework Security
+// 12.0 is the first deployment target for which ld emits chained fixups. Below it this
+// link produces none, so it cannot catch bundled-runtime symbols coalescing with the
+// system libc++/libc++abi - and with -force_load this binary carries the whole archive,
+// making it the most exposed consumer we test.
+#cgo LDFLAGS: -mmacosx-version-min=12.0 -L. -Wl,-force_load,./libchdb.a -liconv -framework CoreFoundation -framework Security
 */
 import "C"

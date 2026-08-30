@@ -27,14 +27,16 @@ if [ "$TARGET_ARCH" == "x86_64" ]; then
     DARWIN_TRIPLE="x86_64-apple-darwin"
     TOOLCHAIN_FILE="cmake/darwin/toolchain-x86_64.cmake"
     BUILD_DIR_SUFFIX="darwin-x86_64"
-    MACOS_MIN_VERSION="10.15"
+    # 12.0 is the first deployment target for which ld emits chained fixups; anything lower
+    # links chdb_example with none, hiding bundled-runtime symbol coalescing.
+    MACOS_MIN_VERSION="12.0"
     CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
 else
     # arm64
     DARWIN_TRIPLE="aarch64-apple-darwin"
     TOOLCHAIN_FILE="cmake/darwin/toolchain-aarch64.cmake"
     BUILD_DIR_SUFFIX="darwin-arm64"
-    MACOS_MIN_VERSION="11.0"
+    MACOS_MIN_VERSION="12.0"
     CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
 fi
 
@@ -227,3 +229,8 @@ echo "Final libchdb.a created at ${PROJ_DIR}/libchdb.a"
 # Print final library size
 echo "Final libchdb.a size:"
 ls -lh ${PROJ_DIR}/libchdb.a
+
+# Gate 3a of the archive symbol gate; it needs no macOS host, so it runs here for an early
+# signal. Gates 1/2/3b/4 need dyld_info and have to run the probe, so the CI job that picks
+# this artifact up on a real macOS runner invokes check_static_lib_hermetic.sh.
+python3 ${MY_DIR}/check_export_contract.py > /dev/null

@@ -328,6 +328,13 @@ jobs:
         run: |
           bash ./chdb/build/test_go_example.sh ${{ github.workspace }}/libchdb.a
         continue-on-error: false
+      - name: Run chdb/build/check_static_lib_hermetic.sh
+        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        timeout-minutes: 60
+        run: |
+          bash ./chdb/build/check_static_lib_hermetic.sh \
+            ${{ github.workspace }}/libchdb.a \
+            ${{ github.workspace }}/programs/local/chdb.h
       - name: Run libchdb stub in examples dir
         run: |
           bash -x ./examples/runStub.sh
