@@ -40,7 +40,7 @@ PROJ_DIR="$( cd "${MY_DIR}/../.." >/dev/null 2>&1 && pwd )"
 
 LIBCHDB_A=${1:-${PROJ_DIR}/libchdb.a}
 CHDB_H=${2:-${PROJ_DIR}/programs/local/chdb.h}
-MIN_USEFUL_TARGET=12.0
+MIN_USEFUL_MAJOR=12
 
 PLATFORM=$(uname)
 case "${PLATFORM}" in
@@ -78,8 +78,16 @@ if [ "${PLATFORM}" = Darwin ]; then
     # machine can still run, and gate 4 has to run the probe. Override with
     # MACOSX_DEPLOYMENT_TARGET, but not below the floor checked next.
     DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-$(sw_vers -productVersion | cut -d. -f1).0}
-    if [ "$(printf '%s\n%s\n' "${MIN_USEFUL_TARGET}" "${DEPLOYMENT_TARGET}" | sort -V | head -1)" != "${MIN_USEFUL_TARGET}" ]; then
-        echo "Error: deployment target ${DEPLOYMENT_TARGET} is older than ${MIN_USEFUL_TARGET}; the"
+    # Compared as a bare major version rather than with `sort -V` or `sort -t. -k`: both
+    # depend on which sort dialect is installed, and the floor only needs the major number
+    # (macOS 11 and 10.x are below it, 12 and up are above).
+    target_major=${DEPLOYMENT_TARGET%%.*}
+    if ! printf '%s' "${target_major}" | grep -Eq '^[0-9]+$'; then
+        echo "Error: could not read a major version out of deployment target '${DEPLOYMENT_TARGET}'"
+        exit 1
+    fi
+    if [ "${target_major}" -lt "${MIN_USEFUL_MAJOR}" ]; then
+        echo "Error: deployment target ${DEPLOYMENT_TARGET} is older than ${MIN_USEFUL_MAJOR}.0; the"
         echo "       linker would emit no chained fixups and gate 1 would pass vacuously."
         exit 1
     fi
