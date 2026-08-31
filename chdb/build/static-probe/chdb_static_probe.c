@@ -52,7 +52,10 @@ int main(void)
         return 1;
     }
 
-    printf("probe: chdb_version=%s, SELECT 1 + 1 -> %.*s", chdb_version(), (int)length, buffer);
+    /* Print the newline here rather than relying on the payload: the CSV result happens to
+       end in one, but a format whose output does not would run into the next line. */
+    size_t shown = (length > 0 && buffer[length - 1] == '\n') ? length - 1 : length;
+    printf("probe: chdb_version=%s, SELECT 1 + 1 -> %.*s\n", chdb_version(), (int)shown, buffer);
     chdb_destroy_query_result(result);
     chdb_close_conn(conn);
     return 0;
