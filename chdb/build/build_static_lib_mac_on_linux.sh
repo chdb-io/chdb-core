@@ -27,16 +27,14 @@ if [ "$TARGET_ARCH" == "x86_64" ]; then
     DARWIN_TRIPLE="x86_64-apple-darwin"
     TOOLCHAIN_FILE="cmake/darwin/toolchain-x86_64.cmake"
     BUILD_DIR_SUFFIX="darwin-x86_64"
-    # 12.0 is the first deployment target for which ld emits chained fixups; anything lower
-    # links chdb_example with none, hiding bundled-runtime symbol coalescing.
-    MACOS_MIN_VERSION="12.0"
+    MACOS_MIN_VERSION="10.15"
     CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
 else
     # arm64
     DARWIN_TRIPLE="aarch64-apple-darwin"
     TOOLCHAIN_FILE="cmake/darwin/toolchain-aarch64.cmake"
     BUILD_DIR_SUFFIX="darwin-arm64"
-    MACOS_MIN_VERSION="12.0"
+    MACOS_MIN_VERSION="11.0"
     CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
 fi
 
