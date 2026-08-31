@@ -586,10 +586,6 @@ jobs:
       - name: Package debug symbols
         run: |
           ls *.debug
-          # xz instead of gzip: the aarch64 debuginfo exceeds GitHub's 2 GiB
-          # release-asset limit as .tar.gz (2.2 GiB as of v26.7.1-rc.1), so the
-          # upload 422'd silently (masked by continue-on-error) and the release
-          # shipped without it. Matches build_linux_x86_wheels.yml.
           XZ_OPT='-T0 -4' tar -cJvf linux-aarch64-debuginfo.tar.xz *.debug
           ls -lh linux-aarch64-debuginfo.tar.xz
       # -----------------------------------------------------------------------
