@@ -15,13 +15,19 @@
 # The five gates are the same on both platforms; only the tools and the condition that
 # exposes the hazard differ.
 #
-#   Mach-O  weak definitions become <weak-def-coalesce> chained fixups and dyld may bind
+#   Mach-O  weak definitions that stay external land in the export trie and dyld may bind
 #           them to the system libc++/libc++abi. Exposed by a deployment target of 12.0 or
-#           newer: measured against a pre-fix arm64 archive, min=10.15 yields no coalescing
-#           fixups at all while 12.0 and up yield 33102.
+#           newer, which is when ld starts emitting chained fixups: measured against a
+#           pre-fix arm64 archive, min=10.15 produced no coalescing records at all while
+#           12.0 and up produced 33102.
 #   ELF     default-visibility definitions reach .dynsym and become interposable. A plain
 #           executable link does not expose them, `-rdynamic` does, so the probe is linked
 #           that way deliberately as the ELF equivalent of a modern deployment target.
+#
+# Gate 1 deliberately does not parse `dyld_info -fixups`. Its `<weak-def-coalesce>` marker
+# text is dyld-version specific - on a macOS 14 runner the same hardened archive that yields
+# 32779 records locally yields none, which would have reported a vacuous pass. It compares
+# symbol sets instead, using only nm/readelf.
 #
 # Note both platforms need a visibility-aware tool: a hidden symbol is still a global
 # definition in the symbol table on Mach-O and ELF alike, so plain `nm -g` cannot see the
@@ -197,6 +203,10 @@ else
             fail "extracted ${extracted} of ${runtime_member_count} runtime members"
         fi
 
+        # Two sets come out of the same dump. runtime_exports is what is still visible from
+        # outside the object, which is what this gate asserts is empty. runtime_defined is
+        # every definition regardless of visibility, which gate 1 uses to scope itself to
+        # the bundled runtime.
         if [ "${PLATFORM}" = Darwin ]; then
             # Only the -m listing spells out "private external"; -g alone shows hidden
             # symbols too and would report a hardened archive as unprotected.
@@ -204,10 +214,15 @@ else
                 | xargs -0 nm -m -g --defined-only > "${WORK_DIR}/nm.txt"
             awk '!/private external/ && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
                 | sort -u > "${WORK_DIR}/runtime_exports.txt"
+            awk '$NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
+                | sort -u > "${WORK_DIR}/runtime_defined.txt"
         else
             find "${WORK_DIR}/objs" -name '*.o' -print0 \
                 | xargs -0 -n 50 readelf -sW > "${WORK_DIR}/readelf.txt"
             elf_visible_defined < "${WORK_DIR}/readelf.txt" | sort -u > "${WORK_DIR}/runtime_exports.txt"
+            awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") {
+                     n = $8; sub(/@.*/, "", n); if (n != "") print n
+                 }' "${WORK_DIR}/readelf.txt" | sort -u > "${WORK_DIR}/runtime_defined.txt"
         fi
 
         # Asserted at zero, not merely "disjoint from this host's system runtime". These
@@ -269,15 +284,16 @@ else
 fi
 echo
 
-# --- Gate 1: what the probe still exposes -----------------------------------------------
-# Symbols in the linked probe that another image could still supply. Returns non-zero if the
-# inspection tool itself failed, so that is not mistaken for "nothing to bind".
-probe_candidates () {
+# --- Gate 1: what the linked probe still exposes ---------------------------------------
+# Symbols that remain visible from outside the linked image, so another image could supply
+# them instead. Returns non-zero if the tool itself failed, so that is never mistaken for
+# "nothing is exposed".
+probe_visible_symbols () {
     local probe=$1 raw="${WORK_DIR}/probe_raw.txt"
     if [ "${PLATFORM}" = Darwin ]; then
-        dyld_info -fixups "${probe}" > "${raw}" 2>/dev/null || return 1
+        nm -m -g --defined-only "${probe}" > "${raw}" 2>/dev/null || return 1
         [ -s "${raw}" ] || return 1
-        grep_optional '<weak-def-coalesce>' "${raw}" | sed 's|.*<weak-def-coalesce>/_||'
+        awk '!/private external/ && $NF ~ /^_/ { print substr($NF, 2) }' "${raw}"
     else
         readelf --dyn-syms -W "${probe}" > "${raw}" 2>/dev/null || return 1
         [ -s "${raw}" ] || return 1
@@ -285,39 +301,34 @@ probe_candidates () {
     fi
 }
 
-echo "== Gate 1: nothing in the probe can bind the bundled runtime elsewhere =="
-if ! probe_candidates "${PROBE}" > "${WORK_DIR}/probe_bindable_unsorted.txt"; then
-    fail "could not inspect the probe's fixups/dynamic symbols; gate 1 was not evaluated"
+echo "== Gate 1: no bundled runtime symbol is visible from the linked probe =="
+if [ ! -s "${WORK_DIR}/runtime_defined.txt" ]; then
+    fail "gate 2 produced no runtime symbol set, so gate 1 has nothing to scope itself to"
+elif ! probe_visible_symbols "${PROBE}" > "${WORK_DIR}/probe_visible_unsorted.txt"; then
+    fail "could not read the probe's symbol table; gate 1 was not evaluated"
 else
-    sort -u "${WORK_DIR}/probe_bindable_unsorted.txt" > "${WORK_DIR}/probe_bindable.txt"
-    total_bindable=$(wc -l < "${WORK_DIR}/probe_bindable.txt" | tr -d ' ')
-    comm -12 "${WORK_DIR}/probe_bindable.txt" "${WORK_DIR}/system_exports.txt" \
-        > "${WORK_DIR}/probe_overlap.txt"
-    risky=$(wc -l < "${WORK_DIR}/probe_overlap.txt" | tr -d ' ')
+    sort -u "${WORK_DIR}/probe_visible_unsorted.txt" > "${WORK_DIR}/probe_visible.txt"
+    probe_visible=$(wc -l < "${WORK_DIR}/probe_visible.txt" | tr -d ' ')
+    runtime_defined=$(wc -l < "${WORK_DIR}/runtime_defined.txt" | tr -d ' ')
+    comm -12 "${WORK_DIR}/runtime_defined.txt" "${WORK_DIR}/probe_visible.txt" \
+        > "${WORK_DIR}/leaked.txt"
+    leaked=$(wc -l < "${WORK_DIR}/leaked.txt" | tr -d ' ')
 
-    # The gate is the intersection with the system runtime, not the raw total. On Mach-O most
-    # of the raw records are ClickHouse/abseil/magic_enum template instantiations: weak by
-    # definition, defined nowhere else, so dyld can only bind them to this image. Measured on
-    # a pre-fix arm64 archive at deployment target 26.0: 33102 records, 479
-    # system-overlapping, probe hangs in chdb_connect. With the bundled runtimes hidden:
-    # 29692 records, 0 system-overlapping, probe passes.
-    echo "  candidate symbols: ${total_bindable} (informational), resolvable from the system runtime: ${risky}"
-    if [ "${total_bindable}" -eq 0 ]; then
-        # A real binary always has some: template instantiations on Mach-O, crt and the
-        # CHDB_EXPORT C API in .dynsym on ELF. Zero means the extraction produced nothing,
-        # so the overlap below would be zero no matter what the archive contains.
-        fail "no candidate symbols found at all - extraction is broken, gate 1 would pass vacuously"
-    elif [ "${risky}" -eq 0 ]; then
+    # Scoped to symbols the bundled runtime actually defines. Intersecting the probe's whole
+    # visible set with the system runtime instead would flag the replaceable global operator
+    # new/delete, which clickhouse_new_delete provides at default visibility on purpose and
+    # which is outside these three targets; gate 2 is what covers the runtime's own copies.
+    echo "  runtime definitions: ${runtime_defined}, visible from the probe: ${probe_visible}, leaked: ${leaked}"
+    if [ "${probe_visible}" -eq 0 ]; then
+        # A linked binary always exposes something. Zero means the extraction produced
+        # nothing, so the intersection below would be empty whatever the archive contains.
+        fail "the probe exposes no symbols at all - extraction is broken, gate 1 would pass vacuously"
+    elif [ "${leaked}" -eq 0 ]; then
         echo "PASS"
     else
-        head -20 "${WORK_DIR}/probe_overlap.txt" | sed 's/^/    /'
-        fail "${risky} bundled runtime symbols can be bound to the system runtime"
+        head -20 "${WORK_DIR}/leaked.txt" | sed 's/^/    /'
+        fail "${leaked} bundled runtime symbols are visible from the linked probe"
     fi
-fi
-if [ "${PLATFORM}" = Linux ]; then
-    # Informational: a dependency here would mean C++ runtime symbols are being satisfied
-    # dynamically rather than from the bundled copy.
-    echo "  system C++ runtime shared libraries linked into the probe: $(ldd "${PROBE}" 2>/dev/null | grep -c 'libstdc++\|libc++' || true)"
 fi
 echo
 
