@@ -227,3 +227,8 @@ echo "Final libchdb.a created at ${PROJ_DIR}/libchdb.a"
 # Print final library size
 echo "Final libchdb.a size:"
 ls -lh ${PROJ_DIR}/libchdb.a
+
+# Gate 3a of the archive symbol gate; it needs no macOS host, so it runs here for an early
+# signal. Gates 1/2/3b/4 need dyld_info and have to run the probe, so the CI job that picks
+# this artifact up on a real macOS runner invokes check_static_lib_hermetic.sh.
+python3 ${MY_DIR}/check_export_contract.py > /dev/null

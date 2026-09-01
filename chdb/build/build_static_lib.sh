@@ -159,3 +159,7 @@ echo "Final libchdb.a created at ${PROJ_DIR}/libchdb.a"
 # Print final library size
 echo "Final libchdb.a size:"
 ls -lh ${PROJ_DIR}/libchdb.a
+
+# Symbol gate for the archive: the bundled runtime must stay hidden and the C API must stay
+# reachable. Runs on both platforms - see chdb/build/check_static_lib_hermetic.sh.
+bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb.a ${PROJ_DIR}/programs/local/chdb.h
