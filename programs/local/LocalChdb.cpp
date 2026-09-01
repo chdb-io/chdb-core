@@ -682,6 +682,61 @@ void connection_wrapper::insert_cancel(streaming_insert_result * ins)
     chdb_stream_cancel_insert(ins->get_stream());
 }
 
+namespace
+{
+
+/// backup_database and restore_database return nothing, so the result exists
+/// only to carry an error. Raise it if there is one, and drop the result
+/// either way.
+void raiseOnEngineError(chdb_result * result)
+{
+    const auto & error_msg = CHDB::chdb_result_error_string(result);
+    if (error_msg.empty())
+    {
+        chdb_destroy_query_result(result);
+        return;
+    }
+
+    std::string msg_copy(error_msg);
+    chdb_destroy_query_result(result);
+    throw std::runtime_error(msg_copy);
+}
+
+}
+
+void connection_wrapper::backup_database(
+    const std::string & database, const std::string & file_path, const std::string & base_file_path)
+{
+    py::gil_scoped_release release;
+    raiseOnEngineError(chdb_backup_database_n(
+        *conn,
+        database.data(),
+        database.size(),
+        file_path.data(),
+        file_path.size(),
+        base_file_path.empty() ? nullptr : base_file_path.data(),
+        base_file_path.size()));
+}
+
+void connection_wrapper::restore_database(const std::string & database, const std::string & file_path)
+{
+    py::gil_scoped_release release;
+    raiseOnEngineError(
+        chdb_restore_database_n(*conn, database.data(), database.size(), file_path.data(), file_path.size()));
+}
+
+py::tuple connection_wrapper::classify_query(const std::string & sql)
+{
+    chdb_query_class query_class = CHDB_QUERY_UNKNOWN;
+    int has_secrets = 0;
+    {
+        py::gil_scoped_release release;
+        if (chdb_classify_query_n(*conn, sql.data(), sql.size(), &query_class, &has_secrets) != CHDBSuccess)
+            throw std::runtime_error("Invalid or closed connection");
+    }
+    return py::make_tuple(query_class, has_secrets != 0);
+}
+
 #if USE_CLIENT_AI
 void connection_wrapper::applyAIParams(std::map<std::string, std::string> & params)
 {
@@ -834,6 +889,35 @@ PYBIND11_MODULE(_chdb, m)
     /// This prevents use-after-free when CompiledFunctionHolder destructors
     /// try to access already-destroyed static CHJIT instances.
     py::module_::import("atexit").attr("register")(py::cpp_function(&chdb_cleanup_at_exit));
+
+    /// py::arithmetic() is what makes the documented ordering usable: without
+    /// it a pybind enum has no __lt__, and max() over a batch's classes fails.
+    py::enum_<chdb_query_class>(
+        m,
+        "query_class",
+        "What a statement does to state that outlives it, as decided by the ClickHouse parser. "
+        "The members compare in ascending order of restriction, so a batch of statements "
+        "classifies as max() over its members",
+        py::arithmetic())
+        .value("READ_ONLY", CHDB_QUERY_READ_ONLY, "Leaves no trace: SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, CHECK")
+        .value(
+            "MUTATING",
+            CHDB_QUERY_MUTATING,
+            "Changes a database, and BACKUP DATABASE captures the change: INSERT, CREATE, ALTER, "
+            "DROP, TRUNCATE, RENAME, UPDATE, DELETE, OPTIMIZE")
+        .value(
+            "MUTATING_GLOBAL",
+            CHDB_QUERY_MUTATING_GLOBAL,
+            "Persistent and worth replaying, but outside every database a checkpoint could "
+            "capture: global UDFs, named collections, workloads, resources, access management, "
+            "writes into the system database")
+        .value(
+            "CONTROL",
+            CHDB_QUERY_CONTROL,
+            "Session-scoped, so replaying is meaningless, or not something to issue through a "
+            "managed connection: USE, SET, ATTACH, DETACH, SYSTEM, BACKUP, RESTORE, KILL, "
+            "transactions, and writes outside the engine such as INTO OUTFILE")
+        .value("UNKNOWN", CHDB_QUERY_UNKNOWN, "Did not parse, or parsed into a statement this version does not classify");
 
     py::class_<memoryview_wrapper>(m, "memoryview_wrapper")
         .def(py::init<std::shared_ptr<local_result_wrapper>>(), py::return_value_policy::take_ownership)
@@ -1009,7 +1093,32 @@ PYBIND11_MODULE(_chdb, m)
             "insert_cancel",
             &connection_wrapper::insert_cancel,
             py::arg("insert_result"),
-            "Abort a streaming INSERT without committing");
+            "Abort a streaming INSERT without committing")
+        .def(
+            "backup_database",
+            &connection_wrapper::backup_database,
+            py::arg("database"),
+            py::arg("file_path"),
+            py::arg("base_file_path") = "",
+            "Back a database up into file_path. The engine quotes both arguments, so neither can "
+            "alter the statement. file_path must be absolute, its directory must exist and be "
+            "covered by backups.allowed_path, and an existing file is never overwritten. Pass "
+            "base_file_path to write only what changed since that archive")
+        .def(
+            "restore_database",
+            &connection_wrapper::restore_database,
+            py::arg("database"),
+            py::arg("file_path"),
+            "Restore a database from an archive written by backup_database. Leaves the current "
+            "database of the session unchanged")
+        .def(
+            "classify_query",
+            &connection_wrapper::classify_query,
+            py::arg("sql"),
+            "Report what the SQL would do, without running it, as (query_class, has_secrets). "
+            "Several statements classify as the most restricted one among them; SQL that does not "
+            "parse classifies as UNKNOWN. has_secrets says whether the text carries a credential, "
+            "which a caller recording statements needs to know before it writes them down");
 
     CHDB::ChdbPyType::initialize(m);
     CHDB::PythonUDFRegistry::instance();

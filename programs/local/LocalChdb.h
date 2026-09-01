@@ -66,6 +66,11 @@ public:
     void insert_append(streaming_insert_result * ins, const py::bytes & data);
     query_result * insert_done(streaming_insert_result * ins);
     void insert_cancel(streaming_insert_result * ins);
+    /// Durable-object primitives: the engine builds the BACKUP/RESTORE
+    /// statement from the parts, and classifies SQL without running it.
+    void backup_database(const std::string & database, const std::string & file_path, const std::string & base_file_path);
+    void restore_database(const std::string & database, const std::string & file_path);
+    py::tuple classify_query(const std::string & sql);
     std::string generate_sql(const std::string & prompt);
 
     // Move the private methods declarations here

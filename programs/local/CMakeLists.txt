@@ -10,6 +10,7 @@ if (OS_WASM)
         LocalServer.cpp
         EmbeddedServer.cpp
         ChdbClient.cpp
+        QueryClassifier.cpp
     )
 else()
     set (CLICKHOUSE_LOCAL_SOURCES
@@ -21,6 +22,7 @@ else()
         LocalServer.cpp
         EmbeddedServer.cpp
         ChdbClient.cpp
+        QueryClassifier.cpp
     )
 
     # Arrow C Data Interface API + ADBC driver, compiled into both libchdb

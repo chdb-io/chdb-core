@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #if USE_PYTHON
@@ -14,6 +15,7 @@
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
+#include <Common/quoteString.h>
 #include <Common/SignalHandlers.h>
 #include <Common/ThreadPool.h>
 #include <Common/ThreadStatus.h>
@@ -1368,6 +1370,166 @@ const char * chdb_result_error(chdb_result * result)
 const char * chdb_version(void)
 {
     return CHDB_VERSION;
+}
+
+namespace CHDB
+{
+namespace
+{
+
+/// Backup and restore differ only in the keyword and the direction word, so
+/// one builder writes both. The caller hands us a bare database name and a
+/// bare path; we quote each for the syntactic position it lands in, which is
+/// the whole point of taking them apart instead of accepting a SQL string.
+/// A path the engine will read the same way we do.
+///
+/// `backups.allowed_path` resolves a relative value against the data
+/// directory, and a relative archive path then resolves against *that*, so a
+/// caller passing `backups/x.tar.gz` lands two directories deeper than it
+/// meant and only finds out by looking. There is no reading of a relative
+/// path here that is both obvious and correct, so refuse it. Refuse a missing
+/// directory too: the engine's own message for it names the allow-list rather
+/// than the directory, which sends people to the wrong place.
+void checkArchivePath(std::string_view what, std::string_view file_path, bool must_exist)
+{
+    if (file_path.empty())
+        throw std::invalid_argument(std::string(what) + " must not be empty");
+    /// A null byte would end the string the lexer sees while leaving the rest
+    /// of the argument behind it, so refuse rather than truncate.
+    if (file_path.find('\0') != std::string_view::npos)
+        throw std::invalid_argument(std::string(what) + " must not contain a null byte");
+
+    const std::filesystem::path path{std::string(file_path)};
+    if (!path.is_absolute())
+        throw std::invalid_argument(
+            std::string(what) + " must be absolute: a relative path resolves against backups.allowed_path, "
+            "which itself resolves against the data directory");
+
+    const auto parent = path.parent_path();
+    std::error_code ec;
+    if (!std::filesystem::is_directory(parent, ec))
+        throw std::invalid_argument(
+            "Directory '" + parent.string() + "' does not exist; create it, or point " + std::string(what)
+            + " somewhere that does. It must also be covered by backups.allowed_path");
+
+    if (must_exist && !std::filesystem::is_regular_file(path, ec))
+        throw std::invalid_argument("Backup archive '" + path.string() + "' does not exist");
+}
+
+String buildBackupOrRestoreQuery(
+    bool restore, std::string_view database, std::string_view file_path, std::string_view base_file_path)
+{
+    if (database.empty())
+        throw std::invalid_argument("Database name must not be empty");
+    if (database.find('\0') != std::string_view::npos)
+        throw std::invalid_argument("Database name must not contain a null byte");
+
+    checkArchivePath(restore ? "Source archive path" : "Destination archive path", file_path, /*must_exist=*/restore);
+
+    String query = (restore ? "RESTORE DATABASE " : "BACKUP DATABASE ") + DB::backQuote(database)
+        + (restore ? " FROM File(" : " TO File(") + DB::quoteString(file_path) + ")";
+
+    if (!base_file_path.empty())
+    {
+        if (restore)
+            throw std::invalid_argument("A base archive applies to backup only; RESTORE reads the base named in the archive");
+
+        checkArchivePath("Base archive path", base_file_path, /*must_exist=*/true);
+        query += " SETTINGS base_backup = File(" + DB::quoteString(base_file_path) + ")";
+    }
+
+    return query;
+}
+
+chdb_result * runBackupOrRestore(
+    chdb_connection conn,
+    bool restore,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len,
+    const char * base_file_path,
+    size_t base_file_path_len)
+{
+    if (!conn)
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null connection"));
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid or closed connection"));
+
+    try
+    {
+        const auto query = buildBackupOrRestoreQuery(
+            restore,
+            std::string_view(database ? database : "", database ? database_len : 0),
+            std::string_view(file_path ? file_path : "", file_path ? file_path_len : 0),
+            std::string_view(base_file_path ? base_file_path : "", base_file_path ? base_file_path_len : 0));
+
+        /// Neither statement returns rows; the format only names the empty
+        /// buffer's encoding.
+        static constexpr std::string_view result_format = "CSV";
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto query_result
+            = client->executeMaterializedQuery(query.data(), query.size(), result_format.data(), result_format.size());
+        return reinterpret_cast<chdb_result *>(query_result.release());
+    }
+    catch (const std::exception & e)
+    {
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(std::string("Error: ") + e.what()));
+    }
+    catch (...)
+    {
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(DB::getCurrentExceptionMessage(true)));
+    }
+}
+
+}
+}
+
+chdb_result * chdb_backup_database_n(
+    chdb_connection conn,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len,
+    const char * base_file_path,
+    size_t base_file_path_len)
+{
+    return CHDB::runBackupOrRestore(
+        conn, /*restore=*/false, database, database_len, file_path, file_path_len, base_file_path, base_file_path_len);
+}
+
+chdb_result * chdb_restore_database_n(
+    chdb_connection conn, const char * database, size_t database_len, const char * file_path, size_t file_path_len)
+{
+    return CHDB::runBackupOrRestore(
+        conn, /*restore=*/true, database, database_len, file_path, file_path_len, /*base_file_path=*/nullptr, 0);
+}
+
+chdb_state chdb_classify_query_n(
+    chdb_connection conn, const char * sql, size_t sql_len, chdb_query_class * out_class, int * out_has_secrets)
+{
+    if (!conn || !out_class)
+        return CHDBError;
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return CHDBError;
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        bool has_secrets = false;
+        *out_class = client->classifyQuery(sql, sql_len, out_has_secrets ? &has_secrets : nullptr);
+        if (out_has_secrets)
+            *out_has_secrets = has_secrets ? 1 : 0;
+        return CHDBSuccess;
+    }
+    catch (...)
+    {
+        return CHDBError;
+    }
 }
 
 void chdb_set_signal_handlers_enabled(int enabled)
