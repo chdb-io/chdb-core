@@ -284,6 +284,9 @@ test_main
 /examples/chdbStreamInsertTest
 /examples/chdbStreamQueryEofTest
 /examples/chdbShutdownTest
+/examples/chdbDurableAbiTest
+/examples/chdb_durable_abi_test_db
+/examples/chdb_durable_abi_test_backups
 libchdb.so
 *.gz
 *.bz2

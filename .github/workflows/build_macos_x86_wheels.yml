@@ -352,6 +352,7 @@ jobs:
           bash -x ./examples/runQueryParamsTest.sh
           bash -x ./examples/runStreamQueryEofTest.sh
           bash -x ./examples/runShutdownTest.sh
+          bash -x ./examples/runDurableAbiTest.sh
       # Both ADBC validation suites, against the libchdb just built. Placed
       # here rather than after the wheel tests so an unrelated failure there
       # does not withhold the result.
