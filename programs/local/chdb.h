@@ -80,6 +80,51 @@ typedef enum chdb_state
     CHDBError = 1
 } chdb_state;
 
+// What a statement does to state that outlives it, as decided by the
+// ClickHouse parser -- see chdb_classify_query_n().
+//
+// The classes answer two questions a caller replaying statements has to keep
+// apart: does this change anything that outlives the statement, and would
+// `BACKUP DATABASE <db>` carry the change?
+//
+//                            outlives it?   `BACKUP DATABASE` carries it?
+//   READ_ONLY                     no              --
+//   MUTATING                      yes             yes
+//   MUTATING_GLOBAL               yes             NO
+//   CONTROL                    session only, or not replayable at all
+//
+// MUTATING_GLOBAL is the class that catches people out. `CREATE FUNCTION`,
+// `CREATE USER` and a named collection all change something real and are
+// worth replaying, but they live beside the databases rather than inside one,
+// so a checkpoint of the database does not hold them. A caller that files
+// them with the MUTATING statements and later checkpoints loses them without
+// an error -- the failure surfaces much later, somewhere else. Keep them
+// where a checkpoint cannot truncate them.
+//
+// Values ascend by how restricted the statement is, so a batch of statements
+// classifies as the maximum over its members.
+typedef enum chdb_query_class
+{
+    // SELECT, SHOW, DESCRIBE, EXPLAIN, EXISTS, CHECK: leaves no trace.
+    CHDB_QUERY_READ_ONLY = 0,
+    // INSERT, CREATE, ALTER, DROP, TRUNCATE, RENAME, UPDATE, DELETE, OPTIMIZE:
+    // changes a database, and `BACKUP DATABASE` captures the change.
+    CHDB_QUERY_MUTATING = 1,
+    // Global UDFs, named collections, workloads, resources, access management,
+    // and writes into the `system` database: persistent, replayable, and
+    // outside every database a checkpoint could capture.
+    CHDB_QUERY_MUTATING_GLOBAL = 2,
+    // USE, SET, ATTACH, DETACH, SYSTEM, BACKUP, RESTORE, KILL, transaction
+    // control, and statements writing outside the engine altogether
+    // (INTO OUTFILE, INSERT INTO FUNCTION): either session-scoped, so
+    // replaying makes no sense, or not something a caller should be issuing
+    // through a managed connection at all.
+    CHDB_QUERY_CONTROL = 3,
+    // Did not parse, or parsed into a statement this version does not classify.
+    // Callers gating writes on the class must treat it as a refusal.
+    CHDB_QUERY_UNKNOWN = 4
+} chdb_query_class;
+
 // Opaque handle for query results.
 // Internal data structure managed by chDB implementation.
 // Users should only interact through API functions.
@@ -824,6 +869,129 @@ CHDB_EXPORT chdb_state chdb_arrow_array_scan(
  * @return CHDBSuccess on success, CHDBError on failure
  */
 CHDB_EXPORT chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name);
+
+//===--------------------------------------------------------------------===//
+// Backup, Restore and Statement Classification
+//===--------------------------------------------------------------------===//
+
+/**
+ * Backs a database up into a single archive file.
+ *
+ * The database name and the destination path are separate arguments and chDB
+ * quotes each one for the position it goes in, so a caller never builds
+ * `BACKUP ...` text and a name holding a backtick, a quote or a path holding
+ * an apostrophe cannot change what runs.
+ *
+ * The destination is subject to the `backups.allowed_path` configuration
+ * parameter, exactly as a hand-written `BACKUP ... TO File(...)` is; a
+ * connection that never set it cannot write a backup anywhere. Set it when
+ * connecting, e.g. `--backups.allowed_path=/var/lib/chdb/backups`.
+ *
+ * file_path must be absolute and its directory must already exist. Both are
+ * checked here rather than left to the engine: `backups.allowed_path`
+ * resolves a relative value against the data directory and a relative
+ * file_path then resolves against that, so a relative path lands somewhere no
+ * caller intended, and the engine reports a missing directory by naming the
+ * allow-list rather than the directory.
+ *
+ * An existing destination is never overwritten -- the call fails instead. Give
+ * every backup its own name and delete the ones you no longer want.
+ *
+ * Passing base_file_path makes the backup incremental against that archive:
+ * only what changed since it is written, and the new archive records the base
+ * it needs. Note that the recorded reference is the base's path as given here,
+ * so a caller that moves its archives between machines or into object storage
+ * has to keep that path reachable, or stay with full backups. NULL, or a
+ * length of zero, means a full backup.
+ *
+ * @param conn Connection whose engine performs the backup
+ * @param database Database name, unquoted (e.g. `my-db`, not `` `my-db` ``)
+ * @param database_len Length of database in bytes
+ * @param file_path Destination archive path, unquoted and absolute
+ * @param file_path_len Length of file_path in bytes
+ * @param base_file_path Existing archive to make this backup incremental
+ *                       against, unquoted and absolute; NULL for a full backup
+ * @param base_file_path_len Length of base_file_path in bytes; 0 for a full backup
+ * @return Query result; check chdb_result_error() and destroy it with
+ *         chdb_destroy_query_result() as for any other result
+ */
+CHDB_EXPORT chdb_result * chdb_backup_database_n(
+    chdb_connection conn,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len,
+    const char * base_file_path,
+    size_t base_file_path_len);
+
+/**
+ * Restores a database from an archive written by chdb_backup_database_n().
+ *
+ * Quoting, the absolute-path requirement, the `backups.allowed_path`
+ * constraint and the result lifecycle match chdb_backup_database_n(); the
+ * archive itself must exist. The current database of the session is left
+ * alone: restoring into `mem` does not make `mem` current, so a caller that
+ * wants to query the restored database has to say so.
+ *
+ * An incremental archive names its base internally, so there is no base
+ * argument here -- but that name is the path the backup was written against,
+ * and the restore fails if nothing is there.
+ *
+ * RESTORE appends to an existing table rather than replacing it, so restore
+ * into a database that does not already hold the tables in the archive.
+ *
+ * @param conn Connection whose engine performs the restore
+ * @param database Database name, unquoted
+ * @param database_len Length of database in bytes
+ * @param file_path Source archive path, unquoted
+ * @param file_path_len Length of file_path in bytes
+ * @return Query result; check chdb_result_error() and destroy it with
+ *         chdb_destroy_query_result()
+ */
+CHDB_EXPORT chdb_result * chdb_restore_database_n(
+    chdb_connection conn,
+    const char * database,
+    size_t database_len,
+    const char * file_path,
+    size_t file_path_len);
+
+/**
+ * Says what a statement would do, without running it.
+ *
+ * Parses the SQL with the connection's own parser and settings -- the same
+ * parser that would execute it -- and reports the effect class. Nothing is
+ * executed and the session is left untouched: no current database change, no
+ * settings change, no query log entry.
+ *
+ * The input may hold several statements. Each is classified on its own and the
+ * result is the maximum, so one CONTROL statement in a batch makes the batch
+ * CONTROL. SQL that does not parse classifies as CHDB_QUERY_UNKNOWN and still
+ * returns CHDBSuccess -- the class is the answer, not an error.
+ *
+ * out_has_secrets, when given, reports whether any statement in the input
+ * carries a credential in its text -- a named collection's key, a user's
+ * password, an access key handed to a table function. A caller that records
+ * statements needs this: the engine redacts secrets when it prints a statement
+ * back, but a log of the text the caller submitted has no such protection, and
+ * a durable log outlives the statement by design. It is false whenever the
+ * class is UNKNOWN, since nothing was proven about text that did not parse.
+ * Pass NULL if you do not need it; the answer costs nothing extra when you do.
+ *
+ * @param conn Connection supplying the parser dialect and parser settings
+ * @param sql SQL text to classify (may contain null bytes)
+ * @param sql_len Length of sql in bytes
+ * @param out_class Receives the class; written on success only
+ * @param out_has_secrets Receives 1 if any statement carries a credential,
+ *                        0 otherwise; may be NULL
+ * @return CHDBSuccess, or CHDBError if conn or out_class is null or the
+ *         connection is closed
+ */
+CHDB_EXPORT chdb_state chdb_classify_query_n(
+    chdb_connection conn,
+    const char * sql,
+    size_t sql_len,
+    chdb_query_class * out_class,
+    int * out_has_secrets);
 
 //===--------------------------------------------------------------------===//
 // Signal Handler Control

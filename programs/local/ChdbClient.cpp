@@ -16,9 +16,15 @@
 #include <Core/Settings.h>
 #include <Core/Block.h>
 #include <Formats/FormatFactory.h>
+#include <IO/ReadBufferFromMemory.h>
+#include <IO/ReadHelpers.h>
+#include <Parsers/ASTExplainQuery.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Parsers/TokenIterator.h>
 #include <Interpreters/InterpreterSetQuery.h>
+#include <QueryClassifier.h>
 #include <Processors/Executors/PullingPipelineExecutor.h>
+#include <Processors/Formats/Impl/ValuesBlockInputFormat.h>
 #include <Processors/Transforms/AddingDefaultsTransform.h>
 #include <QueryPipeline/Pipe.h>
 #include <QueryPipeline/QueryPipeline.h>
@@ -46,6 +52,8 @@ namespace Setting
     extern const SettingsUInt64 max_insert_block_size_bytes;
     extern const SettingsUInt64 min_insert_block_size_rows;
     extern const SettingsUInt64 min_insert_block_size_bytes;
+    extern const SettingsUInt64 max_parser_backtracks;
+    extern const SettingsUInt64 max_parser_depth;
 }
 
 ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
@@ -1085,6 +1093,120 @@ void ChdbClient::cancelInsertStreamWithoutLock()
         }
 #endif
     }
+}
+
+namespace
+{
+
+/// Where a parsed statement stops and the next one may begin.
+///
+/// For everything but an INSERT carrying its rows in the query text, the
+/// parser has already left `parsed_end` in the right place. An INSERT stops
+/// the parser at the first byte of the data, and the data is in whatever
+/// format the statement named, so finding its end means reading it the way the
+/// engine would. This mirrors ClientBase's own multi-query split; classifying
+/// a batch differently from how the client would run it is the one thing this
+/// must not do.
+const char * findStatementEnd(const IAST & ast, const char * parsed_end, const char * all_queries_end)
+{
+    const auto * insert = ast.as<ASTInsertQuery>();
+    /// `EXPLAIN INSERT ... VALUES ...` carries its rows the same way.
+    if (!insert)
+    {
+        if (const auto * explain = ast.as<ASTExplainQuery>(); explain && explain->getExplainedQuery())
+            insert = explain->getExplainedQuery()->as<ASTInsertQuery>();
+    }
+    if (!insert || !insert->data)
+        return parsed_end;
+
+    if (insert->format == "Values")
+    {
+        ReadBufferFromMemory data_in(insert->data, all_queries_end - insert->data);
+        skipBOMIfExists(data_in);
+        do
+        {
+            skipWhitespaceAndSQLComments(data_in);
+            if (data_in.eof() || *data_in.position() == ';')
+                break;
+        } while (ValuesBlockInputFormat::skipToNextRow(&data_in, 1, 0));
+        return insert->data + data_in.count();
+    }
+
+    /// Any other format is arbitrary bytes in which a `;` may well be data, so
+    /// the client's convention is that a blank line ends the statement.
+    const auto blank_line = std::string_view(insert->data, all_queries_end - insert->data).find("\n\n");
+    return blank_line == std::string_view::npos ? all_queries_end : insert->data + blank_line;
+}
+
+}
+
+chdb_query_class ChdbClient::classifyQuery(const char * sql, size_t sql_len, bool * out_has_secrets)
+{
+    if (out_has_secrets)
+        *out_has_secrets = false;
+
+    if (!sql || sql_len == 0)
+        return CHDB_QUERY_UNKNOWN;
+
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    const String text(sql, sql_len);
+    const char * pos = text.data();
+    const char * const end = pos + text.size();
+
+    auto result = CHDB_QUERY_READ_ONLY;
+    bool saw_statement = false;
+
+    try
+    {
+        const Settings & settings = client_context->getSettingsRef();
+        const auto max_parser_depth = static_cast<uint32_t>(settings[Setting::max_parser_depth]);
+        const auto max_parser_backtracks = static_cast<uint32_t>(settings[Setting::max_parser_backtracks]);
+
+        while (pos < end)
+        {
+            /// Step over the separators and any comment between statements, so
+            /// that a trailing `;` or `-- note` is end of input rather than a
+            /// statement that fails to parse.
+            Tokens separators(pos, end);
+            IParser::Pos separator_iterator(separators, max_parser_depth, max_parser_backtracks);
+            while (separator_iterator.isValid() && separator_iterator->type == TokenType::Semicolon)
+                ++separator_iterator;
+
+            pos = separator_iterator->begin;
+            if (pos >= end)
+                break;
+
+            ASTPtr ast = parseQuery(pos, end, settings, /*allow_multi_statements=*/true);
+            if (!ast)
+            {
+                if (out_has_secrets)
+                    *out_has_secrets = false;
+                return CHDB_QUERY_UNKNOWN;
+            }
+
+            saw_statement = true;
+            result = CHDB::combineQueryClass(result, CHDB::classifyStatement(*ast));
+            if (out_has_secrets && CHDB::statementHasSecrets(*ast))
+                *out_has_secrets = true;
+
+            pos = findStatementEnd(*ast, pos, end);
+        }
+    }
+    catch (...)
+    {
+        /// SQL we cannot parse is SQL we cannot vouch for.
+        if (out_has_secrets)
+            *out_has_secrets = false;
+        return CHDB_QUERY_UNKNOWN;
+    }
+
+    if (saw_statement)
+        return result;
+
+    if (out_has_secrets)
+        *out_has_secrets = false;
+    return CHDB_QUERY_UNKNOWN;
 }
 
 

@@ -5,6 +5,7 @@
 #include <Interpreters/Session.h>
 #include <Common/Config/ConfigProcessor.h>
 #include <Core/Names.h>
+#include "chdb.h"
 #include "QueryResult.h"
 #include "StreamingInsert.h"
 
@@ -69,6 +70,16 @@ public:
 
     /// Abort the INSERT (CH-default semantics: no special rollback) and join.
     void cancelInsertStream(void * insert_stream);
+
+    /// What `sql` would do, decided by this connection's parser and parser
+    /// settings without executing anything. Several statements classify as the
+    /// most restricted one among them; anything that fails to parse, and
+    /// anything the classifier does not recognise, is CHDB_QUERY_UNKNOWN.
+    ///
+    /// `out_has_secrets`, when given, reports whether any statement in the
+    /// batch carries a credential in its text. It is set from the same parse,
+    /// and is false whenever the class is UNKNOWN -- nothing was proven.
+    chdb_query_class classifyQuery(const char * sql, size_t sql_len, bool * out_has_secrets = nullptr);
 
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;

@@ -63,6 +63,10 @@ _chdb_stream_fetch_arrow
 _chdb_adbc_init
 _AdbcDriverInit
 
+_chdb_backup_database_n
+_chdb_restore_database_n
+_chdb_classify_query_n
+
 _chdb_set_signal_handlers_enabled
 _chdb_reset_signal_handlers
 
