@@ -15,9 +15,11 @@
  * Run:   LD_LIBRARY_PATH=. ./examples/chdbDurableAbiTest
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "chdb.h"
 
@@ -339,6 +341,16 @@ int main(void)
     snprintf(arg1, sizeof(arg1), "--path=%s/chdb_durable_abi_test_db", cwd);
     snprintf(backups_dir, sizeof(backups_dir), "%s/chdb_durable_abi_test_backups", cwd);
     snprintf(arg2, sizeof(arg2), "--backups.allowed_path=%s", backups_dir);
+
+    /* The engine writes backups here but does not create the directory, and
+     * the data directory it does create is a sibling -- so on a fresh checkout
+     * nothing exists yet. Make it here rather than in the runner, so the
+     * command at the top of this file works on its own. */
+    if (mkdir(backups_dir, 0755) != 0 && errno != EEXIST)
+    {
+        printf("could not create %s: %s\n", backups_dir, strerror(errno));
+        return 1;
+    }
     char * args[] = {arg0, arg1, arg2};
     chdb_connection * conn = chdb_connect(3, args);
     if (!conn)

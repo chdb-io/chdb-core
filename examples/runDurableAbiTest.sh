@@ -30,10 +30,8 @@ export ${LIB_PATH}=..
 ${LDD} chdbDurableAbiTest
 
 echo "Run it:"
-# The test resolves both directories against its working directory and creates
-# the data one itself; backups.allowed_path has to exist before the engine will
-# write into it.
+# The test resolves its directories against the working directory and creates
+# both itself, so this only has to clear whatever a previous run left behind.
 rm -rf chdb_durable_abi_test_db chdb_durable_abi_test_db2 chdb_durable_abi_test_backups
-mkdir chdb_durable_abi_test_backups
 ./chdbDurableAbiTest
 rm -rf chdb_durable_abi_test_db chdb_durable_abi_test_db2 chdb_durable_abi_test_backups
