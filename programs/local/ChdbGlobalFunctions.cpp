@@ -14,8 +14,11 @@ namespace CHDB
 namespace
 {
 
-std::shared_ptr<ChdbPyType> toChdbPyType(const py::object & obj)
+std::shared_ptr<ChdbPyType> toChdbPyType(const py::object & raw_obj)
 {
+    /// Accept Optional[X] / X | None here too, so an explicit return_type may spell
+    /// the same thing an annotation can; the engine makes the type Nullable regardless.
+    auto obj = unwrapOptionalAnnotation(raw_obj);
     if (py::isinstance<ChdbPyType>(obj))
         return obj.cast<std::shared_ptr<ChdbPyType>>();
     if (py::isinstance<py::str>(obj))
