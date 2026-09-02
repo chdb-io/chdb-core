@@ -18,6 +18,11 @@ fi
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
+# The statement table only means what it claims if the engine's parser list is
+# checked against it; a hand-written table cannot notice a new statement type.
+echo "Check statement coverage against the engine's parser list"
+python3 ../chdb/build/check_statement_coverage.py
+
 echo "Compile and link"
 ${CC:-clang} chdbDurableAbiTest.c -o chdbDurableAbiTest -I../programs/local/ -L../ -lchdb
 
