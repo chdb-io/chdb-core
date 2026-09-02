@@ -121,7 +121,14 @@ jobs:
           pyenv install 3.12:latest
           pyenv install 3.13:latest
           pyenv install 3.14:latest
-          pyenv global 3.9 3.10 3.11 3.12 3.13 3.14
+          # pyenv's ":latest" skips pre-releases, so until 3.15.0 final ships
+          # (2026-10-01) fall back to the release candidate; the symlink lets the
+          # bare "3.15" used by pyenv global/shell below resolve to it.
+          pyenv install 3.15:latest || {
+            pyenv install 3.15.0rc2
+            ln -s "$HOME/.pyenv/versions/3.15.0rc2" "$HOME/.pyenv/versions/3.15"
+          }
+          pyenv global 3.9 3.10 3.11 3.12 3.13 3.14 3.15
 
           # Verify installations
           echo "Installed versions:"
@@ -134,7 +141,7 @@ jobs:
           pyenv versions
           echo ""
           echo "Verifying all required Python versions are available:"
-          for version in 3.9 3.10 3.11 3.12 3.13 3.14; do
+          for version in 3.9 3.10 3.11 3.12 3.13 3.14 3.15; do
             if ! pyenv versions --bare | grep -q "^$version"; then
               echo "ERROR: Python $version is not installed!"
               exit 1
@@ -146,6 +153,8 @@ jobs:
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
+          # 3.15 is left out here: pandas/pyarrow publish no cp315 wheels yet, so 3.15
+          # only gets the dependency-free import smoke test in the wheel test step.
           for version in 3.9 3.10 3.11 3.12 3.13 3.14; do
             echo "Installing dependencies for Python $version"
             pyenv shell $version
@@ -441,7 +450,18 @@ jobs:
             sudo ln -sf /usr/bin/lldb-21 /usr/bin/lldb || true
           fi
 
-          for version in 3.9 3.10 3.11 3.12 3.13 3.14; do
+          for version in 3.9 3.10 3.11 3.12 3.13 3.14 3.15; do
+            if [[ "$version" == "3.15" ]]; then
+              # No pandas/pyarrow cp315 wheels yet (pandas 3.1 / pyarrow 26.0.0 will ship
+              # them): install without deps and only check that the wheel imports and
+              # queries, which is what loads libpybind11nonlimitedapi_chdb_3.15. Fold 3.15
+              # into the full matrix below once those wheels exist.
+              pyenv shell $version
+              python -m pip install dist/*.whl --force-reinstall --no-deps
+              python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"
+              pyenv shell --unset
+              continue
+            fi
             # pandas 3.x requires Python >=3.11
             if [[ "$version" == "3.9" || "$version" == "3.10" ]]; then
               PANDAS_CONSTRAINTS=("pandas<3.0")
