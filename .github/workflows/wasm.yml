@@ -77,13 +77,11 @@ jobs:
             name=${key#submodule.}
             name=${name%.path}
             gitdir=".git/modules/$name"
-            if [ -d "$gitdir" ]; then
-              git --git-dir="$gitdir" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && continue
-            elif [ ! -e "$path/.git" ]; then
-              continue
+            [ -d "$gitdir" ] || continue
+            if ! git --git-dir="$gitdir" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+              echo "Removing broken submodule clone: $path"
+              rm -rf "$path" "$gitdir"
             fi
-            echo "Removing broken submodule clone: $path"
-            rm -rf "$path" "$gitdir"
           done
 
       - name: Checkout (with submodules)

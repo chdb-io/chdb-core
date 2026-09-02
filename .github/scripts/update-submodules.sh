@@ -26,17 +26,8 @@
 #      fatal: Unable to find current revision in submodule path 'contrib/google-cloud-cpp'
 #
 #    Stale locks are removed up front (no other git process runs at this point).
-#    If the update still fails, submodule clones without a usable repository are
-#    deleted and the update is retried once.
-#
-# 3. A plain `git submodule update` trusts HEAD. Submodules are cloned with
-#    --no-checkout and populated afterwards, and when a run aborts in between
-#    (one clone failing twice aborts the whole update before any checkout) every
-#    submodule that was cloned is left with HEAD at the remote tip and an empty
-#    working tree. For submodules pinned at that tip the next update sees the
-#    right HEAD and does nothing, and the build fails much later with
-#    "Cannot find source file: contrib/librdkafka/src/cJSON.c". --force makes
-#    git run the checkout regardless (actions/checkout does the same).
+#    If the update still fails, submodule clones without a usable HEAD are deleted
+#    and the update is retried once.
 
 set -euo pipefail
 
@@ -52,8 +43,7 @@ remove_stale_locks() {
     find .git/modules -type f -name '*.lock' -print -delete | sed 's/^/Removed stale lock: /'
 }
 
-# Delete submodule clones whose repository is unusable: a gitdir without a
-# resolvable HEAD (interrupted clone) or a working tree whose gitdir is gone.
+# Delete submodule clones whose repository has no usable HEAD (interrupted clone).
 remove_broken_clones() {
     [ -f .gitmodules ] || return 0
     git config --file .gitmodules --get-regexp '^submodule\..*\.path$' |
@@ -61,18 +51,16 @@ remove_broken_clones() {
         name=${key#submodule.}
         name=${name%.path}
         gitdir=".git/modules/$name"
-        if [ -d "$gitdir" ]; then
-            git --git-dir="$gitdir" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && continue
-        elif [ ! -e "$path/.git" ]; then
-            continue
+        [ -d "$gitdir" ] || continue
+        if ! git --git-dir="$gitdir" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+            echo "Removing broken submodule clone: $path"
+            rm -rf "$path" "$gitdir"
         fi
-        echo "Removing broken submodule clone: $path"
-        rm -rf "$path" "$gitdir"
     done
 }
 
 update() {
-    git submodule update --init --recursive --force --jobs 4
+    git submodule update --init --recursive --jobs 4
 }
 
 remove_stale_locks
