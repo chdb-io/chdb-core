@@ -241,6 +241,13 @@ static const struct statement_case k_all_statements[] = {
     {"DROP TEMPORARY TABLE tmp", CHDB_QUERY_CONTROL},
     {"CHECK GRANT SELECT ON *.*", CHDB_QUERY_READ_ONLY},
 
+    /* A partition move names its destination on the command, not on the
+     * statement; `SETTINGS x = DEFAULT` resets the connection's choice by
+     * another spelling. */
+    {"ALTER TABLE t MOVE PARTITION 1 TO TABLE other.t", CHDB_QUERY_MUTATING},
+    {"INSERT INTO t SETTINGS async_insert = DEFAULT VALUES (1)", CHDB_QUERY_CONTROL},
+    {"INSERT INTO t SETTINGS mutations_sync = DEFAULT VALUES (1)", CHDB_QUERY_CONTROL},
+
     /* Session and server state */
     {"USE d", CHDB_QUERY_CONTROL},
     {"SET max_threads=1", CHDB_QUERY_CONTROL},
@@ -593,6 +600,12 @@ int main(void)
     expect_contained(*conn, "9i.9 multi-target DROP in target", "DROP TABLE mem.a, mem.b", "mem", 1);
     expect_contained(*conn, "9i.10 multi-target DROP straying", "DROP TABLE mem.a, other.b", "mem", 0);
     expect_contained(*conn, "9i.11 ALTER in target", "ALTER TABLE mem.t ADD COLUMN c String", "mem", 1);
+    expect_contained(
+        *conn, "9i.14 MOVE PARTITION within target", "ALTER TABLE mem.a MOVE PARTITION 1 TO TABLE mem.b", "mem", 1);
+    expect_contained(
+        *conn, "9i.15 MOVE PARTITION straying", "ALTER TABLE mem.a MOVE PARTITION 1 TO TABLE other.b", "mem", 0);
+    expect_contained(
+        *conn, "9i.16 MOVE PARTITION into system", "ALTER TABLE mem.a MOVE PARTITION 1 TO TABLE system.b", "mem", 0);
     expect_contained(*conn, "9i.12 a read writes nothing", "SELECT 1", "mem", 1);
     expect_contained(*conn, "9i.13 no target named", "INSERT INTO mem.t VALUES (1)", NULL, 0);
 
@@ -621,6 +634,9 @@ int main(void)
     expect_class(
         *conn, "9k.4 an unrelated setting is fine", "INSERT INTO t SETTINGS max_threads = 4 VALUES (1)",
         CHDB_QUERY_MUTATING);
+    expect_class(
+        *conn, "9k.5 = DEFAULT is the same override", "INSERT INTO t SETTINGS async_insert = DEFAULT VALUES (1)",
+        CHDB_QUERY_CONTROL);
 
     /* 10. Every top-level statement shape gets a class, and the right one. */
     {
