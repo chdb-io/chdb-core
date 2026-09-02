@@ -501,10 +501,20 @@ int main(void)
         expect_backup_error(*conn, "7c. missing directory refused", db, missing_dir);
     }
 
-    /* 8. An incremental backup writes only what changed since its base. */
+    /* 8. An incremental backup carries what changed since its base, and the
+     *    pair restores to the current state. Backing up an unchanged database
+     *    and never reading the archive back would pass whatever the archive
+     *    held, so the change has to be made first and read back after. */
     {
         char incr_path[700];
         snprintf(incr_path, sizeof(incr_path), "%s/incremental.tar.gz", backups_dir);
+
+        if (!run(*conn, "INSERT INTO `durable-obj``1`.t VALUES (4,'d')"))
+        {
+            chdb_close_conn(conn);
+            return 1;
+        }
+
         chdb_result * r = chdb_backup_database_n(
             *conn, db, strlen(db), incr_path, strlen(incr_path), backup_path, strlen(backup_path));
         const char * err = r ? chdb_result_error(r) : "null result";
@@ -513,6 +523,26 @@ int main(void)
         else
             pass("8a. incremental backup against a base");
         chdb_destroy_query_result(r);
+
+        /* The incremental archive references its base by the path given above,
+         * which is still where it was written. */
+        if (!run(*conn, "DROP DATABASE `durable-obj``1`"))
+        {
+            chdb_close_conn(conn);
+            return 1;
+        }
+        r = chdb_restore_database_n(*conn, db, strlen(db), incr_path, strlen(incr_path));
+        err = r ? chdb_result_error(r) : "null result";
+        if (err)
+            fail("8b. restore from the incremental pair", err);
+        else
+            pass("8b. restore from the incremental pair");
+        chdb_destroy_query_result(r);
+
+        /* Four rows: three from the base, one only the increment carries. */
+        expect_scalar(*conn, "8c. base rows survived", "SELECT count() FROM `durable-obj``1`.t", "4\n");
+        expect_scalar(
+            *conn, "8d. the increment's own row", "SELECT name FROM `durable-obj``1`.t WHERE id = 4", "\"d\"\n");
     }
     {
         /* A base that is not there is an error, not a silent full backup. */
@@ -522,9 +552,9 @@ int main(void)
         chdb_result * r = chdb_backup_database_n(
             *conn, db, strlen(db), incr2, strlen(incr2), nobase, strlen(nobase));
         if (!chdb_result_error(r))
-            fail("8b. missing base refused", "expected an error, got success");
+            fail("8e. missing base refused", "expected an error, got success");
         else
-            pass("8b. missing base refused");
+            pass("8e. missing base refused");
         chdb_destroy_query_result(r);
     }
 
