@@ -4,6 +4,7 @@ from typing import Optional, Any
 import sys
 from decimal import Decimal
 from urllib.parse import parse_qsl
+import chdb
 from chdb import _chdb
 from chdb.progress_display import (
     get_notebook_display as _get_notebook_display,
@@ -711,7 +712,7 @@ class Connection:
             - arrowtable format returns pyarrow.Table
 
         Raises:
-            RuntimeError: If query execution fails
+            ChdbError: If query execution fails
             ImportError: If required packages for format are not installed
 
         .. warning::
@@ -754,6 +755,8 @@ class Connection:
             else:
                 result = self._conn.query(query, format, params=params or {})
             return result_func(result)
+        except RuntimeError as e:
+            raise chdb.ChdbError(str(e)) from e
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
 
@@ -814,7 +817,7 @@ class Connection:
             - PyArrow RecordBatch streaming (Arrow format only)
 
         Raises:
-            RuntimeError: If query execution fails
+            ChdbError: If query execution fails
             ImportError: If required packages for format are not installed
 
         .. note::
@@ -860,6 +863,9 @@ class Connection:
         progress_callback = self._setup_auto_progress_callback()
         try:
             c_stream_result = self._conn.send_query(query, format, params=params or {})
+        except RuntimeError as e:
+            self._cleanup_auto_progress_callback(progress_callback)
+            raise chdb.ChdbError(str(e)) from e
         except Exception:
             self._cleanup_auto_progress_callback(progress_callback)
             raise
