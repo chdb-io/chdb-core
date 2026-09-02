@@ -63,6 +63,27 @@ jobs:
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
     timeout-minutes: 120
     steps:
+      - name: Clean up submodule state left by a cancelled job
+        # Runners are reused. A job cancelled mid-checkout leaves lock files and half-cloned
+        # repositories under .git/modules, and actions/checkout only resets the superproject
+        # ("Unable to create '.git/modules/.../index.lock': File exists", "Unable to find
+        # current revision in submodule path ..."). Same logic as
+        # .github/scripts/update-submodules.sh, inlined because it has to run before checkout.
+        run: |
+          [ -d .git/modules ] && [ -f .gitmodules ] || exit 0
+          find .git/modules -type f -name '*.lock' -print -delete | sed 's/^/Removed stale lock: /'
+          git config --file .gitmodules --get-regexp '^submodule\..*\.path$' |
+          while read -r key path; do
+            name=${key#submodule.}
+            name=${name%.path}
+            gitdir=".git/modules/$name"
+            [ -d "$gitdir" ] || continue
+            if ! git --git-dir="$gitdir" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+              echo "Removing broken submodule clone: $path"
+              rm -rf "$path" "$gitdir"
+            fi
+          done
+
       - name: Checkout (with submodules)
         uses: actions/checkout@v7
         with:
