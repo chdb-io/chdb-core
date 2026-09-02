@@ -754,9 +754,10 @@ class Connection:
                 result = self._conn.query_df(query, params=params or {})
             else:
                 result = self._conn.query(query, format, params=params or {})
-            return result_func(result)
         except RuntimeError as e:
             raise chdb.ChdbError(str(e)) from e
+        else:
+            return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
 
