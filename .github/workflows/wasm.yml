@@ -63,10 +63,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
     timeout-minutes: 120
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
+
+      - name: Update submodules
+        # Authenticated clones and recovery from state left by a cancelled job; see the
+        # script header. Depth 1 keeps the shallow submodules actions/checkout used here.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SUBMODULE_DEPTH: 1
+        run: .github/scripts/update-submodules.sh
 
       - name: Install build deps
         run: |
