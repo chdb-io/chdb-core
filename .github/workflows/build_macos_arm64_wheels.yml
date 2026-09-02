@@ -132,6 +132,9 @@ jobs:
 
       - name: Run chdb/build_mac_on_linux.sh
         timeout-minutes: 600
+        env:
+          # For the cctools clones in chdb/build/install_cctools.sh.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           source ~/.cargo/env
           # Use Debug for crash analysis when DEBUG_MODE is enabled
@@ -144,6 +147,9 @@ jobs:
       - name: Run chdb/build/build_static_lib_mac_on_linux.sh
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         timeout-minutes: 600
+        env:
+          # For the cctools clones in chdb/build/install_cctools.sh.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           source ~/.cargo/env
           bash ./chdb/build/build_static_lib_mac_on_linux.sh arm64

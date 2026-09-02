@@ -2,6 +2,17 @@
 
 set -e
 
+# CI passes GITHUB_TOKEN so the clones below are authenticated: anonymous clones
+# from the shared runner egress address get rate-limited by GitHub (HTTP 401,
+# "could not read Username for 'https://github.com'"). Same header
+# actions/checkout uses; GIT_CONFIG_* is process-local and never written to disk.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+    export GIT_CONFIG_VALUE_0
+fi
+
 # Parse arguments
 TARGET_ARCH="${1:-x86_64}"
 
