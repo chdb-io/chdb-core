@@ -163,6 +163,23 @@ bool collectWrittenDatabases(const IAST & ast, const String & current_database, 
         return true;
     }
 
+    /// `ALTER TABLE src MOVE PARTITION p TO TABLE dst.t` writes to two places,
+    /// and the destination is on the command rather than on the statement.
+    if (const auto * alter = ast.as<ASTAlterQuery>())
+    {
+        out_databases.insert(resolve(alter->getDatabase()));
+        if (alter->command_list)
+        {
+            for (const auto & child : alter->command_list->children)
+            {
+                const auto * command = child->as<ASTAlterCommand>();
+                if (command && !command->to_table.empty())
+                    out_databases.insert(resolve(command->to_database));
+            }
+        }
+        return true;
+    }
+
     if (const auto * with_table = dynamic_cast<const ASTQueryWithTableAndOutput *>(&ast))
     {
         out_databases.insert(resolve(with_table->getDatabase()));
@@ -182,11 +199,23 @@ bool overridesSynchronousCompletion(const IAST & ast)
 {
     if (const auto * set = ast.as<ASTSetQuery>(); set && !set->is_standalone)
     {
+        const auto guarded = [](const String & name)
+        {
+            return name == "async_insert" || name == "wait_for_async_insert" || name == "mutations_sync"
+                || name == "alter_sync" || name == "lightweight_deletes_sync";
+        };
+
         for (const auto & change : set->changes)
         {
-            if (change.name == "async_insert" || change.name == "wait_for_async_insert"
-                || change.name == "mutations_sync" || change.name == "alter_sync"
-                || change.name == "lightweight_deletes_sync")
+            if (guarded(change.name))
+                return true;
+        }
+        /// `SETTINGS async_insert = DEFAULT` resets the value the connection
+        /// chose, which is the same override by another spelling. The parser
+        /// files those under default_settings rather than changes.
+        for (const auto & name : set->default_settings)
+        {
+            if (guarded(name))
                 return true;
         }
     }
@@ -228,7 +257,6 @@ chdb_query_class classifyByQueryKind(IAST::QueryKind kind)
         case IAST::QueryKind::Rename:
         case IAST::QueryKind::Optimize:
         case IAST::QueryKind::Alter:
-        case IAST::QueryKind::Copy:
             return CHDB_QUERY_MUTATING;
 
         /// Reached only if an access statement grows an AST that
@@ -239,6 +267,10 @@ chdb_query_class classifyByQueryKind(IAST::QueryKind kind)
         case IAST::QueryKind::Move:
             return CHDB_QUERY_MUTATING_GLOBAL;
 
+        /// `COPY ... TO` writes a file no backup covers. The statement serves
+        /// the PostgreSQL wire protocol, which a managed connection does not
+        /// speak, so both directions refuse rather than split hairs.
+        case IAST::QueryKind::Copy:
         case IAST::QueryKind::System:
         case IAST::QueryKind::Set:
         case IAST::QueryKind::Use:

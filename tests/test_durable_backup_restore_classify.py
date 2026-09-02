@@ -206,6 +206,14 @@ class TestClassifyQuery(DurablePrimitivesTestCase):
         # A multi-target DROP keeps its targets in a list.
         self.assertTrue(self.writes_only("DROP TABLE mem.a, mem.b", "mem"))
         self.assertFalse(self.writes_only("DROP TABLE mem.a, other.b", "mem"))
+        # A partition move names its destination on the command, not on the
+        # statement, so the source alone does not settle it.
+        self.assertTrue(
+            self.writes_only("ALTER TABLE mem.a MOVE PARTITION 1 TO TABLE mem.b", "mem")
+        )
+        self.assertFalse(
+            self.writes_only("ALTER TABLE mem.a MOVE PARTITION 1 TO TABLE other.b", "mem")
+        )
         # A statement that writes nothing is vacuously contained.
         self.assertTrue(self.writes_only("SELECT 1", "mem"))
         # No target named means the question was not asked.
@@ -236,6 +244,11 @@ class TestClassifyQuery(DurablePrimitivesTestCase):
         ):
             with self.subTest(sql=sql):
                 self.assertEqual(self.classify(sql), CONTROL)
+        # `= DEFAULT` resets the value the connection chose, which is the same
+        # override by another spelling; the parser files it separately.
+        self.assertEqual(
+            self.classify("INSERT INTO t SETTINGS async_insert = DEFAULT VALUES (1)"), CONTROL
+        )
         # An unrelated setting is nobody's business but the statement's.
         self.assertEqual(
             self.classify("INSERT INTO t SETTINGS max_threads = 4 VALUES (1)"), MUTATING
