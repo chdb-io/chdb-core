@@ -84,8 +84,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Update submodules
-        run: |
-          git submodule update --init --recursive --jobs 4
+        # Authenticated clones; see the script header.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/update-submodules.sh
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -213,8 +215,17 @@ jobs:
             echo "This is an x86_64 (Intel) machine"
           fi
       - name: Setup pyenv
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          curl https://pyenv.run | bash
+          # Clone pyenv itself with the job token. `curl https://pyenv.run | bash` clones
+          # pyenv plus four unused plugins anonymously, and anonymous clones get
+          # rate-limited on the self-hosted pool's shared egress IP
+          # ("could not read Username for 'https://github.com'").
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
+            git clone --depth 1 https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
 
