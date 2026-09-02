@@ -1508,9 +1508,21 @@ chdb_result * chdb_restore_database_n(
 }
 
 chdb_state chdb_classify_query_n(
-    chdb_connection conn, const char * sql, size_t sql_len, chdb_query_class * out_class, int * out_has_secrets)
+    chdb_connection conn,
+    const char * sql,
+    size_t sql_len,
+    const char * target_database,
+    size_t target_database_len,
+    chdb_query_analysis_v1 * out_analysis)
 {
-    if (!conn || !out_class)
+    if (!conn || !out_analysis)
+        return CHDBError;
+
+    /// The caller declares how much room it has. Anything smaller than the
+    /// header we would write past is a mismatched build, not a smaller
+    /// version -- refuse rather than scribble outside it.
+    const uint32_t declared_size = out_analysis->struct_size;
+    if (declared_size < sizeof(chdb_query_analysis_v1))
         return CHDBError;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
@@ -1520,10 +1532,12 @@ chdb_state chdb_classify_query_n(
     try
     {
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
-        bool has_secrets = false;
-        *out_class = client->classifyQuery(sql, sql_len, out_has_secrets ? &has_secrets : nullptr);
-        if (out_has_secrets)
-            *out_has_secrets = has_secrets ? 1 : 0;
+        client->analyzeQuery(
+            sql,
+            sql_len,
+            std::string_view(target_database ? target_database : "", target_database ? target_database_len : 0),
+            *out_analysis);
+        out_analysis->struct_size = declared_size;
         return CHDBSuccess;
     }
     catch (...)
@@ -1531,6 +1545,7 @@ chdb_state chdb_classify_query_n(
         return CHDBError;
     }
 }
+
 
 void chdb_set_signal_handlers_enabled(int enabled)
 {

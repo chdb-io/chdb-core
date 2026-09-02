@@ -41,13 +41,23 @@ class DurablePrimitivesTestCase(unittest.TestCase):
     def scalar(self, sql):
         return str(self.conn.query(sql, "CSV")).strip()
 
+    def analyze(self, sql, target_database=""):
+        return self.conn._conn.classify_query(sql, target_database)
+
     def classify(self, sql):
-        query_class, _has_secrets = self.conn._conn.classify_query(sql)
-        return query_class
+        return self.analyze(sql)["query_class"]
 
     def has_secrets(self, sql):
-        _query_class, has_secrets = self.conn._conn.classify_query(sql)
-        return has_secrets
+        return self.analyze(sql)["has_secrets"]
+
+    def statement_count(self, sql):
+        return self.analyze(sql)["statement_count"]
+
+    def writes_only(self, sql, target_database):
+        return self.analyze(sql, target_database)["writes_only_target_database"]
+
+    def changes_lifecycle(self, sql):
+        return self.analyze(sql, "mem")["changes_database_lifecycle"]
 
     def backup(self, database, file_path, base_file_path=""):
         self.conn._conn.backup_database(database, file_path, base_file_path)
@@ -154,6 +164,81 @@ class TestClassifyQuery(DurablePrimitivesTestCase):
         self.assertEqual(self.classify("INSERT INTO t VALUES (1)"), MUTATING)
         self.assertEqual(
             self.classify("INSERT INTO system.wasm_modules VALUES ('m','b')"), MUTATING_GLOBAL
+        )
+
+    def test_a_check_only_evaluates(self):
+        """CHECK GRANT asks whether a privilege exists; it changes nothing."""
+        self.assertEqual(self.classify("CHECK GRANT SELECT ON *.*"), READ_ONLY)
+
+    def test_a_temporary_table_is_outside_every_database(self):
+        """No BACKUP DATABASE holds it, so it is not a persistent write."""
+        self.assertEqual(self.classify("CREATE TEMPORARY TABLE tmp (a Int32)"), CONTROL)
+        self.assertEqual(self.classify("DROP TEMPORARY TABLE tmp"), CONTROL)
+
+    def test_statement_count(self):
+        """Only a count of one is a statement a caller can replay on its own."""
+        self.assertEqual(self.statement_count("SELECT 1"), 1)
+        self.assertEqual(self.statement_count("SELECT 1; SELECT 2"), 2)
+        self.assertEqual(self.statement_count("SELECT 1;"), 1)
+        self.assertEqual(self.statement_count("SELECT 1; -- done"), 1)
+        self.assertEqual(self.statement_count("INSERT INTO t VALUES (1),(2)"), 1)
+        self.assertEqual(self.statement_count("INSERT INTO t VALUES (1); SELECT 1"), 2)
+        # Both arms of PARALLEL WITH run.
+        self.assertEqual(self.statement_count("SELECT 1 PARALLEL WITH SELECT 2"), 2)
+        self.assertEqual(self.statement_count("SELECT FROM WHERE (("), 0)
+        self.assertEqual(self.statement_count(""), 0)
+
+    def test_write_containment_resolves_unqualified_names(self):
+        """An unqualified name is resolved through the connection's current
+        database before being judged -- that is the difference between a table
+        write and a write into `system`."""
+        self.assertTrue(self.writes_only("INSERT INTO mem.t VALUES (1)", "mem"))
+        self.assertFalse(self.writes_only("INSERT INTO other.t VALUES (1)", "mem"))
+        self.assertFalse(
+            self.writes_only("INSERT INTO system.wasm_modules VALUES ('m','b')", "mem")
+        )
+        self.assertFalse(self.writes_only("INSERT INTO FUNCTION file('o.csv') SELECT 1", "mem"))
+        self.assertFalse(self.writes_only("SELECT 1 INTO OUTFILE 'o.csv'", "mem"))
+        # RENAME and EXCHANGE touch two objects, either of which may stray.
+        self.assertTrue(self.writes_only("RENAME TABLE mem.a TO mem.b", "mem"))
+        self.assertFalse(self.writes_only("RENAME TABLE mem.a TO other.b", "mem"))
+        self.assertFalse(self.writes_only("EXCHANGE TABLES mem.a AND other.b", "mem"))
+        # A multi-target DROP keeps its targets in a list.
+        self.assertTrue(self.writes_only("DROP TABLE mem.a, mem.b", "mem"))
+        self.assertFalse(self.writes_only("DROP TABLE mem.a, other.b", "mem"))
+        # A statement that writes nothing is vacuously contained.
+        self.assertTrue(self.writes_only("SELECT 1", "mem"))
+        # No target named means the question was not asked.
+        self.assertFalse(self.writes_only("INSERT INTO mem.t VALUES (1)", ""))
+
+    def test_unqualified_write_follows_the_current_database(self):
+        self.conn.query("CREATE DATABASE mem")
+        self.conn.query("USE mem")
+        self.assertTrue(self.writes_only("INSERT INTO t VALUES (1)", "mem"))
+        self.assertFalse(self.writes_only("INSERT INTO t VALUES (1)", "other"))
+
+    def test_database_lifecycle(self):
+        """Acting on the container is not the same as acting inside it."""
+        self.assertTrue(self.changes_lifecycle("CREATE DATABASE d"))
+        self.assertTrue(self.changes_lifecycle("DROP DATABASE d"))
+        self.assertTrue(self.changes_lifecycle("RENAME DATABASE a TO b"))
+        self.assertFalse(self.changes_lifecycle("CREATE TABLE mem.t (a Int32) ENGINE = Memory"))
+        self.assertFalse(self.changes_lifecycle("DROP TABLE mem.t"))
+        self.assertFalse(self.changes_lifecycle("INSERT INTO mem.t VALUES (1)"))
+
+    def test_a_statement_setting_cannot_move_a_write_off_the_sync_policy(self):
+        """A managed connection configures synchronous completion once; a
+        statement re-specifying it is changing the connection's policy."""
+        for sql in (
+            "INSERT INTO t SETTINGS async_insert = 1 VALUES (1)",
+            "INSERT INTO t SETTINGS wait_for_async_insert = 0 VALUES (1)",
+            "ALTER TABLE t UPDATE a = 1 WHERE 1 SETTINGS mutations_sync = 0",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(self.classify(sql), CONTROL)
+        # An unrelated setting is nobody's business but the statement's.
+        self.assertEqual(
+            self.classify("INSERT INTO t SETTINGS max_threads = 4 VALUES (1)"), MUTATING
         )
 
     def test_writing_outside_the_database_is_control(self):
@@ -376,6 +461,21 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
                 os.path.join(self.backups, "orphan.tar.gz"),
                 base_file_path=os.path.join(self.backups, "not-a-base.tar.gz"),
             )
+
+    def test_using_a_closed_connection_raises_rather_than_crashes(self):
+        """close() drops the native handle; the three entry points have to look
+        before they dereference it."""
+        # The engine allows one data path per process, so reuse this case's
+        # own connection rather than opening a second one.
+        inner = self.conn._conn
+        self.conn.close()
+        with self.assertRaises(RuntimeError):
+            inner.classify_query("SELECT 1", "")
+        with self.assertRaises(RuntimeError):
+            inner.backup_database("mem", os.path.join(self.backups, "x.tar.gz"), "")
+        with self.assertRaises(RuntimeError):
+            inner.restore_database("mem", os.path.join(self.backups, "x.tar.gz"))
+        # tearDown closes again; that must stay harmless.
 
     def test_restoring_a_missing_archive_reports_an_error(self):
         with self.assertRaises(RuntimeError):

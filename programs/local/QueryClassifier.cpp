@@ -30,9 +30,13 @@
 #include <Parsers/ASTUseQuery.h>
 #include <Parsers/ASTWatchQuery.h>
 #include <Interpreters/DatabaseCatalog.h>
+#include <Parsers/ASTRenameQuery.h>
+#include <Parsers/ASTExpressionList.h>
+#include <Parsers/ASTIdentifier.h>
+
+#include <set>
 #include <Parsers/ASTQueryWithTableAndOutput.h>
 #include <Parsers/IAST.h>
-#include <Parsers/Access/ASTCheckGrantQuery.h>
 #include <Parsers/Access/ASTCreateMaskingPolicyQuery.h>
 #include <Parsers/Access/ASTCreateQuotaQuery.h>
 #include <Parsers/Access/ASTCreateRoleQuery.h>
@@ -76,7 +80,9 @@ bool isGlobalMutatingStatement(const IAST & ast)
         || ast.as<ASTCreateUserQuery>() || ast.as<ASTCreateRoleQuery>() || ast.as<ASTCreateQuotaQuery>()
         || ast.as<ASTCreateRowPolicyQuery>() || ast.as<ASTCreateMaskingPolicyQuery>()
         || ast.as<ASTCreateSettingsProfileQuery>() || ast.as<ASTDropAccessEntityQuery>()
-        || ast.as<ASTMoveAccessEntityQuery>() || ast.as<ASTGrantQuery>() || ast.as<ASTCheckGrantQuery>();
+        /// CHECK GRANT only evaluates an authorization and changes nothing;
+        /// its QueryKind::Check already lands it in READ_ONLY.
+        || ast.as<ASTMoveAccessEntityQuery>() || ast.as<ASTGrantQuery>();
 }
 
 /// Statements that either only touch the session, so replaying them is
@@ -94,19 +100,102 @@ bool isControlStatement(const IAST & ast)
         || ast.as<ASTHypotheticalIndexQuery>();
 }
 
-/// The `system` database is engine-owned: its storage engine refuses backups
-/// outright, so a write landing there survives nothing. It is also how some
-/// global objects get their payload -- a WebAssembly module arrives as
-/// `INSERT INTO system.wasm_modules`, and the bytes are written to the user
-/// scripts directory, not to any database. Treat writes there as global.
-bool writesToSystemDatabase(const IAST & ast)
+/// Every database a statement writes to, with unqualified names resolved the
+/// way execution would resolve them. Returns false when a write leaves the
+/// engine entirely -- a table function, an outfile -- because such a write
+/// belongs to no database and no caller can claim it lands in theirs.
+///
+/// `out_databases` is only added to; a false return means "and also somewhere
+/// outside", not that the collected set is meaningless.
+bool collectWrittenDatabases(const IAST & ast, const String & current_database, std::set<String> & out_databases)
 {
+    const auto resolve = [&](const String & explicit_database)
+    { return explicit_database.empty() ? current_database : explicit_database; };
+
+    if (ast.as<ASTParallelWithQuery>())
+    {
+        bool contained = true;
+        for (const auto & child : ast.children)
+        {
+            if (!child)
+                return false;
+            contained &= collectWrittenDatabases(*child, current_database, out_databases);
+        }
+        return contained;
+    }
+
+    /// A read that writes a file writes outside every database.
+    if (const auto * with_output = dynamic_cast<const ASTQueryWithOutput *>(&ast); with_output && with_output->out_file)
+        return false;
+
     if (const auto * insert = ast.as<ASTInsertQuery>())
-        return insert->getDatabase() == DatabaseCatalog::SYSTEM_DATABASE;
+    {
+        /// `INSERT INTO FUNCTION file(...)/s3(...)` names a sink, not a table.
+        if (insert->table_function)
+            return false;
+        out_databases.insert(resolve(insert->getDatabase()));
+        return true;
+    }
+
+    /// RENAME and EXCHANGE touch two objects per element, and either side may
+    /// sit in a different database.
+    if (const auto * rename = ast.as<ASTRenameQuery>())
+    {
+        for (const auto & element : rename->getElements())
+        {
+            out_databases.insert(resolve(element.from.getDatabase()));
+            out_databases.insert(resolve(element.to.getDatabase()));
+        }
+        return true;
+    }
+
+    /// `DROP TABLE a, b` keeps its targets in a list rather than in the
+    /// statement's own database/table fields.
+    if (const auto * drop = ast.as<ASTDropQuery>(); drop && drop->database_and_tables)
+    {
+        for (const auto & child : drop->database_and_tables->children)
+        {
+            String database;
+            if (const auto * identifier = child->as<ASTTableIdentifier>())
+                database = identifier->getDatabaseName();
+            out_databases.insert(resolve(database));
+        }
+        return true;
+    }
 
     if (const auto * with_table = dynamic_cast<const ASTQueryWithTableAndOutput *>(&ast))
-        return with_table->getDatabase() == DatabaseCatalog::SYSTEM_DATABASE;
+    {
+        out_databases.insert(resolve(with_table->getDatabase()));
+        return true;
+    }
 
+    /// A statement whose target this function does not know how to read is a
+    /// statement we cannot place. Saying "outside" keeps the caller honest.
+    return false;
+}
+
+/// Statement-level settings that would take a write off the connection's own
+/// synchronous-completion policy. A managed connection configures these once;
+/// a statement re-specifying any of them is changing the policy, whichever
+/// direction it moves, so the value is not inspected.
+bool overridesSynchronousCompletion(const IAST & ast)
+{
+    if (const auto * set = ast.as<ASTSetQuery>(); set && !set->is_standalone)
+    {
+        for (const auto & change : set->changes)
+        {
+            if (change.name == "async_insert" || change.name == "wait_for_async_insert"
+                || change.name == "mutations_sync" || change.name == "alter_sync"
+                || change.name == "lightweight_deletes_sync")
+                return true;
+        }
+    }
+
+    for (const auto & child : ast.children)
+    {
+        if (child && overridesSynchronousCompletion(*child))
+            return true;
+    }
     return false;
 }
 
@@ -183,7 +272,71 @@ bool statementHasSecrets(const IAST & ast)
     return ast.hasSecretParts();
 }
 
-chdb_query_class classifyStatement(const IAST & ast)
+bool changesDatabaseLifecycle(const IAST & ast)
+{
+    if (ast.as<ASTParallelWithQuery>())
+    {
+        for (const auto & child : ast.children)
+        {
+            if (child && changesDatabaseLifecycle(*child))
+                return true;
+        }
+        return false;
+    }
+
+    /// A database statement names a database and no table. ATTACH and DETACH
+    /// of a database count too: they change which databases exist.
+    if (const auto * create = ast.as<ASTCreateQuery>())
+        return create->getTable().empty() && !create->getDatabase().empty();
+
+    if (const auto * drop = ast.as<ASTDropQuery>())
+        return drop->getTable().empty() && !drop->getDatabase().empty() && !drop->database_and_tables;
+
+    if (const auto * rename = ast.as<ASTRenameQuery>())
+        return rename->database;
+
+    return false;
+}
+
+bool writesOnlyToDatabase(const IAST & ast, const String & target_database, const String & current_database)
+{
+    if (target_database.empty())
+        return false;
+
+    /// A statement that writes nothing is vacuously contained. Asking
+    /// collectWrittenDatabases() about a SELECT would take the "target I
+    /// cannot read" branch and answer no, which is the wrong kind of caution:
+    /// there is no write to place.
+    if (classifyStatement(ast, current_database) == CHDB_QUERY_READ_ONLY)
+        return true;
+
+    std::set<String> written;
+    if (!collectWrittenDatabases(ast, current_database, written))
+        return false;
+
+    for (const auto & database : written)
+    {
+        if (database != target_database)
+            return false;
+    }
+    /// A statement that writes nothing is vacuously contained.
+    return true;
+}
+
+size_t countExecutableStatements(const IAST & ast)
+{
+    if (!ast.as<ASTParallelWithQuery>())
+        return 1;
+
+    /// Both arms of `a PARALLEL WITH b` run, so the text is not one statement
+    /// a caller could replay on its own.
+    size_t count = 0;
+    for (const auto & child : ast.children)
+        count += child ? countExecutableStatements(*child) : 1;
+    return count;
+}
+
+chdb_query_class classifyStatement(const IAST & ast, const String & current_database)
 {
     /// `stmt1 PARALLEL WITH stmt2` is as restricted as its most restricted arm.
     if (ast.as<ASTParallelWithQuery>())
@@ -196,10 +349,16 @@ chdb_query_class classifyStatement(const IAST & ast)
         {
             if (!child)
                 return CHDB_QUERY_UNKNOWN;
-            result = combineQueryClass(result, classifyStatement(*child));
+            result = combineQueryClass(result, classifyStatement(*child, current_database));
         }
         return result;
     }
+
+    /// A statement-level setting that moves a write off the connection's
+    /// synchronous-completion policy is the connection's business, not the
+    /// statement's.
+    if (overridesSynchronousCompletion(ast))
+        return CHDB_QUERY_CONTROL;
 
     /// INTO OUTFILE turns any read into a filesystem write, which no database
     /// checkpoint carries. `as<>` is an exact-type match, so this one asks for
@@ -217,8 +376,13 @@ chdb_query_class classifyStatement(const IAST & ast)
         return CHDB_QUERY_MUTATING_GLOBAL;
 
     /// ATTACH shares ASTCreateQuery with CREATE, and DETACH shares ASTDropQuery
-    /// with DROP; both attach an object rather than define one.
-    if (const auto * create = ast.as<ASTCreateQuery>(); create && create->attach)
+    /// with DROP; both attach an object rather than define one. A temporary
+    /// table shares the AST too, and lives outside every database, so no
+    /// backup of one can hold it.
+    if (const auto * create = ast.as<ASTCreateQuery>(); create && (create->attach || create->isTemporary()))
+        return CHDB_QUERY_CONTROL;
+
+    if (const auto * drop = ast.as<ASTDropQuery>(); drop && drop->isTemporary())
         return CHDB_QUERY_CONTROL;
 
     if (const auto * drop = ast.as<ASTDropQuery>(); drop && drop->kind == ASTDropQuery::Kind::Detach)
@@ -249,12 +413,22 @@ chdb_query_class classifyStatement(const IAST & ast)
         result = classifyByQueryKind(ast.getQueryKind());
     }
 
-    /// A write is only MUTATING if a checkpoint of the database would hold it.
-    /// This has to sit after the ALTER branch as well as after the QueryKind
-    /// fallback: `ALTER TABLE system.x` reaches the database no backup covers
-    /// just as surely as `INSERT INTO system.x` does.
-    if (result == CHDB_QUERY_MUTATING && writesToSystemDatabase(ast))
-        return CHDB_QUERY_MUTATING_GLOBAL;
+    /// A write is only MUTATING if a checkpoint of some database would hold
+    /// it. The `system` database is engine-owned and its storage engine
+    /// refuses backups, so a write landing there survives nothing -- and an
+    /// unqualified name lands there whenever `system` is the current database,
+    /// which is exactly how a WebAssembly module gets uploaded.
+    ///
+    /// This sits after the ALTER branch as well as after the QueryKind
+    /// fallback: `ALTER TABLE system.x` reaches that database just as surely
+    /// as `INSERT INTO system.x` does.
+    if (result == CHDB_QUERY_MUTATING)
+    {
+        std::set<String> written;
+        collectWrittenDatabases(ast, current_database, written);
+        if (written.contains(DatabaseCatalog::SYSTEM_DATABASE))
+            return CHDB_QUERY_MUTATING_GLOBAL;
+    }
 
     return result;
 }

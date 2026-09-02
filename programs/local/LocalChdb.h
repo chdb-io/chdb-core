@@ -70,10 +70,11 @@ public:
     /// statement from the parts, and classifies SQL without running it.
     void backup_database(const std::string & database, const std::string & file_path, const std::string & base_file_path);
     void restore_database(const std::string & database, const std::string & file_path);
-    py::tuple classify_query(const std::string & sql);
+    py::dict classify_query(const std::string & sql, const std::string & target_database);
     std::string generate_sql(const std::string & prompt);
 
     // Move the private methods declarations here
+    void requireOpen() const;
     std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
     std::vector<std::string> build_clickhouse_args(const std::string & path, const std::map<std::string, std::string> & params);
 

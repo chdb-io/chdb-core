@@ -72,14 +72,18 @@ public:
     void cancelInsertStream(void * insert_stream);
 
     /// What `sql` would do, decided by this connection's parser and parser
-    /// settings without executing anything. Several statements classify as the
-    /// most restricted one among them; anything that fails to parse, and
-    /// anything the classifier does not recognise, is CHDB_QUERY_UNKNOWN.
+    /// settings without executing anything. Fills `out` with the class, the
+    /// number of executable statements, and the flags described in chdb.h.
     ///
-    /// `out_has_secrets`, when given, reports whether any statement in the
-    /// batch carries a credential in its text. It is set from the same parse,
-    /// and is false whenever the class is UNKNOWN -- nothing was proven.
-    chdb_query_class classifyQuery(const char * sql, size_t sql_len, bool * out_has_secrets = nullptr);
+    /// `target_database` is the database the caller considers its own; an
+    /// empty view means "do not judge containment", and the
+    /// WRITES_ONLY_TARGET_DATABASE flag is then never set. Unqualified names
+    /// resolve through this connection's current database, the way execution
+    /// would resolve them.
+    ///
+    /// Text that fails to parse yields UNKNOWN, a count of zero and no flags.
+    void analyzeQuery(
+        const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out);
 
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
