@@ -108,10 +108,19 @@ jobs:
           fi
         continue-on-error: true
       - name: Setup pyenv
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           # Remove existing pyenv installation if present
           rm -rf $HOME/.pyenv
-          curl https://pyenv.run | bash
+          # Clone pyenv itself with the job token. `curl https://pyenv.run | bash` clones
+          # pyenv plus four unused plugins anonymously, and anonymous clones get
+          # rate-limited on the self-hosted pool's shared egress IP
+          # ("could not read Username for 'https://github.com'").
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
+            git clone --depth 1 https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           # Python 3.8 removed
@@ -195,11 +204,14 @@ jobs:
           sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
       - uses: actions/checkout@v7
+        id: checkout
         with:
           fetch-depth: 0
       - name: Update submodules
-        run: |
-          git submodule update --init --recursive --jobs 4
+        # Authenticated clones; see the script header.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/update-submodules.sh
       - name: Update version for release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -708,7 +720,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Restore pyproject.toml (chdb-core-lite build mutates it in place)
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           git checkout -- pyproject.toml
       - name: Check and upload core files if present
