@@ -28,14 +28,20 @@
 #      fatal: Unable to create '.../.git/modules/contrib/llvm-project/index.lock': File exists.
 #      fatal: Unable to find current revision in submodule path 'contrib/google-cloud-cpp'
 #
-#    The normal path is the plain update. Only when it fails, the workspace is
-#    known to be damaged and no other git process is running, so: stale locks are
-#    removed, submodule clones without a usable repository are deleted, and the
-#    update is retried once with --force. --force makes git run every checkout
-#    even when the submodule's HEAD already matches: submodules are cloned with
-#    --no-checkout and populated afterwards, and an aborted update leaves the
-#    cloned ones with the right HEAD and an empty working tree, which a plain
-#    update would consider up to date.
+#    Every update runs with --force. Submodules are cloned with --no-checkout and
+#    populated afterwards; when an update is aborted in between (one clone failing
+#    twice aborts before any checkout), the cloned submodules are left with HEAD
+#    at the remote tip and an empty working tree. 24 of the 139 submodules are
+#    pinned at that tip, so a plain update considers them up to date and the
+#    build fails much later ("Cannot find source file: contrib/librdkafka/src/
+#    cJSON.c"). --force runs the checkout regardless, as actions/checkout does.
+#
+#    If the update still fails, the workspace is known to be damaged and no other
+#    git process is running: stale locks are removed, submodule clones without a
+#    usable repository are deleted, and the update is retried once.
+#
+# SUBMODULE_DEPTH=N makes the clones shallow (the wasm job used actions/checkout's
+# default of 1 before it moved to this script).
 
 set -euo pipefail
 
@@ -70,9 +76,16 @@ remove_broken_clones() {
     done
 }
 
-if ! git submodule update --init --recursive --jobs 4; then
-    echo "::warning::git submodule update failed, cleaning up stale submodule state and retrying once with --force"
+depth_arg=${SUBMODULE_DEPTH:+--depth=$SUBMODULE_DEPTH}
+
+update() {
+    # shellcheck disable=SC2086  # depth_arg is a single token or empty
+    git submodule update --init --recursive --force --jobs 4 $depth_arg
+}
+
+if ! update; then
+    echo "::warning::git submodule update failed, cleaning up stale submodule state and retrying once"
     remove_stale_locks
     remove_broken_clones
-    git submodule update --init --recursive --force --jobs 4
+    update
 fi
