@@ -34,19 +34,89 @@ static void pass(const char * label)
     printf("%-46s ok\n", label);
 }
 
+/* Run the analysis, or report why it could not run. */
+static int analyze(chdb_connection conn, const char * sql, const char * target_db, chdb_query_analysis_v1 * out)
+{
+    memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+    return chdb_classify_query_n(
+               conn, sql, strlen(sql), target_db, target_db ? strlen(target_db) : 0, out)
+        == CHDBSuccess;
+}
+
 /* A statement's class, or a note about why we could not get one. */
 static void expect_class(chdb_connection conn, const char * label, const char * sql, chdb_query_class want)
 {
-    chdb_query_class got = CHDB_QUERY_UNKNOWN;
-    if (chdb_classify_query_n(conn, sql, strlen(sql), &got, NULL) != CHDBSuccess)
+    chdb_query_analysis_v1 a;
+    if (!analyze(conn, sql, NULL, &a))
     {
         fail(label, "chdb_classify_query_n returned CHDBError");
         return;
     }
-    if (got != want)
+    if (a.query_class != (uint32_t)want)
     {
         char detail[128];
-        snprintf(detail, sizeof(detail), "want class %d, got %d", (int)want, (int)got);
+        snprintf(detail, sizeof(detail), "want class %d, got %u", (int)want, a.query_class);
+        fail(label, detail);
+        return;
+    }
+    pass(label);
+}
+
+/* How many executable statements the text holds. */
+static void expect_count(chdb_connection conn, const char * label, const char * sql, uint32_t want)
+{
+    chdb_query_analysis_v1 a;
+    if (!analyze(conn, sql, NULL, &a))
+    {
+        fail(label, "chdb_classify_query_n returned CHDBError");
+        return;
+    }
+    if (a.statement_count != want)
+    {
+        char detail[128];
+        snprintf(detail, sizeof(detail), "want %u statements, got %u", want, a.statement_count);
+        fail(label, detail);
+        return;
+    }
+    pass(label);
+}
+
+/* Whether every persistent write lands in target_db. */
+static void expect_contained(
+    chdb_connection conn, const char * label, const char * sql, const char * target_db, int want)
+{
+    chdb_query_analysis_v1 a;
+    if (!analyze(conn, sql, target_db, &a))
+    {
+        fail(label, "chdb_classify_query_n returned CHDBError");
+        return;
+    }
+    const int got = (a.flags & CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE) != 0;
+    if (got != want)
+    {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "want contained=%d, got %d for `%.80s`", want, got, sql);
+        fail(label, detail);
+        return;
+    }
+    pass(label);
+}
+
+/* Whether the statement acts on a database as a whole. */
+static void expect_lifecycle(chdb_connection conn, const char * label, const char * sql, int want)
+{
+    chdb_query_analysis_v1 a;
+    if (!analyze(conn, sql, "mem", &a))
+    {
+        fail(label, "chdb_classify_query_n returned CHDBError");
+        return;
+    }
+    const int got = (a.flags & CHDB_QUERY_CHANGES_DATABASE_LIFECYCLE) != 0;
+    if (got != want)
+    {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "want lifecycle=%d, got %d for `%.80s`", want, got, sql);
         fail(label, detail);
         return;
     }
@@ -165,6 +235,12 @@ static const struct statement_case k_all_statements[] = {
     {"DROP TABLE system.t", CHDB_QUERY_MUTATING_GLOBAL},
     {"TRUNCATE TABLE system.t", CHDB_QUERY_MUTATING_GLOBAL},
 
+    /* A temporary table lives outside every database, so no backup of one
+     * holds it; CHECK GRANT only evaluates and changes nothing. */
+    {"CREATE TEMPORARY TABLE tmp (a Int32)", CHDB_QUERY_CONTROL},
+    {"DROP TEMPORARY TABLE tmp", CHDB_QUERY_CONTROL},
+    {"CHECK GRANT SELECT ON *.*", CHDB_QUERY_READ_ONLY},
+
     /* Session and server state */
     {"USE d", CHDB_QUERY_CONTROL},
     {"SET max_threads=1", CHDB_QUERY_CONTROL},
@@ -208,7 +284,6 @@ static const struct statement_case k_all_statements[] = {
     {"MOVE USER u TO local_directory", CHDB_QUERY_MUTATING_GLOBAL},
     {"GRANT SELECT ON *.* TO u", CHDB_QUERY_MUTATING_GLOBAL},
     {"REVOKE SELECT ON *.* FROM u", CHDB_QUERY_MUTATING_GLOBAL},
-    {"CHECK GRANT SELECT ON *.*", CHDB_QUERY_MUTATING_GLOBAL},
 
     /* PARALLEL WITH takes the class of its most restricted arm */
     {"SELECT 1 PARALLEL WITH SELECT 2", CHDB_QUERY_READ_ONLY},
@@ -433,15 +508,24 @@ int main(void)
     expect_backup_error(*conn, "9a. empty database name refused", "", backup_path);
     expect_backup_error(*conn, "9b. empty file path refused", db, "");
     {
-        chdb_query_class ignored = CHDB_QUERY_UNKNOWN;
-        if (chdb_classify_query_n(NULL, "SELECT 1", 8, &ignored, NULL) != CHDBError)
-            fail("9c. classify on a null connection errors", "expected CHDBError");
+        chdb_query_analysis_v1 a;
+        memset(&a, 0, sizeof(a));
+        a.struct_size = sizeof(a);
+        if (chdb_classify_query_n(NULL, "SELECT 1", 8, NULL, 0, &a) != CHDBError)
+            fail("9c. analysis on a null connection errors", "expected CHDBError");
         else
-            pass("9c. classify on a null connection errors");
-        if (chdb_classify_query_n(*conn, "SELECT 1", 8, NULL, NULL) != CHDBError)
-            fail("9d. classify without an out param errors", "expected CHDBError");
+            pass("9c. analysis on a null connection errors");
+        if (chdb_classify_query_n(*conn, "SELECT 1", 8, NULL, 0, NULL) != CHDBError)
+            fail("9d. analysis without an out param errors", "expected CHDBError");
         else
-            pass("9d. classify without an out param errors");
+            pass("9d. analysis without an out param errors");
+        /* A struct_size the engine would write past is a mismatched build. */
+        memset(&a, 0, sizeof(a));
+        a.struct_size = sizeof(a) - 1;
+        if (chdb_classify_query_n(*conn, "SELECT 1", 8, NULL, 0, &a) != CHDBError)
+            fail("9g. undersized struct_size refused", "expected CHDBError");
+        else
+            pass("9g. undersized struct_size refused");
     }
 
     /* Secrets: what a caller must not write into a durable log. */
@@ -459,13 +543,13 @@ int main(void)
         };
         for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++)
         {
-            chdb_query_class cls = CHDB_QUERY_UNKNOWN;
-            int has_secrets = -1;
+            chdb_query_analysis_v1 a;
             char label[96];
             snprintf(label, sizeof(label), "9e.%zu has_secrets", i + 1);
-            if (chdb_classify_query_n(*conn, cases[i].sql, strlen(cases[i].sql), &cls, &has_secrets) != CHDBSuccess)
+            int has_secrets = -1;
+            if (!analyze(*conn, cases[i].sql, NULL, &a))
                 fail(label, "chdb_classify_query_n returned CHDBError");
-            else if (has_secrets != cases[i].want)
+            else if ((has_secrets = (a.flags & CHDB_QUERY_HAS_SECRETS) != 0) != cases[i].want)
             {
                 char detail[256];
                 snprintf(detail, sizeof(detail), "want %d, got %d for `%.90s`", cases[i].want, has_secrets, cases[i].sql);
@@ -475,15 +559,68 @@ int main(void)
                 pass(label);
         }
         /* One secret anywhere in a batch taints the batch. */
-        chdb_query_class cls = CHDB_QUERY_UNKNOWN;
-        int has_secrets = 0;
+        chdb_query_analysis_v1 batch_a;
         const char * batch = "SELECT 1; CREATE USER u IDENTIFIED WITH sha256_password BY 'p'";
-        chdb_classify_query_n(*conn, batch, strlen(batch), &cls, &has_secrets);
-        if (!has_secrets)
+        analyze(*conn, batch, NULL, &batch_a);
+        if (!(batch_a.flags & CHDB_QUERY_HAS_SECRETS))
             fail("9f. a secret anywhere taints the batch", "expected has_secrets");
         else
             pass("9f. a secret anywhere taints the batch");
     }
+
+    /* 9h. Statement count: only a count of one is a statement a caller can
+     *     replay on its own. PARALLEL WITH runs both arms. */
+    expect_count(*conn, "9h.1 one statement", "SELECT 1", 1);
+    expect_count(*conn, "9h.2 two statements", "SELECT 1; SELECT 2", 2);
+    expect_count(*conn, "9h.3 trailing semicolon", "SELECT 1;", 1);
+    expect_count(*conn, "9h.4 trailing comment", "SELECT 1; -- done", 1);
+    expect_count(*conn, "9h.5 PARALLEL WITH counts arms", "SELECT 1 PARALLEL WITH SELECT 2", 2);
+    expect_count(*conn, "9h.6 inlined rows are data", "INSERT INTO t VALUES (1),(2),(3)", 1);
+    expect_count(*conn, "9h.7 statement behind rows", "INSERT INTO t VALUES (1); SELECT 1", 2);
+    expect_count(*conn, "9h.8 unparseable is zero", "SELECT FROM WHERE ((", 0);
+    expect_count(*conn, "9h.9 empty is zero", "   ", 0);
+
+    /* 9i. Write containment. The engine resolves an unqualified name through
+     *     the connection's current database before judging. */
+    expect_contained(*conn, "9i.1 qualified write to target", "INSERT INTO mem.t VALUES (1)", "mem", 1);
+    expect_contained(*conn, "9i.2 write to another database", "INSERT INTO other.t VALUES (1)", "mem", 0);
+    expect_contained(*conn, "9i.3 write into system", "INSERT INTO system.wasm_modules VALUES ('m','b')", "mem", 0);
+    expect_contained(*conn, "9i.4 INSERT INTO FUNCTION", "INSERT INTO FUNCTION file('o.csv') SELECT 1", "mem", 0);
+    expect_contained(*conn, "9i.5 INTO OUTFILE", "SELECT 1 INTO OUTFILE 'o.csv'", "mem", 0);
+    expect_contained(*conn, "9i.6 cross-database RENAME", "RENAME TABLE mem.a TO other.b", "mem", 0);
+    expect_contained(*conn, "9i.7 in-database RENAME", "RENAME TABLE mem.a TO mem.b", "mem", 1);
+    expect_contained(*conn, "9i.8 EXCHANGE across databases", "EXCHANGE TABLES mem.a AND other.b", "mem", 0);
+    expect_contained(*conn, "9i.9 multi-target DROP in target", "DROP TABLE mem.a, mem.b", "mem", 1);
+    expect_contained(*conn, "9i.10 multi-target DROP straying", "DROP TABLE mem.a, other.b", "mem", 0);
+    expect_contained(*conn, "9i.11 ALTER in target", "ALTER TABLE mem.t ADD COLUMN c String", "mem", 1);
+    expect_contained(*conn, "9i.12 a read writes nothing", "SELECT 1", "mem", 1);
+    expect_contained(*conn, "9i.13 no target named", "INSERT INTO mem.t VALUES (1)", NULL, 0);
+
+    /* 9j. Database lifecycle: acting on the container, not inside it. */
+    expect_lifecycle(*conn, "9j.1 CREATE DATABASE", "CREATE DATABASE d", 1);
+    expect_lifecycle(*conn, "9j.2 DROP DATABASE", "DROP DATABASE d", 1);
+    expect_lifecycle(*conn, "9j.3 RENAME DATABASE", "RENAME DATABASE a TO b", 1);
+    expect_lifecycle(*conn, "9j.4 CREATE TABLE is not", "CREATE TABLE mem.t (a Int32) ENGINE = Memory", 0);
+    expect_lifecycle(*conn, "9j.5 DROP TABLE is not", "DROP TABLE mem.t", 0);
+    expect_lifecycle(*conn, "9j.6 INSERT is not", "INSERT INTO mem.t VALUES (1)", 0);
+
+    /* 9k. A statement setting that moves a write off the connection's
+     *     synchronous-completion policy belongs to the connection. */
+    expect_class(
+        *conn, "9k.1 async_insert override", "INSERT INTO t SETTINGS async_insert = 1 VALUES (1)", CHDB_QUERY_CONTROL);
+    expect_class(
+        *conn,
+        "9k.2 wait_for_async_insert override",
+        "INSERT INTO t SETTINGS wait_for_async_insert = 0 VALUES (1)",
+        CHDB_QUERY_CONTROL);
+    expect_class(
+        *conn,
+        "9k.3 mutations_sync override",
+        "ALTER TABLE t UPDATE a = 1 WHERE 1 SETTINGS mutations_sync = 0",
+        CHDB_QUERY_CONTROL);
+    expect_class(
+        *conn, "9k.4 an unrelated setting is fine", "INSERT INTO t SETTINGS max_threads = 4 VALUES (1)",
+        CHDB_QUERY_MUTATING);
 
     /* 10. Every top-level statement shape gets a class, and the right one. */
     {
@@ -491,12 +628,11 @@ int main(void)
         size_t wrong = 0;
         for (size_t i = 0; i < count; i++)
         {
-            chdb_query_class got = CHDB_QUERY_UNKNOWN;
-            if (chdb_classify_query_n(*conn, k_all_statements[i].sql, strlen(k_all_statements[i].sql), &got, NULL)
-                    != CHDBSuccess
-                || got != k_all_statements[i].want)
+            chdb_query_analysis_v1 a;
+            if (!analyze(*conn, k_all_statements[i].sql, NULL, &a) || a.query_class != (uint32_t)k_all_statements[i].want)
             {
-                printf("    %-52s want %d, got %d\n", k_all_statements[i].sql, (int)k_all_statements[i].want, (int)got);
+                printf("    %-52s want %d, got %u\n",
+                       k_all_statements[i].sql, (int)k_all_statements[i].want, a.query_class);
                 wrong++;
             }
         }
@@ -557,11 +693,11 @@ int main(void)
             pass("12a. two connections to one path");
 
         /* Exercising the new ABI on both must not change what follows. */
-        chdb_query_class cls = CHDB_QUERY_UNKNOWN;
+        chdb_query_analysis_v1 a;
         if (first)
-            chdb_classify_query_n(*first, "SELECT 1", 8, &cls, NULL);
+            analyze(*first, "SELECT 1", NULL, &a);
         if (second)
-            chdb_classify_query_n(*second, "SELECT 1", 8, &cls, NULL);
+            analyze(*second, "SELECT 1", NULL, &a);
 
         chdb_connection * intruder = chdb_connect(2, other_args);
         if (intruder)

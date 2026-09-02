@@ -125,6 +125,36 @@ typedef enum chdb_query_class
     CHDB_QUERY_UNKNOWN = 4
 } chdb_query_class;
 
+// Facts about a statement beyond its class -- see chdb_classify_query_n().
+typedef enum chdb_query_analysis_flag
+{
+    // The text carries a credential: a named collection's key, a password, an
+    // access key handed to a table function. Never set when the class is
+    // UNKNOWN, since nothing was proven about text that did not parse.
+    CHDB_QUERY_HAS_SECRETS = 1u << 0,
+    // Every persistent write the statement performs lands in the database the
+    // caller named. Set only when that can be proven: an unqualified name is
+    // resolved through the connection's current database first, and any write
+    // to another database, to `system`, to a table function, or to a file
+    // clears it. A statement that writes nothing sets it vacuously.
+    CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE = 1u << 1,
+    // The statement creates, drops or renames a database rather than acting
+    // inside one. That is a change to the container, which a caller managing
+    // an object per database has to handle itself rather than log.
+    CHDB_QUERY_CHANGES_DATABASE_LIFECYCLE = 1u << 2
+} chdb_query_analysis_flag;
+
+// What chdb_classify_query_n() reports. Versioned by size: set struct_size to
+// sizeof the struct you compiled against, and a newer engine will fill only
+// the fields you have room for.
+typedef struct chdb_query_analysis_v1
+{
+    uint32_t struct_size;      // caller sets to sizeof(chdb_query_analysis_v1)
+    uint32_t statement_count;  // executable statements; PARALLEL WITH arms count
+    uint32_t flags;            // chdb_query_analysis_flag, OR-ed
+    uint32_t query_class;      // chdb_query_class, as a fixed-width ABI field
+} chdb_query_analysis_v1;
+
 // Opaque handle for query results.
 // Internal data structure managed by chDB implementation.
 // Users should only interact through API functions.
@@ -959,39 +989,52 @@ CHDB_EXPORT chdb_result * chdb_restore_database_n(
  * Says what a statement would do, without running it.
  *
  * Parses the SQL with the connection's own parser and settings -- the same
- * parser that would execute it -- and reports the effect class. Nothing is
+ * parser that would execute it -- and reports what it found. Nothing is
  * executed and the session is left untouched: no current database change, no
  * settings change, no query log entry.
  *
- * The input may hold several statements. Each is classified on its own and the
- * result is the maximum, so one CONTROL statement in a batch makes the batch
- * CONTROL. SQL that does not parse classifies as CHDB_QUERY_UNKNOWN and still
- * returns CHDBSuccess -- the class is the answer, not an error.
+ * The report answers the questions a caller has to settle before it decides
+ * whether to run a statement and whether to record it:
  *
- * out_has_secrets, when given, reports whether any statement in the input
- * carries a credential in its text -- a named collection's key, a user's
- * password, an access key handed to a table function. A caller that records
- * statements needs this: the engine redacts secrets when it prints a statement
- * back, but a log of the text the caller submitted has no such protection, and
- * a durable log outlives the statement by design. It is false whenever the
- * class is UNKNOWN, since nothing was proven about text that did not parse.
- * Pass NULL if you do not need it; the answer costs nothing extra when you do.
+ *   statement_count  How many executable statements the text holds. Zero for
+ *                    empty input or text that did not parse. A batch is more
+ *                    than one, and so is `a PARALLEL WITH b`, because both
+ *                    arms execute. A caller that logs statements one at a
+ *                    time needs this: only a count of one is a statement it
+ *                    can replay on its own.
+ *   query_class      What the statement does to state that outlives it; see
+ *                    chdb_query_class. A batch takes the maximum over its
+ *                    members.
+ *   flags            See chdb_query_analysis_flag.
  *
- * @param conn Connection supplying the parser dialect and parser settings
- * @param sql SQL text to classify (may contain null bytes)
+ * target_database names the database the caller considers its own, and is
+ * what CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE is judged against. Pass NULL to
+ * skip that judgement, in which case the flag is never set.
+ *
+ * SQL that does not parse reports CHDB_QUERY_UNKNOWN with no flags and a count
+ * of zero, and still returns CHDBSuccess -- what it is, is the answer, not an
+ * error.
+ *
+ * @param conn Connection supplying the parser dialect, parser settings, and
+ *             the current database used to resolve unqualified names
+ * @param sql SQL text to analyse (may contain null bytes)
  * @param sql_len Length of sql in bytes
- * @param out_class Receives the class; written on success only
- * @param out_has_secrets Receives 1 if any statement carries a credential,
- *                        0 otherwise; may be NULL
- * @return CHDBSuccess, or CHDBError if conn or out_class is null or the
- *         connection is closed
+ * @param target_database The caller's own database, unquoted; may be NULL
+ * @param target_database_len Length of target_database in bytes
+ * @param out_analysis Receives the report. Set out_analysis->struct_size to
+ *                     sizeof(chdb_query_analysis_v1) before the call; every
+ *                     field that fits is written on success
+ * @return CHDBSuccess, or CHDBError if conn or out_analysis is null, the
+ *         connection is closed, or struct_size is smaller than this engine's
+ *         minimum
  */
 CHDB_EXPORT chdb_state chdb_classify_query_n(
     chdb_connection conn,
     const char * sql,
     size_t sql_len,
-    chdb_query_class * out_class,
-    int * out_has_secrets);
+    const char * target_database,
+    size_t target_database_len,
+    chdb_query_analysis_v1 * out_analysis);
 
 //===--------------------------------------------------------------------===//
 // Signal Handler Control

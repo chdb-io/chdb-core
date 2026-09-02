@@ -1140,13 +1140,15 @@ const char * findStatementEnd(const IAST & ast, const char * parsed_end, const c
 
 }
 
-chdb_query_class ChdbClient::classifyQuery(const char * sql, size_t sql_len, bool * out_has_secrets)
+void ChdbClient::analyzeQuery(
+    const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out)
 {
-    if (out_has_secrets)
-        *out_has_secrets = false;
+    out.statement_count = 0;
+    out.flags = 0;
+    out.query_class = CHDB_QUERY_UNKNOWN;
 
     if (!sql || sql_len == 0)
-        return CHDB_QUERY_UNKNOWN;
+        return;
 
     std::lock_guard<std::mutex> lock(client_mutex);
 
@@ -1155,13 +1157,21 @@ chdb_query_class ChdbClient::classifyQuery(const char * sql, size_t sql_len, boo
     const char * const end = pos + text.size();
 
     auto result = CHDB_QUERY_READ_ONLY;
-    bool saw_statement = false;
+    size_t statements = 0;
+    bool has_secrets = false;
+    bool writes_only_target = true;
+    bool changes_lifecycle = false;
 
     try
     {
         const Settings & settings = client_context->getSettingsRef();
         const auto max_parser_depth = static_cast<uint32_t>(settings[Setting::max_parser_depth]);
         const auto max_parser_backtracks = static_cast<uint32_t>(settings[Setting::max_parser_backtracks]);
+        /// Resolving an unqualified name is the difference between
+        /// `INSERT INTO wasm_modules` being a table write and being a write
+        /// into `system`; only the connection knows which.
+        const String current_database = client_context->getCurrentDatabase();
+        const String target(target_database);
 
         while (pos < end)
         {
@@ -1179,35 +1189,35 @@ chdb_query_class ChdbClient::classifyQuery(const char * sql, size_t sql_len, boo
 
             ASTPtr ast = parseQuery(pos, end, settings, /*allow_multi_statements=*/true);
             if (!ast)
-            {
-                if (out_has_secrets)
-                    *out_has_secrets = false;
-                return CHDB_QUERY_UNKNOWN;
-            }
+                return;
 
-            saw_statement = true;
-            result = CHDB::combineQueryClass(result, CHDB::classifyStatement(*ast));
-            if (out_has_secrets && CHDB::statementHasSecrets(*ast))
-                *out_has_secrets = true;
+            statements += CHDB::countExecutableStatements(*ast);
+            result = CHDB::combineQueryClass(result, CHDB::classifyStatement(*ast, current_database));
+            has_secrets |= CHDB::statementHasSecrets(*ast);
+            changes_lifecycle |= CHDB::changesDatabaseLifecycle(*ast);
+            writes_only_target &= CHDB::writesOnlyToDatabase(*ast, target, current_database);
 
             pos = findStatementEnd(*ast, pos, end);
         }
     }
     catch (...)
     {
-        /// SQL we cannot parse is SQL we cannot vouch for.
-        if (out_has_secrets)
-            *out_has_secrets = false;
-        return CHDB_QUERY_UNKNOWN;
+        /// SQL we cannot parse is SQL we cannot vouch for, and nothing was
+        /// proven about it -- leave the report at its refusing default.
+        return;
     }
 
-    if (saw_statement)
-        return result;
+    if (statements == 0)
+        return;
 
-    if (out_has_secrets)
-        *out_has_secrets = false;
-    return CHDB_QUERY_UNKNOWN;
+    out.statement_count = static_cast<uint32_t>(statements);
+    out.query_class = static_cast<uint32_t>(result);
+    if (has_secrets)
+        out.flags |= CHDB_QUERY_HAS_SECRETS;
+    if (changes_lifecycle)
+        out.flags |= CHDB_QUERY_CHANGES_DATABASE_LIFECYCLE;
+    if (writes_only_target && !target_database.empty())
+        out.flags |= CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE;
 }
-
 
 } // namespace DB

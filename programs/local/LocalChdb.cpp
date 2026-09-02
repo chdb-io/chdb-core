@@ -704,9 +704,19 @@ void raiseOnEngineError(chdb_result * result)
 
 }
 
+/// close() sets conn to nullptr, so every entry point has to look before it
+/// dereferences -- otherwise using a closed connection segfaults the
+/// interpreter instead of raising.
+void connection_wrapper::requireOpen() const
+{
+    if (!conn)
+        throw std::runtime_error("Connection is closed");
+}
+
 void connection_wrapper::backup_database(
     const std::string & database, const std::string & file_path, const std::string & base_file_path)
 {
+    requireOpen();
     py::gil_scoped_release release;
     raiseOnEngineError(chdb_backup_database_n(
         *conn,
@@ -720,21 +730,38 @@ void connection_wrapper::backup_database(
 
 void connection_wrapper::restore_database(const std::string & database, const std::string & file_path)
 {
+    requireOpen();
     py::gil_scoped_release release;
     raiseOnEngineError(
         chdb_restore_database_n(*conn, database.data(), database.size(), file_path.data(), file_path.size()));
 }
 
-py::tuple connection_wrapper::classify_query(const std::string & sql)
+py::dict connection_wrapper::classify_query(const std::string & sql, const std::string & target_database)
 {
-    chdb_query_class query_class = CHDB_QUERY_UNKNOWN;
-    int has_secrets = 0;
+    requireOpen();
+
+    chdb_query_analysis_v1 analysis{};
+    analysis.struct_size = sizeof(analysis);
     {
         py::gil_scoped_release release;
-        if (chdb_classify_query_n(*conn, sql.data(), sql.size(), &query_class, &has_secrets) != CHDBSuccess)
+        if (chdb_classify_query_n(
+                *conn,
+                sql.data(),
+                sql.size(),
+                target_database.empty() ? nullptr : target_database.data(),
+                target_database.size(),
+                &analysis)
+            != CHDBSuccess)
             throw std::runtime_error("Invalid or closed connection");
     }
-    return py::make_tuple(query_class, has_secrets != 0);
+
+    py::dict out;
+    out["query_class"] = static_cast<chdb_query_class>(analysis.query_class);
+    out["statement_count"] = analysis.statement_count;
+    out["has_secrets"] = (analysis.flags & CHDB_QUERY_HAS_SECRETS) != 0;
+    out["writes_only_target_database"] = (analysis.flags & CHDB_QUERY_WRITES_ONLY_TARGET_DATABASE) != 0;
+    out["changes_database_lifecycle"] = (analysis.flags & CHDB_QUERY_CHANGES_DATABASE_LIFECYCLE) != 0;
+    return out;
 }
 
 #if USE_CLIENT_AI
@@ -1115,10 +1142,14 @@ PYBIND11_MODULE(_chdb, m)
             "classify_query",
             &connection_wrapper::classify_query,
             py::arg("sql"),
-            "Report what the SQL would do, without running it, as (query_class, has_secrets). "
-            "Several statements classify as the most restricted one among them; SQL that does not "
-            "parse classifies as UNKNOWN. has_secrets says whether the text carries a credential, "
-            "which a caller recording statements needs to know before it writes them down");
+            py::arg("target_database") = "",
+            "Report what the SQL would do, without running it, as a dict of query_class, "
+            "statement_count, has_secrets, writes_only_target_database and "
+            "changes_database_lifecycle. A batch takes the most restricted class among its "
+            "members; SQL that does not parse reports UNKNOWN with a count of zero and no flags. "
+            "target_database is the database the caller owns, and is what "
+            "writes_only_target_database is judged against; unqualified names resolve through the "
+            "connection's current database first");
 
     CHDB::ChdbPyType::initialize(m);
     CHDB::PythonUDFRegistry::instance();
