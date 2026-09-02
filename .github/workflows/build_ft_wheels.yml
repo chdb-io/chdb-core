@@ -46,6 +46,17 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 600
     steps:
+      - name: Keep unattended-upgrades from killing the job
+        # The runner image runs unattended-upgrades with needrestart in automatic mode.
+        # In the daily apt-daily-upgrade window (06:00-07:00 UTC) that restarts
+        # actions.runner.*.service and the job dies with "The runner has received a
+        # shutdown signal". Turn the timers off for the rest of this instance's life
+        # and make needrestart only list what it would restart. An upgrade that is
+        # already running is left alone: interrupting dpkg corrupts the package database.
+        run: |
+          sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
+          sudo mkdir -p /etc/needrestart/conf.d
+          echo "\$nrconf{restart} = 'l';" | sudo tee /etc/needrestart/conf.d/90-ci-no-restart.conf >/dev/null
       - name: Install Python build dependencies
         run: |
           # Fresh self-hosted runners often have unattended-upgrades holding the
