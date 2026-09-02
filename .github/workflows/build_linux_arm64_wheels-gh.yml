@@ -206,6 +206,7 @@ jobs:
           sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
           git --version
       - uses: actions/checkout@v7
+        id: checkout
         with:
           fetch-depth: 0
       - name: Update submodules
@@ -710,7 +711,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Restore pyproject.toml (chdb-core-lite build mutates it in place)
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           git checkout -- pyproject.toml
       - name: Check and upload core files if present

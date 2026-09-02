@@ -290,6 +290,7 @@ jobs:
           brew install go lz4
           go version
       - uses: actions/checkout@v7
+        id: checkout
         with:
           fetch-depth: 0
       - name: Update version for release
@@ -692,7 +693,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Restore pyproject.toml (chdb-core-lite build mutates it in place)
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         run: git checkout -- pyproject.toml
       - name: Check and upload core files if present
         if: always()
