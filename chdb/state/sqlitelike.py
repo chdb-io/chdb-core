@@ -755,7 +755,7 @@ class Connection:
             else:
                 result = self._conn.query(query, format, params=params or {})
         except RuntimeError as e:
-            raise chdb.ChdbError(str(e)) from e
+            raise chdb.ChdbError(str(e)) from e.with_traceback(None)
         else:
             return result_func(result)
         finally:
@@ -866,7 +866,7 @@ class Connection:
             c_stream_result = self._conn.send_query(query, format, params=params or {})
         except RuntimeError as e:
             self._cleanup_auto_progress_callback(progress_callback)
-            raise chdb.ChdbError(str(e)) from e
+            raise chdb.ChdbError(str(e)) from e.with_traceback(None)
         except Exception:
             self._cleanup_auto_progress_callback(progress_callback)
             raise

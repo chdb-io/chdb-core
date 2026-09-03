@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import gc
 import unittest
+import weakref
 
 import chdb
 from chdb import session
@@ -37,6 +39,23 @@ class TestSessionChdbError(unittest.TestCase):
     def test_stateless_query_still_raises_chdb_error(self):
         with self.assertRaises(chdb.ChdbError):
             chdb.query("SELECT * FROM nonexistent_table_xyz")
+
+    def test_kept_error_does_not_keep_session_alive(self):
+        # unittest.assertRaises keeps the exception without its traceback; the
+        # chained engine error must not pin the session through its own one
+        sess = session.Session()
+        ref = weakref.ref(sess)
+        gc.disable()
+        try:
+            try:
+                sess.query("SELECT * FROM nonexistent_table_xyz")
+            except chdb.ChdbError as e:
+                kept = e.with_traceback(None)
+            del sess
+            self.assertIsNone(ref(), "session pinned by the kept ChdbError")
+            self.assertIsInstance(kept, chdb.ChdbError)
+        finally:
+            gc.enable()
 
 
 if __name__ == "__main__":
