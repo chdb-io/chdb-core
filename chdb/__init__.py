@@ -259,11 +259,12 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
         try:
             if lower_output_format in _df_format:
                 res = conn.query_df(sql, params=params)
-                return result_func(res)
-
-            res = conn.query(sql, output_format, params=params)
-
-            if res.has_error():
+            else:
+                res = conn.query(sql, output_format, params=params)
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
+        else:
+            if lower_output_format not in _df_format and res.has_error():
                 raise ChdbError(res.error_message())
             return result_func(res)
         finally:

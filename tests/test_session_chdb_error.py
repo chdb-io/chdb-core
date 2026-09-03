@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 
-import shutil
 import unittest
 
 import chdb
 from chdb import session
-
-test_dir = ".test_session_chdb_error"
 
 
 class TestSessionChdbError(unittest.TestCase):
     """The connection/session APIs must raise ChdbError, like chdb.query does."""
 
     def setUp(self) -> None:
-        shutil.rmtree(test_dir, ignore_errors=True)
-        self.sess = session.Session(test_dir)
+        self.sess = session.Session()
         return super().setUp()
 
     def tearDown(self) -> None:
         self.sess.close()
-        shutil.rmtree(test_dir, ignore_errors=True)
         return super().tearDown()
 
     def test_chdb_error_is_a_runtime_error(self):
