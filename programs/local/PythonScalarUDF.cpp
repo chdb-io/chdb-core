@@ -127,11 +127,12 @@ DB::DataTypePtr fromPythonType(const py::object & annotation)
 /// Python `bytes` value rather than a UTF-8-decoded `str`.
 bool isBytesLikeAnnotation(const py::object & annotation)
 {
-    if (!py::isinstance<py::type>(annotation))
+    auto resolved = unwrapOptionalAnnotation(annotation);
+    if (!py::isinstance<py::type>(resolved))
         return false;
 
     auto builtins = py::module_::import("builtins");
-    return annotation.is(builtins.attr("bytes")) || annotation.is(builtins.attr("bytearray"));
+    return resolved.is(builtins.attr("bytes")) || resolved.is(builtins.attr("bytearray"));
 }
 
 DB::DataTypePtr fromString(const py::object & annotation)
@@ -152,21 +153,70 @@ DB::DataTypePtr fromChdbPyType(const py::object & annotation)
 
 } // anonymous namespace
 
+py::object unwrapOptionalAnnotation(const py::object & annotation)
+{
+    auto typing_module = py::module_::import("typing");
+    auto origin = typing_module.attr("get_origin")(annotation);
+
+    if (origin.is_none())
+        return annotation;
+
+    /// typing.Optional[X] and typing.Union[...] both report typing.Union as origin;
+    /// PEP 604 unions (X | None) report types.UnionType (Python 3.10+).
+    bool is_union = origin.is(typing_module.attr("Union"));
+    if (!is_union)
+    {
+        auto types_module = py::module_::import("types");
+        if (py::hasattr(types_module, "UnionType"))
+            is_union = origin.is(types_module.attr("UnionType"));
+    }
+
+    if (!is_union)
+        return annotation;
+
+    /// Keep the single non-None member as the base type. The engine already makes
+    /// every UDF argument and return type Nullable (see inferReturnType and the
+    /// return_type_ constructor initializer), so the None member carries no extra
+    /// meaning beyond selecting X. Multi-member unions like Union[int, str] are
+    /// ambiguous and rejected.
+    auto none_type = py::none().get_type();
+    py::object base;
+    size_t non_none_count = 0;
+    for (auto member : typing_module.attr("get_args")(annotation))
+    {
+        auto member_type = py::reinterpret_borrow<py::object>(member);
+        if (member_type.is(none_type))
+            continue;
+        base = member_type;
+        ++non_none_count;
+    }
+
+    if (non_none_count == 1)
+        return base;
+
+    throw DB::Exception(
+        DB::ErrorCodes::BAD_ARGUMENTS,
+        "Unsupported Python UDF union type annotation '{}': only Optional[X] "
+        "(equivalently Union[X, None] or X | None) is supported",
+        String(py::str(annotation)));
+}
+
 DB::DataTypePtr annotationToDataType(const py::object & annotation)
 {
-    auto type_object = getPythonObjectType(annotation);
+    auto resolved = unwrapOptionalAnnotation(annotation);
+    auto type_object = getPythonObjectType(resolved);
     switch (type_object)
     {
         case PythonTypeObject::BASE:
-            return fromPythonType(annotation);
+            return fromPythonType(resolved);
         case PythonTypeObject::STRING:
-            return fromString(annotation);
+            return fromString(resolved);
         case PythonTypeObject::TYPE:
-            return fromChdbPyType(annotation);
+            return fromChdbPyType(resolved);
         case PythonTypeObject::INVALID:
         default:
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Unknown Python UDF type annotation: {}",
-                String(py::str(annotation.get_type())));
+                String(py::str(resolved.get_type())));
     }
 }
 

@@ -1,8 +1,10 @@
 #!python3
 
 import os
+import sys
 import unittest
 import datetime
+from typing import Optional, Union
 import chdb
 from chdb import func
 from chdb.sqltypes import (
@@ -4898,6 +4900,215 @@ class TestBytesUDF(unittest.TestCase):
         ret = self.session.query("SELECT hex(bytes_echo(unhex('0001FFFE')))", "CSV")
         self.assertEqual(str(ret).strip(), '"0001FFFE"')
         chdb.drop_function("bytes_echo")
+
+
+class TestOptionalAnnotationUDF(unittest.TestCase):
+    """Optional[X] / Union[X, None] / PEP 604 X | None annotations (chdb-core#188).
+
+    Every UDF argument and return type is Nullable engine-side, so ``Optional[X]``
+    maps one-to-one onto that: the annotation only selects the base type ``X`` and
+    is otherwise identical to a bare ``X``. Multi-member unions (e.g.
+    ``Union[int, str]``) stay ambiguous and are rejected at registration.
+    """
+
+    def setUp(self):
+        self.session = Session()
+
+    def tearDown(self):
+        self.session.close()
+
+    # ── the exact issue repro: Optional[str] arg + return, both inferred ──
+
+    def test_optional_str_annotation_infers_string(self):
+        # Before the fix this raised at registration:
+        #   RuntimeError: Failed to create function 'opt_echo':
+        #     Unknown Python UDF type annotation: <class 'typing.Union'>
+        @func()
+        def opt_echo(x: Optional[str]) -> Optional[str]:
+            return x
+
+        ret = self.session.query("SELECT opt_echo('hello')", "CSV")
+        self.assertEqual(str(ret).strip(), '"hello"')
+        chdb.drop_function("opt_echo")
+
+    def test_optional_int_annotation_infers_int64(self):
+        @func()
+        def opt_inc(x: Optional[int]) -> Optional[int]:
+            return None if x is None else x + 1
+
+        ret = self.session.query("SELECT opt_inc(toInt64(5))", "CSV")
+        self.assertEqual(str(ret).strip(), "6")
+        ret = self.session.query("SELECT opt_inc(toInt64(-3))", "CSV")
+        self.assertEqual(str(ret).strip(), "-2")
+        chdb.drop_function("opt_inc")
+
+    def test_optional_float_annotation_infers_float64(self):
+        @func()
+        def opt_half(x: Optional[float]) -> Optional[float]:
+            return None if x is None else x / 2
+
+        ret = self.session.query("SELECT opt_half(toFloat64(9))", "CSV")
+        self.assertEqual(str(ret).strip(), "4.5")
+        chdb.drop_function("opt_half")
+
+    def test_optional_date_annotation_infers_date(self):
+        @func()
+        def opt_day(d: Optional[datetime.date]) -> Optional[datetime.date]:
+            return d
+
+        ret = self.session.query("SELECT opt_day(toDate('2020-01-15'))", "CSV")
+        self.assertEqual(str(ret).strip(), '"2020-01-15"')
+        chdb.drop_function("opt_day")
+
+    # ── typing.Union[X, None] spelled explicitly (same as Optional[X]) ──
+
+    def test_union_x_none_equivalent_to_optional(self):
+        def union_echo(x: Union[str, None]) -> Union[str, None]:
+            return x
+
+        chdb.create_function("union_echo", union_echo)
+        ret = self.session.query("SELECT union_echo('hey')", "CSV")
+        self.assertEqual(str(ret).strip(), '"hey"')
+        chdb.drop_function("union_echo")
+
+    def test_union_none_x_order_independent(self):
+        # None first: Union[None, int] must also resolve to the base type.
+        def union_inc(x: Union[None, int]) -> Union[None, int]:
+            return None if x is None else x + 1
+
+        chdb.create_function("union_inc", union_inc)
+        ret = self.session.query("SELECT union_inc(toInt64(7))", "CSV")
+        self.assertEqual(str(ret).strip(), "8")
+        chdb.drop_function("union_inc")
+
+    # ── PEP 604 (X | None), Python 3.10+ only ──
+
+    @unittest.skipIf(sys.version_info < (3, 10), "PEP 604 X | None requires Python 3.10+")
+    def test_pep604_union_infers_types(self):
+        # Defined inside the (skipped-on-3.9) method so the file still imports on
+        # 3.9, where `int | None` at def-time would raise TypeError.
+        def pep604_inc(x: int | None) -> int | None:  # noqa: E999
+            return None if x is None else x + 1
+
+        chdb.create_function("pep604_inc", pep604_inc)
+        ret = self.session.query("SELECT pep604_inc(toInt64(4))", "CSV")
+        self.assertEqual(str(ret).strip(), "5")
+        chdb.drop_function("pep604_inc")
+
+    # ── Optional return actually yields SQL NULL (Nullable return path) ──
+
+    def test_optional_return_none_yields_sql_null(self):
+        @func()
+        def opt_maybe(x: Optional[int]) -> Optional[int]:
+            return None if x > 10 else x
+
+        # non-None value returned verbatim
+        ret = self.session.query("SELECT opt_maybe(toInt64(5))", "CSV")
+        self.assertEqual(str(ret).strip(), "5")
+        # None returned → NULL
+        ret = self.session.query("SELECT opt_maybe(toInt64(20))", "CSV")
+        self.assertEqual(str(ret).strip(), "\\N")
+        chdb.drop_function("opt_maybe")
+
+    # ── Optional arg + on_null="pass": the motivating use case (handle x is None) ──
+
+    def test_optional_arg_on_null_pass_receives_none(self):
+        @func(on_null="pass")
+        def opt_none_to_zero(x: Optional[int]) -> int:
+            return 0 if x is None else x + 1
+
+        ret = self.session.query("SELECT opt_none_to_zero(NULL)", "CSV")
+        self.assertEqual(str(ret).strip(), "0")
+        ret = self.session.query("SELECT opt_none_to_zero(toInt64(9))", "CSV")
+        self.assertEqual(str(ret).strip(), "10")
+        chdb.drop_function("opt_none_to_zero")
+
+    def test_optional_arg_on_null_pass_mixed_column(self):
+        @func(on_null="pass")
+        def opt_double(x: Optional[int]) -> Optional[int]:
+            return None if x is None else x * 2
+
+        ret = self.session.query(
+            "SELECT opt_double(x) FROM "
+            "(SELECT CAST(arrayJoin([1, NULL, 3]) AS Nullable(Int64)) AS x)",
+            "CSV",
+        )
+        self.assertEqual(str(ret).strip(), "2\n\\N\n6")
+        chdb.drop_function("opt_double")
+
+    # ── Optional[bytes]: the arg still receives raw bytes, not a decoded str ──
+
+    def test_optional_bytes_arg_receives_bytes(self):
+        def kind(x: Optional[bytes]) -> str:
+            return type(x).__name__
+
+        chdb.create_function("opt_bytes_kind", kind)
+        ret = self.session.query("SELECT opt_bytes_kind('abc')", "CSV")
+        self.assertEqual(str(ret).strip(), '"bytes"')
+        chdb.drop_function("opt_bytes_kind")
+
+    def test_optional_bytes_round_trip_binary_safe(self):
+        def echo(x: Optional[bytes]) -> Optional[bytes]:
+            return x
+
+        chdb.create_function("opt_bytes_echo", echo)
+        ret = self.session.query("SELECT hex(opt_bytes_echo(unhex('0001FFFE')))", "CSV")
+        self.assertEqual(str(ret).strip(), '"0001FFFE"')
+        chdb.drop_function("opt_bytes_echo")
+
+    # ── Optional in the explicit arg_types / return_type params, not annotations ──
+
+    def test_explicit_arg_types_optional(self):
+        chdb.create_function(
+            "opt_arg_explicit", lambda x: x + 1, arg_types=[Optional[int]], return_type=INT64)
+        ret = self.session.query("SELECT opt_arg_explicit(toInt64(9))", "CSV")
+        self.assertEqual(str(ret).strip(), "10")
+        chdb.drop_function("opt_arg_explicit")
+
+    def test_explicit_return_type_optional(self):
+        chdb.create_function(
+            "opt_ret_explicit", lambda: "hi", arg_types=[], return_type=Optional[str])
+        ret = self.session.query("SELECT opt_ret_explicit()", "CSV")
+        self.assertEqual(str(ret).strip(), '"hi"')
+        chdb.drop_function("opt_ret_explicit")
+
+    # ── decorator still returns a normally-callable Python function ──
+
+    def test_optional_preserves_python_callability(self):
+        @func()
+        def opt_call(x: Optional[int]) -> Optional[int]:
+            return None if x is None else x + 1
+
+        self.assertEqual(opt_call(5), 6)
+        self.assertIsNone(opt_call(None))
+        chdb.drop_function("opt_call")
+
+    # ── multi-member unions stay ambiguous → rejected at registration ──
+
+    def test_multi_member_union_arg_rejected(self):
+        def bad(x: Union[int, str]) -> int:
+            return 0
+
+        with self.assertRaisesRegex(RuntimeError, "union type annotation"):
+            chdb.create_function("bad_union_arg", bad)
+
+    def test_multi_member_union_return_rejected(self):
+        def bad_ret() -> Union[int, str]:
+            return 0
+
+        with self.assertRaisesRegex(RuntimeError, "union type annotation"):
+            chdb.create_function("bad_union_ret", bad_ret)
+
+    def test_multi_member_union_explicit_arg_types_rejected(self):
+        # Distinct C++ path (resolveArgTypes) from the inferred-annotation path.
+        with self.assertRaisesRegex(RuntimeError, "union type annotation"):
+            chdb.create_function(
+                "bad_union_arg_explicit", lambda x: x, arg_types=[Union[int, str]], return_type=INT64)
+
+    def test_multi_member_union_explicit_return_type_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "union type annotation"):
+            chdb.create_function(
+                "bad_union_explicit", lambda x: x, arg_types=[INT64], return_type=Union[int, str])
 
 
 if __name__ == "__main__":

@@ -72,4 +72,9 @@ private:
 
 DB::DataTypePtr annotationToDataType(const py::object & annotation);
 
+/// If the annotation is `Optional[X]` / `Union[X, None]` (or PEP 604 `X | None`),
+/// returns the inner base type `X`; any other annotation is returned unchanged.
+/// A union with more than one non-None member (e.g. `Union[int, str]`) is rejected.
+py::object unwrapOptionalAnnotation(const py::object & annotation);
+
 } // namespace CHDB

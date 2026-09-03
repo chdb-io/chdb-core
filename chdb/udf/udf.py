@@ -21,11 +21,14 @@ def func(arg_types=None, return_type=None, *, on_null=None, on_error=None):
             - A ChdbType instance: e.g. ``INT64``
             - A type string: e.g. ``"Int64"``
             - A Python type: e.g. ``int``, ``float``, ``str``
+            - ``Optional[X]`` / ``X | None``: treated as ``X`` (every UDF argument is
+              Nullable regardless, so the ``None`` member only selects the base type).
             - ``None`` (default): inferred from parameter type annotations.
             If provided, must specify types for ALL parameters.
         return_type: ClickHouse return type. Optional. Accepts:
             - A ChdbType instance: e.g. ``INT64``, ``STRING``, ``FLOAT64``
             - A type string: e.g. ``"Int64"``, ``"String"``, ``"DateTime64(3)"``
+            - A Python type, optionally wrapped as ``Optional[X]`` / ``X | None``.
             - ``None`` (default): inferred from the function's return type annotation.
         on_null (str): How to handle NULL inputs. Keyword-only. Accepts:
             - ``"skip"`` (default): return NULL without calling the function.
