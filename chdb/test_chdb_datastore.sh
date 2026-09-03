@@ -36,6 +36,18 @@ fi
 CORE_VERSION=$(${PYTHON} -c "import chdb; print(chdb.query('SELECT version()', 'CSV').bytes().decode().strip())" 2>/dev/null || echo "unknown")
 echo "chdb-core engine version: ${CORE_VERSION}"
 
+# curl below gets GITHUB_TOKEN explicitly, but git does not read it, so the
+# clone and the ls-remote fallback go out anonymous. On a shared runner egress
+# GitHub throttles those to 401, git then tries to prompt for a username, finds
+# no tty, and exits 128. GIT_CONFIG_* is the same channel actions/checkout uses:
+# environment only, never written to disk, inherited by every child process.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+    export GIT_CONFIG_VALUE_0
+fi
+
 resolve_latest_chdb_tag() {
     local i auth=() body tag
     [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
