@@ -14,6 +14,8 @@ Validates that:
 import io
 import json
 import os
+import threading
+import time
 import unittest
 
 import pyarrow as pa
@@ -365,6 +367,77 @@ class TestArrowParallelEncoding(unittest.TestCase):
             # Cross-check value at row 12345 was multiplied by the right i.
             expected = str(12345 * (i + 1))
             self.assertEqual(tbl.column("s")[12345].as_py(), expected)
+
+    # --- Backpressure deadlock regression -----------------------------------
+
+    def test_backpressure_wait_drains_and_does_not_deadlock(self):
+        """The parallel encoder's backpressure wait must keep draining finished
+        tasks while it waits. ``in_flight`` is only decremented by the drain path,
+        so a wait that merely blocks on ``in_flight >= max_in_flight`` deadlocks
+        once the in-flight encoders all finish while the consumer is parked: their
+        completion only notifies, it never drains, so ``in_flight`` never drops.
+
+        The ``arrow_output_parallel_pause_first_encode`` failpoint pins the front
+        (seq 0) encode task; later tasks finish and ``in_flight`` climbs to the
+        cap, parking the consumer. Releasing the front task must let the query
+        finish (with the bug it never returns).
+        """
+        fp = "arrow_output_parallel_pause_first_encode"
+        ctl = chdb.connect(":memory:")
+        available = (
+            ctl.query(
+                f"SELECT count() FROM system.fail_points WHERE name = '{fp}'", "CSV"
+            ).bytes().decode().strip()
+        )
+        if available != "1":
+            self.skipTest("failpoint infrastructure not available in this build")
+
+        # max_threads=2 => backpressure cap = max(2, 2*4) = 8 in-flight tasks;
+        # 200 chunks of 1000 rows each greatly exceeds the cap.
+        sql = (
+            "SELECT number, toString(number) AS s FROM numbers(200000) "
+            "SETTINGS max_threads = 2, max_block_size = 1000, "
+            "output_format_arrow_parallel_encoding = 1"
+        )
+
+        box = {}
+
+        def run():
+            try:
+                conn = chdb.connect(":memory:")
+                data = conn.query(sql, "Arrow").bytes()
+                box["rows"] = pa.ipc.open_file(io.BytesIO(data)).read_all().num_rows
+            except BaseException as exc:  # noqa: BLE001
+                box["err"] = repr(exc)
+
+        ctl.query(f"SYSTEM ENABLE FAILPOINT {fp}", "CSV")
+        try:
+            worker = threading.Thread(target=run, name="arrow-query", daemon=True)
+            worker.start()
+
+            # The front task is pinned, so the query cannot complete until we release
+            # it; this window lets the consumer reach the backpressure wait.
+            time.sleep(3.0)
+            self.assertNotIn(
+                "rows", box, "query completed while the front task was paused"
+            )
+            self.assertNotIn("err", box, f"query errored early: {box.get('err')}")
+
+            ctl.query(f"SYSTEM DISABLE FAILPOINT {fp}", "CSV")
+            worker.join(60)
+
+            self.assertFalse(
+                worker.is_alive(),
+                "parallel Arrow encoder deadlocked: query() did not return after "
+                "the front encode task was released",
+            )
+            self.assertNotIn("err", box, f"query failed: {box.get('err')}")
+            self.assertEqual(box.get("rows"), 200000)
+        finally:
+            try:
+                ctl.query(f"SYSTEM DISABLE FAILPOINT {fp}", "CSV")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

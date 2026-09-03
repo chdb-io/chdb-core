@@ -6,6 +6,7 @@
 #include <Common/CurrentThread.h>
 #include <Common/setThreadName.h>
 #include <Common/ThreadPool.h>
+#include <Common/FailPoint.h>
 #include <Formats/FormatFactory.h>
 #include <Processors/Port.h>
 
@@ -39,6 +40,11 @@ namespace CurrentMetrics
 
 namespace DB
 {
+
+namespace FailPoints
+{
+    extern const char arrow_output_parallel_pause_first_encode[];
+}
 namespace ErrorCodes
 {
     extern const int UNKNOWN_EXCEPTION;
@@ -170,10 +176,20 @@ void ArrowBlockOutputFormat::scheduleParallel(Chunk chunk)
     {
         std::unique_lock lock(mutex);
 
-        /// Apply backpressure when too many tasks are in flight.
+        /// Apply backpressure when too many tasks are in flight. Drain finished front tasks
+        /// *inside* the wait loop: in_flight is only decremented by drainReady(), so a plain
+        /// `while (in_flight >= max) cv.wait()` deadlocks once the in-flight encoders all finish
+        /// while the consumer is parked here -- completing jobs only notify(), they never drain,
+        /// so in_flight would never drop below the limit. Draining before each wait guarantees
+        /// progress.
         const size_t max_in_flight = std::max<size_t>(2, format_settings.max_threads * 4);
-        while (!is_stopped && in_flight >= max_in_flight && !background_exception)
+        while (!is_stopped && !background_exception)
+        {
+            drainReady(lock);
+            if (in_flight < max_in_flight)
+                break;
             cv.wait(lock);
+        }
 
         if (is_stopped)
             return;
@@ -192,6 +208,13 @@ void ArrowBlockOutputFormat::scheduleParallel(Chunk chunk)
         try
         {
             ThreadGroupSwitcher switcher(thread_group, ThreadName::PARQUET_ENCODER);
+
+            /// Test hook (no-op unless the failpoint is enabled): deterministically hold the
+            /// front (seq 0) encode task so a regression test can drive in_flight up to
+            /// max_in_flight -- later tasks finish while the front is pinned -- and exercise the
+            /// backpressure-wait drain path above.
+            if (task->seq == 0)
+                FailPointInjection::pauseFailPoint(FailPoints::arrow_output_parallel_pause_first_encode);
 
             if (is_stopped)
             {
