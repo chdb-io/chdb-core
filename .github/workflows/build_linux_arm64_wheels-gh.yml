@@ -130,13 +130,18 @@ jobs:
           pyenv install 3.12:latest
           pyenv install 3.13:latest
           pyenv install 3.14:latest
-          # pyenv's ":latest" skips pre-releases, so until 3.15.0 final ships
-          # (2026-10-01) fall back to the release candidate; the symlink lets the
-          # bare "3.15" used by pyenv global/shell below resolve to it.
-          pyenv install 3.15:latest || {
+          # pyenv's ":latest" resolver skips pre-releases, so until 3.15.0 final
+          # ships (2026-10-01) install the release candidate and symlink it as
+          # "3.15" so the bare version used by pyenv global/shell below resolves.
+          # Probe with the pyenv binary, not the shell function from `pyenv init`:
+          # that function runs `command pyenv ...`, and under macOS 14's bash 3.2
+          # `set -e` fires inside it even on the failing side of an if/||.
+          if "$HOME/.pyenv/bin/pyenv" latest -k 3.15 >/dev/null 2>&1; then
+            pyenv install 3.15:latest
+          else
             pyenv install 3.15.0rc2
             ln -s "$HOME/.pyenv/versions/3.15.0rc2" "$HOME/.pyenv/versions/3.15"
-          }
+          fi
           pyenv global 3.9 3.10 3.11 3.12 3.13 3.14 3.15
 
           # Verify installations
