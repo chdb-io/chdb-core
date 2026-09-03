@@ -10,9 +10,6 @@
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
-#if USE_JEMALLOC
-#    include <Common/memory.h>
-#endif
 
 namespace DB
 {
@@ -241,9 +238,6 @@ bool isMemoryView(const py::handle & obj)
 
 static void writeMemoryView(const py::handle & obj, rapidjson::Value & json_value, rapidjson::Document::AllocatorType & allocator)
 {
-#if USE_JEMALLOC
-    Memory::MemoryCheckScope memory_check_scope; 
-#endif
     try {
         /// Try to get buffer info using pybind11's buffer interface
         py::buffer_info buf_info = py::cast<py::buffer>(obj).request();

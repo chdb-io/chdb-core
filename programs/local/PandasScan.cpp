@@ -22,9 +22,6 @@
 #include <IO/WriteHelpers.h>
 #include <base/defines.h>
 #include <Common/assert_cast.h>
-#if USE_JEMALLOC
-#    include <Common/memory.h>
-#endif
 
 namespace DB
 {
@@ -270,9 +267,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::Object:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             auto & nullable_column = typeid_cast<ColumnNullable &>(*column);
             auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_column.getNullMapData();
@@ -301,9 +295,6 @@ void PandasScan::innerScanObject(
             /// a Nullable string column (the only case that reaches here) corrupts
             /// the interpreter state and deadlocks.
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             auto & nullable_col = assert_cast<ColumnNullable &>(*column);
             auto data_column = nullable_col.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_col.getNullMapData();
@@ -353,9 +344,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::Float64:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             auto & nullable_column = typeid_cast<ColumnNullable &>(*column);
             auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_column.getNullMapData();
@@ -404,9 +392,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::Int64:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
@@ -417,9 +402,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::Int32:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
@@ -430,9 +412,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::UInt64:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
             for (size_t i = cursor; i < cursor + count; ++i)
             {
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
@@ -443,10 +422,6 @@ void PandasScan::innerScanObject(
     case TypeIndex::UInt8:
         {
             py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-            ::Memory::MemoryCheckScope memory_check_scope;
-#endif
-
             auto & nullable_column = typeid_cast<ColumnNullable &>(*column);
             auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
             auto & null_map = nullable_column.getNullMapData();
