@@ -51,7 +51,10 @@ void free(void * ptr)
     /// which bypasses our malloc override, returning pointers not known to jemalloc.
     /// je_vsallocx() safely returns 0 for such foreign pointers (uses rtree dependent=false),
     /// whereas je_sallocx / je_free crash in jemalloc's rtree lookup.
-    if (unlikely(je_vsallocx(ptr, 0) == 0))
+    /// For jemalloc-owned pointers it returns the usable size, the same value je_sallocx()
+    /// would return, so it doubles as the size lookup for memory tracking.
+    size_t actual_size = je_vsallocx(ptr, 0);
+    if (unlikely(actual_size == 0))
     {
         static void (* libc_free_ptr)(void *) =
             reinterpret_cast<void (*)(void *)>(dlsym(RTLD_NEXT, "free"));
@@ -60,8 +63,7 @@ void free(void * ptr)
         return;
     }
 
-    AllocationTrace trace;
-    size_t actual_size = Memory::untrackMemory(ptr, trace);
+    AllocationTrace trace = CurrentMemoryTracker::free(actual_size);
     trace.onFree(ptr, actual_size);
     je_free(ptr);
 }

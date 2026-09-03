@@ -8,9 +8,6 @@
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeFactory.h>
-#if USE_JEMALLOC
-#include <Common/memory.h>
-#endif
 
 namespace DB
 {
@@ -127,9 +124,6 @@ PandasAnalyzer::PandasAnalyzer(const DB::Settings & settings)
 }
 
 bool PandasAnalyzer::Analyze(py::object column) {
-#if USE_JEMALLOC
-	::Memory::MemoryCheckScope memory_check_scope;
-#endif
 	if (sample_size == 0)
 		return false;
 

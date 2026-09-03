@@ -16,9 +16,6 @@
 #include <DataTypes/DataTypeObject.h>
 #include <DataTypes/DataTypeString.h>
 #include <Interpreters/Context.h>
-#if USE_JEMALLOC
-#    include <Common/memory.h>
-#endif
 
 namespace DB
 {
@@ -175,9 +172,6 @@ static DataTypePtr inferDataTypeFromPandasColumn(
 
 ColumnsDescription PandasDataFrame::getActualTableStructure(DataSourceWrapper & wrapper, ContextPtr & context)
 {
-#if USE_JEMALLOC
-    ::Memory::MemoryCheckScope memory_check_scope;
-#endif
     chassert(py::gil_check());
     NamesAndTypesList names_and_types;
 
@@ -208,9 +202,6 @@ ColumnsDescription PandasDataFrame::getActualTableStructure(DataSourceWrapper & 
 
 bool PandasDataFrame::isPandasDataframe(const py::object & object)
 {
-#if USE_JEMALLOC
-    ::Memory::MemoryCheckScope memory_check_scope;
-#endif
     chassert(py::gil_check());
 
     if (!ModuleIsLoaded<PandasCacheItem>())

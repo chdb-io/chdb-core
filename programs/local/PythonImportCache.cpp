@@ -4,10 +4,6 @@
 #include <Common/Exception.h>
 #include <stack>
 
-#if USE_JEMALLOC
-#    include <Common/memory.h>
-#endif
-
 namespace DB
 {
 
@@ -66,9 +62,6 @@ py::handle PythonImportCacheItem::AddCache(PythonImportCache & cache, py::object
 
 void PythonImportCacheItem::LoadModule(PythonImportCache & cache)
 {
-#if USE_JEMALLOC
-	::Memory::MemoryCheckScope memory_check_scope;
-#endif
 	try
 	{
 		py::gil_assert();
@@ -79,9 +72,6 @@ void PythonImportCacheItem::LoadModule(PythonImportCache & cache)
 	{
 		if (IsRequired())
 		{
-#if USE_JEMALLOC
-			::Memory::MemoryCheckScope memory_check_scope;
-#endif
 			throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR,
 			    				"Required module {} failed to import, due to the following Python exception:\n {}", name, e.what());
 		}
@@ -92,9 +82,6 @@ void PythonImportCacheItem::LoadModule(PythonImportCache & cache)
 
 void PythonImportCacheItem::LoadAttribute(PythonImportCache & cache, py::handle source)
 {
-#if USE_JEMALLOC
-	::Memory::MemoryCheckScope memory_check_scope;
-#endif
 	if (py::hasattr(source, name.c_str()))
 		object = AddCache(cache, std::move(source.attr(name.c_str())));
 	else
@@ -167,9 +154,6 @@ PythonImportCache::~PythonImportCache()
 	try
 	{
 		py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-		::Memory::MemoryCheckScope memory_check_scope;
-#endif
 		owned_objects.clear();
 	}
 	catch (...)

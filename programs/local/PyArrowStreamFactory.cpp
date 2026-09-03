@@ -9,10 +9,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/gil.h>
 
-#if USE_JEMALLOC
-#include <Common/memory.h>
-#endif
-
 namespace DB
 {
 
@@ -50,9 +46,6 @@ std::unique_ptr<ArrowArrayStreamWrapper> PyArrowStreamFactory::createFromPyObjec
     }
     catch (const py::error_already_set & e)
     {
-#if USE_JEMALLOC
-        ::Memory::MemoryCheckScope memory_check_scope;
-#endif
         throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED,
                         "Failed to convert PyArrow object to arrow array stream: {}", e.what());
     }

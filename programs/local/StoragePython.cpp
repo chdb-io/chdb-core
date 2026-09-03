@@ -39,9 +39,6 @@
 #include <Poco/Logger.h>
 #include <Common/Exception.h>
 #include <Common/logger_useful.h>
-#if USE_JEMALLOC
-#include <Common/memory.h>
-#endif
 
 using namespace CHDB;
 
@@ -658,9 +655,6 @@ void StoragePython::prepareColumnCache(
     const ContextPtr & context_)
 {
     py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-    ::Memory::MemoryCheckScope memory_check_scope;
-#endif
 
     auto & data_source = data_source_wrapper->getDataSource();
 

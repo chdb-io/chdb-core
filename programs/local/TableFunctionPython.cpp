@@ -25,10 +25,6 @@
 #include <Common/FunctionDocumentation.h>
 #include <Common/logger_useful.h>
 
-#if USE_JEMALLOC
-#include <Common/memory.h>
-#endif
-
 namespace py = pybind11;
 
 using namespace CHDB;
@@ -99,9 +95,6 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
     }
     catch (py::error_already_set & e)
     {
-#if USE_JEMALLOC
-        ::Memory::MemoryCheckScope memory_check_scope;
-#endif
         throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED, "Python exception occurred: {}", e.what());
     }
 }
@@ -132,9 +125,6 @@ StoragePtr TableFunctionPython::executeImpl(
 ColumnsDescription TableFunctionPython::getActualTableStructure(ContextPtr context, bool /*is_insert_query*/) const
 {
     py::gil_scoped_acquire acquire;
-#if USE_JEMALLOC
-    Memory::MemoryCheckScope memory_check_scope;
-#endif
 
     if (!data_source_wrapper)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Python data source not initialized");
