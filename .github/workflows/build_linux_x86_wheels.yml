@@ -323,10 +323,29 @@ jobs:
       # here rather than after the wheel tests so an unrelated failure there
       # does not withhold the result.
       - name: ADBC validation suites
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -eo pipefail
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
+
+          # Three anonymous clones live under this step and none of them is ours
+          # to pass a token to directly: FetchContent clones apache/arrow-adbc,
+          # that clone updates its own apache/arrow-testing submodule, and pip
+          # installs a git+https requirement. Anonymous clones from the shared
+          # runner egress address get answered with HTTP 401
+          # ("could not read Username for 'https://github.com'"). Same header
+          # actions/checkout uses; GIT_CONFIG_* is inherited by every child
+          # process and never written to disk. Nothing here talks to the
+          # superproject, so the header cannot collide with the credential
+          # actions/checkout persists there.
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            export GIT_CONFIG_VALUE_0
+          fi
 
           BUILD_DIR="$RUNNER_TEMP/adbc-validation"
           VENV="$RUNNER_TEMP/adbc-validation-venv"
