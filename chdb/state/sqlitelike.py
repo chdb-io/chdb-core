@@ -4,6 +4,7 @@ from typing import Optional, Any
 import sys
 from decimal import Decimal
 from urllib.parse import parse_qsl
+import chdb
 from chdb import _chdb
 from chdb.progress_display import (
     get_notebook_display as _get_notebook_display,
@@ -140,7 +141,7 @@ class StreamingResult:
             or None if no more data is available
 
         Raises:
-            RuntimeError: If the streaming query encounters an error
+            ChdbError: If the streaming query encounters an error
 
         .. note::
             Once the stream is exhausted (returns None), subsequent calls will
@@ -178,7 +179,7 @@ class StreamingResult:
         except Exception as e:
             self._exhausted = True
             self._cleanup_progress_callback_once()
-            raise RuntimeError(f"Streaming query failed: {str(e)}") from e
+            raise chdb.ChdbError(f"Streaming query failed: {str(e)}") from e.with_traceback(None)
 
     def __iter__(self):
         return self
@@ -227,7 +228,7 @@ class StreamingResult:
         data can be fetched from this result.
 
         Raises:
-            RuntimeError: If cancellation fails on the server side
+            ChdbError: If cancellation fails on the server side
 
         .. note::
             This method is idempotent - calling it multiple times is safe
@@ -251,7 +252,7 @@ class StreamingResult:
             try:
                 self._conn.streaming_cancel_query(self._result)
             except Exception as e:
-                raise RuntimeError(f"Failed to cancel streaming query: {str(e)}") from e
+                raise chdb.ChdbError(f"Failed to cancel streaming query: {str(e)}") from e.with_traceback(None)
             finally:
                 self._cleanup_progress_callback_once()
         else:
@@ -711,7 +712,7 @@ class Connection:
             - arrowtable format returns pyarrow.Table
 
         Raises:
-            RuntimeError: If query execution fails
+            ChdbError: If query execution fails
             ImportError: If required packages for format are not installed
 
         .. warning::
@@ -753,6 +754,9 @@ class Connection:
                 result = self._conn.query_df(query, params=params or {})
             else:
                 result = self._conn.query(query, format, params=params or {})
+        except RuntimeError as e:
+            raise chdb.ChdbError(str(e)) from e.with_traceback(None)
+        else:
             return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
@@ -814,7 +818,7 @@ class Connection:
             - PyArrow RecordBatch streaming (Arrow format only)
 
         Raises:
-            RuntimeError: If query execution fails
+            ChdbError: If query execution fails
             ImportError: If required packages for format are not installed
 
         .. note::
@@ -860,6 +864,9 @@ class Connection:
         progress_callback = self._setup_auto_progress_callback()
         try:
             c_stream_result = self._conn.send_query(query, format, params=params or {})
+        except RuntimeError as e:
+            self._cleanup_auto_progress_callback(progress_callback)
+            raise chdb.ChdbError(str(e)) from e.with_traceback(None)
         except Exception:
             self._cleanup_auto_progress_callback(progress_callback)
             raise
@@ -1044,7 +1051,7 @@ class Cursor:
             query (str): SQL query string to execute
 
         Raises:
-            Exception: If query execution fails or result parsing fails
+            ChdbError: If query execution fails
 
         .. note::
             This method follows DB-API 2.0 specifications for cursor.execute().
@@ -1085,7 +1092,7 @@ class Cursor:
         self._cursor.execute(query)
         result_mv = self._cursor.get_memview()
         if self._cursor.has_error():
-            raise Exception(self._cursor.error_message())
+            raise chdb.ChdbError(self._cursor.error_message())
         if self._cursor.data_size() == 0:
             self._current_table = None
             self._current_row = 0
