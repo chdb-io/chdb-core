@@ -36,6 +36,20 @@ class TestSessionChdbError(unittest.TestCase):
         with self.assertRaises(chdb.ChdbError):
             self.sess.send_query("SELECT bad syntax FROM", "CSV")
 
+    def test_send_query_deferred_error_raises_chdb_error(self):
+        # semantic errors only surface once the stream is consumed
+        stream = self.sess.send_query("SELECT * FROM nonexistent_table_xyz", "CSV")
+        with self.assertRaises(chdb.ChdbError):
+            stream.fetch()
+
+    def test_cursor_execute_raises_chdb_error(self):
+        conn = chdb.connect(":memory:")
+        try:
+            with self.assertRaises(chdb.ChdbError):
+                conn.cursor().execute("SELECT * FROM nonexistent_table_xyz")
+        finally:
+            conn.close()
+
     def test_stateless_query_still_raises_chdb_error(self):
         with self.assertRaises(chdb.ChdbError):
             chdb.query("SELECT * FROM nonexistent_table_xyz")
