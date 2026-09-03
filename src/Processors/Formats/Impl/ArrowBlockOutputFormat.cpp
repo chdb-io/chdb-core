@@ -6,7 +6,6 @@
 #include <Common/CurrentThread.h>
 #include <Common/setThreadName.h>
 #include <Common/ThreadPool.h>
-#include <Common/FailPoint.h>
 #include <Formats/FormatFactory.h>
 #include <Processors/Port.h>
 
@@ -40,11 +39,6 @@ namespace CurrentMetrics
 
 namespace DB
 {
-
-namespace FailPoints
-{
-    extern const char arrow_output_parallel_pause_first_encode[];
-}
 namespace ErrorCodes
 {
     extern const int UNKNOWN_EXCEPTION;
@@ -208,13 +202,6 @@ void ArrowBlockOutputFormat::scheduleParallel(Chunk chunk)
         try
         {
             ThreadGroupSwitcher switcher(thread_group, ThreadName::PARQUET_ENCODER);
-
-            /// Test hook (no-op unless the failpoint is enabled): deterministically hold the
-            /// front (seq 0) encode task so a regression test can drive in_flight up to
-            /// max_in_flight -- later tasks finish while the front is pinned -- and exercise the
-            /// backpressure-wait drain path above.
-            if (task->seq == 0)
-                FailPointInjection::pauseFailPoint(FailPoints::arrow_output_parallel_pause_first_encode);
 
             if (is_stopped)
             {
