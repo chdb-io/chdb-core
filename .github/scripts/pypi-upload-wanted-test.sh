@@ -41,11 +41,20 @@ export PATH="$FAKE_BIN:$PATH"
 failures=0
 
 # want: "upload" or "skip"; notes: the release body the fake gh returns
+#
+# Only 0 and 1 are decisions. Treating every nonzero status as "skip" would let
+# a broken script pass the whole table, because most cases here expect a skip --
+# a syntax error, a missing gh, or the usage exit would all read as agreement.
 check() {
 	local want=$1 tag=$2 notes=${3:-} fails=${4:-}
-	local got output
-	output=$(FAKE_NOTES="$notes" FAKE_GH_FAILS="$fails" "$SCRIPT" "$tag" 2>&1) \
-		&& got=upload || got=skip
+	local got output rc
+	output=$(FAKE_NOTES="$notes" FAKE_GH_FAILS="$fails" "$SCRIPT" "$tag" 2>&1)
+	rc=$?
+	case $rc in
+	0) got=upload ;;
+	1) got=skip ;;
+	*) got="exit $rc, which is not a decision" ;;
+	esac
 	if [ "$got" = "$want" ]; then
 		printf '  ok    %-22s -> %s\n' "$tag" "$got"
 	else
@@ -82,14 +91,13 @@ echo "an unreadable release does not publish"
 check skip v26.7.3 "" fails
 
 echo "no tag is a usage error, not a decision"
-if "$SCRIPT" >/dev/null 2>&1; then
-	echo "  FAIL  no argument -> exit 0"
-	failures=$((failures + 1))
+"$SCRIPT" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ]; then
+	echo "  ok    no argument -> exit 2"
 else
-	[ $? -eq 2 ] && echo "  ok    no argument -> exit 2" || {
-		echo "  FAIL  no argument -> exited 1, which reads as a decision to skip"
-		failures=$((failures + 1))
-	}
+	echo "  FAIL  no argument -> exit $rc; 0 and 1 are decisions and this is not one"
+	failures=$((failures + 1))
 fi
 
 if [ "$failures" -gt 0 ]; then
