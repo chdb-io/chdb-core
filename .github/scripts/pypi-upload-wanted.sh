@@ -8,39 +8,43 @@
 # release is not on PyPI has to be readable in the log of the job that decided
 # it, months later, without anyone reconstructing what the settings were.
 #
-# Three rules, in this order:
+# Four rules, in this order:
 #
-#   a candidate never goes           -rc.N is for the bindings to pin against,
-#                                    and PyPI keeps every filename forever
+#   a candidate never goes        -rc.N is for the bindings to pin against, and
+#                                 PyPI keeps every filename forever
 #
-#   nothing but vX.Y.Z goes          an allow-list of the one release shape,
-#                                    rather than a list of things to exclude
+#   nothing but vX.Y.Z goes       an allow-list of the one release shape. The
+#                                 condition this replaced tested the tag for
+#                                 the substring "rc", which let v26.7.3-rc1
+#                                 through and said nothing about -beta.1,
+#                                 -stable or a fourth field. check-release-tag.sh
+#                                 rejects all of those but cannot refuse a push:
+#                                 it goes red minutes into a build that then
+#                                 uploads anyway
 #
-#   a release goes unless named      the default, because a release is what a
-#   in CORE_PYPI_SKIP_TAGS           user reaches with `pip install chdb-core`
+#   a release whose notes say     the opt-out, because the wheels are about half
+#   [no-pypi] does not go         a gigabyte against a 10 GB quota that only a
+#                                 deleted release gives back. A release cut for
+#                                 one binding to move onto, rather than for
+#                                 users to install, can say so
 #
-# The second rule is why this is an allow-list. The condition it replaced tested
-# the tag for the substring "rc", which let v26.7.3-rc1 through -- no dot, so
-# not the candidate spelling either -- and said nothing at all about -beta.1,
-# -stable, or a fourth field. check-release-tag.sh rejects every one of those,
-# but it cannot refuse a push; it only goes red, minutes into a build that then
-# uploads anyway. Naming the one shape that publishes closes the whole class,
-# including whatever shape someone mistypes next.
+#   anything else goes            the default, because a release is what a user
+#                                 reaches with `pip install chdb-core`
 #
-# The skip list exists because four abi3 wheels come to roughly half a gigabyte
-# against a 10 GB project quota, and deleting a release is the only way to get
-# any of it back -- and it burns those filenames permanently. So a release cut
-# for one binding to move onto, rather than for users to install, can say so.
-#
-# It is a list of exact tags rather than a boolean for one reason: an entry that
-# outlives its release matches nothing. A boolean left set to "skip" silently
-# keeps the next release off PyPI too.
+# The opt-out lives in the release notes rather than in a repository variable
+# for three reasons. It is decided in the same text box, at the same moment, as
+# the release itself, so there is no "update the setting before you tag" order
+# to get wrong. It does not accumulate -- there is no list to prune, and no
+# entry that outlives its release. And it answers "why is this release not on
+# PyPI" on the page someone asking that is already looking at.
 #
 # Either way the GitHub release is unaffected: wheels, libchdb.so, libchdb.a and
 # debug symbols are uploaded as release assets by steps this does not gate, so
-# `pip install <release asset URL>` works for every tag.
+# every release is installable from the wheel index built over those assets.
 
 set -euo pipefail
+
+MARKER='[no-pypi]'
 
 TAG="${1:-}"
 [ -n "$TAG" ] || {
@@ -65,14 +69,35 @@ if [[ ! $TAG =~ ^v$num\.$num\.$num$ ]]; then
 	exit 1
 fi
 
-# Commas around both sides so an entry matches one whole tag: bare substring
-# matching would let v26.7.3 in the list also skip v26.7.30.
-case ",${CORE_PYPI_SKIP_TAGS:-}," in
-*",$TAG,"*)
-	echo "$TAG is named in CORE_PYPI_SKIP_TAGS; PyPI upload skipped"
-	echo "  the wheels are still on the GitHub release for $TAG"
+# Two digits each, the bound check-release-tag.sh enforces because chdb-go packs
+# the release into major*10000 + minor*100 + patch. A tag past it is one the
+# bindings cannot publish, and that check goes red without being able to stop
+# the upload -- so a filename would be spent on a release nothing downstream
+# could use.
+if [ "${BASH_REMATCH[2]}" -gt 99 ] || [ "${BASH_REMATCH[3]}" -gt 99 ]; then
+	echo "$TAG has a field above 99, which the bindings cannot encode; PyPI upload skipped"
+	echo "  see .github/scripts/check-release-tag.sh for why two digits is the budget"
 	exit 1
-	;;
-esac
+fi
 
-echo "$TAG is a release and is not in CORE_PYPI_SKIP_TAGS; uploading to PyPI"
+repo="${GITHUB_REPOSITORY:-chdb-io/chdb-core}"
+# Read by tag rather than from the event payload, so this behaves the same
+# however the build was triggered.
+if ! notes=$(gh api "repos/$repo/releases/tags/$TAG" --jq '.body // ""' 2>&1); then
+	# Fail closed. The costs are not symmetric: a quota spent is permanent and
+	# takes the filename with it, while a skip is recoverable -- fix the notes
+	# and re-run the build, or upload by hand. A tag with no release cannot have
+	# had wheels attached either, so this is already a broken state.
+	echo "could not read the release notes for $TAG; PyPI upload skipped" >&2
+	echo "  $notes" >&2
+	echo "  re-run this build once the release exists, or upload by hand" >&2
+	exit 1
+fi
+
+if [[ $notes == *"$MARKER"* ]]; then
+	echo "$TAG's release notes say $MARKER; PyPI upload skipped"
+	echo "  the wheels are on the GitHub release and in the wheel index"
+	exit 1
+fi
+
+echo "$TAG is a release and its notes do not say $MARKER; uploading to PyPI"
