@@ -18,12 +18,24 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
+      # A three-hour wheel build cannot be affected by the script and workflow
+      # that turn finished releases into a package index. Listing them here is
+      # what stops a one-line edit to either from occupying the self-hosted
+      # pool; publish_wheel_index.yml checks itself on pull requests.
+      - '.github/scripts/build-wheel-index.py'
+      - '.github/workflows/publish_wheel_index.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths-ignore:
       - '**/*.md'
+      # A three-hour wheel build cannot be affected by the script and workflow
+      # that turn finished releases into a package index. Listing them here is
+      # what stops a one-line edit to either from occupying the self-hosted
+      # pool; publish_wheel_index.yml checks itself on pull requests.
+      - '.github/scripts/build-wheel-index.py'
+      - '.github/workflows/publish_wheel_index.yml'
 
 concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
