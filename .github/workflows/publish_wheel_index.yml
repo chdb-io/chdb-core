@@ -10,30 +10,29 @@
 #
 # Why not just PyPI. Those four wheels are about half a gigabyte against a 10 GB
 # project quota that only a deleted release gives back, so PyPI publication is
-# opt-in per release (see .github/scripts/pypi-upload-wanted.sh). This is what
-# the releases that skip it are reachable through.
+# per-release (see .github/scripts/pypi-upload-wanted.sh). This is what the
+# releases that skip it are reachable through.
 #
 # The index lists every release, so it is a superset of PyPI: adding it can
 # never make a version harder to install, and pip takes the highest candidate
 # across both, so a chdb-core that does reach PyPI wins with no command change.
 # uv is the reason the "every release" part is load-bearing rather than tidy --
 # it searches an extra index before the default one and, under its default
-# first-index strategy, stops at whichever index first matches the name. An
+# first-index strategy, stops at whichever index first matched the name. An
 # index that listed only recent releases would pin uv users to those.
 #
 # Regeneration is stateless: the script reads the releases API and writes the
 # whole tree, so running it more often than necessary costs a few seconds and
-# cannot produce a partial index. Hence the four triggers.
+# cannot produce a partial index for a settled release.
 
 name: Publish wheel index
 
 on:
   workflow_dispatch:
-  # The release event fires before the build workflows have uploaded anything,
-  # so this run usually publishes an index that does not yet contain the new
-  # release. It is here so the index is refreshed promptly when a release is
-  # edited or re-published, and the workflow_run trigger below is what catches
-  # the wheels themselves.
+  # A release is published minutes before any wheel exists, so this run
+  # normally publishes an index that does not contain the new release yet. It
+  # is here for a re-publish or an edit; the workflow_run trigger is what
+  # catches the wheels.
   release:
     types: [published, edited]
   # Each platform's build uploads its wheels to the release as its last steps,
@@ -41,6 +40,11 @@ on:
   # publish_checksums.yml watches the same four workflows: nothing else knows
   # when a release is complete, because the four runners finish hours apart and
   # never see each other's output.
+  #
+  # Not "Build & Test Free-Threading Wheels": it does not run on a release and
+  # its release upload is commented out, so it puts no wheels anywhere this can
+  # see. The script takes every .whl asset it finds, so re-enabling that upload
+  # is all it would take for cp314t wheels to appear in the index.
   workflow_run:
     workflows:
       - "Build & Test macOS arm64"
@@ -48,39 +52,32 @@ on:
       - "Build & Test Linux x86_64"
       - "Build & Test Linux arm64"
     types: [completed]
-  # Not "Build & Test Free-Threading Wheels": it does not run on a release and
-  # its release upload is commented out, so it puts no wheels anywhere this can
-  # see. The script takes every .whl asset it finds, so re-enabling that upload
-  # is all it would take for cp314t wheels to appear in the index.
-  # A backstop, so a missed event cannot leave the index stale indefinitely.
+  # Hourly, and cheap: the job is seconds, and this is what closes the window
+  # if two platform builds finish close enough together that each sees the
+  # other still running and neither deploys.
   schedule:
-    - cron: "17 6 * * *"
-
-# One deployment at a time, and never cancel one in flight: a half-deployed
-# index is a resolver failure for whoever is installing at that moment.
-concurrency:
-  group: pages
-  cancel-in-progress: false
+    - cron: "17 * * * *"
+  # The index is only as good as the script that writes it, and nothing else in
+  # this repository runs that script. Without this, an edit to either file
+  # reaches a release before anything has executed it once.
+  pull_request:
+    paths:
+      - .github/workflows/publish_wheel_index.yml
+      - .github/scripts/build-wheel-index.py
 
 permissions:
   contents: read
 
 jobs:
-  publish:
+  build:
     # A build triggered by a pull request or a push to main uploads nothing to
     # any release, so regenerating after it would be pure noise.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'release'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      settled: ${{ steps.settled.outputs.settled }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
       - name: Build the index
         run: .github/scripts/build-wheel-index.py --out public
         env:
@@ -88,8 +85,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       # A resolver that cannot parse the page reports "no matching distribution"
       # and names nothing, so the shape is checked here where the error can say
-      # what is wrong. pip refuses a page served as text/plain, which is how a
-      # static host that guesses the type wrong fails.
+      # what is wrong.
       - name: The index is a PEP 503 index
         run: |
           set -euo pipefail
@@ -101,6 +97,8 @@ jobs:
           # Four abi3 wheels per release over the releases that carry them: a
           # handful would mean the API returned a truncated page.
           [ "$count" -ge 4 ] || { echo "::error::only $count wheel links; the index looks truncated"; exit 1; }
+          # An href ending at .whl is one with no fragment after it. pip installs
+          # such a link without complaint, which is the whole problem.
           unhashed=$(grep -c 'href="[^"]*\.whl"' public/simple/chdb-core/index.html || true)
           [ "$unhashed" -eq 0 ] \
             || { echo "::error::$unhashed links have no #sha256= fragment; pip would install those unverified"; exit 1; }
@@ -113,8 +111,69 @@ jobs:
                  if not h.startswith("https://github.com/")]
           sys.exit("::error::non-release hrefs: " + ", ".join(bad[:3]) if bad else 0)
           PY
+      # Deploying after the first platform build would publish an index that
+      # holds one platform's wheel for the new release. A user on any other
+      # platform asking for that exact version gets "no matching distribution"
+      # for the hours until the next build lands -- a hard resolver failure,
+      # which is worse than what publish_checksums.yml accepts for the same
+      # timing (a SHA256SUMS missing a line is still a usable file).
+      #
+      # So the last build of a release is the one that deploys, and it is
+      # identified by asking what is still running rather than by counting to
+      # four. A count would have to be told which builds a release contains,
+      # and that changes with DEBUG_MODE, with re-runs, and whenever the
+      # platform set does.
+      - name: Is every build for this release finished
+        id: settled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Manual runs deploy whatever exists: the operator asked for it, and
+          # it is the handle for publishing during a stuck or abandoned build.
+          FORCED: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          if [ "$FORCED" = "true" ]; then
+            echo "manual run: deploying without waiting for builds"
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          builds='["Build & Test macOS arm64","Build & Test macOS x86_64","Build & Test Linux x86_64","Build & Test Linux arm64"]'
+          running=0
+          for state in in_progress queued; do
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$state&per_page=100" \
+                  --jq "[.workflow_runs[]
+                         | select(.name as \$n | $builds | index(\$n))
+                         | select(.event == \"release\")] | length")
+            running=$((running + n))
+          done
+          if [ "$running" -gt 0 ]; then
+            echo "$running release build(s) still running; leaving the index alone"
+            echo "  the last one to finish publishes; the hourly run is the backstop"
+            echo "settled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "no release build is running; publishing"
+            echo "settled=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request' && steps.settled.outputs.settled == 'true'
         with:
           path: public
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && needs.build.outputs.settled == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    # One deployment at a time, and never cancel one in flight: a half-deployed
+    # index is a resolver failure for whoever is installing at that moment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
