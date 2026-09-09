@@ -53,6 +53,8 @@ _chdb_version
 _chdb_arrow_scan
 _chdb_arrow_array_scan
 _chdb_arrow_unregister_table
+_chdb_insert_arrow_array
+_chdb_insert_arrow_stream
 _chdb_query_arrow
 _chdb_query_arrow_n
 _chdb_stream_query_arrow

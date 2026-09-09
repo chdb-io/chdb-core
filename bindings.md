@@ -12,6 +12,7 @@ chDB exposes four main capabilities through its C API ([`chdb.h`](programs/local
 | **Session (Connection)** | `chdb_connect()` / `chdb_query()` | Persistent connection with reusable engine context. Supports multi-statement workflows. |
 | **Streaming Query** | `chdb_stream_query()` / `chdb_stream_fetch_result()` | Chunked result iteration with constant memory usage. Ideal for large result sets that should not be fully materialized. |
 | **Arrow Scan** | `chdb_arrow_scan()` / `chdb_arrow_array_scan()` | Register Arrow streams or arrays as queryable table functions. Enables zero-copy data exchange with Arrow-native ecosystems. |
+| **Arrow Insert** | `chdb_insert_arrow_array()` / `chdb_insert_arrow_stream()` | One-shot insert from Arrow C Data Interface into a MergeTree (or compatible) table. Matches columns by name. |
 
 ### Feature Matrix
 
@@ -114,6 +115,7 @@ All bindings wrap the same stable C API defined in [`chdb.h`](programs/local/chd
 1. **Session** — Wrap `chdb_connect()`, `chdb_query()`, and `chdb_close_conn()`.
 2. **Streaming** — Wrap `chdb_stream_query()`, `chdb_stream_fetch_result()`, and `chdb_stream_cancel_query()`.
 3. **Arrow Scan** — Wrap `chdb_arrow_scan()` / `chdb_arrow_array_scan()` and `chdb_arrow_unregister_table()`.
+4. **Arrow Insert** — Wrap `chdb_insert_arrow_array()` / `chdb_insert_arrow_stream()`.
 
 ### Need Help?
 
