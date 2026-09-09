@@ -18,12 +18,34 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
+      # A three-hour wheel build cannot be affected by the script and workflow
+      # that turn finished releases into a package index, nor by the rules
+      # deciding which releases reach PyPI -- that step runs on tags only, so a
+      # pull request never executes it. Listing them here is what stops a
+      # one-line edit to any of them from occupying the self-hosted pool.
+      # publish_wheel_index.yml checks itself on pull requests, and Pull-CI runs
+      # the PyPI rules' table test on every one.
+      - '.github/scripts/build-wheel-index.py'
+      - '.github/scripts/pypi-upload-wanted.sh'
+      - '.github/scripts/pypi-upload-wanted-test.sh'
+      - '.github/workflows/publish_wheel_index.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths-ignore:
       - '**/*.md'
+      # A three-hour wheel build cannot be affected by the script and workflow
+      # that turn finished releases into a package index, nor by the rules
+      # deciding which releases reach PyPI -- that step runs on tags only, so a
+      # pull request never executes it. Listing them here is what stops a
+      # one-line edit to any of them from occupying the self-hosted pool.
+      # publish_wheel_index.yml checks itself on pull requests, and Pull-CI runs
+      # the PyPI rules' table test on every one.
+      - '.github/scripts/build-wheel-index.py'
+      - '.github/scripts/pypi-upload-wanted.sh'
+      - '.github/scripts/pypi-upload-wanted-test.sh'
+      - '.github/workflows/publish_wheel_index.yml'
 
 
 concurrency:
@@ -790,14 +812,22 @@ jobs:
             ./linux-x86_64-libchdb-static.tar.gz
             ./linux-x86_64-debuginfo.tar.xz
           overwrite: true
+      # A release goes to PyPI, a candidate does not, and a release opts out by
+      # saying [no-pypi] in its notes. The script owns that policy and logs
+      # which way it went; see it for why the quota makes the opt-out worth
+      # having, and why the notes are where it lives. The GitHub release above
+      # is not gated by any of it.
       - name: Upload pypi
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          .github/scripts/pypi-upload-wanted.sh "${{ github.ref_name }}" || exit 0
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.9
           python -m twine upload dist/chdb_core-*.whl
         env:
+          # Reads the release notes the decision is written in.
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
       # NOTE: chdb-core-lite PyPI publishing temporarily disabled; uncomment to re-enable.
