@@ -351,15 +351,25 @@ void HandledSignals::addSignalHandler(
             throw Poco::Exception("Cannot set signal handler.");
 #endif
 
+    /// Install and record under one lock. chdb_reset_signal_handlers() takes the same lock
+    /// to walk `handled_signals` and undo exactly what is recorded there, so an install that
+    /// reached the OS while that walk was reading a vector it had not been appended to yet
+    /// would leave a chDB handler live in a process that had just opted out. The flag is
+    /// re-read here for the same reason: setupCommonDeadlySignalHandlers() checks it before
+    /// calling, but an opt-out arriving after that check must still win, and
+    /// chdb_set_signal_handlers_enabled() stores the flag before taking this lock -- so
+    /// whichever of the two reaches the lock first, the other sees a decided state.
+    std::lock_guard<std::mutex> lock(handled_signals_mutex);
+
+    if (disable_signal_handlers.load(std::memory_order_relaxed))
+        return;
+
     for (auto signal : signals)
         if (sigaction(signal, &sa, nullptr))
             throw Poco::Exception("Cannot set signal handler.");
 
     if (register_signal)
-    {
-        std::lock_guard<std::mutex> lock(handled_signals_mutex);
         std::copy(signals.begin(), signals.end(), std::back_inserter(handled_signals));
-    }
 #endif
 }
 
