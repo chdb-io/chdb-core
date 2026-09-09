@@ -1,0 +1,120 @@
+# Publish a PEP 503 index over the wheels attached to this repository's releases.
+#
+#   pip install "chdb[durable]" \
+#     --extra-index-url https://chdb-io.github.io/chdb-core/simple/ "chdb-core>=26.7.3"
+#
+# Why an index and not a wheel URL. A release attaches four abi3 wheels and a
+# user has one platform; without an index they have to know their own tag set
+# and paste the matching URL, which is both a support burden and a thing that
+# goes stale in requirements files. An index makes the platform pip's problem.
+#
+# Why not just PyPI. Those four wheels are about half a gigabyte against a 10 GB
+# project quota that only a deleted release gives back, so PyPI publication is
+# opt-in per release (see .github/scripts/pypi-upload-wanted.sh). This is what
+# the releases that skip it are reachable through.
+#
+# The index lists every release, so it is a superset of PyPI: adding it can
+# never make a version harder to install, and pip takes the highest candidate
+# across both, so a chdb-core that does reach PyPI wins with no command change.
+# uv is the reason the "every release" part is load-bearing rather than tidy --
+# it searches an extra index before the default one and, under its default
+# first-index strategy, stops at whichever index first matches the name. An
+# index that listed only recent releases would pin uv users to those.
+#
+# Regeneration is stateless: the script reads the releases API and writes the
+# whole tree, so running it more often than necessary costs a few seconds and
+# cannot produce a partial index. Hence the four triggers.
+
+name: Publish wheel index
+
+on:
+  workflow_dispatch:
+  # The release event fires before the build workflows have uploaded anything,
+  # so this run usually publishes an index that does not yet contain the new
+  # release. It is here so the index is refreshed promptly when a release is
+  # edited or re-published, and the workflow_run trigger below is what catches
+  # the wheels themselves.
+  release:
+    types: [published, edited]
+  # Each platform's build uploads its wheels to the release as its last steps,
+  # so "that build finished" is the signal that new wheels exist. Same reason
+  # publish_checksums.yml watches the same four workflows: nothing else knows
+  # when a release is complete, because the four runners finish hours apart and
+  # never see each other's output.
+  workflow_run:
+    workflows:
+      - "Build & Test macOS arm64"
+      - "Build & Test macOS x86_64"
+      - "Build & Test Linux x86_64"
+      - "Build & Test Linux arm64"
+    types: [completed]
+  # Not "Build & Test Free-Threading Wheels": it does not run on a release and
+  # its release upload is commented out, so it puts no wheels anywhere this can
+  # see. The script takes every .whl asset it finds, so re-enabling that upload
+  # is all it would take for cp314t wheels to appear in the index.
+  # A backstop, so a missed event cannot leave the index stale indefinitely.
+  schedule:
+    - cron: "17 6 * * *"
+
+# One deployment at a time, and never cancel one in flight: a half-deployed
+# index is a resolver failure for whoever is installing at that moment.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # A build triggered by a pull request or a push to main uploads nothing to
+    # any release, so regenerating after it would be pure noise.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Build the index
+        run: .github/scripts/build-wheel-index.py --out public
+        env:
+          # Only to raise the API rate limit; the releases this reads are public.
+          GITHUB_TOKEN: ${{ github.token }}
+      # A resolver that cannot parse the page reports "no matching distribution"
+      # and names nothing, so the shape is checked here where the error can say
+      # what is wrong. pip refuses a page served as text/plain, which is how a
+      # static host that guesses the type wrong fails.
+      - name: The index is a PEP 503 index
+        run: |
+          set -euo pipefail
+          for page in public/simple/index.html public/simple/chdb-core/index.html; do
+            [ -s "$page" ] || { echo "::error::$page is missing or empty"; exit 1; }
+          done
+          count=$(grep -c '\.whl' public/simple/chdb-core/index.html)
+          echo "chdb-core: $count wheel links"
+          # Four abi3 wheels per release over the releases that carry them: a
+          # handful would mean the API returned a truncated page.
+          [ "$count" -ge 4 ] || { echo "::error::only $count wheel links; the index looks truncated"; exit 1; }
+          unhashed=$(grep -c 'href="[^"]*\.whl"' public/simple/chdb-core/index.html || true)
+          [ "$unhashed" -eq 0 ] \
+            || { echo "::error::$unhashed links have no #sha256= fragment; pip would install those unverified"; exit 1; }
+          python3 - <<'PY'
+          # The links have to be absolute release URLs: a relative href would
+          # resolve against the index host, which does not serve wheels.
+          import re, sys
+          page = open("public/simple/chdb-core/index.html").read()
+          bad = [h for h in re.findall(r'href="([^"]+)"', page)
+                 if not h.startswith("https://github.com/")]
+          sys.exit("::error::non-release hrefs: " + ", ".join(bad[:3]) if bad else 0)
+          PY
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deployment
+        uses: actions/deploy-pages@v4
