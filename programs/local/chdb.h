@@ -1045,14 +1045,26 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
  * Call BEFORE chdb_connect() or query_stable() to prevent chDB
  * from installing process-wide signal handlers.
  *
+ * While disabled, no chDB entry point changes the disposition of any signal,
+ * so a host that handles deadly signals itself -- a JVM recovering from SIGSEGV
+ * as a NullPointerException, for instance -- keeps its handlers across every
+ * call. Switching to 0 also takes back the handlers chDB installed while it was
+ * enabled, as chdb_reset_signal_handlers() does.
+ *
+ * The flag is process-wide and sticky; one call per process is enough.
+ *
  * @param enabled 1 to enable signal handlers (default), 0 to disable them
  */
 CHDB_EXPORT void chdb_set_signal_handlers_enabled(int enabled);
 
 /**
- * Resets all signal handlers installed by chDB back to SIG_DFL.
+ * Resets the signal handlers installed by chDB back to SIG_DFL.
  * Useful when signal handlers were already installed and need to be removed,
  * e.g. to let the embedding process manage its own signal handling.
+ *
+ * Only signals chDB installed a handler for are touched; a handler owned by the
+ * embedding process is left in place. When chDB installed nothing, this is a
+ * no-op.
  */
 CHDB_EXPORT void chdb_reset_signal_handlers(void);
 

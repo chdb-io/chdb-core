@@ -35,9 +35,6 @@
 #include "Poco/String.h"
 #include "Poco/ConsoleChannel.h"
 #include "Poco/AutoPtr.h"
-#if defined(POCO_OS_FAMILY_UNIX) && !defined(POCO_VXWORKS)
-#include "Poco/SignalHandler.h"
-#endif
 
 
 using Poco::Logger;
@@ -99,9 +96,14 @@ void Application::setup()
 #if defined(POCO_OS_FAMILY_UNIX) && !defined(POCO_VXWORKS)
 	_workingDirAtLaunch = Path::current();
 
-	#if !defined(_DEBUG)
-	Poco::SignalHandler::install();
-	#endif
+	/// Poco::SignalHandler::install() is deliberately not called here. It sigactions
+	/// SIGILL/SIGBUS/SIGSEGV/SIGSYS process-wide from this constructor, so constructing
+	/// any Application took those four signals away from whoever owned them -- including
+	/// the process embedding libchdb, and without consulting
+	/// HandledSignals::disable_signal_handlers. The handler it installs cannot do anything
+	/// useful either: it siglongjmps to a buffer registered by poco_throw_on_signal, which
+	/// has no users here, so it always falls through to std::abort(). Deadly signals are
+	/// handled by HandledSignals::setupCommonDeadlySignalHandlers() instead.
 #else
 	setUnixOptions(false);
 #endif
