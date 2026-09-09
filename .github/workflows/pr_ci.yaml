@@ -30,6 +30,14 @@ jobs:
       - name: CHDB_VERSION follows the ClickHouse line
         run: .github/scripts/check-abi-version.sh
 
+      # Which releases reach PyPI is decided in a step that runs on tags only,
+      # so nothing else here ever executes those rules. Without this they first
+      # run during the release they are wrong about, and a wrong decision spends
+      # a filename PyPI never gives back. Runs on every pull request, which is
+      # what lets the wheel builds ignore the script's path.
+      - name: The PyPI publication rules hold
+        run: .github/scripts/pypi-upload-wanted-test.sh
+
       - name: Install flake8
         run: python -m pip install flake8
 
