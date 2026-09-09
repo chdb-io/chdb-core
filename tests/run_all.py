@@ -41,6 +41,7 @@ ISOLATED = [
     "test_c_api_query_with_params",
     "test_c_api_stream_insert",
     "test_signal_handler_api",
+    "test_system_logs",
 ]
 
 # Modules covered by the ISOLATED targets above; excluded from the main shards.

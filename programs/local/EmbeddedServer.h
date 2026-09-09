@@ -57,6 +57,7 @@ private:
     void setupUsers();
     void cleanup();
     void processConfig();
+    void setupSystemLogs();
     void applyCmdOptions(ContextMutablePtr context);
     void initializeWithArgs(int argc, char ** argv);
     static std::unique_ptr<EmbeddedServer> global_instance;
@@ -64,6 +65,9 @@ private:
     static size_t client_ref_count;
     /// Set by beginShutdown(); guarded by instance_mutex.
     static bool engine_stopped;
+    /// Whether --config-file was passed by the caller, as opposed to a config found next to the
+    /// process. Only an explicit one may arm system logs.
+    bool config_file_passed_explicitly = false;
     std::string db_path;
     ServerSettings server_settings;
     std::optional<StatusFile> status;

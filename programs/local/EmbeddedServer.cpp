@@ -36,6 +36,7 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
+#include <Interpreters/SystemLog.h>
 #include <Interpreters/loadMetadata.h>
 #include <Interpreters/registerInterpreters.h>
 #include <Loggers/OwnFormattingChannel.h>
@@ -306,7 +307,10 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
 
     /// Load config files if exists
     std::string config_path;
-    if (config().has("config-file"))
+    /// Decide this before the file layer is merged in: afterwards a <config-file> element inside
+    /// an auto-discovered config would be indistinguishable from one the caller passed.
+    config_file_passed_explicitly = config().has("config-file");
+    if (config_file_passed_explicitly)
         config_path = config().getString("config-file");
     else if (config_path.empty() && fs::exists("config.xml"))
         config_path = "config.xml";
@@ -1167,10 +1171,35 @@ void EmbeddedServer::processConfig()
         DatabaseCatalog::instance().startupBackgroundTasks();
     }
 
+    setupSystemLogs();
+
     std::string default_database = config().getString("database", server_default_database);
     if (default_database.empty())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "default_database cannot be empty");
     global_context->setCurrentDatabase(default_database);
+}
+
+void EmbeddedServer::setupSystemLogs()
+{
+    /// clickhouse-local initializes system logs only when the config asks for them
+    /// (LocalServer::processConfig). EmbeddedServer never initialized them at all, so a
+    /// <query_log> section was accepted and silently ignored on the embedded path: the table
+    /// never appeared and SYSTEM FLUSH LOGS reported success without doing anything.
+    ///
+    /// Keep LocalServer's conditions and add one more: only a config the caller passed explicitly
+    /// arms system logs. EmbeddedServer also picks up ./config.xml, ~/.clickhouse-local/config.*
+    /// and /etc/clickhouse-local/config.*, and spawning a background flush thread per log because
+    /// a config file happens to sit in the host process' working directory is not a reasonable
+    /// thing for an embedded engine to do.
+    if (config().has("no-system-tables") || config().has("only-system-tables"))
+        return;
+
+    if (!config_file_passed_explicitly || !hasAnySystemLogConfigured(config()))
+        return;
+
+    removeOrphanedSystemLogData(global_context, config());
+
+    global_context->initializeSystemLogs();
 }
 
 void EmbeddedServer::applyCmdOptions(ContextMutablePtr context)
