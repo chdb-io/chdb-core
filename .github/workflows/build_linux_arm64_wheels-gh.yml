@@ -805,14 +805,21 @@ jobs:
             ./linux-aarch64-libchdb-static.tar.gz
             ./linux-aarch64-debuginfo.tar.xz
           overwrite: true
+      # A release goes to PyPI, a candidate does not, and a release can opt out
+      # by naming its tag in the CORE_PYPI_SKIP_TAGS repository variable. The
+      # script owns that policy and logs which way it went; see it for why the
+      # quota makes the opt-out worth having. The GitHub release above is not
+      # gated by any of it.
       - name: Upload pypi
-        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          .github/scripts/pypi-upload-wanted.sh "${{ github.ref_name }}" || exit 0
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.9
           python -m twine upload dist/chdb_core-*.whl
         env:
+          CORE_PYPI_SKIP_TAGS: ${{ vars.CORE_PYPI_SKIP_TAGS }}
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
       # NOTE: chdb-core-lite PyPI publishing temporarily disabled; uncomment to re-enable.
