@@ -9,6 +9,7 @@ These tests verify that:
 2. set_signal_handlers_enabled(0) prevents handler installation AND removes existing ones.
 3. reset_signal_handlers() restores SIG_DFL for all chDB-managed signals.
 4. Re-enabling after disable works correctly.
+5. While disabled, no chDB entry point touches a handler the host process owns.
 """
 
 import ctypes
@@ -230,7 +231,56 @@ chdb._chdb.set_signal_handlers_enabled(0)
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    # Test 7: concurrent enable/disable calls are thread-safe
+    # Test 7: a disabled chDB must not disturb a handler the host owns
+    def test_disabled_chdb_preserves_host_deadly_signal_handlers(self):
+        """No chDB entry point may change a deadly-signal disposition while disabled.
+
+        A host that recovers from deadly signals -- a JVM turning SIGSEGV into
+        NullPointerException -- is killed outright if its handler is replaced, even
+        for the span of one call, so the assertion is on the exact handler address
+        rather than merely on one being present.
+        """
+        import chdb
+
+        self._chdb.set_signal_handlers_enabled(0)
+        self._chdb.reset_signal_handlers()
+
+        watched = [signal.SIGSEGV, signal.SIGBUS, signal.SIGILL, signal.SIGFPE]
+        saved = {sig: signal.getsignal(sig) for sig in watched}
+        for sig in watched:
+            signal.signal(sig, lambda *_: None)
+
+        host_handlers = {sig: _get_sigaction_handler(sig) for sig in watched}
+        for sig, handler in host_handlers.items():
+            self.assertNotEqual(handler, 0,
+                f"precondition: host handler must be installed for signal {sig}")
+
+        def assert_host_handlers_intact(after):
+            for sig, expected in host_handlers.items():
+                self.assertEqual(_get_sigaction_handler(sig), expected,
+                    f"{after} replaced the host handler for signal {sig}")
+
+        try:
+            chdb.query("SELECT 1", "CSV")
+            assert_host_handlers_intact("chdb.query()")
+
+            conn = chdb.connect(":memory:")
+            try:
+                assert_host_handlers_intact("chdb.connect()")
+                self.assertEqual(str(conn.query("SELECT 1", "CSV")).strip(), "1")
+                assert_host_handlers_intact("a query on a connection")
+            finally:
+                conn.close()
+            assert_host_handlers_intact("closing a connection")
+
+            self._chdb.reset_signal_handlers()
+            assert_host_handlers_intact("reset_signal_handlers()")
+        finally:
+            for sig, previous in saved.items():
+                signal.signal(sig, previous)
+            self._chdb.set_signal_handlers_enabled(1)
+
+    # Test 8: concurrent enable/disable calls are thread-safe
     def test_concurrent_enable_disable_no_crash(self):
         """Calling set_signal_handlers_enabled from multiple threads must not crash."""
         import threading
