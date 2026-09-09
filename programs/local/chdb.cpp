@@ -156,27 +156,18 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
             result = std::make_unique<MaterializedQueryResult>(app.getErrorMsg());
         }
 
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
-
         return result;
     }
     catch (const DB::Exception & e)
     {
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
         throw std::domain_error(DB::getExceptionMessage(e, false));
     }
     catch (const boost::program_options::error & e)
     {
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
         throw std::invalid_argument("Bad arguments: " + std::string(e.what()));
     }
     catch (...)
     {
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
         throw std::domain_error(DB::getCurrentExceptionMessage(true));
     }
 }
@@ -232,9 +223,6 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
         conn->server = client.get();
         conn->connected = true;
         auto conn_ptr = std::make_unique<chdb_conn *>(conn.get());
-
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
 
         client.release();
         conn.release();
@@ -544,12 +532,7 @@ chdb_connection * chdb_connect(int argc, char ** argv)
 {
     try
     {
-        auto * conn = connect_chdb_with_exception(argc, argv);
-
-        if (HandledSignals::disable_signal_handlers.load(std::memory_order_relaxed))
-            chdb_reset_signal_handlers();
-
-        return conn;
+        return connect_chdb_with_exception(argc, argv);
     }
     catch (const DB::Exception & e)
     {
@@ -1605,7 +1588,11 @@ chdb_state chdb_shutdown(void)
 
 void chdb_reset_signal_handlers(void)
 {
-    static constexpr int deadly_signals[] = {SIGABRT, SIGSEGV, SIGILL, SIGBUS, SIGSYS, SIGFPE, SIGTSTP, SIGTRAP};
+    /// No instance means chDB never installed a handler, so there is nothing of ours
+    /// to take back. Do not construct the singleton just to find that out.
+    auto * instance = HandledSignals::tryGetInstance();
+    if (!instance)
+        return;
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -1616,17 +1603,26 @@ void chdb_reset_signal_handlers(void)
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
-    for (int sig : deadly_signals)
-        sigaction(sig, &sa, nullptr);
+    /// Serialize against concurrent appends in addSignalHandler(), which a query or a
+    /// connect on another thread can be doing right now, and against other concurrent
+    /// callers. This is a leaf lock: nothing is acquired while holding it.
+    std::lock_guard<std::mutex> lock(instance->handled_signals_mutex);
 
-    if (auto * instance = HandledSignals::tryGetInstance())
+    /// Only the signals chDB actually installed a handler for. Resetting a fixed list of
+    /// deadly signals instead would hand SIG_DFL to signals the embedding process owns,
+    /// which is fatal for a host that recovers from them as a matter of course -- a JVM
+    /// turns SIGSEGV into NullPointerException and SIGFPE into ArithmeticException.
+    /// setupCommonDeadlySignalHandlers() appends the same signals again on every call,
+    /// so walk the list through a seen-set to keep this linear in signals, not in calls.
+    sigset_t already_reset;
+    sigemptyset(&already_reset);
+    for (int sig : instance->handled_signals)
     {
-        /// Serialize the clear against concurrent appends in addSignalHandler()
-        /// (e.g. the EmbeddedServer connect path, which runs outside CHDB_MUTEX) and
-        /// against other concurrent chdb_reset_signal_handlers() callers. This leaf lock
-        /// is acquired last and released here, so it cannot deadlock with CHDB_MUTEX even
-        /// when this function is called while CHDB_MUTEX is held (pyEntryClickHouseLocal).
-        std::lock_guard<std::mutex> lock(instance->handled_signals_mutex);
-        instance->handled_signals.clear();
+        if (sigismember(&already_reset, sig) == 1)
+            continue;
+        sigaddset(&already_reset, sig);
+        sigaction(sig, &sa, nullptr);
     }
+
+    instance->handled_signals.clear();
 }
