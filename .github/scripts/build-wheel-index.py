@@ -162,6 +162,21 @@ def main() -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "index.html").write_text(page(name, "".join(body)))
         print(f"{name}: {len(wheels)} wheels, all hashed")
+        # Per release, because a release short of its siblings is the visible
+        # symptom of a platform build that failed: that wheel does not exist,
+        # so the index cannot carry it, and the release is published without it
+        # rather than withheld from the platforms that did build.
+        #
+        # Counted and not judged. How many wheels a release is supposed to have
+        # is not a number this can know -- four abi3 wheels usually, five while
+        # the free-threading upload was enabled, fewer with DEBUG_MODE -- and a
+        # guess at it would flag every normal release. The reading is left to
+        # whoever is looking at a release they have reason to doubt.
+        per_release: dict[str, int] = defaultdict(int)
+        for wheel in wheels:
+            per_release[wheel["release"]] += 1
+        for release, count in sorted(per_release.items(), reverse=True):
+            print(f"    {release}: {count}")
 
 
 if __name__ == "__main__":

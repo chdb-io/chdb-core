@@ -123,6 +123,26 @@ jobs:
       # four. A count would have to be told which builds a release contains,
       # and that changes with DEBUG_MODE, with re-runs, and whenever the
       # platform set does.
+      #
+      # Asked per workflow, because the repository-wide runs endpoint cannot be
+      # narrowed to these four: filtering it by event=release alone would count
+      # check_release_tag, check_bindings -- and this workflow, which a release
+      # event also starts, so it would wait for itself forever. Per workflow,
+      # total_count is the whole answer in one request and no page limit applies.
+      #
+      # It waits on any release, not just the one that triggered it, because
+      # there is one index for every release: deploying while another release is
+      # mid-upload publishes that one partially, which is the case above. The
+      # wait is bounded -- when those builds finish, their own workflow_run
+      # fires -- and the blocking tags are named below so a long hold is not a
+      # mystery.
+      #
+      # A release whose build failed is deliberately still published. Its wheel
+      # for that platform does not exist and nothing here can invent it, so the
+      # choice is between an index missing one platform and an index missing the
+      # release entirely -- and the three platforms that did build should not be
+      # unreachable because the fourth was not. The wheel count per release is
+      # in the build log above, which is where a short one shows up.
       - name: Is every build for this release finished
         id: settled
         env:
@@ -137,14 +157,18 @@ jobs:
             echo "settled=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          builds='["Build & Test macOS arm64","Build & Test macOS x86_64","Build & Test Linux x86_64","Build & Test Linux arm64"]'
           running=0
-          for state in in_progress queued; do
-            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=$state&per_page=100" \
-                  --jq "[.workflow_runs[]
-                         | select(.name as \$n | $builds | index(\$n))
-                         | select(.event == \"release\")] | length")
-            running=$((running + n))
+          for wf in build_macos_arm64_wheels.yml build_macos_x86_wheels.yml \
+                    build_linux_x86_wheels.yml build_linux_arm64_wheels-gh.yml; do
+            for state in in_progress queued; do
+              runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?event=release&status=$state&per_page=100")
+              n=$(jq '.total_count' <<<"$runs")
+              if [ "$n" -gt 0 ]; then
+                tags=$(jq -r '[.workflow_runs[].head_branch] | unique | join(", ")' <<<"$runs")
+                echo "  $wf: $n $state ($tags)"
+              fi
+              running=$((running + n))
+            done
           done
           if [ "$running" -gt 0 ]; then
             echo "$running release build(s) still running; leaving the index alone"
