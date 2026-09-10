@@ -24,11 +24,14 @@ class Colors:
 # each of those its own process: the engine is built once there and goes away
 # with the process, instead of being torn down and rebuilt in place.
 ISOLATED = [
+    "test_adbc_driver.TestAdbcCancel",
     "test_adbc_driver.TestAdbcGetObjects",
     "test_adbc_driver.TestAdbcIngest",
     "test_adbc_driver.TestAdbcMetadata",
     "test_adbc_driver.TestAdbcParameters",
     "test_adbc_driver.TestAdbcQuery",
+    "test_adbc_driver.TestAdbcReadOnly",
+    "test_adbc_driver.TestAdbcStatementSettings",
     "test_adbc_driver.TestAdbcPersistence.test_on_disk_path_roundtrip",
     "test_adbc_driver.TestAdbcUri.test_chdb_bad_authority_rejected",
     "test_adbc_driver.TestAdbcUri.test_chdb_memory_forms",
@@ -44,6 +47,8 @@ ISOLATED = [
 ]
 
 # Modules covered by the ISOLATED targets above; excluded from the main shards.
+# Note the consequence: a class of one of these modules that is NOT named above
+# does not run at all. Add new test_adbc_driver classes here.
 ISOLATED_MODULES = {t.split(".", 1)[0] for t in ISOLATED}
 
 # Shard the remaining suite across this many subprocesses so that no single

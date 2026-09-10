@@ -10,13 +10,18 @@
 /// A statement's next Execute invalidates its own prior stream (spec-required);
 /// a different statement or a metadata call that hits a still-live stream is
 /// rejected with INVALID_STATE rather than silently invalidating it (see
-/// reclaimActiveStream). Independent concurrent readers work over separate
+/// beginConnectionOperation). Independent concurrent readers work over separate
 /// connections; note that session state (SET, temporary tables) is
 /// per-connection.
+///
+/// StatementCancel stops a stream between batches (chdbStatementCancel), and
+/// statement options that name a ClickHouse setting bound a read before it runs
+/// (applyStatementSettings).
 
 #include "chdb.h"
 #include "chdb-internal.h"
 
+#include <Core/Settings.h>
 #include <Parsers/Lexer.h>
 
 #include <arrow/c/abi.h>
@@ -40,11 +45,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -171,13 +179,27 @@ struct ConnectionImpl
     std::mutex mutex;
     /// The connection's outstanding streamed result, if any. The engine runs
     /// one statement at a time per connection; a new operation resolves this
-    /// via reclaimActiveStream (same statement re-execute invalidates it,
+    /// via beginConnectionOperation (same statement re-execute invalidates it,
     /// a different statement or metadata call is rejected while it is live).
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
     bool arrow_uuid_as_fixed_byte_array = false;
     bool arrow_variant_as_string = false;
+    /// ADBC_CONNECTION_OPTION_READ_ONLY, held until ConnectionInit can pass it
+    /// to the engine. Enforcement is the engine's (readonly=2: writes and DDL
+    /// are rejected, per-query settings still work), not this driver's, so it
+    /// covers SQL the caller writes as well as the driver's own entry points.
+    bool read_only = false;
+    /// Engine settings a statement applied to this session, paired with the
+    /// values to put back. See applyStatementSettings for why the restore is
+    /// deferred to the next operation on the connection.
+    std::vector<std::pair<std::string, std::string>> settings_to_restore;
 };
+
+/// Puts back the settings the last statement applied. Declared here because
+/// beginConnectionOperation is the point where they stop applying, and defined
+/// once the SQL helpers it needs are in scope.
+void restoreStatementSettings(ConnectionImpl * connection);
 
 std::atomic<uint64_t> statement_id_counter{1};
 
@@ -204,6 +226,10 @@ struct StatementImpl
     std::optional<bool> arrow_uuid_as_fixed_byte_array;
     std::optional<bool> arrow_variant_as_string;
 
+    /// Statement options that name a ClickHouse setting, applied around this
+    /// statement's execution only (see applyStatementSettings).
+    std::map<std::string, std::string> engine_settings;
+
     void releaseBoundStream()
     {
         if (has_bound_stream && bound_stream.release)
@@ -225,6 +251,12 @@ bool outputVariantAsString(const StatementImpl * impl)
     return impl->arrow_variant_as_string.value_or(impl->connection->arrow_variant_as_string);
 }
 
+constexpr const char * kStreamInvalidatedBySuccessor
+    = "[chdb] result stream invalidated by a subsequent statement on this connection";
+constexpr const char * kStreamInvalidatedByClose
+    = "[chdb] result stream invalidated: connection closed";
+constexpr const char * kStreamCancelled = "[chdb] query cancelled";
+
 /// Streaming result adapter: exposes chdb's pull-one-batch streaming
 /// (chdb_stream_query_arrow + chdb_stream_fetch_arrow, where each fetch
 /// yields a single-batch ArrowArrayStream) as one continuous
@@ -235,7 +267,7 @@ struct StreamingResultState
     /// Identity of the statement that produced this stream (compared, never
     /// dereferenced). The spec lets the SAME statement's next Execute
     /// invalidate its own prior result, but a DIFFERENT statement (or a
-    /// metadata call) must not silently invalidate it — see reclaimActiveStream.
+    /// metadata call) must not silently invalidate it — see beginConnectionOperation.
     /// Stored as the owning statement's monotonic id (0 = none), never a
     /// pointer, so a reused statement address cannot cause a false match.
     uint64_t owner_statement = 0;
@@ -249,10 +281,42 @@ struct StreamingResultState
     /// the connection) takes over: the engine runs one statement at a time
     /// per connection, so the older stream must stop touching it.
     bool invalidated = false;
+    /// Same effect as `invalidated`, but the consumer is told the query was
+    /// cancelled (ADBC_STATUS_CANCELLED / ECANCELED), which is what the spec
+    /// has callers act on.
+    bool cancelled = false;
+    /// StatementCancel's request, published without taking `mutex` so that
+    /// cancelling never waits for an in-flight fetch to finish. Whichever
+    /// thread next holds `mutex` turns it into `cancelled`.
+    std::atomic<bool> cancel_requested{false};
     std::string last_error;
     /// Guards all mutable members: get_next runs on the consumer's thread
     /// while invalidation comes from the thread executing the next statement.
     std::mutex mutex;
+
+    /// Caller holds `mutex`. Honours a StatementCancel that could not take
+    /// the lock itself, and reports whether the stream is now cancelled.
+    bool absorbCancelRequest()
+    {
+        if (cancelled)
+            return true;
+        if (!cancel_requested.load(std::memory_order_acquire))
+            return false;
+        cancelled = true;
+        last_error = kStreamCancelled;
+        retirePendingBatch();
+        releaseEngineStream();
+        return true;
+    }
+
+    /// Caller holds `mutex`. Drops a batch that was fetched but never handed
+    /// out, which every path that retires the engine stream does first.
+    void retirePendingBatch()
+    {
+        if (has_pending && pending.release)
+            pending.release(&pending);
+        has_pending = false;
+    }
 
     /// Caller holds `mutex`.
     void releaseEngineStream()
@@ -275,13 +339,49 @@ struct StreamingResultState
                 owner->active_stream = nullptr;
         }
         std::lock_guard guard(mutex);
-        if (has_pending && pending.release)
-            pending.release(&pending);
+        retirePendingBatch();
         releaseEngineStream();
     }
 };
 
-/// A new operation wants the connection, which runs one statement at a time.
+/// Caller holds connection.stream_mutex and state.mutex. Drops the
+/// connection's reference to the stream and the stream's back-reference to the
+/// connection, so a consumer that releases the ArrowArrayStream after the
+/// connection is gone cannot reach freed state from ~StreamingResultState.
+void detachStream(ConnectionImpl & connection, StreamingResultState & state)
+{
+    if (connection.active_stream == &state)
+        connection.active_stream = nullptr;
+    state.owner = nullptr;
+}
+
+/// Asks the connection's outstanding stream to stop, and retires it right
+/// away unless a fetch is inside the engine with it — that thread honours the
+/// request when its batch is done (absorbCancelRequest), so cancelling never
+/// waits for a batch to arrive. owner_statement limits this to one statement's
+/// stream; 0 means any. Reports whether there was such a stream.
+///
+/// Only the stream registry is locked, never the connection's execution mutex:
+/// cancelling has to work while the Execute or fetch being cancelled holds it.
+bool cancelActiveStream(ConnectionImpl * connection, uint64_t owner_statement)
+{
+    std::lock_guard reg(connection->stream_mutex);
+    auto * stream = connection->active_stream;
+    if (!stream || (owner_statement != 0 && stream->owner_statement != owner_statement))
+        return false;
+    stream->cancel_requested.store(true, std::memory_order_release);
+    std::unique_lock guard(stream->mutex, std::try_to_lock);
+    if (guard.owns_lock())
+    {
+        stream->absorbCancelRequest();
+        detachStream(*connection, *stream);
+    }
+    return true;
+}
+
+/// Hands the connection to a new operation, which the engine can only serve
+/// one at a time.
+///
 /// The ADBC concurrency spec offers three ways to handle an outstanding
 /// result stream: buffer it, execute concurrently, or error. chDB can do
 /// neither of the first two for a live stream, so it takes the error option —
@@ -290,35 +390,42 @@ struct StreamingResultState
 /// when it is that statement's Execute (nullptr for metadata calls and other
 /// statements, which may never reuse and so always get the error).
 ///
-/// A stream that is already exhausted or invalidated is not "live": it is
-/// silently detached so ordinary sequential use is unaffected.
-[[nodiscard]] AdbcStatusCode reclaimActiveStream(
+/// A stream that is already exhausted, invalidated or cancelled is not
+/// "live": it is silently detached so ordinary sequential use is unaffected.
+///
+/// Once the connection is free, the engine settings the previous statement
+/// applied are put back. This is the first moment a SET can run without
+/// destroying that statement's result stream, and it is also where the
+/// previous statement's settings stop applying (see applyStatementSettings).
+[[nodiscard]] AdbcStatusCode beginConnectionOperation(
     ConnectionImpl * connection, uint64_t owner_for_reuse, const char * reason, AdbcError * error)
 {
-    std::lock_guard reg(connection->stream_mutex);
-    auto * old = connection->active_stream;
-    if (!old)
-        return ADBC_STATUS_OK;
-    std::lock_guard guard(old->mutex);
-    const bool consumed = old->exhausted || old->invalidated;
-    if (!consumed && !(owner_for_reuse != 0 && old->owner_statement == owner_for_reuse))
-        return setError(
-            error,
-            ADBC_STATUS_INVALID_STATE,
-            "[chdb] another result stream is still open on this connection; release it "
-            "before running new operations (chDB executes one statement at a time per "
-            "connection)");
-    old->invalidated = true;
-    old->last_error = reason;
-    old->releaseEngineStream();
-    connection->active_stream = nullptr;
+    {
+        std::lock_guard reg(connection->stream_mutex);
+        if (auto * old = connection->active_stream)
+        {
+            std::lock_guard guard(old->mutex);
+            const bool consumed = old->exhausted || old->invalidated || old->absorbCancelRequest();
+            if (!consumed && !(owner_for_reuse != 0 && old->owner_statement == owner_for_reuse))
+                return setError(
+                    error,
+                    ADBC_STATUS_INVALID_STATE,
+                    "[chdb] another result stream is still open on this connection; release it "
+                    "before running new operations (chDB executes one statement at a time per "
+                    "connection)");
+            if (!old->cancelled)
+            {
+                old->invalidated = true;
+                old->last_error = reason;
+            }
+            old->retirePendingBatch();
+            old->releaseEngineStream();
+            detachStream(*connection, *old);
+        }
+    }
+    restoreStatementSettings(connection);
     return ADBC_STATUS_OK;
 }
-
-constexpr const char * kStreamInvalidatedBySuccessor
-    = "[chdb] result stream invalidated by a subsequent statement on this connection";
-constexpr const char * kStreamInvalidatedByClose
-    = "[chdb] result stream invalidated: connection closed";
 
 /// ---------------------------------------------------------------------
 /// Small utilities
@@ -489,6 +596,116 @@ std::string quoteStringLiteral(const std::string & value)
     }
     quoted += '\'';
     return quoted;
+}
+
+/// Undoes the CSV quoting of a single cell, the shape runScalarQuery returns.
+std::string unquoteCsvCell(std::string cell)
+{
+    if (cell.size() < 2 || cell.front() != '"' || cell.back() != '"')
+        return cell;
+    cell = cell.substr(1, cell.size() - 2);
+    size_t pos = 0;
+    while ((pos = cell.find("\"\"", pos)) != std::string::npos)
+    {
+        cell.erase(pos, 1);
+        ++pos;
+    }
+    return cell;
+}
+
+/// Reads one value out of the connection's session on the driver's own behalf
+/// (an option, a setting): takes the connection like any other operation, so a
+/// live stream from another statement is rejected instead of silently killed.
+AdbcStatusCode readSessionScalar(
+    ConnectionImpl * connection, const std::string & sql, std::string & out, AdbcError * error)
+{
+    std::lock_guard lock(connection->mutex);
+    if (AdbcStatusCode s
+        = beginConnectionOperation(connection, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
+        s != ADBC_STATUS_OK)
+        return s;
+    std::string cell;
+    if (AdbcStatusCode s = runScalarQuery(connection, sql, cell, error); s != ADBC_STATUS_OK)
+        return s;
+    out = unquoteCsvCell(std::move(cell));
+    return ADBC_STATUS_OK;
+}
+
+/// Assembles the assignment list of a SET statement. Values go through as
+/// string literals whatever the setting's type is; the engine parses each one
+/// into that type, so one form covers numbers, enums and strings alike.
+std::string settingsAssignmentSql(const std::vector<std::pair<std::string, std::string>> & settings)
+{
+    std::string assignments;
+    for (const auto & [name, value] : settings)
+    {
+        if (!assignments.empty())
+            assignments += ", ";
+        assignments += name + " = " + quoteStringLiteral(value);
+    }
+    return assignments;
+}
+
+/// Applies a statement's engine settings so the statement runs under them,
+/// recording the previous values for beginConnectionOperation to put back.
+///
+/// chDB has no per-statement settings channel — SET writes the session — and
+/// no query can run while a result stream is open, so the restore has to wait
+/// for the next operation on this connection. That is still exactly
+/// statement scope: the engine copies the settings into the query context when
+/// the query starts, which for a streamed result happens during its init, so
+/// the stream keeps the values it was started with no matter what the session
+/// looks like afterwards.
+///
+/// Caller holds connection->mutex and has just called beginConnectionOperation.
+[[nodiscard]] AdbcStatusCode applyStatementSettings(
+    ConnectionImpl * connection, const std::map<std::string, std::string> & settings, AdbcError * error)
+{
+    if (settings.empty())
+        return ADBC_STATUS_OK;
+
+    std::vector<std::pair<std::string, std::string>> to_apply;
+    to_apply.reserve(settings.size());
+    for (const auto & [name, value] : settings)
+    {
+        std::string previous;
+        if (AdbcStatusCode s = runScalarQuery(
+                connection, "SELECT getSetting(" + quoteStringLiteral(name) + ")", previous, error);
+            s != ADBC_STATUS_OK)
+            return s;
+        /// Recorded before the SET runs: a SET that fails halfway still has to
+        /// be undone.
+        connection->settings_to_restore.emplace_back(name, unquoteCsvCell(std::move(previous)));
+        to_apply.emplace_back(name, value);
+    }
+    return runUpdateQuery(connection, "SET " + settingsAssignmentSql(to_apply), nullptr, error);
+}
+
+/// Settings that gate their own modification: once a session sets one to its
+/// restrictive value, the engine refuses to set it back (SettingsConstraints
+/// rejects `readonly` while readonly is on, `allow_ddl` once DDL is off, and
+/// `allow_python_table_function` once that is off). A statement option lasts
+/// for one statement, so accepting these would quietly turn into a permanent
+/// change to the whole connection when the restore is refused.
+bool isOneWaySetting(const char * key)
+{
+    return std::strcmp(key, "readonly") == 0
+        || std::strcmp(key, "allow_ddl") == 0
+        || std::strcmp(key, "allow_python_table_function") == 0;
+}
+
+void restoreStatementSettings(ConnectionImpl * connection)
+{
+    if (connection->settings_to_restore.empty())
+        return;
+    const std::string sql = "SET " + settingsAssignmentSql(connection->settings_to_restore);
+    /// Cleared first: a value the engine will not take back must not be
+    /// retried in front of every later statement.
+    connection->settings_to_restore.clear();
+    /// Best effort — a failed restore is not the caller's error to handle.
+    AdbcError ignored{};
+    if (runUpdateQuery(connection, sql, nullptr, &ignored) != ADBC_STATUS_OK && ignored.release)
+        ignored.release(&ignored);
 }
 
 /// Finds `?` placeholders through the engine's own lexer, so every literal
@@ -779,7 +996,7 @@ AdbcStatusCode queryToTable(
     ConnectionImpl * connection, const std::string & sql, std::shared_ptr<arrow::Table> & table, AdbcError * error)
 {
     /// Metadata helper: never a statement reuse, so a live stream is rejected.
-    if (AdbcStatusCode s = reclaimActiveStream(connection, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
+    if (AdbcStatusCode s = beginConnectionOperation(connection, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
         s != ADBC_STATUS_OK)
         return s;
     ArrowArrayStream stream;
@@ -982,6 +1199,36 @@ AdbcStatusCode chdbConnectionSetOption(
             return ADBC_STATUS_OK; /// autocommit is the only supported mode
         return notImplemented(error, "disabling autocommit (ClickHouse has no classic transactions)");
     }
+    if (std::strcmp(key, ADBC_CONNECTION_OPTION_READ_ONLY) == 0)
+    {
+        auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+        bool requested = false;
+        if (AdbcStatusCode s = parseBoolOption(value, requested, error, key); s != ADBC_STATUS_OK)
+            return s;
+        /// Set before Init (the usual case — driver managers pass connection
+        /// options straight through to a fresh handle): remembered and given to
+        /// the engine as readonly=2 when the session starts.
+        if (!impl->conn)
+        {
+            impl->read_only = requested;
+            return ADBC_STATUS_OK;
+        }
+        /// Set on a live connection: the same setting, written the way SQL
+        /// would. Going read-only is one-way — readonly=2 lets a session change
+        /// any setting except `readonly` itself — so the engine rejects turning
+        /// it back off and that error is what the caller sees.
+        std::lock_guard lock(impl->mutex);
+        if (AdbcStatusCode s
+            = beginConnectionOperation(impl, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
+            s != ADBC_STATUS_OK)
+            return s;
+        if (AdbcStatusCode s
+            = runUpdateQuery(impl, requested ? "SET readonly = 2" : "SET readonly = 0", nullptr, error);
+            s != ADBC_STATUS_OK)
+            return s;
+        impl->read_only = requested;
+        return ADBC_STATUS_OK;
+    }
     if (std::strcmp(key, kArrowUuidAsFixedByteArrayOption) == 0)
     {
         auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
@@ -1011,6 +1258,12 @@ AdbcStatusCode chdbConnectionInit(
     std::vector<std::string> args = {"chdb"};
     if (db->path != ":memory:")
         args.push_back("--path=" + db->path);
+    /// readonly=2, not 1: writes and DDL are rejected, but the session may
+    /// still tune per-query settings (SET / SETTINGS clauses), which is what a
+    /// read-only *connection* means — and what the driver itself needs to
+    /// scope a statement's settings. readonly=1 would reject those too.
+    if (impl->read_only)
+        args.push_back("--readonly=2");
     args.insert(args.end(), db->extra_args.begin(), db->extra_args.end());
     std::vector<char *> argv;
     argv.reserve(args.size());
@@ -1041,9 +1294,9 @@ AdbcStatusCode chdbConnectionRelease(AdbcConnection * connection, AdbcError * er
             std::lock_guard guard(s->mutex);
             s->invalidated = true;
             s->last_error = kStreamInvalidatedByClose;
+            s->retirePendingBatch();
             s->releaseEngineStream();
-            s->owner = nullptr;
-            impl->active_stream = nullptr;
+            detachStream(*impl, *s);
         }
     }
     if (impl->conn)
@@ -1065,6 +1318,22 @@ AdbcStatusCode chdbConnectionRollback(AdbcConnection *, AdbcError * error)
         error, ADBC_STATUS_INVALID_STATE, "[chdb] no active transaction: connections are autocommit-only");
 }
 
+/// Stops whatever the connection has outstanding, which is the result stream
+/// a statement left open. Metadata readers are materialized before they are
+/// handed out, so for those nothing is left running in the engine and this is a
+/// no-op — which is why it reports OK, not INVALID_STATE, when there is no
+/// stream to stop.
+AdbcStatusCode chdbConnectionCancel(AdbcConnection * connection, AdbcError * error)
+{
+    if (!connection || !connection->private_data)
+        return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not initialized");
+    auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
+    if (!impl->conn)
+        return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not initialized");
+    cancelActiveStream(impl, /*owner_statement=*/0);
+    return ADBC_STATUS_OK;
+}
+
 AdbcStatusCode chdbConnectionGetOption(
     AdbcConnection * connection, const char * key, char * value, size_t * length, AdbcError * error)
 {
@@ -1076,39 +1345,33 @@ AdbcStatusCode chdbConnectionGetOption(
     if (!impl->conn)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not initialized");
 
+    std::string option_value;
     if (std::strcmp(key, ADBC_CONNECTION_OPTION_CURRENT_DB_SCHEMA) == 0)
     {
-        std::string current;
-        {
-            std::lock_guard lock(impl->mutex);
-            /// Metadata read: reject (don't silently kill) a live stream.
-            if (AdbcStatusCode s = reclaimActiveStream(impl, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
-                s != ADBC_STATUS_OK)
-                return s;
-            AdbcStatusCode status = runScalarQuery(impl, "SELECT currentDatabase()", current, error);
-            if (status != ADBC_STATUS_OK)
-                return status;
-        }
-        /// The scalar helper hands back a CSV cell: strip the quoting.
-        if (current.size() >= 2 && current.front() == '"' && current.back() == '"')
-        {
-            current = current.substr(1, current.size() - 2);
-            size_t pos = 0;
-            while ((pos = current.find("\"\"", pos)) != std::string::npos)
-            {
-                current.erase(pos, 1);
-                ++pos;
-            }
-        }
-        /// Standard get-option contract: report the required size (with NUL)
-        /// and copy only when the caller's buffer already fits it.
-        const size_t needed = current.size() + 1;
-        if (value && *length >= needed)
-            std::memcpy(value, current.c_str(), needed);
-        *length = needed;
-        return ADBC_STATUS_OK;
+        if (AdbcStatusCode s = readSessionScalar(impl, "SELECT currentDatabase()", option_value, error);
+            s != ADBC_STATUS_OK)
+            return s;
     }
-    return setError(error, ADBC_STATUS_NOT_FOUND, "[chdb] unknown connection option '" + std::string(key) + "'");
+    else if (std::strcmp(key, ADBC_CONNECTION_OPTION_READ_ONLY) == 0)
+    {
+        /// Read from the engine rather than from `read_only`: SQL the caller
+        /// ran itself (SET readonly = ...) counts just as much as the option.
+        std::string readonly_setting;
+        if (AdbcStatusCode s = readSessionScalar(impl, "SELECT getSetting('readonly')", readonly_setting, error);
+            s != ADBC_STATUS_OK)
+            return s;
+        option_value = readonly_setting == "0" ? ADBC_OPTION_VALUE_DISABLED : ADBC_OPTION_VALUE_ENABLED;
+    }
+    else
+        return setError(error, ADBC_STATUS_NOT_FOUND, "[chdb] unknown connection option '" + std::string(key) + "'");
+
+    /// Standard get-option contract: report the required size (with NUL)
+    /// and copy only when the caller's buffer already fits it.
+    const size_t needed = option_value.size() + 1;
+    if (value && *length >= needed)
+        std::memcpy(value, option_value.c_str(), needed);
+    *length = needed;
+    return ADBC_STATUS_OK;
 }
 
 AdbcStatusCode chdbConnectionGetInfo(
@@ -1621,7 +1884,7 @@ AdbcStatusCode chdbConnectionGetTableSchema(
 
     std::lock_guard lock(impl->mutex);
     /// Metadata read: reject (don't silently kill) a live stream.
-    if (AdbcStatusCode s = reclaimActiveStream(impl, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
+    if (AdbcStatusCode s = beginConnectionOperation(impl, /*owner_for_reuse=*/0, kStreamInvalidatedBySuccessor, error);
         s != ADBC_STATUS_OK)
         return s;
     ArrowArrayStream stream;
@@ -1750,6 +2013,31 @@ AdbcStatusCode chdbStatementSetOption(
         if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
             return status;
         impl->arrow_variant_as_string = parsed;
+        return ADBC_STATUS_OK;
+    }
+    /// Refused rather than silently made permanent: this one cannot be put
+    /// back after the statement, so it would outlive the statement it was set
+    /// on. Checked before the pass-through below, which would otherwise
+    /// accept it like any other setting.
+    if (isOneWaySetting(key))
+    {
+        std::string message = "[chdb] setting '" + std::string(key)
+            + "' cannot be scoped to a statement: the engine refuses to set it back afterwards, so it "
+              "would stay in effect for the rest of the connection";
+        if (std::strcmp(key, "readonly") == 0)
+            message += std::string(" (set the ") + ADBC_CONNECTION_OPTION_READ_ONLY
+                + " connection option instead)";
+        return setError(error, ADBC_STATUS_INVALID_ARGUMENT, message);
+    }
+    /// Any other ClickHouse setting can be set on a statement and applies to
+    /// that statement alone. This is how a client bounds a read before
+    /// executing: max_block_size caps the rows in each Arrow batch (so also in
+    /// the first one), and max_result_rows with result_overflow_mode = 'break'
+    /// stops the query once it has produced enough — no query rewriting, no
+    /// session state left behind for the next statement.
+    if (DB::Settings::hasBuiltin(key))
+    {
+        impl->engine_settings[key] = value ? value : "";
         return ADBC_STATUS_OK;
     }
     return notImplemented(error, std::string("statement option '") + key + "'");
@@ -2204,6 +2492,8 @@ AdbcStatusCode executeBoundQuery(
 int streamingGetNextImpl(StreamingResultState & state, ArrowArray * out)
 {
     std::lock_guard guard(state.mutex);
+    if (state.absorbCancelRequest())
+        return ECANCELED; /// last_error says the query was cancelled
     if (state.invalidated)
         return EIO; /// last_error carries the reason
     if (state.has_pending)
@@ -2237,6 +2527,17 @@ int streamingGetNextImpl(StreamingResultState & state, ArrowArray * out)
         state.last_error = "failed to read batch from stream";
         return rc;
     }
+    /// A cancel that arrived while the engine was producing this batch could
+    /// not take the lock; it is honoured here instead, and the batch is dropped
+    /// rather than handed to a consumer that already asked to stop.
+    if (state.cancel_requested.load(std::memory_order_acquire))
+    {
+        if (out->release)
+            out->release(out);
+        out->release = nullptr;
+        state.absorbCancelRequest();
+        return ECANCELED;
+    }
     if (!out->release)
         state.exhausted = true;
     return 0;
@@ -2260,31 +2561,24 @@ AdbcStatusCode executeMaterializedSelect(
     return consumeArrowCDataResult(result, out, rows_affected, error, statementIsInsert(impl->query));
 }
 
-/// Takes ownership of a freshly initialized streaming query handle and wires
-/// the adapter into the caller's ArrowArrayStream. Shared by the plain and
-/// parameterized execution paths.
-AdbcStatusCode wireStreamingResult(
-    ConnectionImpl * connection,
-    uint64_t owner_statement,
-    chdb_result * stream_result,
-    ArrowArrayStream * out,
-    AdbcError * error)
+/// Reads the result schema and the first batch into the stream's state.
+///
+/// Fetching eagerly drives statements without a result set to completion and
+/// tells us whether there is a result schema at all. It runs under the stream's
+/// own lock, which is what lets a StatementCancel racing with Execute be
+/// resolved rather than lost.
+AdbcStatusCode primeStreamingResult(StreamingResultState & state, AdbcError * error)
 {
-    chdb_connection conn = *connection->conn;
-    auto state = std::make_unique<StreamingResultState>();
-    state->owner = connection;
-    state->owner_statement = owner_statement;
-    state->conn = conn;
-    state->stream_result = stream_result;
+    std::lock_guard guard(state.mutex);
+    if (state.absorbCancelRequest())
+        return setError(error, ADBC_STATUS_CANCELLED, kStreamCancelled);
 
-    /// Fetch the first batch eagerly: it drives statements without a result
-    /// set to completion and tells us whether there is a result schema.
     ArrowArrayStream first;
     std::memset(&first, 0, sizeof(first));
-    if (chdb_stream_fetch_arrow(conn, stream_result, reinterpret_cast<chdb_arrow_stream>(&first))
+    if (chdb_stream_fetch_arrow(state.conn, state.stream_result, reinterpret_cast<chdb_arrow_stream>(&first))
         != CHDBSuccess)
     {
-        const char * err = chdb_result_error(stream_result);
+        const char * err = chdb_result_error(state.stream_result);
         const std::string message = err ? err : "first fetch failed";
         return setError(error, err ? statusForEngineError(message) : ADBC_STATUS_INTERNAL, "[chdb] " + message);
     }
@@ -2311,17 +2605,54 @@ AdbcStatusCode wireStreamingResult(
             first.release(&first);
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] " + imported.status().ToString());
     }
-    state->schema = imported.ValueUnsafe();
+    state.schema = imported.ValueUnsafe();
 
-    int rc = first.get_next(&first, &state->pending);
+    int rc = first.get_next(&first, &state.pending);
     if (first.release)
         first.release(&first);
     if (rc != 0)
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] failed to read first batch");
-    if (state->pending.release)
-        state->has_pending = true;
+    if (state.pending.release)
+        state.has_pending = true;
     else
-        state->exhausted = true; /// empty result — schema-only stream
+        state.exhausted = true; /// empty result — schema-only stream
+
+    /// A cancel raised while the engine was producing that batch could not take
+    /// this lock, so it is honoured here: Execute reports the cancellation
+    /// instead of handing back a stream the caller already asked to stop.
+    if (state.absorbCancelRequest())
+        return setError(error, ADBC_STATUS_CANCELLED, kStreamCancelled);
+    return ADBC_STATUS_OK;
+}
+
+/// Takes ownership of a freshly initialized streaming query handle and wires
+/// the adapter into the caller's ArrowArrayStream. Shared by the plain and
+/// parameterized execution paths.
+AdbcStatusCode wireStreamingResult(
+    ConnectionImpl * connection,
+    uint64_t owner_statement,
+    chdb_result * stream_result,
+    ArrowArrayStream * out,
+    AdbcError * error)
+{
+    auto state = std::make_unique<StreamingResultState>();
+    state->owner = connection;
+    state->owner_statement = owner_statement;
+    state->conn = *connection->conn;
+    state->stream_result = stream_result;
+
+    /// Register before fetching anything. Execute holds the connection's
+    /// execution mutex, so StatementCancel is the only operation that can reach
+    /// this stream while the engine is producing the first batch — and stopping
+    /// a query that has not yielded a row yet is what cancelling is for. Every
+    /// failure path below destroys `state`, whose destructor deregisters it.
+    {
+        std::lock_guard reg(connection->stream_mutex);
+        connection->active_stream = state.get();
+    }
+
+    if (AdbcStatusCode status = primeStreamingResult(*state, error); status != ADBC_STATUS_OK)
+        return status;
 
     out->private_data = state.release();
     out->get_schema = [](ArrowArrayStream * self, ArrowSchema * schema_out) -> int
@@ -2356,22 +2687,18 @@ AdbcStatusCode wireStreamingResult(
         self->release = nullptr;
     };
 
-    /// Register as the connection's outstanding stream; exhausted
-    /// (schema-only) streams have nothing left in the engine to invalidate.
+    /// An exhausted (schema-only) stream has nothing left in the engine, so it
+    /// stops being the connection's outstanding stream right away: it must not
+    /// point back at a connection that may be released before the consumer
+    /// releases the stream, and the finished engine handle can be dropped now.
     auto * registered = static_cast<StreamingResultState *>(out->private_data);
-    if (!registered->exhausted)
+    if (registered->exhausted)
     {
         std::lock_guard reg(connection->stream_mutex);
-        connection->active_stream = registered;
-    }
-    else
-    {
-        /// Unregistered, so connection close would never clear these: the
-        /// stream must not point back at a connection that may be released
-        /// before it, and the completed engine handle can be dropped now.
-        registered->owner = nullptr;
+        std::lock_guard guard(registered->mutex);
         chdb_destroy_query_result(registered->stream_result);
         registered->stream_result = nullptr;
+        detachStream(*connection, *registered);
     }
     return ADBC_STATUS_OK;
 }
@@ -2418,7 +2745,10 @@ AdbcStatusCode chdbStatementExecuteQuery(
     /// live stream from a DIFFERENT statement makes this Execute fail with
     /// INVALID_STATE instead of silently killing the other reader.
     if (AdbcStatusCode s
-        = reclaimActiveStream(impl->connection, /*owner_for_reuse=*/impl->id, kStreamInvalidatedBySuccessor, error);
+        = beginConnectionOperation(impl->connection, /*owner_for_reuse=*/impl->id, kStreamInvalidatedBySuccessor, error);
+        s != ADBC_STATUS_OK)
+        return s;
+    if (AdbcStatusCode s = applyStatementSettings(impl->connection, impl->engine_settings, error);
         s != ADBC_STATUS_OK)
         return s;
 
@@ -2454,6 +2784,24 @@ AdbcStatusCode chdbStatementExecuteQuery(
     }
 
     return executeStreamingSelect(impl, out, rows_affected, error);
+}
+
+/// Stops this statement's result stream.
+///
+/// What the engine offers is cancellation between batches, so the query stops
+/// early rather than instantly — which is what the spec allows for ("it is not
+/// guaranteed to, for instance, the result set may be buffered in memory
+/// already") — and the statement is immediately reusable afterwards.
+AdbcStatusCode chdbStatementCancel(AdbcStatement * statement, AdbcError * error)
+{
+    if (!statement || !statement->private_data)
+        return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] statement is not allocated");
+    auto * impl = static_cast<StatementImpl *>(statement->private_data);
+    if (!impl->connection || !impl->connection->conn)
+        return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not initialized");
+    if (!cancelActiveStream(impl->connection, /*owner_statement=*/impl->id))
+        return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] this statement has no query to cancel");
+    return ADBC_STATUS_OK;
 }
 
 AdbcStatusCode chdbStatementExecutePartitions(
@@ -2555,7 +2903,11 @@ extern "C" AdbcStatusCode chdb_adbc_init(int version, void * raw_driver, AdbcErr
     /// ADBC 1.1.0 additions beyond these stay zeroed: the driver manager
     /// backfills unset entries with NOT_IMPLEMENTED stubs.
     if (version == ADBC_VERSION_1_1_0)
+    {
+        driver->ConnectionCancel = chdbConnectionCancel;
         driver->ConnectionGetOption = chdbConnectionGetOption;
+        driver->StatementCancel = chdbStatementCancel;
+    }
 
     return ADBC_STATUS_OK;
 }

@@ -112,6 +112,17 @@ You can check if the `error_message` field is `NULL` to determine if an error oc
 All bindings wrap the same stable C API defined in [`chdb.h`](programs/local/chdb.h):
 
 1. **Session** — Wrap `chdb_connect()`, `chdb_query()`, and `chdb_close_conn()`.
+   The engine starts on the first connection and shuts down when the last one
+   closes, and it is meant to start once per process: cycling it repeatedly is
+   known to corrupt the process allocator on macOS and abort. This is why the
+   test suite gives every test that opens a second storage path its own process
+   (the `ISOLATED` list in [`tests/run_all.py`](tests/run_all.py)) and why the
+   ADBC conformance suite runs one case per process
+   (`programs/local/adbc/validation/run.sh`). A binding that pools connections
+   should keep one alive outside the pool for the host's lifetime — a pool
+   configured to drop to zero idle connections, or one whose maximum-lifetime
+   policy retires the last connection, cycles the engine on a schedule with
+   nothing reporting it.
 2. **Streaming** — Wrap `chdb_stream_query()`, `chdb_stream_fetch_result()`, and `chdb_stream_cancel_query()`.
 3. **Arrow Scan** — Wrap `chdb_arrow_scan()` / `chdb_arrow_array_scan()` and `chdb_arrow_unregister_table()`.
 

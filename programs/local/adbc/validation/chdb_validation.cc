@@ -175,9 +175,12 @@ public:
         }
     }
 
+    /// Cancellation lands between batches: the request never waits for the
+    /// batch in flight, and the engine stops the query at the next one.
+    bool supports_cancel() const override { return true; }
+
     /// Not implemented by the driver. ClickHouse also has no catalog level and
     /// no client-side transaction control.
-    bool supports_cancel() const override { return false; }
     bool supports_concurrent_statements() const override { return false; }
     bool supports_execute_schema() const override { return false; }
     bool supports_metadata_current_catalog() const override { return false; }
