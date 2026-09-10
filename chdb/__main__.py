@@ -1,9 +1,12 @@
 import argparse
-from .__init__ import query
+import os
+import sys
+
+from chdb import query
 
 
 def main():
-    prog = 'python -m chdb'
+    prog = 'chdb' if os.path.basename(sys.argv[0]) == 'chdb' else 'python -m chdb'
     custom_usage = "%(prog)s [-h] \"SELECT 1\" [format]"
     description = ('''A simple command line interface for chdb
                    to run SQL and output in specified format''')
