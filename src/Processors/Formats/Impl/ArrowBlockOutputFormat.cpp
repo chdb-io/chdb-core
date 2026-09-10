@@ -170,10 +170,20 @@ void ArrowBlockOutputFormat::scheduleParallel(Chunk chunk)
     {
         std::unique_lock lock(mutex);
 
-        /// Apply backpressure when too many tasks are in flight.
+        /// Apply backpressure when too many tasks are in flight. Drain finished front tasks
+        /// *inside* the wait loop: in_flight is only decremented by drainReady(), so a plain
+        /// `while (in_flight >= max) cv.wait()` deadlocks once the in-flight encoders all finish
+        /// while the consumer is parked here -- completing jobs only notify(), they never drain,
+        /// so in_flight would never drop below the limit. Draining before each wait guarantees
+        /// progress.
         const size_t max_in_flight = std::max<size_t>(2, format_settings.max_threads * 4);
-        while (!is_stopped && in_flight >= max_in_flight && !background_exception)
+        while (!is_stopped && !background_exception)
+        {
+            drainReady(lock);
+            if (in_flight < max_in_flight)
+                break;
             cv.wait(lock);
+        }
 
         if (is_stopped)
             return;
