@@ -331,11 +331,12 @@ Best Practices
 
 .. note::
    - Multiple sessions on the same database path can be open at the same time; each session keeps its own state (current database, settings)
-   - A process hosts one embedded engine bound to one database path; opening a session on a different path requires closing all existing sessions first
+   - A process hosts one embedded engine bound to one database path; opening a session on a different path requires closing all existing sessions first, which shuts the engine down and starts a new one
    - Temporary sessions are automatically cleaned up when the session object is destroyed
    - File-based sessions persist data across Python interpreter restarts
 
 .. warning::
+   - Keep one session open for as long as your program needs chDB. The engine is meant to start once per process: closing the last session and opening a new one repeatedly is known to corrupt the process allocator on macOS and abort. A long-lived service should hold a session for its lifetime rather than open and close one per request
    - Always call :meth:`StreamingResult.close()` when terminating streaming queries early
    - Large result sets should use streaming queries to avoid memory issues
    - Session state is not shared between different Python processes

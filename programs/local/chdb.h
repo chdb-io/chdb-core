@@ -207,9 +207,21 @@ CHDB_EXPORT void free_result_v2(struct local_result_v2 * result);
 
 /**
  * Creates a new chDB connection.
+ *
  * The engine uses one storage path per process: multiple connections to that
  * same path may be open at once. Connecting with a different path requires
- * closing all existing connections first.
+ * closing all existing connections first, which shuts the engine down and
+ * boots a new one.
+ *
+ * Keep at least one connection open for as long as the host needs chDB. The
+ * engine is meant to start once per process: repeatedly closing the last
+ * connection and reconnecting puts it through a full shutdown and boot each
+ * time, and doing that many times in one process is known to corrupt the
+ * process allocator on macOS and abort -- either in the engine's own teardown
+ * or at some unrelated allocation afterwards. A host that pools connections
+ * should hold one outside the pool rather than let the pool empty and
+ * reconnect on the next request: an idle timeout or a maximum-lifetime policy
+ * that retires the last connection puts it on that path with no indication.
  *
  * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
  * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
@@ -229,6 +241,9 @@ CHDB_EXPORT struct chdb_conn ** connect_chdb(int argc, char ** argv);
 /**
  * Closes an existing chDB connection and cleans up resources.
  * Thread-safe function that handles connection shutdown and cleanup.
+ *
+ * Closing the last open connection shuts the engine down. See chdb_connect()
+ * for why a host should not do that until it is finished with chDB.
  *
  * @param conn Pointer to connection pointer to close
  */
@@ -334,9 +349,21 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
 
 /**
  * Creates a new chDB connection.
+ *
  * The engine uses one storage path per process: multiple connections to that
  * same path may be open at once. Connecting with a different path requires
- * closing all existing connections first.
+ * closing all existing connections first, which shuts the engine down and
+ * boots a new one.
+ *
+ * Keep at least one connection open for as long as the host needs chDB. The
+ * engine is meant to start once per process: repeatedly closing the last
+ * connection and reconnecting puts it through a full shutdown and boot each
+ * time, and doing that many times in one process is known to corrupt the
+ * process allocator on macOS and abort -- either in the engine's own teardown
+ * or at some unrelated allocation afterwards. A host that pools connections
+ * should hold one outside the pool rather than let the pool empty and
+ * reconnect on the next request: an idle timeout or a maximum-lifetime policy
+ * that retires the last connection puts it on that path with no indication.
  *
  * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
  * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
@@ -356,6 +383,9 @@ CHDB_EXPORT chdb_connection * chdb_connect(int argc, char ** argv);
 /**
  * Closes an existing chDB connection and cleans up resources.
  * Thread-safe function that handles connection shutdown and cleanup.
+ *
+ * Closing the last open connection shuts the engine down. See chdb_connect()
+ * for why a host should not do that until it is finished with chDB.
  *
  * @param conn Pointer to connection pointer to close
  */
