@@ -681,6 +681,19 @@ std::string settingsAssignmentSql(const std::vector<std::pair<std::string, std::
     return runUpdateQuery(connection, "SET " + settingsAssignmentSql(to_apply), nullptr, error);
 }
 
+/// Settings that gate their own modification: once a session sets one to its
+/// restrictive value, the engine refuses to set it back (SettingsConstraints
+/// rejects `readonly` while readonly is on, `allow_ddl` once DDL is off, and
+/// `allow_python_table_function` once that is off). A statement option lasts
+/// for one statement, so accepting these would quietly turn into a permanent
+/// change to the whole connection when the restore is refused.
+bool isOneWaySetting(const char * key)
+{
+    return std::strcmp(key, "readonly") == 0
+        || std::strcmp(key, "allow_ddl") == 0
+        || std::strcmp(key, "allow_python_table_function") == 0;
+}
+
 void restoreStatementSettings(ConnectionImpl * connection)
 {
     if (connection->settings_to_restore.empty())
@@ -2002,12 +2015,26 @@ AdbcStatusCode chdbStatementSetOption(
         impl->arrow_variant_as_string = parsed;
         return ADBC_STATUS_OK;
     }
-    /// Any ClickHouse setting can be set on a statement and applies to that
-    /// statement alone. This is how a client bounds a read before executing:
-    /// max_block_size caps the rows in each Arrow batch (so also in the first
-    /// one), and max_result_rows with result_overflow_mode = 'break' stops the
-    /// query once it has produced enough — no query rewriting, no session state
-    /// left behind for the next statement.
+    /// Refused rather than silently made permanent: this one cannot be put
+    /// back after the statement, so it would outlive the statement it was set
+    /// on. Checked before the pass-through below, which would otherwise
+    /// accept it like any other setting.
+    if (isOneWaySetting(key))
+    {
+        std::string message = "[chdb] setting '" + std::string(key)
+            + "' cannot be scoped to a statement: the engine refuses to set it back afterwards, so it "
+              "would stay in effect for the rest of the connection";
+        if (std::strcmp(key, "readonly") == 0)
+            message += std::string(" (set the ") + ADBC_CONNECTION_OPTION_READ_ONLY
+                + " connection option instead)";
+        return setError(error, ADBC_STATUS_INVALID_ARGUMENT, message);
+    }
+    /// Any other ClickHouse setting can be set on a statement and applies to
+    /// that statement alone. This is how a client bounds a read before
+    /// executing: max_block_size caps the rows in each Arrow batch (so also in
+    /// the first one), and max_result_rows with result_overflow_mode = 'break'
+    /// stops the query once it has produced enough — no query rewriting, no
+    /// session state left behind for the next statement.
     if (DB::Settings::hasBuiltin(key))
     {
         impl->engine_settings[key] = value ? value : "";

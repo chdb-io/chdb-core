@@ -1546,6 +1546,33 @@ class TestAdbcStatementSettings(unittest.TestCase):
             cur.execute("SELECT count() FROM settings_parts")
             self.assertEqual(cur.fetchone()[0], 4)
 
+    def test_settings_that_cannot_be_restored_are_refused(self):
+        # A statement option lasts for one statement. These three gate their
+        # own modification, so the engine refuses to set them back and they
+        # would silently become permanent for the connection -- the driver
+        # rejects them up front instead.
+        from adbc_driver_manager import AdbcStatusCode
+
+        with _connect() as conn, conn.cursor() as cur:
+            for key in ("readonly", "allow_ddl", "allow_python_table_function"):
+                with self.assertRaises(Exception, msg=key) as ctx:
+                    cur.adbc_statement.set_options(**{key: "1"})
+                self.assertEqual(
+                    ctx.exception.status_code, AdbcStatusCode.INVALID_ARGUMENT, key
+                )
+            # The readonly message points at the option that does work.
+            with self.assertRaises(Exception) as ctx:
+                cur.adbc_statement.set_options(**{"readonly": "2"})
+            self.assertIn("adbc.connection.readonly", str(ctx.exception))
+
+            # Nothing was applied: the connection is still writable, and the
+            # next statement is unaffected.
+            cur.execute("SELECT getSetting('readonly')")
+            self.assertEqual(cur.fetchone()[0], 0)
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("CREATE DATABASE IF NOT EXISTS one_way_probe")
+            cur.execute("DROP DATABASE one_way_probe")
+
     def test_unknown_statement_option_is_rejected(self):
         from adbc_driver_manager import AdbcStatusCode
 
