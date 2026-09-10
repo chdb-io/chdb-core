@@ -40,7 +40,8 @@
 #
 # Either way the GitHub release is unaffected: wheels, libchdb.so, libchdb.a and
 # debug symbols are uploaded as release assets by steps this does not gate, so
-# every release is installable from the wheel index built over those assets.
+# a release that skips PyPI is still installable from its asset URLs, which is
+# how the non-Python bindings consume it in any case.
 
 set -euo pipefail
 
@@ -96,7 +97,7 @@ fi
 
 if [[ $notes == *"$MARKER"* ]]; then
 	echo "$TAG's release notes say $MARKER; PyPI upload skipped"
-	echo "  the wheels are on the GitHub release and in the wheel index"
+	echo "  the wheels are still attached to the GitHub release"
 	exit 1
 fi
 
