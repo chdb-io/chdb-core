@@ -18,34 +18,26 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
-      # A three-hour wheel build cannot be affected by the script and workflow
-      # that turn finished releases into a package index, nor by the rules
-      # deciding which releases reach PyPI -- that step runs on tags only, so a
-      # pull request never executes it. Listing them here is what stops a
-      # one-line edit to any of them from occupying the self-hosted pool.
-      # publish_wheel_index.yml checks itself on pull requests, and Pull-CI runs
-      # the PyPI rules' table test on every one.
-      - '.github/scripts/build-wheel-index.py'
+      # A three-hour wheel build cannot be affected by the rules deciding which
+      # releases reach PyPI: that step runs on tags only, so a pull request
+      # never executes it. Listing them here is what stops a one-line edit from
+      # occupying the self-hosted pool, and Pull-CI runs their table test on
+      # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
-      - '.github/workflows/publish_wheel_index.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths-ignore:
       - '**/*.md'
-      # A three-hour wheel build cannot be affected by the script and workflow
-      # that turn finished releases into a package index, nor by the rules
-      # deciding which releases reach PyPI -- that step runs on tags only, so a
-      # pull request never executes it. Listing them here is what stops a
-      # one-line edit to any of them from occupying the self-hosted pool.
-      # publish_wheel_index.yml checks itself on pull requests, and Pull-CI runs
-      # the PyPI rules' table test on every one.
-      - '.github/scripts/build-wheel-index.py'
+      # A three-hour wheel build cannot be affected by the rules deciding which
+      # releases reach PyPI: that step runs on tags only, so a pull request
+      # never executes it. Listing them here is what stops a one-line edit from
+      # occupying the self-hosted pool, and Pull-CI runs their table test on
+      # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
-      - '.github/workflows/publish_wheel_index.yml'
 
 
 concurrency:
