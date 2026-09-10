@@ -382,6 +382,19 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     try
     {
         DB::ThreadStatus thread_status;
+
+        /// A materialized query rebuilds this connection's LocalQueryState. An
+        /// un-drained streaming read left active on the connection would then
+        /// keep a ClientBase-side streaming context that outlives the engine
+        /// state it points at, so cancelling it later (e.g. from cleanup() at
+        /// connection close) dereferences a disengaged LocalQueryState and
+        /// aborts. Retire the stream now, while its state is still valid; this
+        /// also clears the process-global output buffer the abandoned stream
+        /// would otherwise leave dirty. Mirrors executeStreamingInit abandoning
+        /// an unfinished stream before starting a new one.
+        if (streaming_query_context && streaming_query_context->streaming_result)
+            cancelStreamingQueryWithoutLock(streaming_query_context->streaming_result);
+
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
 #if USE_PYTHON
