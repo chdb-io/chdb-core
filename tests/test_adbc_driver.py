@@ -174,6 +174,20 @@ def _connect(path=":memory:"):
     return _raw_connect({"path": path})
 
 
+def _connect_read_only(path=":memory:"):
+    if path == ":memory:":
+        _pin_memory_engine()
+    else:
+        _release_memory_keepalive()
+    return adbc_dbapi.connect(
+        driver=_LIBCHDB_PATH,
+        entrypoint="chdb_adbc_init",
+        db_kwargs={"path": path},
+        conn_kwargs={"adbc.connection.readonly": "true"},
+        autocommit=True,
+    )
+
+
 def _extension_name(field):
     if hasattr(field.type, "extension_name"):
         return field.type.extension_name
@@ -401,6 +415,37 @@ class TestAdbcQuery(unittest.TestCase):
             cur.execute("SELECT 7")
             self.assertEqual(cur.fetchone()[0], 7)
             cur.close()
+
+    def test_sequential_queries_after_closing_a_stream(self):
+        # A client's normal loop: run a query, read part of it, close the
+        # result, run the next one on a fresh statement. Closing the stream has
+        # to hand the connection back, or the next execute is rejected.
+        with _connect() as conn:
+            for expected in (1, 2, 3):
+                cur = conn.cursor()
+                cur.execute("SELECT number FROM numbers(1000000)")
+                reader = cur.fetch_record_batch()
+                self.assertGreater(next(iter(reader)).num_rows, 0)
+                reader.close()
+                del reader
+                cur.close()
+                with conn.cursor() as probe:
+                    probe.execute(f"SELECT {expected}")
+                    self.assertEqual(probe.fetchone()[0], expected)
+
+    def test_empty_result_stream_reports_schema_and_no_batches(self):
+        # A schema-only stream still answers get_schema and yields no batches:
+        # the shape a client needs to render an empty grid with real columns.
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT number AS n, toString(number) AS s "
+                "FROM numbers(10) WHERE number < 0"
+            )
+            reader = cur.fetch_record_batch()
+            self.assertEqual(reader.schema.names, ["n", "s"])
+            self.assertEqual(reader.schema.field("n").type, pa.uint64())
+            batches = list(reader)
+        self.assertEqual([b.num_rows for b in batches], [])
 
     def test_error_reports_message(self):
         with _connect() as conn, conn.cursor() as cur:
@@ -1215,6 +1260,311 @@ class TestAdbcPythonInterop(unittest.TestCase):
             if native is not None:
                 native.close()
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipUnless(_ENABLED, _SKIP_REASON)
+class TestAdbcReadOnly(unittest.TestCase):
+    def test_read_only_connection_reports_and_enforces_read_only(self):
+        # The canonical option maps to the engine's readonly=2, so enforcement
+        # covers SQL the caller writes, not just the driver's own entry points.
+        with _connect_read_only() as conn:
+            self.assertEqual(
+                conn.adbc_connection.get_option("adbc.connection.readonly"), "true"
+            )
+            with conn.cursor() as cur:
+                cur.execute("SELECT getSetting('readonly')")
+                self.assertEqual(cur.fetchone()[0], 2)
+                cur.execute("SELECT sum(number) FROM numbers(10)")
+                self.assertEqual(cur.fetchone()[0], 45)
+                for sql in (
+                    "CREATE TABLE ro_denied (x Int64) ENGINE = MergeTree() ORDER BY x",
+                    "CREATE DATABASE ro_denied_db",
+                ):
+                    with self.assertRaises(Exception, msg=sql) as ctx:
+                        cur.execute(sql)
+                    self.assertRegex(str(ctx.exception), "[Rr]eadonly")
+
+    def test_read_only_connection_rejects_writes_to_an_existing_table(self):
+        # The gap this closes: with the option unhandled, writes went through.
+        # The table has to exist first, or name resolution reports the missing
+        # table before the read-only check is reached.
+        with _connect() as writable, writable.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS ro_target (x Int64) "
+                "ENGINE = MergeTree() ORDER BY x"
+            )
+            cur.execute("TRUNCATE TABLE ro_target")
+            cur.execute("INSERT INTO ro_target VALUES (7)")
+
+        with _connect_read_only() as conn, conn.cursor() as cur:
+            cur.execute("SELECT x FROM ro_target")
+            self.assertEqual(cur.fetchone()[0], 7)
+            for sql in (
+                "INSERT INTO ro_target VALUES (8)",
+                "TRUNCATE TABLE ro_target",
+                "DROP TABLE ro_target",
+            ):
+                with self.assertRaises(Exception, msg=sql) as ctx:
+                    cur.execute(sql)
+                self.assertRegex(str(ctx.exception), "[Rr]eadonly")
+
+        with _connect() as writable, writable.cursor() as cur:
+            cur.execute("SELECT count(), sum(x) FROM ro_target")
+            self.assertEqual(cur.fetchone(), (1, 7))
+
+    def test_read_only_connection_still_takes_per_query_settings(self):
+        # readonly=2, not 1: a read-only session may still tune settings, which
+        # is what statement-level settings need.
+        with _connect_read_only() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count() FROM numbers(4) SETTINGS max_threads = 1")
+            self.assertEqual(cur.fetchone()[0], 4)
+
+    def test_read_only_connection_rejects_bulk_ingest(self):
+        with _connect_read_only() as conn, conn.cursor() as cur:
+            with self.assertRaises(Exception) as ctx:
+                cur.adbc_ingest(
+                    "ro_ingest",
+                    pa.table({"v": pa.array([1, 2], pa.int64())}),
+                    mode="create",
+                )
+            self.assertRegex(str(ctx.exception), "[Rr]eadonly")
+
+    def test_read_only_set_on_a_live_connection_is_one_way(self):
+        # Setting the option after Init goes through the engine too. Going
+        # read-only is one-way: readonly=2 forbids changing `readonly` itself,
+        # so the engine — not this driver — rejects turning it back off.
+        with _connect() as conn:
+            conn.adbc_connection.set_options(**{"adbc.connection.readonly": "true"})
+            self.assertEqual(
+                conn.adbc_connection.get_option("adbc.connection.readonly"), "true"
+            )
+            with conn.cursor() as cur:
+                with self.assertRaises(Exception) as ctx:
+                    cur.execute("CREATE DATABASE ro_live_denied")
+                self.assertRegex(str(ctx.exception), "[Rr]eadonly")
+            with self.assertRaises(Exception):
+                conn.adbc_connection.set_options(
+                    **{"adbc.connection.readonly": "false"}
+                )
+
+    def test_connection_is_writable_without_the_option(self):
+        with _connect() as conn:
+            # The cursor is closed first: its result stream still holds the
+            # connection, and reading an option is an operation like any other.
+            with conn.cursor() as cur:
+                cur.execute("SELECT getSetting('readonly')")
+                self.assertEqual(cur.fetchone()[0], 0)
+            self.assertEqual(
+                conn.adbc_connection.get_option("adbc.connection.readonly"), "false"
+            )
+
+
+@unittest.skipUnless(_ENABLED, _SKIP_REASON)
+class TestAdbcCancel(unittest.TestCase):
+    def test_cancel_stops_the_stream_and_the_statement_is_reusable(self):
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT number FROM numbers(1000000000)")
+            reader = iter(cur.fetch_record_batch())
+            self.assertGreater(next(reader).num_rows, 0)
+
+            cur.adbc_cancel()
+
+            with self.assertRaises(Exception) as ctx:
+                for _ in reader:
+                    pass
+            self.assertIn("cancelled", str(ctx.exception))
+
+            # Cancel-and-reuse: the same statement runs again straight away.
+            cur.execute("SELECT 11")
+            self.assertEqual(cur.fetchone()[0], 11)
+            cur.close()
+
+    def test_cancel_hands_the_connection_to_another_statement(self):
+        # A cancelled stream is no longer "live", so the statement that would
+        # otherwise be rejected with INVALID_STATE can run.
+        with _connect() as conn:
+            cur1 = conn.cursor()
+            cur1.execute("SELECT number FROM numbers(1000000000)")
+            reader = iter(cur1.fetch_record_batch())
+            next(reader)
+            cur1.adbc_cancel()
+
+            cur2 = conn.cursor()
+            cur2.execute("SELECT 3")
+            self.assertEqual(cur2.fetchone()[0], 3)
+            cur1.close()
+            cur2.close()
+
+    def test_cancel_from_another_thread_ends_a_running_read(self):
+        # The spec requires Cancel to be thread-safe: it is called from a UI
+        # thread while the consumer thread sits inside the engine. It must not
+        # deadlock against the fetch, and the read must end early.
+        import threading
+
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT number FROM numbers(1000000000)")
+            reader = iter(cur.fetch_record_batch())
+            rows = next(reader).num_rows
+
+            cancelled = threading.Event()
+
+            def cancel():
+                cur.adbc_cancel()
+                cancelled.set()
+
+            worker = threading.Thread(target=cancel)
+            worker.start()
+            with self.assertRaises(Exception):
+                for batch in reader:
+                    rows += batch.num_rows
+            worker.join(60)
+            self.assertTrue(cancelled.is_set())
+            self.assertLess(rows, 1000000000)
+            cur.close()
+
+    def test_connection_cancel_stops_the_open_stream(self):
+        with _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT number FROM numbers(1000000000)")
+            reader = iter(cur.fetch_record_batch())
+            next(reader)
+
+            conn.adbc_cancel()
+
+            with self.assertRaises(Exception) as ctx:
+                for _ in reader:
+                    pass
+            self.assertIn("cancelled", str(ctx.exception))
+            cur.close()
+
+    def test_connection_cancel_with_nothing_running_reports_success(self):
+        # Metadata readers are materialized before they are handed out, so
+        # there is nothing left running in the engine to stop.
+        with _connect() as conn:
+            conn.adbc_cancel()
+            conn.adbc_get_objects(depth="catalogs").read_all()
+            conn.adbc_cancel()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 4")
+                self.assertEqual(cur.fetchone()[0], 4)
+
+    def test_cancel_without_a_query_reports_invalid_state(self):
+        from adbc_driver_manager import AdbcStatusCode
+
+        with _connect() as conn, conn.cursor() as cur:
+            with self.assertRaises(Exception) as ctx:
+                cur.adbc_cancel()
+            self.assertEqual(ctx.exception.status_code, AdbcStatusCode.INVALID_STATE)
+
+
+@unittest.skipUnless(_ENABLED, _SKIP_REASON)
+class TestAdbcStatementSettings(unittest.TestCase):
+    def test_max_block_size_bounds_every_batch_including_the_first(self):
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_statement.set_options(**{"max_block_size": "128"})
+            cur.execute("SELECT number FROM numbers(1000)")
+            batches = list(cur.fetch_record_batch())
+        self.assertEqual(batches[0].num_rows, 128)
+        self.assertTrue(all(b.num_rows <= 128 for b in batches))
+        self.assertEqual(sum(b.num_rows for b in batches), 1000)
+
+    def test_max_result_rows_with_break_bounds_the_whole_read(self):
+        # The engine stops at a block boundary, so a client that wants an exact
+        # bound sets the block size to match — 200 rows in blocks of 100.
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_statement.set_options(
+                **{
+                    "max_block_size": "100",
+                    "max_result_rows": "200",
+                    "result_overflow_mode": "break",
+                }
+            )
+            cur.execute("SELECT number FROM numbers(100000)")
+            table = cur.fetch_arrow_table()
+        self.assertEqual(table.num_rows, 200)
+        self.assertEqual(table.column("number").to_pylist()[:3], [0, 1, 2])
+
+    def test_statement_settings_do_not_outlive_the_statement(self):
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT getSetting('max_block_size')")
+                default_block_size = cur.fetchone()[0]
+
+            with conn.cursor() as bounded:
+                bounded.adbc_statement.set_options(**{"max_block_size": "128"})
+                bounded.execute("SELECT getSetting('max_block_size')")
+                self.assertEqual(bounded.fetchone()[0], 128)
+
+            # The next statement on the same connection sees the old value back.
+            with conn.cursor() as cur:
+                cur.execute("SELECT getSetting('max_block_size')")
+                self.assertEqual(cur.fetchone()[0], default_block_size)
+
+    def test_statement_settings_do_not_bound_metadata_calls(self):
+        # A leftover result bound would silently truncate GetObjects; the
+        # settings are put back before any other operation runs.
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS settings_probe (a Int64) "
+                    "ENGINE = MergeTree() ORDER BY a"
+                )
+            with conn.cursor() as bounded:
+                bounded.adbc_statement.set_options(
+                    **{"max_result_rows": "1", "result_overflow_mode": "break"}
+                )
+                bounded.execute("SELECT number FROM numbers(1000)")
+                bounded.fetch_arrow_table()
+            self.assertEqual(
+                conn.adbc_get_table_schema("settings_probe").names, ["a"]
+            )
+
+    def test_settings_reach_an_update_statement(self):
+        # Statement settings apply on the update path too, not only to reads:
+        # a one-partition-per-block cap makes a four-partition INSERT fail.
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS settings_parts")
+            cur.execute(
+                "CREATE TABLE settings_parts (p Int64) ENGINE = MergeTree() "
+                "PARTITION BY p ORDER BY p"
+            )
+            cur.adbc_statement.set_options(
+                **{"max_partitions_per_insert_block": "1"}
+            )
+            with self.assertRaises(Exception) as ctx:
+                cur.execute(
+                    "INSERT INTO settings_parts SELECT number FROM numbers(4)"
+                )
+            self.assertRegex(str(ctx.exception), "[Pp]artition")
+
+            cur.adbc_statement.set_options(
+                **{"max_partitions_per_insert_block": "0"}
+            )
+            cur.execute("INSERT INTO settings_parts SELECT number FROM numbers(4)")
+            cur.execute("SELECT count() FROM settings_parts")
+            self.assertEqual(cur.fetchone()[0], 4)
+
+    def test_unknown_statement_option_is_rejected(self):
+        from adbc_driver_manager import AdbcStatusCode
+
+        with _connect() as conn, conn.cursor() as cur:
+            with self.assertRaises(Exception) as ctx:
+                cur.adbc_statement.set_options(**{"not_a_clickhouse_setting": "1"})
+            self.assertEqual(
+                ctx.exception.status_code, AdbcStatusCode.NOT_IMPLEMENTED
+            )
+
+    def test_invalid_setting_value_is_reported_at_execute(self):
+        with _connect() as conn, conn.cursor() as cur:
+            cur.adbc_statement.set_options(**{"max_block_size": "not_a_number"})
+            with self.assertRaises(Exception):
+                cur.execute("SELECT 1")
+            # The connection is still usable and unbounded afterwards.
+            with conn.cursor() as probe:
+                probe.execute("SELECT count() FROM numbers(500)")
+                self.assertEqual(probe.fetchone()[0], 500)
 
 
 if __name__ == "__main__":
