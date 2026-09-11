@@ -24,6 +24,8 @@ CHDB_EXPORT const char * chdb_version(void);
 // WARNING: The following structs are deprecated and will be removed in a future version.
 struct local_result
 {
+    /// buf is NOT NUL-terminated: len is the only length. Treating buf as a C string
+    /// (printf("%s"), strlen) reads past the end of the buffer.
     char * buf;
     size_t len;
     void * _vec; // std::vector<char> *, for freeing
@@ -708,6 +710,9 @@ CHDB_EXPORT void chdb_destroy_insert_stream(chdb_insert_stream stream);
  * Gets pointer to the result data buffer
  * @param result The query result handle
  * @return Read-only pointer to the result data
+ * @note NOT NUL-terminated. The buffer is exactly chdb_result_length() bytes and the byte
+ *       after it belongs to no one -- printf("%s"), strlen() and strcpy() read out of bounds.
+ *       Use the length: fwrite(chdb_result_buffer(r), 1, chdb_result_length(r), stdout).
  */
 CHDB_EXPORT char * chdb_result_buffer(chdb_result * result);
 

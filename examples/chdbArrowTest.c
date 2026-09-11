@@ -421,6 +421,7 @@ static void test_assert_row_count(chdb_result * result, uint64_t expected_rows, 
     char full_test_name[512];
     char * result_str;
     char * end;
+    size_t buffer_len;
     uint64_t actual_rows;
 
     test_assert_no_error(result, query_name);
@@ -429,12 +430,16 @@ static void test_assert_row_count(chdb_result * result, uint64_t expected_rows, 
     snprintf(full_test_name, sizeof(full_test_name), "%s - Result buffer is not null", query_name);
     test_assert_not_null(buffer, full_test_name);
 
-    /* Parse the count result (assuming CSV format with just the number) */
-    result_str = (char*)malloc(strlen(buffer) + 1);
-    strcpy(result_str, buffer);
+    /* Parse the count result (assuming CSV format with just the number).
+     * The buffer is not NUL-terminated -- chdb_result_length() is the only
+     * length -- so copy exactly that many bytes and terminate the copy. */
+    buffer_len = chdb_result_length(result);
+    result_str = (char*)malloc(buffer_len + 1);
+    memcpy(result_str, buffer, buffer_len);
+    result_str[buffer_len] = '\0';
 
     /* Remove trailing whitespace/newlines */
-    end = result_str + strlen(result_str) - 1;
+    end = result_str + buffer_len - 1;
     while (end > result_str && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r' || *end == '\f' || *end == '\v')) {
         *end = '\0';
         end--;
