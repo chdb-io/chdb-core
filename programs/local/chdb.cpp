@@ -55,6 +55,10 @@ namespace CHDB
 extern "C"
 {
     extern chdb_state chdb_arrow_scan(chdb_connection, const char *, chdb_arrow_stream);
+    extern chdb_result * chdb_insert_arrow_array(
+        chdb_connection, const char *, chdb_arrow_schema, chdb_arrow_array, const chdb_arrow_insert_options *);
+    extern chdb_result * chdb_insert_arrow_stream(
+        chdb_connection, const char *, chdb_arrow_stream, const chdb_arrow_insert_options *);
     extern chdb_result * chdb_query_arrow(chdb_connection, const char *, chdb_arrow_stream, const chdb_arrow_options *);
     extern chdb_result * chdb_query_arrow_n(chdb_connection, const char *, size_t, chdb_arrow_stream, const chdb_arrow_options *);
     extern chdb_result * chdb_stream_query_arrow(chdb_connection, const char *, const chdb_arrow_options *);
@@ -66,13 +70,15 @@ extern "C"
     extern unsigned char chdb_adbc_init(int, void *, void *);
 }
 
-/// Force-link references: chdb-arrow.cpp.o and chdb-arrow-output.cpp.o each
-/// live in their own translation unit and have no internal callers, so the
-/// linker would discard them under --gc-sections / .a archive semantics
-/// when libchdb.so is linked from main.cpp's perspective. Taking the
-/// address of one entry point from each .o keeps the whole .o alive.
+/// Force-link references: chdb-arrow.cpp.o, chdb-arrow-insert.cpp.o and
+/// chdb-arrow-output.cpp.o each live in their own translation unit and have
+/// no internal callers, so the linker would discard them under --gc-sections /
+/// .a archive semantics when libchdb.so is linked from main.cpp's perspective.
+/// Taking the address of one entry point from each .o keeps the whole .o alive.
 [[maybe_unused]] void * force_link_arrow_functions[] = {
     reinterpret_cast<void*>(chdb_arrow_scan),
+    reinterpret_cast<void*>(chdb_insert_arrow_array),
+    reinterpret_cast<void*>(chdb_insert_arrow_stream),
     reinterpret_cast<void*>(chdb_query_arrow),
     reinterpret_cast<void*>(chdb_query_arrow_n),
     reinterpret_cast<void*>(chdb_stream_query_arrow),
