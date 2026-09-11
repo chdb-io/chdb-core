@@ -63,7 +63,8 @@ int main()
     // Print results (assuming it's a string type, adjust according to actual data type)
     if (result)
     {
-        printf("Query Result: %s\n", result->buf);
+        /* buf is not NUL-terminated; len is the contract. */
+        printf("Query Result: %.*s\n", (int)result->len, result->buf);
         printf("Elapsed Time: %fs\n", result->elapsed);
         printf("Rows Read: %llu\n", (unsigned long long)result->rows_read);
         printf("Bytes Read: %llu\n", (unsigned long long)result->bytes_read);

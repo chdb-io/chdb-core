@@ -175,6 +175,8 @@ public:
     query_result(chdb_result * result) : result_wrapper(std::make_shared<local_result_wrapper>(result)) { }
     query_result(chdb_result * result, bool keep_buf) : result_wrapper(std::make_shared<local_result_wrapper>(result, keep_buf)) { }
     ~query_result() = default;
+    /// NOT NUL-terminated, and only chdb_result_length() bytes long. Callers must carry
+    /// the size: do not hand this pointer to anything that looks for a terminator.
     char * data() { return result_wrapper->data(); }
     py::bytes bytes() { return result_wrapper->bytes(); }
     py::str str() { return result_wrapper->str(); }
