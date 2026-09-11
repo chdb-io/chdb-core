@@ -7417,6 +7417,21 @@ void Context::stopServers(const ServerType & server_type) const
 
 void Context::shutdown() TSA_NO_THREAD_SAFETY_ANALYSIS
 {
+    /// chdb stops the engine and starts a new one inside a single process, which a
+    /// server never does, and these two process-global holders are only ever
+    /// assigned -- nothing releases them. So the closed engine's contexts stay
+    /// alive until the next start overwrites them, and the next
+    /// makeBackgroundContext() trips its chassert(!background_context_instance).
+    /// Release them here, when the context they belong to is shutting down.
+    if (global_context_instance.get() == this)
+    {
+        background_context_instance.reset();
+        /// Only when someone else still holds it: dropping the last reference to
+        /// this object from inside its own member function would destroy it here.
+        if (global_context_instance.use_count() > 1)
+            global_context_instance.reset();
+    }
+
     shared->shutdown();
 }
 
