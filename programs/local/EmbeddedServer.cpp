@@ -644,6 +644,18 @@ static ConfigurationPtr getConfigurationFromXMLString(const char * xml_data)
     return {new Poco::Util::XMLConfiguration{&input_source}};
 }
 
+/// The built-in users XML is a compile-time constant, so parse it once per process rather
+/// than once per engine start. chdb starts and stops the engine repeatedly inside one
+/// process, and each parse left its Poco name pool behind -- 40,736 bytes per start, the
+/// largest single per-start leak LeakSanitizer reports. Sharing one configuration is safe:
+/// Context::setUsersConfig() only stores the pointer and hands a const reference to
+/// AccessControl, and nothing outside Context reads it back.
+static ConfigurationPtr getDefaultUsersConfiguration(const char * xml_data)
+{
+    static ConfigurationPtr default_users_config = getConfigurationFromXMLString(xml_data);
+    return default_users_config;
+}
+
 
 void EmbeddedServer::setupUsers()
 {
@@ -686,7 +698,7 @@ void EmbeddedServer::setupUsers()
         }
 
         if (users_config_path.empty())
-            users_config = getConfigurationFromXMLString(minimal_default_user_xml);
+            users_config = getDefaultUsersConfiguration(minimal_default_user_xml);
         else
         {
             ConfigProcessor config_processor(users_config_path);
@@ -695,7 +707,7 @@ void EmbeddedServer::setupUsers()
         }
     }
     else
-        users_config = getConfigurationFromXMLString(minimal_default_user_xml);
+        users_config = getDefaultUsersConfiguration(minimal_default_user_xml);
     if (users_config)
     {
         global_context->setUsersConfig(users_config);
