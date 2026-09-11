@@ -712,7 +712,7 @@ CHDB_EXPORT void chdb_destroy_insert_stream(chdb_insert_stream stream);
  * @return Read-only pointer to the result data
  * @note NOT NUL-terminated. The buffer is exactly chdb_result_length() bytes and the byte
  *       after it belongs to no one -- printf("%s"), strlen() and strcpy() read out of bounds.
- *       Use the length: printf("%.*s", (int)chdb_result_length(r), chdb_result_buffer(r)).
+ *       Use the length: fwrite(chdb_result_buffer(r), 1, chdb_result_length(r), stdout).
  */
 CHDB_EXPORT char * chdb_result_buffer(chdb_result * result);
 

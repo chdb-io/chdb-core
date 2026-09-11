@@ -151,7 +151,9 @@ static void test_engine_start_leak_budget(void)
     }
     size_t after = live_bytes();
 
-    double per_cycle = (double)(after - before) / (double)cycles;
+    /* Convert before subtracting: an unrelated free between the two reads would make
+     * a size_t subtraction wrap into a huge positive delta. */
+    double per_cycle = ((double)after - (double)before) / (double)cycles;
     printf("  %.0f bytes retained per connect/close cycle (budget %d)\n", per_cycle, LEAK_BUDGET_PER_CYCLE);
     CHECK(per_cycle < (double)LEAK_BUDGET_PER_CYCLE, "engine start/stop stays within its leak budget");
 }
