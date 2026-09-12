@@ -1,135 +1,92 @@
-## Welcome to the Bindings Contributors
+## Bindings
 
-Welcome to the community of bindings contributors! chDB offers a stable C ABI, which facilitates the development of bindings in various languages. For a C language calling demo, please refer to the examples in the `/examples` directory, such as `chdbDlopen.c`, `chdbSimple.c`, and `chdbStub.c`.
+Stable C ABI: `[chdb.h](programs/local/chdb.h)`. C demos: `examples/chdbDlopen.c`, `chdbSimple.c`, `chdbStub.c`.
 
-### Core Features
+Prefer `_n` entry points (pointer + length). The plain forms are NUL-terminated and cannot carry an interior NUL.
 
-chDB exposes four main capabilities through its C API ([`chdb.h`](programs/local/chdb.h)):
+### Inventory
 
-| Feature | C API | Description |
-|---|---|---|
-| **Stateless Query** | `query_stable()` | One-shot query execution; each call bootstraps a new engine context. Simple but incurs startup overhead per query. |
-| **Session (Connection)** | `chdb_connect()` / `chdb_query()` | Persistent connection with reusable engine context. Supports multi-statement workflows. |
-| **Streaming Query** | `chdb_stream_query()` / `chdb_stream_fetch_result()` | Chunked result iteration with constant memory usage. Ideal for large result sets that should not be fully materialized. |
-| **Arrow Scan** | `chdb_arrow_scan()` / `chdb_arrow_array_scan()` | Register Arrow streams or arrays as queryable table functions. Enables zero-copy data exchange with Arrow-native ecosystems. |
+Everything a binding can wrap. A binding need not implement all of it — this is the checklist, and the list to update when the ABI grows.
 
-### Feature Matrix
 
-| Binding | Stateless Query | Session | Streaming | Arrow Scan | Repository |
-|:---|:---:|:---:|:---:|:---:|:---|
-| **Python** (chdb) | ✅ | ✅ | ✅ | | [chdb-io/chdb](https://github.com/chdb-io/chdb) |
-| **Go** | ✅ | ✅ | ✅ | | [chdb-io/chdb-go](https://github.com/chdb-io/chdb-go) |
-| **Rust** | ✅ | ✅ | | ✅ | [chdb-io/chdb-rust](https://github.com/chdb-io/chdb-rust) |
-| **Node.js** | ✅ | ✅ | | | [chdb-io/chdb-node](https://github.com/chdb-io/chdb-node) |
-| **Ruby** | ✅ | ✅ | ✅ | | [chdb-io/chdb-ruby](https://github.com/chdb-io/chdb-ruby) |
-| **Zig** | ✅ | ✅ | ✅ | | [chdb-io/chdb-zig](https://github.com/chdb-io/chdb-zig) |
-| **Bun** | ✅ | | | | [chdb-io/chdb-bun](https://github.com/chdb-io/chdb-bun) |
-| **.NET** | ✅ | | | | [chdb-io/chdb-dotnet](https://github.com/chdb-io/chdb-dotnet) |
-| **Java** | | | | | _Contributors Needed_ |
-| **PHP** | | | | | _Contributors Needed_ |
-| **R** | | | | | _Contributors Needed_ |
+| #   | Capability                  | Entry points                                                                                                                                                                                | Since                                    |
+| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 1   | Connection                  | `chdb_connect`, `chdb_close_conn`                                                                                                                                                           | v26.1.0                                  |
+| 2   | Query                       | `chdb_query`, `chdb_query_n`, `chdb_query_cmdline`                                                                                                                                          | v26.1.0                                  |
+| 3   | Result accessors            | `chdb_result_{buffer,length,elapsed,error,rows_read,bytes_read,storage_rows_read,storage_bytes_read}`, `chdb_destroy_query_result`. Write metrics `rows_written` / `bytes_written`: v26.7.0 | v26.1.0                                  |
+| 4   | Streaming query             | `chdb_stream_query[_n]`, `chdb_stream_fetch_result`, `chdb_stream_cancel_query`                                                                                                             | v26.1.0                                  |
+| 5   | Arrow scan                  | `chdb_arrow_scan`, `chdb_arrow_array_scan`, `chdb_arrow_unregister_table`                                                                                                                   | v26.1.0                                  |
+| 6   | Arrow insert                | `chdb_insert_arrow_array`, `chdb_insert_arrow_stream` (+ optional `chdb_arrow_insert_options`)                                                                                              | unreleased (in tree; not in tag v26.7.3) |
+| 7   | Signal handlers             | `chdb_set_signal_handlers_enabled`, `chdb_reset_signal_handlers`                                                                                                                            | v26.3.0                                  |
+| 8   | Parameters                  | `chdb_{query,stream_query}_with_params[_n]` (v26.5.0); `chdb_stream_{insert,query_arrow}_with_params[_n]` (v26.7.0)                                                                         | v26.5.0                                  |
+| 9   | Arrow export                | `chdb_query_arrow[_n]`, `chdb_stream_query_arrow[_n]`, `chdb_stream_fetch_arrow`. Options struct: `chdb_arrow_options`                                                                      | v26.5.0                                  |
+| 10  | Streaming INSERT            | `chdb_stream_insert[_n]`, `chdb_stream_append`, `chdb_stream_done`, `chdb_stream_cancel_insert`, `chdb_stream_insert_error`, `chdb_destroy_insert_stream`                                   | v26.7.0                                  |
+| 11  | Version                     | `chdb_version`                                                                                                                                                                              | v26.7.0                                  |
+| 12  | Backup / restore / analysis | `chdb_backup_database_n`, `chdb_restore_database_n`, `chdb_classify_query_n`                                                                                                                | v26.7.2-rc.2                             |
+| 13  | Shutdown                    | `chdb_shutdown`                                                                                                                                                                             | v26.7.2-rc.2                             |
+
+
+### Feature matrix
+
+Columns are inventory groups: Query = 1–3 · Stream = 4 · Params = 8 · Arrow scan = 5 · Arrow export = 9 · Arrow insert = 6 · Insert stream = 10 · Backup = 12 · Lifecycle = 7, 11, 13.
+
+✅ implemented · ⬜ unverified / not yet · — n/a
+
+
+| Binding                    | Query | Stream | Params | Arrow scan | Arrow export | Arrow insert | Insert stream | Backup | Lifecycle | Repository                                                    |
+| -------------------------- | ----- | ------ | ------ | ---------- | ------------ | ------------ | ------------- | ------ | --------- | ------------------------------------------------------------- |
+| **Python** (chdb)          | ✅     | ✅      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb](https://github.com/chdb-io/chdb)               |
+| **Go**                     | ✅     | ✅      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-go](https://github.com/chdb-io/chdb-go)         |
+| **Rust**                   | ✅     | ✅      | ✅      | ✅          | ✅            | ✅            | ✅             | ✅      | ✅         | [chdb-io/chdb-rust](https://github.com/chdb-io/chdb-rust)     |
+| **Node.js**                | ✅     | ⬜      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-node](https://github.com/chdb-io/chdb-node)     |
+| **Ruby**                   | ✅     | ✅      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-ruby](https://github.com/chdb-io/chdb-ruby)     |
+| **Zig**                    | ✅     | ✅      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-zig](https://github.com/chdb-io/chdb-zig)       |
+| **Bun**                    | ✅     | ⬜      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-bun](https://github.com/chdb-io/chdb-bun)       |
+| **.NET**                   | ✅     | ⬜      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | [chdb-io/chdb-dotnet](https://github.com/chdb-io/chdb-dotnet) |
+| **Java** / **PHP** / **R** | ⬜     | ⬜      | ⬜      | ⬜          | ⬜            | ⬜            | ⬜             | ⬜      | ⬜         | *Contributors needed*                                         |
+
+
+> Non-Rust rows have not been re-audited against this inventory. Treat ⬜ as unverified until the binding's owner confirms.
+
+### Contracts
+
+Stated in `chdb.h` comments and enforced in `ChdbClient`.
+
+- **Destroy every `chdb_result`** with `chdb_destroy_query_result`, stream chunks and error results included.
+- **`chdb_stream_insert*` never returns NULL.** Init failure is `chdb_stream_insert_error`, not a null handle. Wrap first, then check the error, so a failed init is still destroyed.
+- **`chdb_stream_done` and `chdb_stream_cancel_insert` do not free the handle.** Call `chdb_destroy_insert_stream` on every path. It cancels if not finalized; cancelling twice is safe.
+- **Cancel and destroy streaming query state.** `chdb_stream_cancel_query` stops execution but does not free the stream handle or fetched chunks — still call `chdb_destroy_query_result` on the stream handle and on every chunk from `chdb_stream_fetch_result`. The connection must outlive every result derived from it.
+- **One storage path per process.** Several connections may share that path. A connect to a different `--path` while the engine is already up fails until every connection on the old path is closed (see `EmbeddedServer::getInstance`). Closing the last connection tears the engine down; see `chdb_connect` for why hosts should not churn connect/close in a long-lived process.
+- **Many buffered queries per connection are normal** (`chdb_query*` one after another). **While a streaming INSERT is open**, any other statement on that connection is rejected (`ChdbClient`, `test_concurrent_statement_rejected_during_insert`). **A second INSERT or streaming read** while an insert is open is rejected. With a streaming **read** still open, the C layer does not consistently block a buffered `chdb_query*` or a second `chdb_stream_query*` — bindings should treat the connection as busy until the read stream is cancelled/destroyed anyway. Do not interleave fetches on one stream across threads (`chdb.h` on `chdb_stream_fetch_result`).
+- **Arrow export transfers `out_stream->release` to the caller.** ClickHouse buffers live in `private_data` and are freed only by that callback. The companion `chdb_result` is metrics/error only — destroying it does not release the stream.
+- **Signal handlers are process-wide.** `chdb_set_signal_handlers_enabled(0)` sets a disable flag and calls `chdb_reset_signal_handlers`, so later queries do not reinstall. `chdb_reset_signal_handlers` alone restores `SIG_DFL` for signals chDB installed and clears its list, without setting the disable flag — the next `setupCommonDeadlySignalHandlers()` call (on connect / query) may install again unless disabled.
+- **`chdb_shutdown` is one-way.** It returns `CHDBError` while any connection is still open (`client_ref_count != 0`). Once `beginShutdown()` succeeds, `engine_stopped` is set and later `chdb_connect` fails for the rest of the process even if thread joins fail (shutdown may return `CHDBError` and remain retryable). Safe to call concurrently with `chdb_connect` (mutex-serialized). Skip it if the process is simply exiting.
+
+### Arrow export options
+
+`chdb_arrow_options` defaults (also what `NULL` means): `unsupported_as_binary=0`, `low_cardinality_as_dictionary=0`, `string_as_string=1`. A binding's "default options" struct must match, so defaults and "no options" behave the same.
+
+DateTime columns export as Arrow `uint32` Unix seconds with no timezone. For a timezone-tagged timestamp, request `DateTime64` in SQL (`toDateTime64(col, 0, 'UTC')`).
 
 ### ADBC (experimental)
 
-> **Experimental.** The ADBC driver is a preview feature: its behavior and
-> packaging may change before it is declared stable.
-
-libchdb also exports an [ADBC](https://arrow.apache.org/adbc/) driver
-entrypoint (`chdb_adbc_init`), so any language with an ADBC driver manager
-(Python, Go, R, Ruby, Rust, C#, GLib) can use chDB through the standard ADBC
-API — streamed Arrow results, qmark parameters, bulk ingestion and catalog
-metadata — without a dedicated binding:
+Preview: behavior and packaging may change. `libchdb` exports `chdb_adbc_init`, so any language with an [ADBC](https://arrow.apache.org/adbc/) driver manager (Python, Go, R, Ruby, Rust, C#, GLib) can use streamed Arrow, qmark parameters, bulk ingest, and catalog metadata without a dedicated binding:
 
 ```
 driver     = /path/to/libchdb.so
 entrypoint = chdb_adbc_init
 ```
 
-For languages without a binding above, ADBC is the recommended path for
-standard database access; per-language bindings remain the home for
-chDB-specific features. See `examples/chdbAdbcTest.c` for the raw C-ABI
-contract, `tests/test_adbc_driver.py` for end-to-end usage, and
-[`docs/adbc.rst`](docs/adbc.rst) for compatibility options.
+Recommended for languages with no row above; per-language bindings remain the home for chDB-specific features. See `examples/chdbAdbcTest.c`, `tests/test_adbc_driver.py`, and [docs/adbc.rst](docs/adbc.rst).
 
-> **Legend:** ✅ Supported  |  Blank = not yet implemented
+### Do not bind
 
-### chDB stable ABI
+Still exported, marked for removal. New bindings should ignore them; existing ones should migrate.
 
-chDB also provides `query_stable` (v1) and `query_stable_v2` as alternative C functions. These APIs are still available and fully functional.
+`query_stable`, `query_stable_v2`, `free_result`, `free_result_v2`, `connect_chdb`, `close_conn`, `query_conn`, `query_conn_n`, `query_conn_streaming`, `query_conn_streaming_n`, `chdb_streaming_result_error`, `chdb_streaming_fetch_result`, `chdb_streaming_cancel_query`, `chdb_destroy_result`, and the `local_result` / `local_result_v2` structs. (`query_conn_n` is the deprecated connection API, not the modern `chdb_query_n`.)
 
-The following is the definition of the `local_result` and `local_result_v2` structure:
+Modern equivalent: `chdb_connect` + `chdb_query_n` + result accessors.
 
-```c
-struct local_result
-{
-    char * buf;
-    size_t len;
-    void * _vec; // std::vector<char> *, for freeing
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-};
+### Contact
 
-struct local_result_v2
-{
-    char * buf;
-    size_t len;
-    void * _vec; // std::vector<char> *, for freeing
-    double elapsed;
-    uint64_t rows_read;
-    uint64_t bytes_read;
-    char * error_message;
-};
-```
-
-The following is the definition of the `query_stable`, `free_result` and `query_stable_v2`, `free_result_v2` functions.
-
-```c
-// v1 API
-struct local_result * query_stable(int argc, char ** argv);
-void free_result(struct local_result * result);
-
-// v2 API added `char * error_message`.
-struct local_result_v2 * query_stable_v2(int argc, char ** argv);
-void free_result_v2(struct local_result_v2 * result);
-```
-
-#### Query
-`query_stable` and `query_stable_v2` accept the same parameters just like the `clickhouse-local` command line tool. You can check `queryToBuffer` function in [LocalChdb.cpp](programs/local/LocalChdb.cpp) as an example.
-
-The difference is that `query_stable_v2` adds the `char * error_message` field.
-You can check if the `error_message` field is `NULL` to determine if an error occurred.
-
-#### Free Result
-`free_result` and `free_result_v2` are used to free the `local_result` and `local_result_v2` memory. For GC languages, you can call `free_result` or `free_result_v2` in the destructor of the object.
-
-#### Known Issues
-
-- By chDB v1.2.0, the `query_stable_v2` returns nil if the query (eg. CREATE TABLE) successes but returns no data. We will change this behavior in the future.
-
-### Adding a Feature to Your Binding
-
-All bindings wrap the same stable C API defined in [`chdb.h`](programs/local/chdb.h):
-
-1. **Session** — Wrap `chdb_connect()`, `chdb_query()`, and `chdb_close_conn()`.
-   The engine starts on the first connection and shuts down when the last one
-   closes, and it is meant to start once per process: cycling it repeatedly is
-   known to corrupt the process allocator on macOS and abort. This is why the
-   test suite gives every test that opens a second storage path its own process
-   (the `ISOLATED` list in [`tests/run_all.py`](tests/run_all.py)) and why the
-   ADBC conformance suite runs one case per process
-   (`programs/local/adbc/validation/run.sh`). A binding that pools connections
-   should keep one alive outside the pool for the host's lifetime — a pool
-   configured to drop to zero idle connections, or one whose maximum-lifetime
-   policy retires the last connection, cycles the engine on a schedule with
-   nothing reporting it.
-2. **Streaming** — Wrap `chdb_stream_query()`, `chdb_stream_fetch_result()`, and `chdb_stream_cancel_query()`.
-3. **Arrow Scan** — Wrap `chdb_arrow_scan()` / `chdb_arrow_array_scan()` and `chdb_arrow_unregister_table()`.
-
-### Need Help?
-
-If you have already developed bindings for a language not listed above, or are interested in contributing, please contact us at:
-
-- Discord: [bindings](https://discord.gg/uUk6AKf7yM)
-- Email: auxten@clickhouse.com
-- Twitter: [@chdb](https://twitter.com/chdb_io)
+New language, or a language not listed: [Discord](https://discord.gg/uUk6AKf7yM) · [auxten@clickhouse.com](mailto:auxten@clickhouse.com) · [@chdb](https://twitter.com/chdb_io)
