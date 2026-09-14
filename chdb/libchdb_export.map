@@ -59,6 +59,8 @@
         chdb_arrow_scan;
         chdb_arrow_array_scan;
         chdb_arrow_unregister_table;
+        chdb_insert_arrow_array;
+        chdb_insert_arrow_stream;
         chdb_query_arrow;
         chdb_query_arrow_n;
         chdb_stream_query_arrow;

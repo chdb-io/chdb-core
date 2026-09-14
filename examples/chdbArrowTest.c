@@ -968,6 +968,88 @@ void test_arrow_array_scan(chdb_connection conn)
     if (schema3.release) schema3.release(&schema3);
 }
 
+void test_arrow_insert(chdb_connection conn)
+{
+    struct ArrowSchema schema;
+    struct ArrowArray array;
+    chdb_result * create_result;
+    chdb_result * insert_result;
+    chdb_result * select_result;
+    chdb_result * count_result;
+    chdb_result * err_result;
+    chdb_arrow_insert_options opts;
+    struct ArrowArrayStream stream;
+    CustomStreamData * stream_data;
+    const char * error;
+
+    printf("\n=== Testing Arrow Insert Functions ===\n");
+
+    create_result = chdb_query(
+        conn,
+        "CREATE TABLE arrow_insert_dest (id Int64, extra String DEFAULT '', value String) ENGINE=Memory",
+        "CSV");
+    test_assert_no_error(create_result, "CREATE TABLE arrow_insert_dest");
+    chdb_destroy_query_result(create_result);
+
+    create_schema(&schema);
+    memset(&array, 0, sizeof(array));
+    create_arrow_array(&array, 1000);
+
+    /* Name mapping: table has `extra` between id and value; Arrow has (id, value). */
+    insert_result = chdb_insert_arrow_array(
+        conn, "arrow_insert_dest",
+        (chdb_arrow_schema)&schema, (chdb_arrow_array)&array, NULL);
+    test_assert_no_error(insert_result, "chdb_insert_arrow_array into arrow_insert_dest");
+    chdb_destroy_query_result(insert_result);
+
+    count_result = chdb_query(conn, "SELECT count() FROM arrow_insert_dest", "CSV");
+    test_assert_row_count(count_result, 1000, "Inserted row count");
+    chdb_destroy_query_result(count_result);
+
+    select_result = chdb_query(
+        conn, "SELECT id, extra, value FROM arrow_insert_dest ORDER BY id LIMIT 1", "TabSeparated");
+    test_assert_query_result_contains(select_result, "0\t\tvalue_0", "Name mapping leaves extra defaulted");
+    chdb_destroy_query_result(select_result);
+
+    err_result = chdb_insert_arrow_array(NULL, "arrow_insert_dest",
+        (chdb_arrow_schema)&schema, (chdb_arrow_array)&array, NULL);
+    error = chdb_result_error(err_result);
+    test_assert(error != NULL, "Null connection insert returns error", error ? error : "no error");
+    chdb_destroy_query_result(err_result);
+
+    create_result = chdb_query(
+        conn,
+        "CREATE TABLE arrow_insert_stream_dest (id Int64, value String) ENGINE=Memory",
+        "CSV");
+    test_assert_no_error(create_result, "CREATE TABLE arrow_insert_stream_dest");
+    chdb_destroy_query_result(create_result);
+
+    memset(&stream, 0, sizeof(stream));
+    stream_data = (CustomStreamData *)malloc(sizeof(CustomStreamData));
+    init_custom_stream_data(stream_data);
+    stream_data->total_rows = 250;
+    stream_data->batch_size = 50;
+    stream.get_schema = custom_get_schema;
+    stream.get_next = custom_get_next;
+    stream.get_last_error = custom_get_last_error;
+    stream.release = custom_release;
+    stream.private_data = stream_data;
+
+    opts.settings = "max_threads=2";
+    insert_result = chdb_insert_arrow_stream(
+        conn, "arrow_insert_stream_dest", (chdb_arrow_stream)&stream, &opts);
+    test_assert_no_error(insert_result, "chdb_insert_arrow_stream into arrow_insert_stream_dest");
+    chdb_destroy_query_result(insert_result);
+
+    count_result = chdb_query(conn, "SELECT count() FROM arrow_insert_stream_dest", "CSV");
+    test_assert_row_count(count_result, 250, "Stream insert row count");
+    chdb_destroy_query_result(count_result);
+
+    if (array.release) array.release(&array);
+    if (schema.release) schema.release(&schema);
+    if (stream.release) stream.release(&stream);
+}
+
 int main(void)
 {
     char * argv[] = {"clickhouse", "--multiquery"};
@@ -990,6 +1072,7 @@ int main(void)
     /* Run test suites */
     test_arrow_scan(conn);
     test_arrow_array_scan(conn);
+    test_arrow_insert(conn);
 
     /* Clean up */
     chdb_close_conn(conn_ptr);
