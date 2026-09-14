@@ -152,12 +152,34 @@ jobs:
 
       # MinIO strictly verifies SigV4 signatures (moto does not), closing the
       # signing loop. Downloaded once into the workspace; tests skip without it.
+      #
+      # Taken out of the container image because there is nowhere left to
+      # download the binary from: dl.min.io answers 410 for the community build
+      # and the GitHub releases carry no assets. No --platform, so this follows
+      # whatever the runner is.
+      #
+      # Best effort on purpose. The two tests that use MinIO already skip when
+      # it is absent, so a registry outage must not fail the whole job -- but it
+      # does cost the SigV4 coverage, which is why the miss is a warning
+      # annotation and not a silent skip.
       - name: Fetch MinIO
+        env:
+          MINIO_IMAGE: quay.io/minio/minio:latest
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/.bin"
           if [ ! -x "${GITHUB_WORKSPACE}/.bin/minio" ]; then
-            curl -fsSL -o "${GITHUB_WORKSPACE}/.bin/minio" https://dl.min.io/server/minio/release/linux-amd64/minio
-            chmod +x "${GITHUB_WORKSPACE}/.bin/minio"
+            if cid=$(docker create "${MINIO_IMAGE}" 2>/dev/null); then
+              docker cp "${cid}:/usr/bin/minio" "${GITHUB_WORKSPACE}/.bin/minio" || true
+              docker rm -f "${cid}" >/dev/null 2>&1 || true
+            fi
+            if [ -f "${GITHUB_WORKSPACE}/.bin/minio" ]; then
+              chmod +x "${GITHUB_WORKSPACE}/.bin/minio"
+            fi
+          fi
+          if "${GITHUB_WORKSPACE}/.bin/minio" --version; then
+            echo "MinIO ready; the SigV4-verified S3 tests will run"
+          else
+            echo "::warning::MinIO unavailable from ${MINIO_IMAGE}; the SigV4-verified S3 tests will skip and signing stays unverified"
           fi
 
       - name: Iceberg local table via MEMFS (mt + st)
