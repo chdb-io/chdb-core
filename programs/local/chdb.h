@@ -930,6 +930,43 @@ CHDB_EXPORT chdb_state chdb_arrow_array_scan(
  */
 CHDB_EXPORT chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name);
 
+/**
+ * Options for direct Arrow insert APIs.
+ */
+typedef struct chdb_arrow_insert_options
+{
+    /// Optional INSERT SETTINGS clause body, e.g. "max_threads=4,min_insert_block_size_rows=65536".
+    /// Pass NULL for engine defaults.
+    const char * settings;
+} chdb_arrow_insert_options;
+
+/**
+ * Insert rows from an Arrow C Data Interface schema+array directly into a
+ * MergeTree (or compatible) table. Combines register, INSERT … SELECT, and
+ * unregister in one call. Destination columns are matched by name from the
+ * Arrow schema (not by position), so ALTER TABLE ADD COLUMN is safe.
+ *
+ * @param conn Active connection
+ * @param dest_table Destination table identifier (bare name or already-quoted)
+ * @param arrow_schema Arrow schema pointer
+ * @param arrow_array Arrow array pointer
+ * @param options Optional insert settings; pass NULL for defaults
+ * @return chdb_result with metrics or error (no result buffer on success)
+ */
+CHDB_EXPORT chdb_result * chdb_insert_arrow_array(
+    chdb_connection conn, const char * dest_table,
+    chdb_arrow_schema arrow_schema, chdb_arrow_array arrow_array,
+    const chdb_arrow_insert_options * options);
+
+/**
+ * Insert rows from an Arrow C Data Interface stream directly into a destination table.
+ * See chdb_insert_arrow_array for semantics.
+ */
+CHDB_EXPORT chdb_result * chdb_insert_arrow_stream(
+    chdb_connection conn, const char * dest_table,
+    chdb_arrow_stream arrow_stream,
+    const chdb_arrow_insert_options * options);
+
 //===--------------------------------------------------------------------===//
 // Backup, Restore and Statement Classification
 //===--------------------------------------------------------------------===//

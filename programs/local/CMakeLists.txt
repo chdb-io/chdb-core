@@ -30,6 +30,7 @@ else()
     # so the wheel doubles as the ADBC driver.
     set (CHDB_ARROW_SOURCES
         chdb-arrow.cpp
+        chdb-arrow-insert.cpp
         chdb-arrow-output.cpp
         chdb-adbc.cpp
         ArrowStreamSource.cpp
