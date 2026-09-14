@@ -159,6 +159,7 @@
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <base/defines.h>
+#include <base/scope_guard.h>
 
 #include <Processors/QueryPlan/Optimizations/RuntimeDataflowStatistics.h>
 #include <Processors/QueryPlan/RuntimeFilterLookup.h>
@@ -7417,6 +7418,31 @@ void Context::stopServers(const ServerType & server_type) const
 
 void Context::shutdown() TSA_NO_THREAD_SAFETY_ANALYSIS
 {
+    /// chdb stops the engine and starts a new one inside a single process, which a
+    /// server never does, and these two process-global holders are only ever
+    /// assigned -- nothing releases them. So the closed engine's contexts stay
+    /// alive until the next start overwrites them, and the next
+    /// makeBackgroundContext() trips its chassert(!background_context_instance).
+    /// Release them here, when the context they belong to is shutting down.
+    ///
+    /// On the way out, not on the way in: ContextSharedPart::shutdown() reaches code
+    /// that reads Context::getGlobalContextInstance() -- StreamingStorageRegistry's
+    /// shutdown hands it to DatabaseCatalog::tryGetTable(), which dereferences it --
+    /// so clearing it first would pass a null context to a shutting-down queue table.
+    /// A scope guard rather than a statement after the call, so an exception on the
+    /// way through shutdown still leaves the holders released; otherwise the next
+    /// engine start in this process would hit the assertion again.
+    SCOPE_EXIT({
+        if (global_context_instance.get() == this)
+        {
+            background_context_instance.reset();
+            /// Only when someone else still holds it: dropping the last reference to
+            /// this object from inside its own member function would destroy it here.
+            if (global_context_instance.use_count() > 1)
+                global_context_instance.reset();
+        }
+    });
+
     shared->shutdown();
 }
 

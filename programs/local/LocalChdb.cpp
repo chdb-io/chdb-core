@@ -956,7 +956,12 @@ PYBIND11_MODULE(_chdb, m)
 
     py::class_<query_result>(m, "query_result")
         .def(py::init<chdb_result *>(), py::return_value_policy::take_ownership)
-        .def("data", &query_result::data)
+        /// Bound to the length-aware accessor on purpose. Binding query_result::data
+        /// (a char *) makes pybind11's type_caster<char> call strlen() on a buffer that
+        /// is exactly chdb_result_length() bytes and carries no terminator, which reads
+        /// out of bounds (AddressSanitizer: container-overflow). Same Python type as
+        /// before -- str -- just built from the length the engine reports.
+        .def("data", &query_result::str)
         .def("bytes", &query_result::bytes)
         .def("__str__", &query_result::str)
         .def("__len__", &query_result::size)

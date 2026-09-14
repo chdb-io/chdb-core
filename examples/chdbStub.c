@@ -63,7 +63,12 @@ int main()
     // Print results (assuming it's a string type, adjust according to actual data type)
     if (result)
     {
-        printf("Query Result: %s\n", result->buf);
+        /* buf is not NUL-terminated; len is the contract. Not %.*s either: it takes
+         * an int precision, and a result over INT_MAX would pass a negative one,
+         * which printf reads as "no precision" and then scans for a NUL. */
+        printf("Query Result: ");
+        fwrite(result->buf, 1, result->len, stdout);
+        printf("\n");
         printf("Elapsed Time: %fs\n", result->elapsed);
         printf("Rows Read: %llu\n", (unsigned long long)result->rows_read);
         printf("Bytes Read: %llu\n", (unsigned long long)result->bytes_read);

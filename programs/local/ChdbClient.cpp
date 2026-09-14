@@ -851,7 +851,12 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
 
     try
     {
-        DB::ThreadStatus thread_status;
+        /// No ThreadStatus here: the worker runs on a global-pool thread and
+        /// startThreadFromGlobalPool already constructed one for it. A second one trips
+        /// chassert(!current_thread) in its constructor, and where the assert is compiled
+        /// out it is worse -- the inner object's destructor clears current_thread while the
+        /// pool's own ThreadStatus is still alive, so the thread finishes its work with no
+        /// thread status at all and loses memory accounting and query attribution.
         if (ctx->thread_group)
             DB::CurrentThread::attachToGroupIfDetached(ctx->thread_group);
 
