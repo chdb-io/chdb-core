@@ -107,6 +107,13 @@ TextLog::TextLog(ContextPtr context_,
                  const SystemLogSettings & settings)
     : SystemLog<TextLogElement>(context_, settings, getLogQueue(settings.queue_settings))
 {
+    /// The queue is process-wide (the logging channel has to reach it without a Context), so it
+    /// outlives the TextLog that consumes it. shutdown() latches it as shut down and nothing used
+    /// to clear that latch, so in a process that builds more than one engine -- chdb opens and
+    /// closes them repeatedly -- every TextLog after the first was dead on arrival: its saving
+    /// thread exited at once, pushes were dropped and SYSTEM FLUSH LOGS failed with ABORTED.
+    /// This instance is a live consumer again, so hand the queue back to it.
+    queue->restart();
 }
 
 }

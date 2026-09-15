@@ -1759,7 +1759,10 @@ void LocalServer::processConfig()
     if (!getClientConfiguration().has("no-system-tables")
         && !getClientConfiguration().has("only-system-tables")
         && hasAnySystemLogConfigured(config()))
+    {
+        removeOrphanedSystemLogData(global_context, config());
         global_context->initializeSystemLogs();
+    }
 
     std::string default_database = getClientConfiguration().getString("database", server_default_database);
     if (default_database.empty())

@@ -19,6 +19,7 @@
 #include <Interpreters/BlobStorageLog.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/CrashLog.h>
+#include <Databases/IDatabase.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/ErrorLog.h>
 #include <Interpreters/FilesystemCacheLog.h>
@@ -421,6 +422,70 @@ std::vector<ISystemLog *> SystemLogs::getAllLogs() const
     return result;
 }
 
+void removeOrphanedSystemLogData(ContextPtr context, const Poco::Util::AbstractConfiguration & config)
+{
+    /// Every application except the server gets a `system` database with the Memory database
+    /// engine (see loadMetadataSystem), whose table metadata is never written to disk. The data
+    /// directory of a MergeTree system log table is, so after a restart on the same path there is
+    /// a directory that no table can claim: creating the table fails with
+    /// "Directory for table data ... already exists" (InterpreterCreateQuery), the saving thread
+    /// retries in a loop and SYSTEM FLUSH LOGS can block until its timeout. Drop those leftovers.
+    ///
+    /// Atomic and Ordinary system databases keep their metadata and key data by UUID, so they have
+    /// nothing to clean up here -- and DatabaseAtomic::getTableDataPath() throws for a table it
+    /// does not hold.
+    DatabasePtr system_database = DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE);
+    if (!system_database || system_database->getEngineName() != "Memory")
+        return;
+
+    auto remove_if_orphaned = [&](const String & table)
+    {
+        /// Best effort: a directory we fail to remove degrades one log, it must not stop startup.
+        try
+        {
+            /// An empty <table></table> would resolve to the database directory itself.
+            if (table.empty() || system_database->isTableExist(table, context))
+                return;
+
+            /// Ask the database for the path, so that this cannot drift from the check in
+            /// InterpreterCreateQuery that fails on it.
+            const String relative_data_path = system_database->getTableDataPath(table);
+            if (relative_data_path.empty())
+                return;
+
+            const std::filesystem::path data_path = std::filesystem::path(context->getPath()) / relative_data_path;
+            if (!std::filesystem::exists(data_path))
+                return;
+
+            LOG_INFO(
+                getLogger("SystemLog"),
+                "Removing orphaned data directory {} left by system log table {}.{}: its metadata did not survive the "
+                "previous run, so the table has to be created anew",
+                data_path.string(),
+                DatabaseCatalog::SYSTEM_DATABASE,
+                table);
+
+            std::filesystem::remove_all(data_path);
+        }
+        catch (...)
+        {
+            tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
+    };
+
+    /// createSystemLog() forces every system log into the `system` database, ignoring a custom
+    /// <database>, so only the table name can be redirected.
+#define REMOVE_ORPHANED_SYSTEM_LOG_DATA(log_type, member, descr) \
+    if (config.has(#member)) \
+        remove_if_orphaned(config.getString(#member ".table", #member));
+
+    LIST_OF_ALL_SYSTEM_LOGS(REMOVE_ORPHANED_SYSTEM_LOG_DATA)
+    #if CLICKHOUSE_CLOUD
+        LIST_OF_CLOUD_SYSTEM_LOGS(REMOVE_ORPHANED_SYSTEM_LOG_DATA)
+    #endif
+#undef REMOVE_ORPHANED_SYSTEM_LOG_DATA
+}
+
 bool hasAnySystemLogConfigured(const Poco::Util::AbstractConfiguration & config)
 {
 #define CHECK_HAS_SYSTEM_LOG(log_type, member, descr) \
@@ -556,7 +621,22 @@ void SystemLogs::shutdown()
 {
     auto logs = getAllLogs();
     for (auto & log : logs)
-        log->shutdown();
+    {
+        /// Two callers. The constructor's catch below, where a throw from here would replace the
+        /// real startup error with a misleading teardown one; and
+        /// ContextSharedPart::shutdown() -> DatabaseCatalog::shutdown(callback) -> flushAndShutdown(),
+        /// where an escaping exception aborts DatabaseCatalog::shutdownImpl before it resets the
+        /// singleton, after which every later context in the process fails with "Database catalog
+        /// is initialized twice". Never let one log's shutdown take the rest down with it.
+        try
+        {
+            log->shutdown();
+        }
+        catch (...)
+        {
+            tryLogCurrentException(__PRETTY_FUNCTION__);
+        }
+    }
 }
 
 void SystemLogs::handleCrash()

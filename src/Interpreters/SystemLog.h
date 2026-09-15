@@ -149,6 +149,11 @@ LIST_OF_ALL_SYSTEM_LOGS(FORWARD_DECLARATION)
 /// (e.g. `query_log`, `processors_profile_log`).
 bool hasAnySystemLogConfigured(const Poco::Util::AbstractConfiguration & config);
 
+/// Removes data directories left behind by system log tables of a previous run whose metadata was
+/// not persisted. Only applies to a `system` database with the Memory engine, i.e. every
+/// application except the server. Call before initializeSystemLogs().
+void removeOrphanedSystemLogData(ContextPtr context, const Poco::Util::AbstractConfiguration & config);
+
 /// System logs should be destroyed in destructor of the last Context and before tables,
 ///  because SystemLog destruction makes insert query while flushing data into underlying tables
 class SystemLogs
