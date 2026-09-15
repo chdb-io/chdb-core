@@ -74,8 +74,10 @@ private:
         const size_t cursor,
         const size_t count,
         const T * ptr,
+        const bool * mask_ptr,
         DB::MutableColumnPtr & column,
-        size_t stride);
+        size_t stride,
+        size_t mask_stride);
 
     template <typename T>
     static void innerScanNumeric(
