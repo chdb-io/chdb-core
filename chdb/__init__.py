@@ -3,39 +3,7 @@ import os
 import threading
 
 
-class ChdbError(Exception):
-    """Base exception class for chDB-related errors.
-
-    This exception is raised when chDB query execution fails or encounters
-    an error. It inherits from the standard Python Exception class and
-    provides error information from the underlying ClickHouse engine.
-
-    The exception message typically contains detailed error information
-    from ClickHouse, including syntax errors, type mismatches, missing
-    tables/columns, and other query execution issues.
-
-    Attributes:
-        args: Tuple containing the error message and any additional arguments
-
-    Examples:
-        >>> try:
-        ...     result = chdb.query("SELECT * FROM non_existent_table")
-        ... except chdb.ChdbError as e:
-        ...     print(f"Query failed: {e}")
-        Query failed: Table 'non_existent_table' doesn't exist
-
-        >>> try:
-        ...     result = chdb.query("SELECT invalid_syntax FROM")
-        ... except chdb.ChdbError as e:
-        ...     print(f"Syntax error: {e}")
-        Syntax error: Syntax error near 'FROM'
-
-    Note:
-        This exception is automatically raised by chdb.query() and related
-        functions when the underlying ClickHouse engine reports an error.
-        You should catch this exception when handling potentially failing
-        queries to provide appropriate error handling in your application.
-    """
+from ._exceptions import ChdbError
 
 
 _arrow_format = set({"arrowtable"})
@@ -257,11 +225,12 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
         try:
             if lower_output_format in _df_format:
                 res = conn.query_df(sql, params=params)
-                return result_func(res)
-
-            res = conn.query(sql, output_format, params=params)
-
-            if res.has_error():
+            else:
+                res = conn.query(sql, output_format, params=params)
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
+        else:
+            if lower_output_format not in _df_format and res.has_error():
                 raise ChdbError(res.error_message())
             return result_func(res)
         finally:
