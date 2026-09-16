@@ -167,10 +167,10 @@ ColumnPtr PandasScan::scanColumn(
     switch (which.idx)
 	{
     case TypeIndex::Float32:
-        innerScanFloat<Float32>(cursor, count, static_cast<const Float32 *>(col_wrap.buf), column, col_wrap.stride);
+        innerScanFloat<Float32>(cursor, count, static_cast<const Float32 *>(col_wrap.buf), getMaskPtr(col_wrap), column, col_wrap.stride, col_wrap.mask_stride);
         break;
     case TypeIndex::Float64:
-        innerScanFloat<Float64>(cursor, count, static_cast<const Float64 *>(col_wrap.buf), column, col_wrap.stride);
+        innerScanFloat<Float64>(cursor, count, static_cast<const Float64 *>(col_wrap.buf), getMaskPtr(col_wrap), column, col_wrap.stride, col_wrap.mask_stride);
         break;
     case TypeIndex::Int8:
         innerScanNumeric<Int8>(cursor, count, static_cast<const Int8 *>(col_wrap.buf), getMaskPtr(col_wrap), column, col_wrap.stride, col_wrap.mask_stride);
@@ -457,45 +457,69 @@ void PandasScan::innerScanObject(
     }
 }
 
+/// A pandas masked float column (Float32/Float64 extension dtype) carries an
+/// explicit validity mask, and the values under it are undefined: pyarrow's
+/// to_pandas() leaves 0.0 there, not NaN. So the mask is the only source of
+/// truth when present -- and an *unmasked* NaN is a genuine NaN value, exactly
+/// as pandas reports it. Plain numpy float columns have no mask and keep the
+/// NaN sentinel convention.
 template <typename T>
 void PandasScan::innerScanFloat(
     const size_t cursor,
     const size_t count,
     const T * ptr,
+    const bool * mask_ptr,
     DB::MutableColumnPtr & column,
-    size_t stride)
+    size_t stride,
+    size_t mask_stride)
 {
     auto & nullable_column = typeid_cast<ColumnNullable &>(*column);
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    if (stride == sizeof(T))
+    const bool data_contiguous = (stride == sizeof(T));
+    const bool mask_contiguous = (mask_stride == sizeof(bool));
+
+    if (data_contiguous && (mask_ptr == nullptr || mask_contiguous))
     {
         ColumnVectorHelper * helper = static_cast<ColumnVectorHelper *>(data_column.get());
         const T * start = ptr + cursor;
         helper->appendRawData<sizeof(T)>(reinterpret_cast<const char *>(start), count);
 
-        const size_t old_size = null_map.size();
-        null_map.resize(old_size + count);
-        UInt8 * null_pos = null_map.data() + old_size;
-        for (size_t i = 0; i < count; ++i)
-            null_pos[i] = start[i] != start[i] ? 1 : 0; /// NaN check, auto-vectorizable
+        if (mask_ptr != nullptr)
+        {
+            const bool * mask_start = mask_ptr + cursor;
+            null_map.insert(reinterpret_cast<const UInt8 *>(mask_start), reinterpret_cast<const UInt8 *>(mask_start + count));
+        }
+        else
+        {
+            const size_t old_size = null_map.size();
+            null_map.resize(old_size + count);
+            UInt8 * null_pos = null_map.data() + old_size;
+            for (size_t i = 0; i < count; ++i)
+                null_pos[i] = start[i] != start[i] ? 1 : 0; /// NaN check, auto-vectorizable
+        }
     }
     else
     {
         auto & container = assert_cast<ColumnVector<T> &>(*data_column).getData();
         const auto * base_ptr = reinterpret_cast<const char *>(ptr);
+        const auto * mask_base = reinterpret_cast<const char *>(mask_ptr);
         for (size_t i = cursor; i < cursor + count; ++i)
         {
             T value = *reinterpret_cast<const T *>(base_ptr + i * stride);
             container.push_back(value);
-            null_map.push_back(std::isnan(value) ? 1 : 0);
+
+            if (mask_ptr != nullptr)
+                null_map.push_back(*reinterpret_cast<const bool *>(mask_base + i * mask_stride) ? 1 : 0);
+            else
+                null_map.push_back(std::isnan(value) ? 1 : 0);
         }
     }
 }
 
-template void PandasScan::innerScanFloat<Float32>(const size_t, const size_t, const Float32 *, DB::MutableColumnPtr &, size_t);
-template void PandasScan::innerScanFloat<Float64>(const size_t, const size_t, const Float64 *, DB::MutableColumnPtr &, size_t);
+template void PandasScan::innerScanFloat<Float32>(const size_t, const size_t, const Float32 *, const bool *, DB::MutableColumnPtr &, size_t, size_t);
+template void PandasScan::innerScanFloat<Float64>(const size_t, const size_t, const Float64 *, const bool *, DB::MutableColumnPtr &, size_t, size_t);
 
 template <typename T>
 void PandasScan::innerScanNumeric(
