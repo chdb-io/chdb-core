@@ -398,6 +398,84 @@ See also: [test_func_udf.py](tests/test_func_udf.py), [test_func_udf_types.py](t
 </details>
 
 <details>
+<summary><b>User Defined Aggregate Functions (UDAF)</b></summary>
+
+An aggregate function is a Python accumulator class. chDB creates one accumulator per
+aggregation state, feeds it rows, merges partial states across threads, and asks it for the
+final value.
+
+```python
+import chdb
+from chdb import agg
+from chdb.session import Session
+from chdb.sqltypes import FLOAT64
+
+sess = Session()
+
+@agg([FLOAT64, FLOAT64], FLOAT64, name="wavg")
+class WeightedAvg:
+    def __init__(self):
+        self.num = 0.0
+        self.den = 0.0
+
+    def update(self, value, weight):   # one row
+        self.num += value * weight
+        self.den += weight
+
+    def merge(self, other):            # fold a partial state in
+        self.num += other.num
+        self.den += other.den
+
+    def evaluate(self):                # final value; None becomes NULL
+        return self.num / self.den if self.den else None
+
+print(sess.query("SELECT wavg(v, w) FROM values('v Float64, w Float64', (1.0, 1.0), (4.0, 3.0))"))
+
+# Types can be inferred from annotations, exactly like @chdb.func:
+@agg()
+class py_sum:
+    def __init__(self):
+        self.total = 0
+
+    def update(self, value: int) -> None:
+        self.total += value
+
+    def merge(self, other):
+        self.total += other.total
+
+    def evaluate(self) -> int:
+        return self.total
+
+print(sess.query("SELECT k, py_sum(v) FROM values('k Int64, v Int64', (1, 10), (1, 20), (2, 5)) GROUP BY k ORDER BY k"))
+
+# Or register without the decorator, and remove it again:
+chdb.create_aggregate_function("py_sum2", py_sum)
+chdb.drop_aggregate_function("py_sum2")
+```
+
+Key features:
+- **Combinators work**: `py_sumIf(x, cond)`, `py_sumArray(arr)`, `py_sum(DISTINCT x)`,
+  `py_sumState(x)` / `py_sumMerge(s)` and `arrayReduce('py_sum', arr)` all resolve.
+- **Same type system as UDFs**: `arg_types` / `return_type` accept `ChdbType`, a type string
+  or a Python type, and are inferred from `update()` / `evaluate()` annotations when omitted.
+- **NULL handling**: `on_null="skip"` (default) drops rows where any argument is NULL;
+  `on_null="pass"` delivers `None` to `update()`.
+- **Exception handling**: `on_error="propagate"` (default) raises; `on_error="ignore"` drops
+  the offending row. Exceptions from `merge()` and `evaluate()` always propagate.
+- **Optional batch fast path**: define `update_batch(self, *columns)`, receiving one Python
+  list per argument, and ungrouped aggregation calls it once per block instead of once per row.
+  It is only picked up on an accumulator class; a plain callable factory
+  (`lambda: WeightedAvg(bias)`, which is how an accumulator takes parameters) must declare
+  `arg_types` and `return_type` explicitly and always uses the per-row path.
+- **Persistence**: `-State` / `-Merge`, `AggregateFunction(py_sum, Int64)` columns and
+  spill-to-disk aggregation pickle the accumulator, so the class must be importable by name
+  (define it at module level).
+
+See also: [test_func_udaf.py](tests/test_func_udaf.py).
+
+</details>
+
+<details>
 <summary><b>Query Progress</b></summary>
 
 ```python

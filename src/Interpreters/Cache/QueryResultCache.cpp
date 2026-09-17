@@ -3,6 +3,7 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -122,6 +123,13 @@ struct HasNonDeterministicFunctionsMatcher
                 return;
             }
             if (CHDB::PythonUDFFactory::instance().tryGetFunction(function->name))
+            {
+                data.has_non_deterministic_functions = true;
+                return;
+            }
+            /// Same reasoning for Python aggregate functions. The matcher sees the raw AST
+            /// name, so combinator suffixes (myudafIf, myudafState, ...) must be stripped.
+            if (CHDB::isPythonUDAFName(function->name))
             {
                 data.has_non_deterministic_functions = true;
                 return;

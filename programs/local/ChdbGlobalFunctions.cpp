@@ -1,6 +1,7 @@
 #include "ChdbGlobalFunctions.h"
 #include "ChdbPyType.h"
 #include "PythonScalarUDF.h"
+#include "PythonUDAFRegistry.h"
 #include "PythonUDFRegistry.h"
 
 #include <algorithm>
@@ -103,6 +104,48 @@ void createFunction(
     }
 }
 
+void createAggregateFunction(
+    const std::string & name,
+    const py::object & accumulator,
+    const py::object & arg_types,
+    const py::object & return_type,
+    const py::object & on_null,
+    const py::object & on_error)
+{
+    try
+    {
+        DB::DataTypePtr data_type = nullptr;
+        if (!return_type.is_none())
+            data_type = toChdbPyType(return_type)->dataType();
+
+        /// None and [] mean different things here: None asks for inference from the
+        /// accumulator class, [] declares a zero-argument aggregate.
+        if (!arg_types.is_none() && !py::isinstance<py::list>(arg_types))
+            throw std::runtime_error("arg_types must be a list, got " + std::string(py::str(arg_types.get_type())));
+
+        auto null_handling = parseNullHandling(on_null);
+        auto exception_handling = parseExceptionHandling(on_error);
+
+        registerPythonUDAF(name, accumulator, std::move(data_type), arg_types, null_handling, exception_handling);
+    }
+    catch (const DB::Exception & e)
+    {
+        throw std::runtime_error("Failed to create aggregate function '" + name + "': " + e.message());
+    }
+}
+
+void dropAggregateFunction(const std::string & name)
+{
+    try
+    {
+        std::ignore = removePythonUDAF(name);
+    }
+    catch (const DB::Exception & e)
+    {
+        throw std::runtime_error("Failed to drop aggregate function '" + name + "': " + e.message());
+    }
+}
+
 void dropFunction(const std::string & name)
 {
     try
@@ -152,6 +195,47 @@ void registerGlobalFunctions(py::module_ & m)
         "                   NULL to None and calls the function.\n"
         "    on_error (str): How to handle exceptions. 'propagate' (default)\n"
         "                    raises the error; 'ignore' returns NULL for that row.\n");
+
+    m.def(
+        "create_aggregate_function",
+        &createAggregateFunction,
+        py::arg("name"),
+        py::arg("accumulator"),
+        py::arg("arg_types") = py::none(),
+        py::arg("return_type") = py::none(),
+        py::kw_only(),
+        py::arg("on_null") = py::none(),
+        py::arg("on_error") = py::none(),
+        "Register a Python aggregate UDF (UDAF) globally.\n\n"
+        "Args:\n"
+        "    name (str): Function name to use in SQL queries.\n"
+        "    accumulator (callable): Zero-argument callable returning a fresh accumulator,\n"
+        "                 normally the accumulator class itself. One accumulator is created\n"
+        "                 per aggregation state. It must define update(self, *args),\n"
+        "                 merge(self, other) and evaluate(self); update_batch(self, *columns)\n"
+        "                 is optional and, when present, is used for ungrouped aggregation.\n"
+        "                 A non-class callable (e.g. a lambda closing over parameters) is\n"
+        "                 allowed, but must declare arg_types and return_type explicitly and\n"
+        "                 never takes the update_batch fast path.\n"
+        "    arg_types: List of argument types (ChdbType, str, or Python type). Optional for\n"
+        "               an accumulator class; inferred from update()'s annotations.\n"
+        "    return_type: Return type (ChdbType, str or Python type). Optional for an\n"
+        "                 accumulator class; inferred from evaluate()'s return annotation.\n"
+        "    on_null (str): How to handle NULL inputs. 'skip' (default) drops rows with a\n"
+        "                   NULL argument; 'pass' converts NULL to None and calls update().\n"
+        "    on_error (str): How to handle exceptions raised by update(). 'propagate'\n"
+        "                    (default) raises; 'ignore' drops the offending row.\n");
+
+    m.def(
+        "drop_aggregate_function",
+        &dropAggregateFunction,
+        py::arg("name"),
+        "Remove a previously registered Python aggregate UDF.\n\n"
+        "Does nothing if the function is not registered.\n\n"
+        "Args:\n"
+        "    name (str): Name of the aggregate function to remove.\n"
+        "Example:\n"
+        "    chdb.drop_aggregate_function('py_avg')");
 
     m.def(
         "drop_function",

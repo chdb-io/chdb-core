@@ -1,5 +1,6 @@
 #include <AggregateFunctions/AggregateFunctionNothing.h>
 #include <AggregateFunctions/AggregateFunctionFactory.h>
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <AggregateFunctions/Combinators/AggregateFunctionCombinatorFactory.h>
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeLowCardinality.h>
@@ -227,6 +228,29 @@ AggregateFunctionPtr AggregateFunctionFactory::getImpl(
     if (CurrentThread::isInitialized())
         query_context = CurrentThread::get().tryGetQueryContext();
 
+    /// Python UDAFs are registered at runtime and live in their own lock-protected registry
+    /// (see CHDB::PythonUDAFFactory). Consulting it here - after the builtin maps and before
+    /// the combinator branch - is what makes `myudafIf`, `AggregateFunction(myudaf, ...)` type
+    /// parsing and `arrayReduce('myudaf', ...)` work. A single lookup builds the function and
+    /// fills the properties, so a concurrent drop cannot strand us between the two.
+    if (!found.creator)
+    {
+        AggregateFunctionProperties python_udaf_properties;
+        if (auto python_udaf
+            = CHDB::PythonUDAFFactory::instance().tryGet(name, argument_types, parameters, python_udaf_properties))
+        {
+            if (action == NullsAction::RESPECT_NULLS)
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Function {} does not support RESPECT NULLS", name);
+
+            out_properties = python_udaf_properties;
+
+            if (query_context && query_context->getSettingsRef()[Setting::log_queries])
+                query_context->addQueryFactoriesInfo(Context::QueryLogFactories::AggregateFunction, name);
+
+            return python_udaf;
+        }
+    }
+
     if (found.creator)
     {
         auto opt = getAssociatedFunctionByNullsAction(is_case_insensitive ? case_insensitive_name : name, action);
@@ -382,6 +406,9 @@ std::optional<AggregateFunctionProperties> AggregateFunctionFactory::tryGetPrope
             return found.properties;
         }
 
+        if (auto python_udaf_properties = CHDB::PythonUDAFFactory::instance().tryGetProperties(name))
+            return python_udaf_properties;
+
         /// Combinators of aggregate functions.
         /// For every aggregate function 'agg' and combiner '-Comb' there is a combined aggregate function with the name 'aggComb',
         ///  that can have different number and/or types of arguments, different result type and different behaviour.
@@ -412,6 +439,10 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name_) con
     if (case_insensitive_aggregate_functions.contains(name_lowercase) || isAlias(name_lowercase))
         return true;
 
+    /// Python UDAFs are case-sensitive, like Python scalar UDFs.
+    if (CHDB::PythonUDAFFactory::instance().has(name_))
+        return true;
+
     String name = name_;
     while (AggregateFunctionCombinatorPtr combinator = AggregateFunctionCombinatorFactory::instance().tryFindSuffix(name))
     {
@@ -420,6 +451,9 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name_) con
 
         if (aggregate_functions.contains(name) || isAlias(name) || case_insensitive_aggregate_functions.contains(name_lowercase)
             || isAlias(name_lowercase))
+            return true;
+
+        if (CHDB::PythonUDAFFactory::instance().has(name))
             return true;
     }
     return false;

@@ -41,6 +41,7 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Functions/grouping.h>
 #include <Storages/StorageJoin.h>
@@ -1828,6 +1829,9 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
 
             auto python_udf_names = CHDB::PythonUDFFactory::instance().getRegisteredNames();
             possible_function_names.insert(possible_function_names.end(), python_udf_names.begin(), python_udf_names.end());
+
+            auto python_udaf_names = CHDB::PythonUDAFFactory::instance().getRegisteredNames();
+            possible_function_names.insert(possible_function_names.end(), python_udaf_names.begin(), python_udaf_names.end());
 
             function_names = UserDefinedSQLFunctionFactory::instance().getAllRegisteredNames();
             possible_function_names.insert(possible_function_names.end(), function_names.begin(), function_names.end());

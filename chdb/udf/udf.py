@@ -81,6 +81,116 @@ def func(arg_types=None, return_type=None, *, on_null=None, on_error=None):
     return decorator
 
 
+def agg(arg_types=None, return_type=None, *, name=None, on_null=None, on_error=None):
+    """Decorator to register a Python accumulator class as a chDB SQL aggregate function.
+
+    The decorated class is the accumulator factory: chDB instantiates it once per
+    aggregation state (once per GROUP BY key, per aggregating thread), so accumulators
+    are never shared between groups.
+
+    An accumulator must define:
+        ``update(self, *args)``
+            Consume one row. Arguments arrive already converted to Python values.
+        ``merge(self, other)``
+            Fold another accumulator of the same class into ``self``. chDB aggregates
+            in parallel and merges the partial states.
+        ``evaluate(self)``
+            Return the final value for the group. ``None`` becomes SQL NULL.
+
+    It may additionally define:
+        ``update_batch(self, *columns)``
+            Consume a whole block at once, receiving one Python ``list`` per argument.
+            Used for ungrouped aggregation (``SELECT myagg(x) FROM t``), where it
+            replaces one ``update()`` call per row. Ignored when ``on_error="ignore"``,
+            because dropping a single offending row is not expressible in a batch call,
+            and only detected on an accumulator *class* - a plain callable factory
+            (see below) always takes the per-row path.
+
+    Accumulators must be picklable for ``-State``/``-Merge`` and for spill-to-disk
+    aggregation (``max_bytes_before_external_group_by``), which means the class has to
+    be importable by name - define it at module level, not inside a function.
+
+    :func:`chdb.create_aggregate_function` also accepts a plain zero-argument callable
+    instead of a class (``lambda: WeightedAvg(bias)``), which is how an accumulator takes
+    construction parameters. Such a factory is opaque until it is called, so it must pass
+    ``arg_types`` and ``return_type`` explicitly and never uses the ``update_batch`` fast
+    path.
+
+    Args:
+        arg_types: List of argument types, in the same spellings :func:`func` accepts
+            (``ChdbType``, type string, or Python type). Optional; inferred from the
+            annotations on ``update()`` when omitted.
+        return_type: Result type, same spellings. Optional; inferred from the return
+            annotation on ``evaluate()`` when omitted.
+        name (str): SQL name. Keyword-only. Defaults to the class ``__name__``, which is
+            usually not the spelling you want in SQL - unlike :func:`func`, whose decorated
+            functions are already named like SQL functions. Registration fails if the name
+            collides with a built-in function or with an already registered UDAF.
+        on_null (str): How to handle NULL inputs. Keyword-only. ``"skip"`` (default)
+            drops rows where any argument is NULL; ``"pass"`` converts NULL to ``None``
+            and calls ``update()``.
+        on_error (str): How to handle exceptions raised by ``update()``. Keyword-only.
+            ``"propagate"`` (default) raises; ``"ignore"`` drops the offending row.
+            Exceptions from ``merge()`` and ``evaluate()`` always propagate.
+
+    Returns:
+        The class, unchanged and still usable as a normal Python class.
+
+    Examples:
+        .. code-block:: python
+
+            from chdb import agg
+            from chdb.sqltypes import FLOAT64
+
+            @agg([FLOAT64, FLOAT64], FLOAT64, name="wavg")
+            class WeightedAvg:
+                def __init__(self):
+                    self.num = 0.0
+                    self.den = 0.0
+
+                def update(self, value, weight):
+                    self.num += value * weight
+                    self.den += weight
+
+                def merge(self, other):
+                    self.num += other.num
+                    self.den += other.den
+
+                def evaluate(self):
+                    return self.num / self.den if self.den else None
+
+            # Types inferred from annotations:
+            @agg()
+            class py_sum:
+                def __init__(self):
+                    self.total = 0
+
+                def update(self, value: int) -> None:
+                    self.total += value
+
+                def merge(self, other):
+                    self.total += other.total
+
+                def evaluate(self) -> int:
+                    return self.total
+
+    To remove a registered aggregate function, use ``chdb.drop_aggregate_function(name)``.
+    """
+
+    def decorator(cls):
+        chdb.create_aggregate_function(
+            name if name is not None else cls.__name__,
+            cls,
+            arg_types,
+            return_type,
+            on_null=on_null,
+            on_error=on_error,
+        )
+        return cls
+
+    return decorator
+
+
 def generate_udf(func_name, args, return_type, udf_body):
     """Generate UDF configuration and executable script files.
 

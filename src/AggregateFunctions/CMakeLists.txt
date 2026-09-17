@@ -191,6 +191,7 @@ endif()
 
 extract_into_parent_list(clickhouse_aggregate_functions_sources dbms_sources
     AggregateFunctionFactory.cpp # AggregateFunctionFactory::instance() Used many times
+    PythonUDAFFactory.cpp # CHDB::PythonUDAFFactory - consulted by AggregateFunctionFactory.cpp and QueryResultCache.cpp
     Combinators/AggregateFunctionCombinatorFactory.cpp # AggregateFunctionCombinatorFactory::instance() Used by AggregateFunctionFactory.cpp
     AggregateFunctionCount.cpp # Used in optimizeUseAggregateProjection.cpp
     IAggregateFunction.cpp # For AggregateFunctionCount.cpp, WindowTransform.cpp, FunctionsConversion.cpp...
@@ -198,6 +199,7 @@ extract_into_parent_list(clickhouse_aggregate_functions_sources dbms_sources
 )
 extract_into_parent_list(clickhouse_aggregate_functions_headers dbms_headers
     IAggregateFunction.h
+    PythonUDAFFactory.h
     Combinators/IAggregateFunctionCombinator.h
     AggregateFunctionFactory.h
     Combinators/AggregateFunctionCombinatorFactory.h
