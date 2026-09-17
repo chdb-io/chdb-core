@@ -1,42 +1,31 @@
 # AGENTS.md — chDB Core
 
-This repository contains the embedded ClickHouse engine, its public C ABI, and
-the artifacts published as chdb-core. The higher-level pandas-compatible
-DataStore API lives in [chdb-io/chdb](https://github.com/chdb-io/chdb).
+This repository contains the embedded ClickHouse engine, public C ABI, native
+bindings, and chdb-core release artifacts. The higher-level DataStore API lives
+in [chdb-io/chdb](https://github.com/chdb-io/chdb).
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for environment setup, build
-commands, tests, and release mechanics.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for setup, commands, and contributor
+workflow.
 
-## Scope and upstream discipline
+## Scope and ABI
 
-- Keep engine, C ABI, native bindings, packaging, and engine-level tests here.
-  Make DataStore and Python-facade changes in the chdb repository.
-- This tree is derived from ClickHouse. Keep patches focused and avoid
-  unrelated generated, vendored, or submodule changes.
-- For an upstream synchronization, record the ClickHouse version or commit and
-  make deliberate chDB-specific deviations easy to identify.
-
-## Public ABI
-
-- Treat [`programs/local/chdb.h`](./programs/local/chdb.h) as a stable public C
-  ABI. Preserve symbol, ownership, lifetime, error, and cancellation contracts.
-- Prefer length-aware `_n` entry points for new string-taking APIs.
-- When the ABI changes, update the inventory and contracts in
-  [`bindings.md`](./bindings.md), along with relevant tests and examples.
-- Keep `CHDB_VERSION` aligned with the ClickHouse line checked by
-  [`.github/scripts/check-abi-version.sh`](./.github/scripts/check-abi-version.sh).
+- Keep engine, C ABI, native binding, packaging, and engine-level test changes
+  here. Make DataStore and high-level dataframe API changes in chdb.
+- Keep ClickHouse-derived patches focused. For upstream syncs, record the
+  ClickHouse version or commit and any intentional chDB differences.
+- Treat [`programs/local/chdb.h`](./programs/local/chdb.h) as a stable ABI.
+  Preserve symbol, ownership, lifetime, error, and cancellation contracts, and
+  prefer length-aware `_n` entry points for new string-taking APIs.
+- When the ABI changes, update [`bindings.md`](./bindings.md), relevant tests and
+  examples, and `CHDB_VERSION` when the ClickHouse version line changes.
 
 ## Build and test
 
-- Start with the smallest relevant checks, then run `make test` for changes that
-  can affect the Python test suite.
-- Use `make buildlib` for native-library changes and `make wheel` when packaging
-  needs validation.
-- Report only commands and results that were actually run. Call out platform or
-  toolchain coverage that was not available locally.
+- Run the smallest relevant checks first. Use `make test`, `make buildlib`, and
+  `make wheel` when applicable to the change.
+- Report only checks that were actually run and note unavailable platform or
+  toolchain coverage.
 
 ## Repository skills
 
 Shared coding-agent skills live under [`.agents/skills`](./.agents/skills).
-Before preparing a pull request title or description, use the
-`pr-description` skill in that directory.
