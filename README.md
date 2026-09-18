@@ -349,38 +349,7 @@ arrow_table = pa.table(
 chdb.query("SELECT b, sum(a) FROM Python(arrow_table) GROUP BY b ORDER BY b").show()
 ```
 
-#### Query on Arrow RecordBatch
-
-```python
-import chdb
-import pyarrow as pa
-record_batch = pa.record_batch(
-    [
-        pa.array([1, 2, 3, 4, 5, 6], pa.int64()),
-        pa.array(["tom", "jerry", "auxten", "tom", "jerry", "auxten"], pa.string()),
-    ],
-    names=["a", "b"],
-)
-
-chdb.query("SELECT b, sum(a) FROM Python(record_batch) GROUP BY b ORDER BY b").show()
-```
-
-#### Query on Arrow Dataset
-
-A `pyarrow.dataset.Dataset` is queried in place, so a directory of Parquet/CSV
-files (including Hive-partitioned layouts) can be scanned without loading it
-into memory first.
-
-```python
-import chdb
-import pyarrow.dataset as ds
-dataset = ds.dataset("/path/to/parquet_dir", format="parquet", partitioning="hive")
-
-chdb.query("SELECT b, sum(a) FROM Python(dataset) GROUP BY b ORDER BY b").show()
-```
-
-see also: [test_query_py.py](tests/test_query_py.py),
-[test_arrow_recordbatch_dataset.py](tests/test_arrow_recordbatch_dataset.py).
+see also: [test_query_py.py](tests/test_query_py.py).
 
 </details>
 
