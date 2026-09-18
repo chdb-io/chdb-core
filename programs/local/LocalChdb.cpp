@@ -9,6 +9,7 @@
 #include "PythonImporter.h"
 #include "ChdbPyType.h"
 #include "ChdbGlobalFunctions.h"
+#include "PythonUDAFRegistry.h"
 #include "PythonUDFRegistry.h"
 #include "StoragePython.h"
 #include "ChdbClient.h"
@@ -1158,6 +1159,7 @@ PYBIND11_MODULE(_chdb, m)
 
     CHDB::ChdbPyType::initialize(m);
     CHDB::PythonUDFRegistry::instance();
+    CHDB::PythonUDAFRegistry::instance();
     CHDB::PyDateTimeHelper::initialize();
     CHDB::registerGlobalFunctions(m);
 
@@ -1187,6 +1189,7 @@ PYBIND11_MODULE(_chdb, m)
     auto destroy_import_cache = []()
     {
         CHDB::PythonUDFRegistry::instance().clear();
+        CHDB::PythonUDAFRegistry::instance().clear();
         CHDB::PythonImporter::destroy();
     };
     m.add_object("_destroy_import_cache", py::capsule(destroy_import_cache));

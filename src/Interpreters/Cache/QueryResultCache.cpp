@@ -3,6 +3,7 @@
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -82,6 +83,41 @@ struct HasNonDeterministicFunctionsMatcher
 
     static bool needChildVisit(const ASTPtr &, const ASTPtr &) { return true; }
 
+    /// arrayReduce('quantile(0.5)', ...) spells parameters inside the literal; only the
+    /// leading name identifies the aggregate function.
+    static String aggregateNameFromLiteral(const String & spec)
+    {
+        return spec.substr(0, std::min(spec.find('('), spec.size()));
+    }
+
+    /// True for `arrayReduce('my_udaf', ...)` and friends, which name the aggregate in
+    /// argument 0 rather than in the AST function name. Without this the name checks below
+    /// never see `my_udaf`: the AST function name is `arrayReduce`, which FunctionFactory
+    /// resolves as a deterministic ordinary function and returns on.
+    ///
+    /// Argument 0 only has to be a constant *expression* (getArgumentsThatAreAlwaysConstant
+    /// returns {0}), so `arrayReduce(concat('my_', 'udaf'), ...)` is legal too. Evaluating
+    /// it here is not an option, so a computed name is treated as non-deterministic. That
+    /// costs nothing while no Python UDAF is registered, which is the usual case.
+    static bool callsPythonUDAFByName(const ASTFunction & function)
+    {
+        if (CHDB::PythonUDAFFactory::instance().empty())
+            return false;
+
+        if (function.name != "arrayReduce" && function.name != "arrayReduceInRanges"
+            && function.name != "initializeAggregation")
+            return false;
+
+        if (!function.arguments || function.arguments->children.empty())
+            return false;
+
+        const auto * literal = function.arguments->children.front()->as<ASTLiteral>();
+        if (!literal || literal->value.getType() != Field::Types::String)
+            return true;
+
+        return CHDB::isPythonUDAFName(aggregateNameFromLiteral(literal->value.safeGet<String>()));
+    }
+
     static void visit(const ASTPtr & node, Data & data)
     {
         if (data.has_non_deterministic_functions)
@@ -89,6 +125,12 @@ struct HasNonDeterministicFunctionsMatcher
 
         if (const auto * function = node->as<ASTFunction>())
         {
+            if (callsPythonUDAFByName(*function))
+            {
+                data.has_non_deterministic_functions = true;
+                return;
+            }
+
             /// The `eval` table function hides its real query inside an opaque string argument, so the
             /// generated query cannot be inspected here. Treat it as non-deterministic (and, in
             /// HasSystemTablesMatcher, as touching a system table) to keep such queries out of the cache,
@@ -122,6 +164,13 @@ struct HasNonDeterministicFunctionsMatcher
                 return;
             }
             if (CHDB::PythonUDFFactory::instance().tryGetFunction(function->name))
+            {
+                data.has_non_deterministic_functions = true;
+                return;
+            }
+            /// Same reasoning for Python aggregate functions. The matcher sees the raw AST
+            /// name, so combinator suffixes (myudafIf, myudafState, ...) must be stripped.
+            if (CHDB::isPythonUDAFName(function->name))
             {
                 data.has_non_deterministic_functions = true;
                 return;

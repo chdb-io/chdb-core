@@ -247,11 +247,13 @@ sql = query
 PyReader = _chdb.PyReader
 create_function = _chdb.create_function
 drop_function = _chdb.drop_function
+create_aggregate_function = _chdb.create_aggregate_function
+drop_aggregate_function = _chdb.drop_aggregate_function
 NullHandling = _chdb.NullHandling
 ExceptionHandling = _chdb.ExceptionHandling
 
 from . import dbapi, session, udf, utils  # noqa: E402
-from .udf import func  # noqa: E402
+from .udf import agg, func  # noqa: E402
 from .state import connect  # noqa: E402
 
 __all__ = [
@@ -261,8 +263,11 @@ __all__ = [
     "query",
     "sql",
     "func",
+    "agg",
     "create_function",
     "drop_function",
+    "create_aggregate_function",
+    "drop_aggregate_function",
     "NullHandling",
     "ExceptionHandling",
     "chdb_version",

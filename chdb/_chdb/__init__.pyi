@@ -23,3 +23,15 @@ def create_function(
 ) -> None: ...
 
 def drop_function(name: str) -> None: ...
+
+def create_aggregate_function(
+    name: str,
+    accumulator: Callable[[], object],
+    arg_types: Optional[Sequence[Union[ChdbType, str, type]]] = None,
+    return_type: Optional[Union[ChdbType, str, type]] = None,
+    *,
+    on_null: Optional[Union[NullHandling, str]] = None,
+    on_error: Optional[Union[ExceptionHandling, str]] = None,
+) -> None: ...
+
+def drop_aggregate_function(name: str) -> None: ...
