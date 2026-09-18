@@ -2,6 +2,8 @@
 
 #include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <Functions/FunctionFactory.h>
+#include <Functions/UserDefined/PythonUDFFactory.h>
+#include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Common/Exception.h>
 
 
@@ -65,6 +67,20 @@ void PythonUDAFRegistry::registerUDAF(
             "Python UDAF '{}' cannot be registered: an ordinary function with that name already exists",
             name);
 
+    /// Ordinary functions are resolved before aggregate ones (see resolveFunction), so a
+    /// scalar UDF of the same name would take every call and the aggregate would never run.
+    if (PythonUDFFactory::instance().tryGetFunction(name))
+        throw DB::Exception(
+            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+            "Python UDAF '{}' cannot be registered: a Python scalar UDF with that name already exists",
+            name);
+
+    if (DB::UserDefinedSQLFunctionFactory::instance().tryGet(name))
+        throw DB::Exception(
+            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+            "Python UDAF '{}' cannot be registered: a SQL user-defined function with that name already exists",
+            name);
+
     /// Build the descriptor (which runs Python: inspect.signature, pickle import) BEFORE
     /// taking the registry lock. On free-threaded builds, running Python while holding a
     /// lock that other attached threads may block on is the same stop-the-world deadlock
@@ -111,7 +127,7 @@ bool PythonUDAFRegistry::has(const String & name) const
 namespace
 {
 
-DB::AggregateFunctionProperties makeProperties()
+DB::AggregateFunctionProperties makeProperties(const PythonUDAFDescriptor & descriptor)
 {
     DB::AggregateFunctionProperties properties;
 
@@ -119,14 +135,19 @@ DB::AggregateFunctionProperties makeProperties()
     /// arrive in, so that an ORDER BY feeding the aggregate is not optimized away.
     properties.is_order_dependent = true;
 
-    /// This flag means "do not wrap me in the Null combinator, I handle Nullable arguments
-    /// myself" (see AggregateFunctionFactory::get). PythonAggregateUDF does exactly that:
-    /// on_null="skip" drops rows with a NULL argument and on_null="pass" hands None to
-    /// update(). Letting the combinator wrap us instead would silently defeat on_null="pass"
-    /// whenever another combinator sits on the outside, and would force the per-row add()
-    /// path - one GIL acquisition per row - for every grouped aggregation over a Nullable
-    /// column.
-    properties.is_window_function = true;
+    /// This flag means "do not wrap me in the Null combinator, I take Nullable arguments as
+    /// they are" (see AggregateFunctionFactory::get). Only on_null="pass" may claim it, and
+    /// it has to: the combinator would strip the NULL rows that mode exists to deliver, and
+    /// getOwnNullAdapter cannot prevent that because it is consulted on the outermost
+    /// function only - any combinator sitting outside us would defeat it.
+    ///
+    /// on_null="skip" deliberately keeps the adapter even though it duplicates a check we
+    /// also make ourselves. Combinators that track whether any row contributed read that
+    /// from the adapter: without it, AggregateFunctionOrFill sets its "seen a row" flag for
+    /// rows we silently drop, so py_sumOrNull() over an all-NULL column would finalize a
+    /// fresh accumulator instead of returning NULL (and aggregate_functions_null_for_empty
+    /// introduces exactly that shape automatically).
+    properties.is_window_function = descriptor.null_handling == NullHandling::PASS;
 
     return properties;
 }
@@ -143,7 +164,7 @@ DB::AggregateFunctionPtr PythonUDAFRegistry::tryGet(
     if (!descriptor)
         return nullptr;
 
-    out_properties = makeProperties();
+    out_properties = makeProperties(*descriptor);
 
     /// No Python runs here, so this is safe to call from query threads without the GIL.
     return std::make_shared<PythonAggregateUDF>(std::move(descriptor), argument_types, parameters);
@@ -151,10 +172,11 @@ DB::AggregateFunctionPtr PythonUDAFRegistry::tryGet(
 
 std::optional<DB::AggregateFunctionProperties> PythonUDAFRegistry::tryGetProperties(const String & name) const
 {
-    if (!has(name))
+    auto descriptor = find(name);
+    if (!descriptor)
         return {};
 
-    return makeProperties();
+    return makeProperties(*descriptor);
 }
 
 std::vector<String> PythonUDAFRegistry::getRegisteredNames() const

@@ -244,6 +244,12 @@ AggregateFunctionPtr AggregateFunctionFactory::getImpl(
 
             out_properties = python_udaf_properties;
 
+            /// Same contract as the builtin branch below: `get` turns an argument that is
+            /// only ever NULL into AggregateFunctionNothing. Building the function first is
+            /// harmless - Nothing is the bottom type, so its argument check always passes.
+            if (!out_properties.returns_default_when_only_null && has_null_arguments)
+                return nullptr;
+
             if (query_context && query_context->getSettingsRef()[Setting::log_queries])
                 query_context->addQueryFactoriesInfo(Context::QueryLogFactories::AggregateFunction, name);
 

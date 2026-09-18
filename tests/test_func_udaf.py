@@ -270,6 +270,24 @@ class PyRowCount:
         return self.rows
 
 
+class PyMutateThenRaise:
+    """Mutates itself and only then raises, to pin what on_error="ignore" can undo."""
+
+    def __init__(self):
+        self.total = 0
+
+    def update(self, value):
+        self.total += value
+        if value == 3:
+            raise ValueError("boom after mutating")
+
+    def merge(self, other):
+        self.total += other.total
+
+    def evaluate(self):
+        return self.total
+
+
 class NotAnAccumulator:
     def update(self, value):
         pass
@@ -506,6 +524,24 @@ class TestUDAFTypeDeclaration(UDAFTestCase):
         self.assertIn("built-in aggregate function with that name already exists",
                       str(ctx.exception))
 
+    def test_scalar_udf_name_is_rejected(self):
+        # Ordinary functions resolve before aggregates, so a same-named scalar UDF would
+        # take every call and the aggregate would never run.
+        chdb.create_function("shadowing_udf", lambda x: x, [INT64], INT64)
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                chdb.create_aggregate_function("shadowing_udf", PySum)
+            self.assertIn("Python scalar UDF with that name already exists", str(ctx.exception))
+        finally:
+            chdb.drop_function("shadowing_udf")
+
+    def test_scalar_udf_cannot_shadow_an_existing_udaf(self):
+        self.register("shadowed_agg", PySum)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            chdb.create_function("shadowed_agg", lambda x: x, [INT64], INT64)
+        self.assertIn("Python aggregate function with that name already exists", str(ctx.exception))
+
     def test_ordinary_function_name_is_rejected(self):
         with self.assertRaises(RuntimeError) as ctx:
             chdb.create_aggregate_function("abs", PySum)
@@ -646,12 +682,71 @@ class TestUDAFNullHandling(UDAFTestCase):
         # Only (1, 1) and (4, 4) survive, and neither argument is NULL in them.
         self.assertEqual(result, "20000")
 
-    def test_literal_null_argument_finalizes_an_empty_accumulator(self):
-        # An only-NULL argument type (Nullable(Nothing)) must still reach the accumulator
-        # rather than being short-circuited into a NULL result.
+    def test_literal_null_argument_matches_builtin_for_skip_mode(self):
+        # An argument that is only ever NULL short-circuits to NULL, exactly as it does for
+        # a built-in NULL-skipping aggregate.
         self.register("literal_null_sum", PySum, [INT64], INT64)
 
-        self.assertEqual(self.scalar("SELECT literal_null_sum(NULL)"), "0")
+        self.assertEqual(self.scalar("SELECT literal_null_sum(NULL)"),
+                         self.scalar("SELECT sum(NULL)"))
+        self.assertEqual(self.scalar("SELECT literal_null_sum(NULL)"), r"\N")
+
+    def test_literal_null_argument_reaches_update_in_pass_mode(self):
+        self.register("literal_null_pass", PyCountNonNull, [INT64], INT64, on_null="pass")
+
+        # One row, one None seen.
+        self.assertEqual(self.scalar("SELECT literal_null_pass(NULL)"), "1")
+
+    def test_or_null_returns_null_when_every_row_was_skipped(self):
+        # -OrNull decides from the Null adapter whether any row contributed. With on_null
+        # ="skip" the adapter must stay in place, or the flag is set for rows we dropped.
+        self.register("ornull_sum", PySum, [INT64], INT64)
+
+        py_result = self.scalar(
+            "SELECT ornull_sumOrNull(v) FROM values('v Nullable(Int64)', (NULL), (NULL))"
+        )
+        builtin_result = self.scalar(
+            "SELECT sumOrNull(v) FROM values('v Nullable(Int64)', (NULL), (NULL))"
+        )
+
+        self.assertEqual(py_result, r"\N")
+        self.assertEqual(py_result, builtin_result)
+
+    def test_or_null_returns_a_value_when_some_row_contributed(self):
+        self.register("ornull_sum2", PySum, [INT64], INT64)
+
+        result = self.scalar(
+            "SELECT ornull_sum2OrNull(v) FROM values('v Nullable(Int64)', (NULL), (4), (NULL))"
+        )
+
+        self.assertEqual(result, "4")
+
+    def test_aggregate_functions_null_for_empty_returns_null_for_all_null_input(self):
+        # The setting rewrites the call into the -OrNull form automatically.
+        self.register("nfe_sum", PySum, [INT64], INT64)
+
+        py_result = self.scalar(
+            "SELECT nfe_sum(v) FROM values('v Nullable(Int64)', (NULL), (NULL)) "
+            "SETTINGS aggregate_functions_null_for_empty = 1"
+        )
+        builtin_result = self.scalar(
+            "SELECT sum(v) FROM values('v Nullable(Int64)', (NULL), (NULL)) "
+            "SETTINGS aggregate_functions_null_for_empty = 1"
+        )
+
+        self.assertEqual(py_result, r"\N")
+        self.assertEqual(py_result, builtin_result)
+
+    def test_on_null_pass_or_null_counts_the_null_rows_as_contributions(self):
+        # In "pass" mode every row genuinely reaches the accumulator, so -OrNull must not
+        # report the group as empty.
+        self.register("ornull_pass", PyCountNonNull, [INT64], INT64, on_null="pass")
+
+        result = self.scalar(
+            "SELECT ornull_passOrNull(v) FROM values('v Nullable(Int64)', (NULL), (NULL))"
+        )
+
+        self.assertEqual(result, "2")
 
     def test_nullable_result_type_for_nullable_argument(self):
         self.register("nullable_sum", PySum, [INT64], INT64)
@@ -678,6 +773,15 @@ class TestUDAFErrorHandling(UDAFTestCase):
 
         # numbers 0..4 sum to 10; row with value 3 raises and is dropped.
         self.assertEqual(self.scalar("SELECT ignore_sum(toInt64(number)) FROM numbers(5)"), "7")
+
+    def test_on_error_ignore_does_not_roll_back_a_partial_update(self):
+        # "ignore" suppresses the exception and moves to the next row; it cannot undo what
+        # update() already changed, because rolling back would mean copying the accumulator
+        # on every row. This pins the documented contract.
+        self.register("partial_sum", PyMutateThenRaise, [INT64], INT64, on_error="ignore")
+
+        # 0..4 sum to 10; row 3 raises *after* adding itself, so its contribution remains.
+        self.assertEqual(self.scalar("SELECT partial_sum(toInt64(number)) FROM numbers(5)"), "10")
 
     def test_evaluate_exception_propagates(self):
         self.register("eval_raise", PyRaisingEvaluate, [INT64], INT64, on_error="ignore")
@@ -1085,6 +1189,20 @@ class TestUDAFQueryShapes(UDAFTestCase):
         with self.assertRaises(Exception) as ctx:
             self.session.query(
                 "SELECT qc_sum(toInt64(number)) FROM numbers(5) SETTINGS use_query_cache = 1, "
+                "query_cache_nondeterministic_function_handling = 'throw'",
+                "CSV",
+            )
+        self.assertIn("non-deterministic", str(ctx.exception))
+
+    def test_query_result_cache_sees_a_udaf_named_by_arrayreduce(self):
+        # arrayReduce names the aggregate in a string literal, so the cache matcher has to
+        # look inside it; the AST function name is arrayReduce, which is deterministic.
+        self.register("qc_reduce_sum", PySum, [INT64], INT64)
+
+        with self.assertRaises(Exception) as ctx:
+            self.session.query(
+                "SELECT arrayReduce('qc_reduce_sum', [toInt64(1), toInt64(2)]) "
+                "SETTINGS use_query_cache = 1, "
                 "query_cache_nondeterministic_function_handling = 'throw'",
                 "CSV",
             )

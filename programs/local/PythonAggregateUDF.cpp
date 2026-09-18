@@ -222,6 +222,9 @@ PythonAggregateUDF::PythonAggregateUDF(
             descriptor->name, declared_count, argument_types_.size());
     }
 
+    arguments_can_be_null = std::any_of(
+        argument_types_.begin(), argument_types_.end(), [](const auto & type) { return DB::canContainNull(*type); });
+
     const size_t check_count = std::min(argument_types_.size(), declared_count);
     for (size_t i = 0; i < check_count; ++i)
     {
@@ -366,7 +369,7 @@ void PythonAggregateUDF::addRow(
     size_t row,
     RowScratch & scratch) const
 {
-    if (descriptor->null_handling == NullHandling::SKIP && hasNullArgument(specs, row))
+    if (descriptor->null_handling == NullHandling::SKIP && arguments_can_be_null && hasNullArgument(specs, row))
         return;
 
     auto & target = state(place);
@@ -414,7 +417,7 @@ void PythonAggregateUDF::addRowsAsBatch(
     const UInt8 * null_map) const
 {
     const size_t argc = specs.size();
-    const bool skip_nulls = descriptor->null_handling == NullHandling::SKIP;
+    const bool skip_nulls = descriptor->null_handling == NullHandling::SKIP && arguments_can_be_null;
 
     SmallVector<py::list> columns(argc);
     size_t accepted = 0;

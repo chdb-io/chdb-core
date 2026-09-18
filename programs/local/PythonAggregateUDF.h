@@ -74,12 +74,14 @@ PythonUDAFDescriptorPtr makePythonUDAFDescriptor(
   * runs once per GROUP BY key on the hot path and must not need the GIL; by the time a
   * state is actually used we are already inside a batch-wide py::gil_scoped_acquire.
   *
-  * NULL handling is ours, not the Null combinator's: the registry reports
-  * AggregateFunctionProperties::is_window_function, which is how an aggregate tells
-  * AggregateFunctionFactory::get "I take Nullable arguments as they are". That is what makes
-  * on_null="pass" survive an outer combinator (getOwnNullAdapter is only consulted on the
-  * outermost function), and it keeps grouped aggregation over a Nullable column on the
-  * batched add path instead of the combinator's per-row one.
+  * NULL handling depends on the mode. on_null="pass" claims
+  * AggregateFunctionProperties::is_window_function, the engine's "I take Nullable arguments
+  * as they are" flag, so the Null combinator never wraps it and the NULLs actually reach
+  * update() even when another combinator sits outside. on_null="skip" keeps the combinator,
+  * because combinators such as -OrNull read "did any row contribute" from it; the cost is
+  * that grouped aggregation over a Nullable column then arrives through the combinator's
+  * per-row add() instead of our batched paths. The checks below still run in both modes, so
+  * the class is correct with or without the adapter.
   *
   * Deriving from IAggregateFunctionHelper rather than IAggregateFunctionDataHelper is
   * deliberate: the latter marks addBatchLookupTable8 final and, for states of at most 16
@@ -293,6 +295,9 @@ private:
     PythonUDAFDescriptorPtr descriptor;
     /// getResultType() with Nullable peeled off, for insertPythonObjectToColumn.
     DB::DataTypePtr result_actual_type;
+    /// Whether any declared argument can carry a NULL at this call site. When it cannot,
+    /// the per-row NULL scan is pure overhead, so it is skipped entirely.
+    bool arguments_can_be_null = false;
 };
 
 } // namespace CHDB

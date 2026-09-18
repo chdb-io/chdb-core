@@ -130,8 +130,14 @@ def agg(arg_types=None, return_type=None, *, name=None, on_null=None, on_error=N
             drops rows where any argument is NULL; ``"pass"`` converts NULL to ``None``
             and calls ``update()``.
         on_error (str): How to handle exceptions raised by ``update()``. Keyword-only.
-            ``"propagate"`` (default) raises; ``"ignore"`` drops the offending row.
-            Exceptions from ``merge()`` and ``evaluate()`` always propagate.
+            ``"propagate"`` (default) raises; ``"ignore"`` swallows the exception and
+            carries on with the next row. Note that ``"ignore"`` cannot undo a partial
+            update: whatever ``update()`` already changed before raising stays in the
+            accumulator, because rolling it back would mean copying the accumulator on
+            every row. Write ``update()`` so it computes first and mutates last if that
+            matters. Exceptions from ``merge()`` and ``evaluate()``, and failures to
+            construct or pickle an accumulator, always propagate - dropping those would
+            lose a whole group rather than a row.
 
     Returns:
         The class, unchanged and still usable as a normal Python class.

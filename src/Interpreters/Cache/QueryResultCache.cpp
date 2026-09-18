@@ -83,6 +83,33 @@ struct HasNonDeterministicFunctionsMatcher
 
     static bool needChildVisit(const ASTPtr &, const ASTPtr &) { return true; }
 
+    /// arrayReduce('quantile(0.5)', ...) spells parameters inside the literal; only the
+    /// leading name identifies the aggregate function.
+    static String aggregateNameFromLiteral(const String & spec)
+    {
+        return spec.substr(0, std::min(spec.find('('), spec.size()));
+    }
+
+    /// True for `arrayReduce('my_udaf', ...)` and friends, which name the aggregate in a
+    /// string literal. Without this the name checks below never see `my_udaf`: the AST
+    /// function name is `arrayReduce`, which FunctionFactory resolves as a deterministic
+    /// ordinary function and returns on.
+    static bool callsPythonUDAFByName(const ASTFunction & function)
+    {
+        if (function.name != "arrayReduce" && function.name != "arrayReduceInRanges"
+            && function.name != "initializeAggregation")
+            return false;
+
+        if (!function.arguments || function.arguments->children.empty())
+            return false;
+
+        const auto * literal = function.arguments->children.front()->as<ASTLiteral>();
+        if (!literal || literal->value.getType() != Field::Types::String)
+            return false;
+
+        return CHDB::isPythonUDAFName(aggregateNameFromLiteral(literal->value.safeGet<String>()));
+    }
+
     static void visit(const ASTPtr & node, Data & data)
     {
         if (data.has_non_deterministic_functions)
@@ -90,6 +117,12 @@ struct HasNonDeterministicFunctionsMatcher
 
         if (const auto * function = node->as<ASTFunction>())
         {
+            if (callsPythonUDAFByName(*function))
+            {
+                data.has_non_deterministic_functions = true;
+                return;
+            }
+
             /// The `eval` table function hides its real query inside an opaque string argument, so the
             /// generated query cannot be inspected here. Treat it as non-deterministic (and, in
             /// HasSystemTablesMatcher, as touching a system table) to keep such queries out of the cache,

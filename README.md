@@ -460,8 +460,11 @@ Key features:
   or a Python type, and are inferred from `update()` / `evaluate()` annotations when omitted.
 - **NULL handling**: `on_null="skip"` (default) drops rows where any argument is NULL;
   `on_null="pass"` delivers `None` to `update()`.
-- **Exception handling**: `on_error="propagate"` (default) raises; `on_error="ignore"` drops
-  the offending row. Exceptions from `merge()` and `evaluate()` always propagate.
+- **Exception handling**: `on_error="propagate"` (default) raises; `on_error="ignore"` swallows
+  the exception and carries on with the next row. It cannot undo a partial update, though —
+  whatever `update()` changed before raising stays in the accumulator. Exceptions from
+  `merge()` and `evaluate()`, and failures to construct or pickle an accumulator, always
+  propagate.
 - **Optional batch fast path**: define `update_batch(self, *columns)`, receiving one Python
   list per argument, and ungrouped aggregation calls it once per block instead of once per row.
   It is only picked up on an accumulator class; a plain callable factory

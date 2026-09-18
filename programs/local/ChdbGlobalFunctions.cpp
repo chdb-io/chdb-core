@@ -224,7 +224,10 @@ void registerGlobalFunctions(py::module_ & m)
         "    on_null (str): How to handle NULL inputs. 'skip' (default) drops rows with a\n"
         "                   NULL argument; 'pass' converts NULL to None and calls update().\n"
         "    on_error (str): How to handle exceptions raised by update(). 'propagate'\n"
-        "                    (default) raises; 'ignore' drops the offending row.\n");
+        "                    (default) raises; 'ignore' swallows the exception and carries\n"
+        "                    on with the next row, but cannot undo a partial update - what\n"
+        "                    update() changed before raising stays in the accumulator.\n"
+        "                    Exceptions from merge() and evaluate() always propagate.\n");
 
     m.def(
         "drop_aggregate_function",
