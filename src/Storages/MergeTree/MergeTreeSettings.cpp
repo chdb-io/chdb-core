@@ -1777,7 +1777,8 @@ This is table disk: the path/endpoint points to the table data, not the database
 Supported for object-storage disks whose metadata lives on the object storage itself
 (s3_plain, s3_plain_rewritable, web, web_index) and their cached variants. Encrypted
 variants are supported only over the writable s3_plain / s3_plain_rewritable disks, not
-over the read-only web / web_index disks.
+over the read-only web / web_index disks. A local object-storage disk is supported only
+when the disk is read-only and uses non-random (for example, plain) metadata paths.
 )", 0) \
     DECLARE(Bool, allow_nullable_key, false, R"(
 Allow Nullable types as primary keys.
@@ -2369,8 +2370,24 @@ static void validateTableDisk(const DiskPtr & disk)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "MergeTree settings `table_disk` requires `disk` setting.");
 
     const auto description = disk->getDataSourceDescription();
-    if (description.type != DataSourceType::ObjectStorage)
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "MergeTree settings `table_disk` is not supported for non-ObjectStorage disks");
+    bool is_readonly_local_object_storage = false;
+    if (description.type == DataSourceType::Local && disk->isReadOnly())
+    {
+        try
+        {
+            is_readonly_local_object_storage = disk->getObjectStorage() != nullptr;
+        }
+        catch (const Exception &)
+        {
+            /// A plain local disk has no object storage and remains unsupported.
+        }
+    }
+    if (description.type != DataSourceType::ObjectStorage && !is_readonly_local_object_storage)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "MergeTree settings `table_disk` is not supported for {}. "
+            "Local object-storage disks must be read-only",
+            description.toString());
 
     /// table_disk loads the table straight from the disk root (no database/UUID path), so its metadata must be
     /// reconstructable from the object storage alone; random blob keys (Local, Keeper) keep the map elsewhere.
