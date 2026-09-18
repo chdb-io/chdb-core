@@ -1,5 +1,6 @@
 #include "PythonTableCache.h"
 #include "NumpyType.h"
+#include "PyArrowTable.h"
 #include "PyBorrowGuard.h"
 #include "PybindWrapper.h"
 #include "PythonArrowStream.h"
@@ -115,7 +116,8 @@ static py::object findQueryableObj(const String & var_name)
                 {
                     // Get the object using Python's indexing syntax
                     obj = namespace_obj[py::cast(var_name)];
-                    if (DB::isInheritsFromPyReader(obj) || DB::isPandasDf(obj) || DB::isPyarrowTable(obj)
+                    if (DB::isInheritsFromPyReader(obj) || DB::isPandasDf(obj)
+                        || CHDB::PyArrowTable::isPyArrowObject(obj)
                         || CHDB::hasArrowCStreamMethod(obj) || DB::hasGetItem(obj))
                     {
                         return obj;

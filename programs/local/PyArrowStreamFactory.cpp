@@ -38,7 +38,20 @@ std::unique_ptr<ArrowArrayStreamWrapper> PyArrowStreamFactory::createFromPyObjec
         switch (arrow_object_type)
         {
             case PyArrowObjectType::Table:
-                return createFromTable(py_obj, column_names);
+            case PyArrowObjectType::RecordBatch:
+            {
+                /// pyarrow.dataset.dataset() wraps an in-memory Table or
+                /// RecordBatch into an InMemoryDataset, so both share the
+                /// dataset scan below and its projection pushdown.
+                auto & import_cache = PythonImporter::ImportCache();
+                auto dataset = import_cache.pyarrow.dataset().attr("dataset")(py_obj);
+                return createFromDataset(dataset, column_names);
+            }
+            case PyArrowObjectType::Dataset:
+                /// Already a Dataset: pyarrow.dataset.dataset() rejects a single
+                /// Dataset instance (it only accepts a *list* of them), so scan
+                /// it as is.
+                return createFromDataset(py_obj, column_names);
             default:
                 throw Exception(ErrorCodes::PY_EXCEPTION_OCCURED,
                     "Unsupported PyArrow object type: {}", arrow_object_type);
@@ -51,23 +64,20 @@ std::unique_ptr<ArrowArrayStreamWrapper> PyArrowStreamFactory::createFromPyObjec
     }
 }
 
-std::unique_ptr<ArrowArrayStreamWrapper> PyArrowStreamFactory::createFromTable(
-    py::object & table,
+std::unique_ptr<ArrowArrayStreamWrapper> PyArrowStreamFactory::createFromDataset(
+    py::object & dataset,
     const Names & column_names)
 {
     chassert(py::gil_check());
 
-    py::handle table_handle(table);
-    auto & import_cache = PythonImporter::ImportCache();
-    auto arrow_dataset = import_cache.pyarrow.dataset().attr("dataset");
-
-	auto dataset = arrow_dataset(table_handle);
+	/// Unbound Dataset.scanner: the concrete class varies with the dataset kind
+	/// (InMemoryDataset, FileSystemDataset, UnionDataset, ...).
 	py::object arrow_scanner = dataset.attr("__class__").attr("scanner");
 
 	py::dict kwargs;
 	if (!column_names.empty()) {
         ArrowSchemaWrapper schema;
-        auto obj_schema = table_handle.attr("schema");
+        auto obj_schema = dataset.attr("schema");
         auto export_to_c = obj_schema.attr("_export_to_c");
         export_to_c(reinterpret_cast<uint64_t>(&schema.arrow_schema));
 
