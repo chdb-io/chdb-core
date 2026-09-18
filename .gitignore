@@ -267,6 +267,7 @@ minitest/
 /arrow1100
 test_main
 /build*
+!/BUILD.md
 /bench
 /tests/data
 /examples/chdbStub

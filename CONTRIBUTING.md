@@ -1,331 +1,463 @@
-# Contributing
+# Contributing to chdb-core
 
-Welcome to `chdb` contributor's guide.
+Welcome — and thanks for considering a contribution. All contributors
+are expected to be open, considerate, reasonable, and respectful;
+see [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
-This document focuses on getting any potential contributor familiarized with
-the development processes, but [other kinds of contributions] are also appreciated.
+This is the contributor-facing handbook. [`AGENTS.md`](./AGENTS.md)
+is short and stays loaded in AI coding agents at all times; it
+captures only the cross-subtree design rules. Per-directory
+AGENTS.md files (under `programs/local/`, `contrib/`, `chdb/` and
+the `contrib/*-cmake/` glue dirs) carry location-specific rules.
+Everything human-facing — setup, build, the modify-then-test
+workflow, PR conventions, CI, releases — lives here.
 
-If you are new to using [git] or have never collaborated in a project previously,
-please have a look at [contribution-guide.org]. Other resources are also
-listed in the excellent [guide created by FreeCodeCamp] [^contrib1].
+> **Disambiguation — chdb-core vs chdb**
+> - **chdb-core** (this repository) is a fork of ClickHouse. It
+>   builds the C++ engine + a minimal Python C-extension binding,
+>   distributed as the `chdb-core` PyPI package. ~3,200 commits,
+>   ~130 git submodules, `contrib/` is roughly 9 GB on disk.
+> - **chdb** ([chdb-io/chdb](https://github.com/chdb-io/chdb)) is
+>   the pure-Python user-facing wrapper: `import chdb`, `from chdb
+>   import datastore`, the chdb-ds DataFrame API. It depends on
+>   `chdb-core`.
+>
+> **If you find yourself wanting to change the user-facing Python
+> API** (`import chdb`, DataStore, pandas compatibility, query
+> result handling), **you are probably in the wrong repository** —
+> go to chdb-io/chdb. This file (chdb-core) is for SQL engine,
+> parser, formats, codecs, storage, table functions, and the
+> C-extension binding.
 
-Please notice, all users and contributors are expected to be **open,
-considerate, reasonable, and respectful**. When in doubt,
-[Python Software Foundation's Code of Conduct] is a good reference in terms of
-behavior guidelines.
+## What chdb-core is
 
-## Issue Reports
+chdb-core is a fork of ClickHouse carved into an **embeddable** SQL
+engine — the same SQL dialect, the same query optimiser, the same
+format readers and codecs, but loadable in-process via Python (and
+Bun/Go/Rust/Node/Zig/Ruby/.NET via separate sibling repositories
+that link against `chdb-core`'s shared library). On GitHub,
+`chdb-io/chdb-core` is registered as a fork of `chdb-io/chdb`
+(historical — the C++ engine was carved out of chdb's earlier
+life), but the kernel tracks ClickHouse upstream and is re-synced
+from ClickHouse periodically (see
+[`UPSTREAM_SYNC.md`](./UPSTREAM_SYNC.md)).
 
-If you experience bugs or general issues with `chdb`, please have a look
-on the [issue tracker].
-If you don't see anything useful there, please feel free to fire an issue report.
+This repository contains, roughly:
 
-:::{tip}
-Please don't forget to include the closed issues in your search.
-Sometimes a solution was already reported, and the problem is considered
-**solved**.
-:::
+- **The full ClickHouse SQL engine** (`src/`, `base/`, `programs/`,
+  `cmake/`, `contrib/`, `utils/`, `packages/`, `docker/`, `ci/`,
+  `tests/`)
+- **chDB's C++ entry point** (`programs/local/chdb*.cpp`,
+  `ChdbClient`, `AIQueryProcessor`, the Arrow / Python interop
+  layer)
+- **A minimal Python wrapper that ships with `chdb-core`** (`chdb/`)
+- **The published `using-chdb` agent skill** (`agent/skills/`)
 
-New issue reports should include information about your programming environment
-(e.g., operating system, Python version) and steps to reproduce the problem.
-Please try also to simplify the reproduction steps to a very minimal example
-that still illustrates the problem you are facing. By removing other factors,
-you help us to identify the root cause of the issue.
+### Where does my change go?
 
-## Documentation Improvements
+The full cross-repo routing table lives in
+[chdb-io/chdb `CONTRIBUTING.md`](https://github.com/chdb-io/chdb/blob/main/CONTRIBUTING.md).
+Quick version for chdb-core's own scope:
 
-You can help improve `chdb` docs by making them more readable and coherent, or
-by adding missing information and correcting mistakes.
+- **C++ SQL engine** (functions, types, formats, codecs, storage) →
+  `src/`
+- **Public C ABI** (the contract every binding links against) →
+  `programs/local/chdb*.{cpp,h}` (see
+  [`programs/local/AGENTS.md`](./programs/local/AGENTS.md))
+- **Minimal Python wrapper bundled in the `chdb-core` wheel**
+  (`chdb.query()`, `chdb.session`, `dbapi`) → `chdb/` (this repo)
+- **Wheel build scripts** → `chdb/build.sh`
+- **Higher-level Python user-facing API** (`from chdb import
+  datastore`, pandas compat, the DataStore API) → wrong repo, go to
+  chdb-io/chdb
 
-`chdb` documentation uses [Sphinx] as its main documentation compiler.
-This means that the docs are kept in the same repository as the project code, and
-that any documentation update is done in the same way was a code contribution.
+## Reporting issues
 
-```{todo} Don't forget to mention which markup language you are using.
+Search [open and closed issues](https://github.com/chdb-io/chdb-core/issues)
+first. A good issue includes:
 
-    e.g.,  [reStructuredText] or [CommonMark] with [MyST] extensions.
+- OS + architecture + Python version
+- The chdb-core version (`python -c "import chdb; print(chdb.query('SELECT version()'))"`)
+- A minimal reproduction (SQL or a short Python script)
+- Expected vs observed behaviour
+
+For crashes, include a native stack trace — see "Capture the stack
+trace…" below for the gdb/lldb flow.
+
+## Things to avoid (read first — highest-ROI section)
+
+### Prefer the smallest-scope rebuild over `make clean && make`
+
+A full C++ rebuild takes a while. The good news is that for most
+changes you only need an incremental build — figure out which layer
+your change is in (see "I changed X — what to run" below) and pick
+the matching command:
+
+- Pure Python under `chdb/*.py` → no rebuild needed; just reinstall
+  the wheel
+- C++ under `programs/local/` → incremental ninja build; minutes on
+  a primed ccache
+- C++ under `src/` (engine internals) → incremental still works;
+  larger blast radius depending on header reach
+- `contrib/` → don't (see "Treat `contrib/` as read-only" below)
+
+A primed ccache makes a big difference for iteration speed, so it's
+worth keeping it healthy between branches.
+
+> ⚠️ **`make clean` (and therefore `make build`) currently removes
+> tracked files under `chdb/build/`** (`build_static_lib*.sh`,
+> `create_*_libchdb.py`, `cpp-example/`, `go-example/`, etc.)
+> because `tox -e clean` `rmtree`s the whole directory rather than
+> just build artefacts. After a `make build`, restore them with
+> `git checkout HEAD -- chdb/build/`. (Bug in `tox.ini`'s clean
+> recipe; not part of an ordinary contributor PR.)
+
+### Treat `contrib/` as read-only; route fixes upstream
+
+`contrib/` is **~9 GB across ~260 entries, with ~130 git
+submodules**. Every entry is a vendored upstream library — Abseil,
+Arrow, Boost, RocksDB, ZSTD, ICU, OpenSSL, libcxx, … The vast
+majority track ClickHouse upstream submodule pins.
+
+If you find a bug in a `contrib/` library:
+
+1. Resist the urge to patch it locally — the patch won't survive
+   the next upstream sync.
+2. Check whether ClickHouse upstream has already fixed it (their
+   submodule pin may be ahead of ours).
+3. If a real upstream fix is needed, the path is: PR the upstream
+   library directly, then update the submodule pointer in ClickHouse
+   upstream, then sync that change into chdb-core via the
+   upstream-sync flow (see
+   [`UPSTREAM_SYNC.md`](./UPSTREAM_SYNC.md)).
+
+chdb-specific divergences (jemalloc / arrow / pybind11 / postgres
+cmake glue) live in `contrib/*-cmake/` dirs; see each of those
+dirs' AGENTS.md for what's intentional.
+
+### Coordinate ClickHouse / contrib submodule bumps via an issue
+
+This repository is an **active fork of ClickHouse**. Submodule
+bumps need to consider:
+
+- chdb-core's diverged patches (some files in `src/` and
+  `programs/local/` are chdb-specific and may conflict with upstream
+  changes)
+- ABI compatibility for the C-binding consumed by `chdb-io/chdb`,
+  `chdb-bun`, `chdb-go`, `chdb-rust`, `chdb-node`, `chdb-zig`,
+  `chdb-ruby`, …
+- Build-matrix impact (a new submodule version may add a new
+  transitive toolchain requirement, breaking macOS arm64 or Linux
+  musl)
+
+If you think a submodule bump is needed, **open an issue first**
+describing why, and let a maintainer drive the bump. The same
+applies to enabling a new CMake feature flag in `chdb/build.sh`
+(`-DENABLE_*`): each one has a binary-size and platform-compatibility
+cost, so it's a project-wide decision worth discussing in an issue.
+
+### Open an issue before changing SQL dialect or function semantics
+
+chDB inherits the entire ClickHouse SQL surface — every function,
+table engine, format, type, setting. Users *and* downstream language
+bindings (Bun/Go/Rust/Node/Zig/Ruby) treat the dialect as stable.
+
+Changing function semantics, adding a function, or removing one is
+a user-facing API change, even if your patch is "just" in
+`src/Functions/` or `src/AggregateFunctions/`. Open an issue first
+with the proposed change, the rationale, and a migration story —
+that way the discussion happens before you've written the code, and
+the eventual PR is fast to review.
+
+### Understand the C ABI before refactoring `programs/local/chdb*.cpp`
+
+`programs/local/` contains chDB's *public C ABI*: `chdb.h`,
+`chdb.cpp`, `ChdbClient`, `AIQueryProcessor`, the Arrow stream
+registry, the Python interop wrappers. This ABI is what the Python
+wrapper, Bun binding, Go binding, Rust binding, Node binding, Zig
+binding, and Ruby binding all link against.
+
+A "cleanup" refactor that changes function signatures, struct
+layouts, or the way memory is owned across the boundary can break
+every binding repository in the chDB ecosystem without an obvious
+local test failure. Before changing anything in
+`programs/local/chdb*.{cpp,h,hpp}`, please read
+[`programs/local/AGENTS.md`](./programs/local/AGENTS.md) — it
+covers the opaque-pointer pattern and the kinds of changes that
+need a coordinated version bump downstream.
+
+### Capture the stack trace before changing code on a crash
+
+When tests crash with `SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGILL`,
+`SIGBUS`, or `SIGSYS`, **always obtain the stack trace first**,
+then analyse the root cause before attempting fixes. C++ engine
+crashes usually point at:
+
+- A real bug in the engine (most common)
+- A refcounting / lifetime issue at the C-binding boundary
+- An ASAN / UBSAN-detectable issue
+
+Specifically, do *not*:
+
+- Remove the failing assertion
+- Add a defensive `try/catch` that swallows the error
+- Mark the test as skipped to make CI green
+
+Capture the trace (`gdb` on Linux, `lldb` on macOS, or core dump +
+post-mortem analysis) and fix the root cause. If the cause is in a
+ClickHouse upstream file, the fix may need to land in upstream
+first.
+
+## Setting up
+
+The first build is heavyweight — budget hours of CPU time and
+~50–60 GB of free disk. **`chdb/build.sh` requires Python 3.9 on
+`PATH`** (abi3 / Limited-API anchor; built wheel runs on 3.9–3.14).
+Subsequent incremental builds are fast.
+
+```bash
+git clone https://github.com/chdb-io/chdb-core
+cd chdb-core
+git submodule update --init --recursive
+python3 --version                           # must report 3.9.x
+make build                                  # = clean buildlib wheel
+pip install dist/chdb_core-*.whl --force-reinstall
+cd /tmp && python -c "import chdb; print(chdb.query('SELECT 1+1'))"
 ```
 
-```{todo} If your project is hosted on GitHub, you can also mention the following tip:
+Full toolchain details (brew vs. pip-only paths, `tox` requirement,
+ccache notes), the wheel-filename vs. engine-version distinction,
+the "run sanity check from /tmp, not from the repo" caveat, and the
+end-to-end verification path against
+[`chdb-io/chdb`](https://github.com/chdb-io/chdb) all live in
+[`BUILD.md`](./BUILD.md).
 
-   :::{tip}
-      Please notice that the [GitHub web interface] provides a quick way of
-      propose changes in `chdb`'s files. While this mechanism can
-      be tricky for normal code contributions, it works perfectly fine for
-      contributing to the docs, and can be quite handy.
+## I changed X — what to run
 
-      If you are interested in trying this method out, please navigate to
-      the `docs` folder in the source [repository], find which file you
-      would like to propose changes and click in the little pencil icon at the
-      top, to open [GitHub's code editor]. Once you finish editing the file,
-      please write a message in the form at the bottom of the page describing
-      which changes have you made and what are the motivations behind them and
-      submit your proposal.
-   :::
+After the first-time setup, pick your row and run the rebuild +
+verify commands top-to-bottom. The canonical test entry is
+`make test` (= `cd tests && python3 run_all.py`), and **the full
+suite is what you sign off on** — see the callout below. Targeted
+pytest is fine for tight iteration while you're debugging a
+specific failure, but it isn't sufficient for sign-off.
+
+| You changed | Rebuild? | Rebuild + verify commands |
+|---|---|---|
+| **A. C++ in `programs/local/`** (chDB entry point — C ABI) | Incremental | `cd chdb && bash build.sh` (ninja rebuilds only what's affected; minutes with primed ccache) → `make test` (full, ~2 min). If you changed the ABI surface, also smoke-test a downstream binding (chdb-go / chdb-bun / etc.) — see [`programs/local/AGENTS.md`](./programs/local/AGENTS.md). |
+| **B. C++ in `src/`** (engine internals) | Incremental | Same as A. Larger blast radius depending on header reach. The full `make test` is the default; targeted `tests/test_<area>.py` is fine as a faster inner loop while iterating. |
+| **C. SQL function / type behaviour (`src/Functions/*`, `src/AggregateFunctions/*`, `src/DataTypes/*`)** | Incremental | Same as A + add a `tests/test_*.py` case that fails before the change. Because this is user-visible, open an issue describing the change before the PR. |
+| **D. Python wrapper under `chdb/*.py`** | No | `pip install -e .` once → from outside the repo: `cd /tmp && python3 -c "import chdb; print(chdb.query('SELECT 1+1'))"` → `make test` |
+| **E. Tests (`tests/test_*.py`)** | No | `make test` (full, ~2 min). Targeted `pytest tests/test_<file>.py -v` is fine while iterating on the new test itself. |
+| **F. Docs (`docs/`)** | No | `make docs` (HTML on :8001) or `make docs-md` (markdown) |
+| **G. CI workflows** (`.github/workflows/` or `ci/`) | No | Iterate via PR; `pr_ci.yaml` is cheap |
+| **H. `contrib/` libraries** | — | **Don't — see "Treat contrib/ as read-only" above** |
+| **I. Submodule pointers** | — | **Open an issue first — see "Coordinate ClickHouse / contrib submodule bumps" above** |
+
+> ⚠️ **Prefer the full suite when in doubt.** chdb-core changes —
+> especially anywhere in `src/` or `programs/local/` — routinely
+> surface failures in unexpected places: SQL function tweaks fall
+> over in format-reader paths, ABI changes break Arrow zero-copy
+> tests, allocator tweaks show up in jemalloc-sensitive corners. If
+> your change touches more than one row above, or you're not sure
+> which code paths it reaches, **just run the full `make test`**
+> (~2 min once the build is incremental).
+
+**Before opening a PR**: lint your Python changes
+(`flake8 chdb --count --show-source --statistics`) plus the full
+`make test` from row A / B / C.
+
+## Day-to-day commands
+
+```bash
+bash chdb/build.sh                              # incremental C++ rebuild
+make test                                        # full test suite (~2 min)
+flake8 chdb --count --show-source --statistics   # Python lint
+make docs                                        # docs preview on :8001
 ```
 
-When working on documentation changes in your local machine, you can
-compile them with:
+Full reference (release-wheel build, platform-specific scripts,
+hygiene, ccache reset, submodule re-pin, the `chdb/build/` cleanup
+quirk) is in [`BUILD.md`](./BUILD.md).
 
-```
-make docs
-```
+## Code style
 
-A browser will open with the docs site.
+### C++
 
-## Code Contributions
+- **`clang-format`** — `.clang-format` exists at repo root; run
+  before committing: `clang-format -i <file>`
+- **`clang-tidy`** — `.clang-tidy` exists; CI runs static analysis
+  on changed files
+- **ClickHouse coding conventions** apply — naming (`PascalCaseClasses`,
+  `snake_case_methods`, `ALL_CAPS_CONSTANTS`), header-include order,
+  smart-pointer use, exception hierarchy. ClickHouse upstream's
+  `docs/en/development/style.md` is the authoritative reference;
+  deviating from it is a review-time pushback.
 
-```{todo} Please include a reference or explanation about the internals of the project.
+### Python
 
-   An architecture description, design principles or at least a summary of the
-   main concepts will make it easy for potential contributors to get started
-   quickly.
-```
+chdb-core's Python lint is `[flake8]` in `setup.cfg`, scoped to
+critical errors only (`E9, F63, F7, F82`), line-length 120, ignore
+`F811`, per-file `__init__.py:F401`. black / mypy / pre-commit are
+listed in `requirements-dev.txt` but not enforced as PR gates.
 
-### Submit an issue
+### Don't run the formatter over the whole repo
 
-Before you work on any non-trivial code contribution it's best to first create
-a report in the [issue tracker] to start a discussion on the subject.
-This often provides additional considerations and avoids unnecessary work.
+Mass-format diffs are noise that drowns the actual review. Only
+format the files you've already changed.
 
-### Create an environment
+## Testing
 
-Before you start coding, we recommend creating an isolated [virtual environment]
-to avoid any problems with your installed Python packages.
-This can easily be done via either [virtualenv]:
+The test runner is `tests/run_all.py` (invoked via `make test`).
+It runs Python integration tests against the built wheel, so make
+sure `import chdb` works first.
 
-```
-virtualenv <PATH TO VENV>
-source <PATH TO VENV>/bin/activate
-```
+### Format-cases generator
 
-or [Miniconda]:
+`tests/gen_format_cases.py` produces `tests/format_output.py` (a
+Python dict consumed by other tests). After adding or changing a
+format reader/writer, edit the `formats = […]` list inside the
+generator, re-run it, and commit the regenerated
+`tests/format_output.py`.
 
-```
-conda create -n chdb python=3 six virtualenv pytest pytest-cov
-conda activate chdb
-```
+### When a test crashes
 
-### Clone the repository
+See "Capture the stack trace before changing code on a crash" above
+— capture the stack trace before changing code. The first line of
+defence is `lldb` (macOS) / `gdb` (Linux). Set
+`PYTHONFAULTHANDLER=1` for a Python-side trace too.
 
-1. Create an user account on GitHub if you do not already have one.
+### Inherited ClickHouse test scaffolding (not active in chdb-core)
 
-2. Fork the project [repository]: click on the *Fork* button near the top of the
-   page. This creates a copy of the code under your account on GitHub.
+`tests/sqllogic/`, `tests/performance/`, and the C++ unit tests
+under `src/*/tests/` are ClickHouse-upstream leftovers — not in
+use in chdb-core. Don't add tests there expecting them to be
+picked up.
 
-3. Clone this copy to your local disk:
+## ClickHouse upstream sync flow
+
+chdb-core is an active fork of
+[ClickHouse/ClickHouse](https://github.com/ClickHouse/ClickHouse).
+Submodule bumps and `src/` rebases are sequenced by maintainers
+(rather than landing as drive-by PRs) because they affect the C
+ABI, the build matrix, and a handful of chdb-specific divergences
+in `contrib/`.
+
+For routing of upstream-bug reports, submodule changes, `contrib/`
+divergences, and the issue-first path, see
+[`UPSTREAM_SYNC.md`](./UPSTREAM_SYNC.md). For chDB-specific C++
+work (in `programs/local/` or chDB-only spots in `src/`), a regular
+PR works — see [`programs/local/AGENTS.md`](./programs/local/AGENTS.md)
+for the ABI rules.
+
+## PR & commit conventions
+
+**PR titles** — follow ClickHouse style: **start with a capitalised
+verb, no Conventional-Commit prefix**. Describe user impact, not
+internal mechanics.
+
+Good:
+
+- `Add setting to disable the Python function`
+- `Resolve jemalloc / glibc allocator mismatch on musl`
+- `Improve hash-join memory usage on 1B-row tables`
+- `Simplify ChdbClient lifecycle`
+
+Avoid:
+
+- `feat: add setting to disable the Python function` (no
+  Conventional-Commit prefix)
+- `[Feature] Add setting...` (no brackets)
+- `feat(local): add setting...` (no scope notation)
+- `Refactored FunctionFactory::resolve_overloads to take a span`
+  (describes mechanics, not user impact)
+
+**Commit messages** inside a PR can be lowercase / informal as long
+as the PR title itself follows the rule above. chdb-core uses merge
+commits (not squash), so each commit title still lives in `git log`
+forever — keep them readable.
+
+**Branch names** — descriptive with a category prefix:
+`fix/array-map-null`, `feat/new-table-function`,
+`docs/update-readme`, `refactor/cleanup-imports`. External
+contributors may also use `<github-handle>/<topic>`.
+
+**Scope** — one concern per PR. Split refactors away from fixes.
+
+**Tests** — every behaviour change needs one. C++ engine bug fixes
+land with a `tests/test_*.py` case that fails before the change.
+
+**PR description** — The inherited `PULL_REQUEST_TEMPLATE.md` from
+ClickHouse upstream applies; just skip the ASAN/TSAN batch checkboxes
+that target ClickHouse's CI rather than ours.
+
+### Opening a PR when you can't fork chdb-core
+
+`chdb-io/chdb-core` is itself a fork of `chdb-io/chdb` (the C++
+engine was carved out of the Python repo's earlier life). The two
+upstreams sit in the same GitHub fork network, which means **once
+you have a fork of `chdb-io/chdb` at `<your-handle>/chdb`, GitHub
+won't let you also create a fork of `chdb-io/chdb-core`** — same
+network, one fork per account.
+
+The working approach is to piggy-back on your existing `chdb` fork.
+Push your chdb-core branch into it under a distinct name and PR
+from there:
+
+1. Make sure `<your-handle>/chdb` exists on GitHub (forking
+   `chdb-io/chdb` is the prerequisite).
+2. In your local chdb-core checkout, add a remote pointing at your
+   chdb fork and push the branch under a chdb-core-prefixed name:
+
+   ```bash
+   git remote add via-chdb-fork git@github.com:<your-handle>/chdb.git
+   git push via-chdb-fork <your-branch>:<your-branch>-chdb-core
+   ```
+
+3. After the push, the `chdb-io/chdb-core` repo page on GitHub will
+   show a "recent push" banner with **Compare & pull request** —
+   click it, double-check the diff contains only your intended
+   changes (not the entire chdb-core tree), and open the PR.
+
+   If GitHub does not show the banner, manually open:
 
    ```
-   git clone git@github.com:YourLogin/chdb.git
-   cd chdb
+   https://github.com/chdb-io/chdb-core/compare/main...<your-handle>:chdb:<your-branch>-chdb-core
    ```
 
-### Build the project
+## CI
 
-chdb-core is a c++ library meant to be imported by python.
+To reproduce CI locally:
 
-To build the c++ library, you must have a few prerequisites, amongst others:
-
-- clang: Minimum version can be found in [`cmake/tools.cmake`](cmake/tools.cmake), search for `CLANG_MINIMUM_VERSION`
-- Rust: Version can be found in [`rust/vendor.sh`](rust/vendor.sh), search for `TOOLCHAIN`
-- make
-- cmake
-- ccache
-- patchelf
-- yasm
-
-And some python-specific ones:
-
-- pyenv with at least python 3.9 installed (`pyenv install 3.9`)
-
-Activate your venv & make sure you're running under 3.9:
-
-```
-pyenv shell 3.9
-pip install -r requirements-dev.txt
+```bash
+flake8 chdb --count --show-source --statistics    # lint
+make build                                         # full clean + buildlib + wheel (slow)
+make test                                          # full test suite
 ```
 
-Create the library with:
+## Security
 
-```
-pyenv shell 3.9
+- **No secrets in test fixtures.** S3 keys, ClickHouse Cloud DSNs,
+  OAuth tokens, signed JWT samples — none of them belong in
+  `tests/` or `examples/`. Use environment variables;
+  `pytest.skip` if not set.
+- **Stack traces matter.** C++ engine crashes signal real bugs;
+  capture and diagnose, don't paper over.
+- **Vulnerability reports** go through GitHub security advisories,
+  not public issues. See [`SECURITY.md`](./SECURITY.md).
+- **Supply chain**: every `contrib/` change is a supply-chain risk
+  (see "Treat `contrib/` as read-only" and "Coordinate ClickHouse /
+  contrib submodule bumps" above).
 
-make buildlib
-```
+## Related files
 
-This includes compiling clickhouse itself, which can take upwards of tens of minutes, depending on your processor. The library can be found in `buildlib/libchdb.so`. A patched version of the library meant to be imported by python is written under the `chdb` directory; for example in Linux that'll be `chdb/_chdb.abi3.so`.
-
-To actually use the library, build the wheel:
-
-```
-pyenv shell 3.9
-
-make wheel
-
-# install it locally
-pip install dist/chdb_core-*.whl
-```
-
-You can use `make test` to run all the python unittests:
-
-```
-make test
-```
-
-### Implement your changes
-
-1. Create a branch to hold your changes:
-
-   ```
-   git checkout -b my-feature
-   ```
-
-   and start making changes. Never work on the main branch!
-
-2. Start your work on this branch. Don't forget to add [docstrings] to new
-   functions, modules and classes, especially if they are part of public APIs.
-
-3. Add yourself to the list of contributors in `AUTHORS.rst`.
-
-4. When you’re done editing, do:
-
-   ```
-   git add <MODIFIED FILES>
-   git commit
-   ```
-
-   to record your changes in [git].
-
-   :::{important}
-   Don't forget to add unit tests and documentation in case your
-   contribution adds an additional feature and is not just a bugfix.
-
-   Moreover, writing a [descriptive commit message] is highly recommended.
-   In case of doubt, you can check the commit history with:
-
-   ```
-   git log --graph --decorate --pretty=oneline --abbrev-commit --all
-   ```
-
-   to look for recurring communication patterns.
-   :::
-
-5. Please check that your changes don't break any unit tests with:
-
-   ```
-   make test
-   ```
-
-### Submit your contribution
-
-1. If everything works fine, push your local branch to the remote server with:
-
-   ```
-   git push -u origin my-feature
-   ```
-
-2. Go to the web page of your fork and click "Create pull request"
-   to send your changes for review.
-
-   ```{todo} if you are using GitHub, you can uncomment the following paragraph
-
-      Find more detailed information in [creating a PR]. You might also want to open
-      the PR as a draft first and mark it as ready for review after the feedbacks
-      from the continuous integration (CI) system or any required fixes.
-
-   ```
-
-### Troubleshooting
-
-The following tips can be used when facing problems to build or test the
-package:
-
-- Make sure to fetch all the tags from the upstream [repository].
-  The command `git describe --abbrev=0 --tags` should return the version you
-  are expecting. If you are trying to run CI scripts in a fork repository,
-  make sure to push all the tags.
-  You can also try to remove all the egg files or the complete egg folder, i.e.,
-  `.eggs`, as well as the `*.egg-info` folders in the `src` folder or
-  potentially in the root of your project.
-
-- Make sure to have a reliable pyenv installation that uses the correct
-  Python version (e.g., 3.9+). When in doubt you can run:
-
-  ```
-  pyenv --version
-  # OR
-  which python
-  # should point to .pyenv/shims/python
-  ```
-
-- [Pytest can drop you] in an interactive session in the case an error occurs.
-  In order to do that you need to pass a `--pdb` option (for example by
-  running `pytest -k <NAME OF THE FALLING TEST> --pdb`).
-  You can also setup breakpoints manually instead of using the `--pdb` option.
-
-## Maintainer tasks
-
-### Releases
-
-```{todo} This section assumes you are using PyPI to publicly release your package.
-
-   If instead you are using a different/private package index, please update
-   the instructions accordingly.
-```
-
-If you are part of the group of maintainers and have correct user permissions
-on [PyPI], the following steps can be used to release a new version for
-`chdb`:
-
-1. Make sure all unit tests are successful.
-2. Tag the current commit on the main branch with a release tag, e.g., `v1.2.3`.
-3. Push the new tag to the upstream [repository],
-   e.g., `git push upstream v1.2.3`
-4. Clean up the `dist` and `build` folders with `tox -e clean`
-   (or `rm -rf dist build`)
-   to avoid confusion with old builds and Sphinx docs.
-5. Run `tox -e build` and check that the files in `dist` have
-   the correct version (no `.dirty` or [git] hash) according to the [git] tag.
-   Also check the sizes of the distributions, if they are too big (e.g., >
-   500KB), unwanted clutter may have been accidentally included.
-6. Run `tox -e publish -- --repository pypi` and check that everything was
-   uploaded to [PyPI] correctly.
-
-[^contrib1]: Even though, these resources focus on open source projects and
-    communities, the general ideas behind collaborating with other developers
-    to collectively create software are general and can be applied to all sorts
-    of environments, including private companies and proprietary code bases.
-
-
-[black]: https://pypi.org/project/black/
-[commonmark]: https://commonmark.org/
-[contribution-guide.org]: http://www.contribution-guide.org/
-[creating a pr]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request
-[descriptive commit message]: https://chris.beams.io/posts/git-commit
-[docstrings]: https://www.sphinx-doc.org/en/master/usage/extensions/napoleon.html
-[first-contributions tutorial]: https://github.com/firstcontributions/first-contributions
-[flake8]: https://flake8.pycqa.org/en/stable/
-[git]: https://git-scm.com
-[github web interface]: https://docs.github.com/en/github/managing-files-in-a-repository/managing-files-on-github/editing-files-in-your-repository
-[github's code editor]: https://docs.github.com/en/github/managing-files-in-a-repository/managing-files-on-github/editing-files-in-your-repository
-[github's fork and pull request workflow]: https://guides.github.com/activities/forking/
-[guide created by freecodecamp]: https://github.com/freecodecamp/how-to-contribute-to-open-source
-[miniconda]: https://docs.conda.io/en/latest/miniconda.html
-[myst]: https://myst-parser.readthedocs.io/en/latest/syntax/syntax.html
-[other kinds of contributions]: https://opensource.guide/how-to-contribute
-[pypi]: https://pypi.org/
-[pyscaffold's contributor's guide]: https://pyscaffold.org/en/stable/contributing.html
-[pytest can drop you]: https://docs.pytest.org/en/stable/usage.html#dropping-to-pdb-python-debugger-at-the-start-of-a-test
-[python software foundation's code of conduct]: https://www.python.org/psf/conduct/
-[restructuredtext]: https://www.sphinx-doc.org/en/master/usage/restructuredtext/
-[sphinx]: https://www.sphinx-doc.org/en/master/
-[tox]: https://tox.readthedocs.io/en/stable/
-[virtual environment]: https://realpython.com/python-virtual-environments-a-primer/
-[virtualenv]: https://virtualenv.pypa.io/en/stable/
-
-
-```{todo} Please review and change the following definitions:
-```
-
-[repository]: https://github.com/chdb-io/chdb
-[issue tracker]: https://github.com/chdb-io/chdb/issues
+- [`AGENTS.md`](./AGENTS.md) — minimal always-loaded design rules
+  for AI coding agents
+- [`BUILD.md`](./BUILD.md) — long-form build / test manual
+- [`UPSTREAM_SYNC.md`](./UPSTREAM_SYNC.md) — how chdb-core stays in
+  sync with ClickHouse upstream
+- Subdirectory `AGENTS.md` files (override the root for files
+  inside them — agents.md spec):
+  - [`programs/local/AGENTS.md`](./programs/local/AGENTS.md) — C
+    ABI stability rules
+  - [`contrib/AGENTS.md`](./contrib/AGENTS.md) — vendored libs +
+    pointer to per-cmake-dir AGENTS.md
