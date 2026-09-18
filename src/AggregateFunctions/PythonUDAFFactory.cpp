@@ -42,27 +42,43 @@ void PythonUDAFFactory::setInstance(PythonUDAFFactory * impl)
     impl_ = impl;
 }
 
+namespace
+{
+
+/// Mirror AggregateFunctionFactory::isAggregateFunctionName: peel one combinator suffix at
+/// a time, handing every prefix (starting with `name_` itself) to `matches`.
+template <typename Predicate>
+bool anyCombinatorPrefix(const String & name_, Predicate && matches)
+{
+    String name = name_;
+    if (matches(name))
+        return true;
+
+    while (DB::AggregateFunctionCombinatorPtr combinator
+           = DB::AggregateFunctionCombinatorFactory::instance().tryFindSuffix(name))
+    {
+        name = name.substr(0, name.size() - combinator->getName().size());
+        if (matches(name))
+            return true;
+    }
+
+    return false;
+}
+
+}
+
 bool isPythonUDAFName(const String & name_)
 {
     auto & factory = PythonUDAFFactory::instance();
     if (factory.empty())
         return false;
 
-    if (factory.has(name_))
-        return true;
+    return anyCombinatorPrefix(name_, [&factory](const String & name) { return factory.has(name); });
+}
 
-    /// Mirror AggregateFunctionFactory::isAggregateFunctionName: peel one combinator
-    /// suffix at a time and re-check the base name.
-    String name = name_;
-    while (DB::AggregateFunctionCombinatorPtr combinator
-           = DB::AggregateFunctionCombinatorFactory::instance().tryFindSuffix(name))
-    {
-        name = name.substr(0, name.size() - combinator->getName().size());
-        if (factory.has(name))
-            return true;
-    }
-
-    return false;
+bool isAggregateNameOrCombinatorForm(const String & name_, const String & base)
+{
+    return anyCombinatorPrefix(name_, [&base](const String & name) { return name == base; });
 }
 
 } // namespace CHDB

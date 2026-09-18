@@ -465,6 +465,14 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name_) con
     return false;
 }
 
+bool AggregateFunctionFactory::hasNameOrAlias(const String & name) const
+{
+    if (IFactoryWithAliases<AggregateFunctionWithProperties>::hasNameOrAlias(name))
+        return true;
+
+    return CHDB::PythonUDAFFactory::instance().has(name);
+}
+
 AggregateFunctionFactory & AggregateFunctionFactory::instance()
 {
     static AggregateFunctionFactory ret;

@@ -1,5 +1,9 @@
 #!python3
 
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import chdb
@@ -311,6 +315,32 @@ class UDAFTestCase(unittest.TestCase):
         chdb.create_aggregate_function(name, accumulator, arg_types, return_type, **kwargs)
         self._registered.append(name)
 
+    def run_isolated(self, body):
+        """Run `body` in a fresh interpreter.
+
+        Some of what needs testing is process-global: whether registration works before
+        any connection exists, and how an executable UDF configured through udf_path
+        interacts with a UDAF. Neither can be observed once this class's own Session has
+        initialised the engine.
+        """
+        preamble = (
+            "import os, sys, tempfile\n"
+            "sys.path.insert(0, %r)\n"
+            "import chdb\n"
+            "from chdb.session import Session\n"
+            "from chdb.sqltypes import INT64\n"
+            "from test_func_udaf import PySum\n"
+        ) % os.path.dirname(os.path.abspath(__file__))
+        completed = subprocess.run(
+            [sys.executable, "-c", preamble + body],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        self.assertEqual(completed.returncode, 0,
+                         "subprocess failed:\n" + completed.stdout[-2000:] + completed.stderr[-2000:])
+        return completed.stdout.strip()
+
     def scalar(self, sql):
         return str(self.session.query(sql, "CSV")).strip()
 
@@ -541,6 +571,67 @@ class TestUDAFTypeDeclaration(UDAFTestCase):
         with self.assertRaises(RuntimeError) as ctx:
             chdb.create_function("shadowed_agg", lambda x: x, [INT64], INT64)
         self.assertIn("Python aggregate function with that name already exists", str(ctx.exception))
+
+    def test_scalar_udf_named_like_a_combinator_form_is_rejected(self):
+        # A scalar UDF called fooIf captures fooIf(x, cond), which is the advertised
+        # combinator form of the aggregate foo.
+        chdb.create_function("combform_sumIf", lambda x: x, [INT64], INT64)
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                chdb.create_aggregate_function("combform_sum", PySum)
+            self.assertIn("would capture that combinator form", str(ctx.exception))
+        finally:
+            chdb.drop_function("combform_sumIf")
+
+    def test_registration_works_before_any_connection_exists(self):
+        # Registration runs on the Python thread and must not touch anything that needs a
+        # query context; the first thing a user does is register, before opening a session.
+        output = self.run_isolated(
+            "chdb.create_aggregate_function('coldstart_sum', PySum, [INT64], INT64)\n"
+            "print(str(chdb.query('SELECT coldstart_sum(toInt64(number)) FROM numbers(5)', 'CSV')).strip())\n"
+        )
+
+        self.assertEqual(output, "10")
+
+    def test_executable_udf_already_loaded_makes_the_call_ambiguous(self):
+        # An executable UDF configured through udf_path is invisible to the aggregate
+        # registration guard (that registry needs a query context). Once a session has
+        # loaded it, the name resolves to the scalar function, so the call has to be
+        # refused rather than silently evaluated per row.
+        output = self.run_isolated(
+            "directory = tempfile.mkdtemp()\n"
+            "script = os.path.join(directory, 'clash_exec.py')\n"
+            "open(script, 'w').write('#!' + sys.executable + chr(10) + 'import sys' + chr(10) +\n"
+            "    'for line in sys.stdin:' + chr(10) + '    print(int(line.strip()) + 1)' + chr(10) +\n"
+            "    '    sys.stdout.flush()' + chr(10))\n"
+            "os.chmod(script, 0o755)\n"
+            "open(os.path.join(directory, 'udf_config.xml'), 'w').write(\n"
+            "    '<functions><function><type>executable</type><name>clash_exec</name>'\n"
+            "    '<return_type>Int64</return_type><format>TabSeparated</format>'\n"
+            "    '<command>clash_exec.py</command>'\n"
+            "    '<argument><type>Int64</type><name>x</name></argument></function></functions>')\n"
+            "sess = Session(':memory:?user_scripts_path=' + directory +\n"
+            "               '&user_defined_executable_functions_config=' + directory + '/*.xml')\n"
+            "print('scalar:', str(sess.query('SELECT clash_exec(1)', 'CSV')).strip())\n"
+            "chdb.create_aggregate_function('clash_exec', PySum, [INT64], INT64)\n"
+            "try:\n"
+            "    sess.query('SELECT clash_exec(toInt64(1))', 'CSV')\n"
+            "    print('resolved:no-error')\n"
+            "except Exception as e:\n"
+            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n"
+        )
+
+        self.assertIn("scalar: 2", output)
+        self.assertIn("both an ordinary function and a Python aggregate function", output)
+
+    def test_sql_udf_cannot_take_the_name_of_a_udaf(self):
+        # CREATE FUNCTION guards against aggregate names via
+        # AggregateFunctionFactory::hasNameOrAlias, which now also sees Python UDAFs.
+        self.register("sqludf_clash", PySum, [INT64], INT64)
+
+        with self.assertRaises(Exception) as ctx:
+            self.session.query("CREATE FUNCTION sqludf_clash AS (x) -> x + 1", "CSV")
+        self.assertIn("sqludf_clash", str(ctx.exception))
 
     def test_ordinary_function_name_is_rejected(self):
         with self.assertRaises(RuntimeError) as ctx:
@@ -1207,6 +1298,26 @@ class TestUDAFQueryShapes(UDAFTestCase):
                 "CSV",
             )
         self.assertIn("non-deterministic", str(ctx.exception))
+
+    def test_query_result_cache_refuses_a_computed_aggregate_name(self):
+        # arrayReduce's first argument only has to be a constant expression, not a literal,
+        # so the name cannot always be read from the AST. A computed name is treated as
+        # non-deterministic rather than silently cached.
+        self.register("qc_computed_sum", PySum, [INT64], INT64)
+
+        with self.assertRaises(Exception) as ctx:
+            self.session.query(
+                "SELECT arrayReduce(concat('qc_computed_', 'sum'), [toInt64(1), toInt64(2)]) "
+                "SETTINGS use_query_cache = 1, "
+                "query_cache_nondeterministic_function_handling = 'throw'",
+                "CSV",
+            )
+        self.assertIn("non-deterministic", str(ctx.exception))
+        # ... and it still computes the right answer when the cache is not involved.
+        self.assertEqual(
+            self.scalar("SELECT arrayReduce(concat('qc_computed_', 'sum'), [toInt64(1), toInt64(2)])"),
+            "3",
+        )
 
     def test_group_by_use_nulls_with_rollup(self):
         self.register("gbun_sum", PySum)

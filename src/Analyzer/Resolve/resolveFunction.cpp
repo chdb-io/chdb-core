@@ -60,6 +60,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int AMBIGUOUS_IDENTIFIER;
     extern const int BAD_ARGUMENTS;
     extern const int INVALID_IDENTIFIER;
     extern const int SYNTAX_ERROR;
@@ -1816,6 +1817,19 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
 
     if (function)
     {
+        /// Every registry consulted above resolves before aggregate functions, so a Python
+        /// UDAF sharing this exact name would silently never run. Registration rejects the
+        /// collisions it can see; executable UDFs configured through `udf_path` are only
+        /// visible with a query context, which registration does not have, so surface the
+        /// ambiguity here rather than quietly calling the ordinary function.
+        if (CHDB::PythonUDAFFactory::instance().has(function_name))
+            throw Exception(
+                ErrorCodes::AMBIGUOUS_IDENTIFIER,
+                "Function name '{}' is both an ordinary function and a Python aggregate function. "
+                "Drop one of them. In scope {}",
+                function_name,
+                scope.scope_node->formatASTForErrorMessage());
+
         checkFunctionNodeHasEmptyNullsAction(function_node);
     }
     else

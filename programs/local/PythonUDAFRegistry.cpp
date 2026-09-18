@@ -3,7 +3,6 @@
 #include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <Functions/FunctionFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
-#include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Common/Exception.h>
 
 
@@ -68,18 +67,35 @@ void PythonUDAFRegistry::registerUDAF(
             name);
 
     /// Ordinary functions are resolved before aggregate ones (see resolveFunction), so a
-    /// scalar UDF of the same name would take every call and the aggregate would never run.
-    if (PythonUDFFactory::instance().tryGetFunction(name))
-        throw DB::Exception(
-            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
-            "Python UDAF '{}' cannot be registered: a Python scalar UDF with that name already exists",
-            name);
+    /// scalar UDF would take every call the aggregate is meant to serve. That covers the
+    /// combinator forms too: with an aggregate `foo`, a scalar UDF named `fooIf` captures
+    /// `fooIf(x, cond)`. Registering an aggregate therefore has to look at every scalar
+    /// name, not just this one.
+    for (const auto & scalar_name : PythonUDFFactory::instance().getRegisteredNames())
+    {
+        if (!isAggregateNameOrCombinatorForm(scalar_name, name))
+            continue;
 
-    if (DB::UserDefinedSQLFunctionFactory::instance().tryGet(name))
+        if (scalar_name == name)
+            throw DB::Exception(
+                DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+                "Python UDAF '{}' cannot be registered: a Python scalar UDF with that name already exists",
+                name);
+
         throw DB::Exception(
             DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
-            "Python UDAF '{}' cannot be registered: a SQL user-defined function with that name already exists",
-            name);
+            "Python UDAF '{}' cannot be registered: the Python scalar UDF '{}' would capture that "
+            "combinator form of it",
+            name, scalar_name);
+    }
+
+    /// Registries that need a query context to answer - SQL user-defined functions,
+    /// executable UDFs, WASM UDFs - are deliberately not consulted here: registration
+    /// happens on the Python thread and there may be no context at all (the very first
+    /// thing a user does is register, before opening any connection). The reverse
+    /// direction is covered centrally instead - AggregateFunctionFactory::hasNameOrAlias
+    /// now reports Python UDAFs, which is what those registries check before taking a
+    /// name - and resolveFunction refuses a call that is ambiguous at query time.
 
     /// Build the descriptor (which runs Python: inspect.signature, pickle import) BEFORE
     /// taking the registry lock. On free-threaded builds, running Python while holding a

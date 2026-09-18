@@ -60,4 +60,9 @@ private:
 /// themselves (the query result cache walks the AST).
 bool isPythonUDAFName(const String & name);
 
+/// True when `name` is `base`, or any combinator form of it (`baseIf`, `baseArrayState`...).
+/// Used to reject a scalar function whose name would capture calls meant for an aggregate:
+/// ordinary functions are resolved before aggregate ones.
+bool isAggregateNameOrCombinatorForm(const String & name, const String & base);
+
 } // namespace CHDB

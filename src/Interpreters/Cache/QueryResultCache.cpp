@@ -90,12 +90,20 @@ struct HasNonDeterministicFunctionsMatcher
         return spec.substr(0, std::min(spec.find('('), spec.size()));
     }
 
-    /// True for `arrayReduce('my_udaf', ...)` and friends, which name the aggregate in a
-    /// string literal. Without this the name checks below never see `my_udaf`: the AST
-    /// function name is `arrayReduce`, which FunctionFactory resolves as a deterministic
-    /// ordinary function and returns on.
+    /// True for `arrayReduce('my_udaf', ...)` and friends, which name the aggregate in
+    /// argument 0 rather than in the AST function name. Without this the name checks below
+    /// never see `my_udaf`: the AST function name is `arrayReduce`, which FunctionFactory
+    /// resolves as a deterministic ordinary function and returns on.
+    ///
+    /// Argument 0 only has to be a constant *expression* (getArgumentsThatAreAlwaysConstant
+    /// returns {0}), so `arrayReduce(concat('my_', 'udaf'), ...)` is legal too. Evaluating
+    /// it here is not an option, so a computed name is treated as non-deterministic. That
+    /// costs nothing while no Python UDAF is registered, which is the usual case.
     static bool callsPythonUDAFByName(const ASTFunction & function)
     {
+        if (CHDB::PythonUDAFFactory::instance().empty())
+            return false;
+
         if (function.name != "arrayReduce" && function.name != "arrayReduceInRanges"
             && function.name != "initializeAggregation")
             return false;
@@ -105,7 +113,7 @@ struct HasNonDeterministicFunctionsMatcher
 
         const auto * literal = function.arguments->children.front()->as<ASTLiteral>();
         if (!literal || literal->value.getType() != Field::Types::String)
-            return false;
+            return true;
 
         return CHDB::isPythonUDAFName(aggregateNameFromLiteral(literal->value.safeGet<String>()));
     }
