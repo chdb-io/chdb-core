@@ -624,6 +624,63 @@ class TestUDAFTypeDeclaration(UDAFTestCase):
         self.assertIn("scalar: 2", output)
         self.assertIn("both an ordinary function and a Python aggregate function", output)
 
+    def test_builtin_combinator_form_name_is_rejected(self):
+        # `multiIf` is a built-in ordinary function and also the -If spelling of an
+        # aggregate called `multi`, so `multi` is not a usable aggregate name.
+        with self.assertRaises(RuntimeError) as ctx:
+            chdb.create_aggregate_function("multi", PySum, [INT64], INT64)
+        message = str(ctx.exception)
+        self.assertIn("would capture that combinator form", message)
+        self.assertIn("multiIf", message)
+
+    def test_sql_udf_registered_first_makes_the_call_ambiguous(self):
+        # A SQL UDF is substituted before aggregate functions are even considered, and the
+        # registry needs a query context so registration cannot see it. Creating it first
+        # therefore has to be caught at resolution.
+        output = self.run_isolated(
+            "sess = Session()\n"
+            "sess.query(\"CREATE FUNCTION sqlfirst_clash AS (x) -> x + 1\")\n"
+            "print('sql udf:', str(sess.query('SELECT sqlfirst_clash(1)', 'CSV')).strip())\n"
+            "chdb.create_aggregate_function('sqlfirst_clash', PySum, [INT64], INT64)\n"
+            "try:\n"
+            "    sess.query('SELECT sqlfirst_clash(toInt64(1))', 'CSV')\n"
+            "    print('resolved:no-error')\n"
+            "except Exception as e:\n"
+            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n"
+        )
+
+        self.assertIn("sql udf: 2", output)
+        self.assertIn("both a user-defined function and a Python aggregate function", output)
+
+    def test_executable_udf_captures_a_combinator_form(self):
+        # The combinator spelling has to be guarded too: an executable UDF named fooIf
+        # captures fooIf(x, cond), the -If form of an aggregate foo.
+        output = self.run_isolated(
+            "directory = tempfile.mkdtemp()\n"
+            "script = os.path.join(directory, 'combclash_execIf.py')\n"
+            "open(script, 'w').write('#!' + sys.executable + chr(10) + 'import sys' + chr(10) +\n"
+            "    'for line in sys.stdin:' + chr(10) + '    print(int(line.strip()) + 1)' + chr(10) +\n"
+            "    '    sys.stdout.flush()' + chr(10))\n"
+            "os.chmod(script, 0o755)\n"
+            "open(os.path.join(directory, 'udf_config.xml'), 'w').write(\n"
+            "    '<functions><function><type>executable</type><name>combclash_execIf</name>'\n"
+            "    '<return_type>Int64</return_type><format>TabSeparated</format>'\n"
+            "    '<command>combclash_execIf.py</command>'\n"
+            "    '<argument><type>Int64</type><name>x</name></argument></function></functions>')\n"
+            "sess = Session(':memory:?user_scripts_path=' + directory +\n"
+            "               '&user_defined_executable_functions_config=' + directory + '/*.xml')\n"
+            "print('scalar:', str(sess.query('SELECT combclash_execIf(1)', 'CSV')).strip())\n"
+            "chdb.create_aggregate_function('combclash_exec', PySum, [INT64], INT64)\n"
+            "try:\n"
+            "    sess.query('SELECT combclash_execIf(toInt64(1))', 'CSV')\n"
+            "    print('resolved:no-error')\n"
+            "except Exception as e:\n"
+            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n"
+        )
+
+        self.assertIn("scalar: 2", output)
+        self.assertIn("both an ordinary function and a Python aggregate function", output)
+
     def test_sql_udf_cannot_take_the_name_of_a_udaf(self):
         # CREATE FUNCTION guards against aggregate names via
         # AggregateFunctionFactory::hasNameOrAlias, which now also sees Python UDAFs.

@@ -1598,6 +1598,19 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     {
         user_defined_function = UserDefinedSQLFunctionFactory::instance().tryGet(function_name);
 
+        /// A SQL or WASM user-defined function is substituted here, long before aggregate
+        /// functions are considered, so a Python UDAF of this name - or of the name this
+        /// one is a combinator form of - would never run. That registry needs a query
+        /// context, which registration does not have, so the ambiguity can only be caught
+        /// here, and it has to be caught before the substitution below.
+        if (user_defined_function && CHDB::isPythonUDAFName(function_name))
+            throw Exception(
+                ErrorCodes::AMBIGUOUS_IDENTIFIER,
+                "Function name '{}' is both a user-defined function and a Python aggregate function. "
+                "Drop one of them. In scope {}",
+                function_name,
+                scope.scope_node->formatASTForErrorMessage());
+
         if (!lambda_expression_untyped && user_defined_function)
             /// Try to substitute user defined SQL expression
             lambda_expression_untyped = tryGetLambdaFromUserDefinedSQLFunctions(user_defined_function, scope.context);
@@ -1818,11 +1831,13 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     if (function)
     {
         /// Every registry consulted above resolves before aggregate functions, so a Python
-        /// UDAF sharing this exact name would silently never run. Registration rejects the
-        /// collisions it can see; executable UDFs configured through `udf_path` are only
-        /// visible with a query context, which registration does not have, so surface the
-        /// ambiguity here rather than quietly calling the ordinary function.
-        if (CHDB::PythonUDAFFactory::instance().has(function_name))
+        /// UDAF reachable under this name would silently never run - including through a
+        /// combinator, since `fooIf` is how an aggregate `foo` is spelled with -If.
+        /// Registration rejects the collisions it can see, built-ins among them, so this
+        /// combinator-aware check cannot misfire on something like `multiIf`; what is left
+        /// for it are the registries registration cannot inspect without a query context,
+        /// such as executable UDFs configured through `udf_path`.
+        if (CHDB::isPythonUDAFName(function_name))
             throw Exception(
                 ErrorCodes::AMBIGUOUS_IDENTIFIER,
                 "Function name '{}' is both an ordinary function and a Python aggregate function. "

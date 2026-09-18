@@ -66,6 +66,24 @@ void PythonUDAFRegistry::registerUDAF(
             "Python UDAF '{}' cannot be registered: an ordinary function with that name already exists",
             name);
 
+    /// Same reasoning one level up: a built-in ordinary function whose name is a
+    /// combinator form of this aggregate captures those calls. `multiIf` is such a name
+    /// for an aggregate called `multi`. Rejecting at registration - rather than at
+    /// resolution - keeps the error next to the cause and, just as importantly, leaves the
+    /// query-time guard free to be combinator-aware without ever misfiring on a built-in.
+    for (const auto & builtin_name : DB::FunctionFactory::instance().getAllNames())
+    {
+        if (builtin_name.size() <= name.size() || !builtin_name.starts_with(name))
+            continue;
+
+        if (isAggregateNameOrCombinatorForm(builtin_name, name))
+            throw DB::Exception(
+                DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+                "Python UDAF '{}' cannot be registered: the built-in function '{}' would capture that "
+                "combinator form of it",
+                name, builtin_name);
+    }
+
     /// Ordinary functions are resolved before aggregate ones (see resolveFunction), so a
     /// scalar UDF would take every call the aggregate is meant to serve. That covers the
     /// combinator forms too: with an aggregate `foo`, a scalar UDF named `fooIf` captures
