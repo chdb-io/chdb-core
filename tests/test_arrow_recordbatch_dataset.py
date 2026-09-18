@@ -15,6 +15,7 @@ of the already-supported one instead of to hand-copied literals.
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -306,6 +307,70 @@ class TestArrowRecordBatchInput(unittest.TestCase):
             self.assertEqual(str(out), "3,6\n")
         finally:
             sess.close()
+
+    def test_record_batch_limit_leaves_engine_usable(self):
+        # LIMIT satisfies itself from the first block and cancels, leaving the
+        # Arrow stream partially drained. The next query must still see
+        # everything.
+        rb_limit = pa.record_batch([pa.array(range(100_000), pa.int64())], names=["x"])
+        head = chdb.query(
+            "SELECT x FROM Python(rb_limit) LIMIT 3 SETTINGS max_threads = 1",
+            "ArrowTable",
+        )
+        self.assertEqual(head.to_pylist(), [{"x": 0}, {"x": 1}, {"x": 2}])
+        full = chdb.query("SELECT count() AS c, sum(x) AS s FROM Python(rb_limit)", "CSV")
+        self.assertEqual(str(full), f"100000,{100_000 * 99_999 // 2}\n")
+
+    def test_record_batch_odd_column_names_are_projected_correctly(self):
+        # The projection is pushed down as plain Python strings, so a name that
+        # needs quoting in SQL must still map to the right column.
+        rb_names = pa.record_batch(
+            [pa.array([1, 2], pa.int64()), pa.array(["x", "y"], pa.string())],
+            names=["col with space", "名字"],
+        )
+        out = chdb.query(
+            "SELECT `名字`, `col with space` AS n FROM Python(rb_names) ORDER BY n",
+            "ArrowTable",
+        )
+        self.assertEqual(out.column_names, ["名字", "n"])
+        self.assertEqual(
+            out.to_pylist(), [{"名字": "x", "n": 1}, {"名字": "y", "n": 2}]
+        )
+
+    def test_record_batch_nested_types_match_equivalent_table(self):
+        schema = pa.schema(
+            [
+                pa.field("st", pa.struct([("n", pa.int64()), ("s", pa.string())])),
+                pa.field("mp", pa.map_(pa.string(), pa.int64())),
+                pa.field("ls", pa.large_string()),
+                pa.field("bn", pa.binary()),
+            ]
+        )
+        rb_nested = pa.record_batch(
+            [
+                pa.array(
+                    [{"n": 1, "s": "a"}, {"n": 2, "s": "b"}],
+                    pa.struct([("n", pa.int64()), ("s", pa.string())]),
+                ),
+                pa.array([[("k", 1)], [("k", 2), ("j", 3)]], pa.map_(pa.string(), pa.int64())),
+                pa.array(["big1", "big2"], pa.large_string()),
+                pa.array([b"\x00\x01", b"\x02"], pa.binary()),
+            ],
+            schema=schema,
+        )
+        tbl_nested = pa.Table.from_batches([rb_nested])
+        sql = "SELECT st.n AS n, mp['k'] AS k, ls, hex(bn) AS b FROM Python({}) ORDER BY n"
+        rb_out = chdb.query(sql.format("rb_nested"), "ArrowTable")
+        tbl_out = chdb.query(sql.format("tbl_nested"), "ArrowTable")
+        self.assertEqual(rb_out.schema, tbl_out.schema)
+        self.assertEqual(rb_out.to_pylist(), tbl_out.to_pylist())
+        self.assertEqual(
+            rb_out.to_pylist(),
+            [
+                {"n": 1, "k": 1, "ls": "big1", "b": "0001"},
+                {"n": 2, "k": 2, "ls": "big2", "b": "02"},
+            ],
+        )
 
     def test_record_batch_takes_dedicated_pyarrow_dataset_path(self):
         # Falsifiable structural check: the dedicated PyArrow path wraps the
@@ -599,6 +664,168 @@ class TestArrowDatasetInput(unittest.TestCase):
             "ArrowTable",
         )
         self.assertEqual(out.to_pylist(), expected)
+
+    def test_dataset_limit_leaves_engine_usable(self):
+        # LIMIT cancels the pipeline with the dataset scan still mid-stream.
+        ds_limit = ds.dataset(self.parquet_dir, format="parquet")
+        all_ids = {r["id"] for r in self.parquet_rows}
+        head = chdb.query("SELECT id FROM Python(ds_limit) LIMIT 2", "ArrowTable")
+        # Fragment order under a threaded scanner is not defined, so pin the
+        # count and membership rather than which two rows arrive first.
+        self.assertEqual(head.num_rows, 2)
+        self.assertTrue({r["id"] for r in head.to_pylist()} <= all_ids)
+        full = chdb.query("SELECT count() AS c, sum(id) AS s FROM Python(ds_limit)", "CSV")
+        self.assertEqual(str(full), f"{len(all_ids)},{sum(all_ids)}\n")
+
+    def test_dataset_scan_error_is_reported_and_engine_stays_usable(self):
+        # Corrupting the file after the Dataset is built keeps schema inference
+        # happy and makes the failure happen inside the scan loop.
+        broken_dir = os.path.join(self.tmpdir, "broken")
+        os.makedirs(broken_dir, exist_ok=True)
+        path = os.path.join(broken_dir, "a.parquet")
+        pq.write_table(pa.table({"v": pa.array([1, 2, 3], pa.int64())}), path)
+        ds_broken = ds.dataset(broken_dir, format="parquet")
+        with open(path, "wb") as fh:
+            fh.write(b"PAR1" + b"garbage" * 50)
+
+        with self.assertRaisesRegex(Exception, "ArrowArrayStream"):
+            chdb.query("SELECT count() FROM Python(ds_broken)", "CSV")
+
+        # The engine must survive the aborted, undrained Arrow scan -- including
+        # a following Arrow-format read.
+        self.assertEqual(str(chdb.query("SELECT 1", "CSV")), "1\n")
+        self.assertEqual(
+            chdb.query("SELECT 1 AS ok", "ArrowTable").to_pylist(), [{"ok": 1}]
+        )
+
+    def test_dataset_concurrent_queries_each_see_full_data(self):
+        # One name bound by several in-flight queries: each scan opens its own
+        # scanner over the shared Dataset.
+        ds_shared = ds.dataset(self.parquet_dir, format="parquet")
+        expected = f"{len(self.parquet_rows)},{sum(r['id'] for r in self.parquet_rows)}\n"
+        results = []
+        errors = []
+
+        def run(ds_conc):
+            try:
+                results.append(
+                    str(
+                        chdb.query(
+                            "SELECT count() AS c, sum(id) AS s FROM Python(ds_conc)",
+                            "CSV",
+                        )
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - reported through `errors`
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=run, args=(ds_shared,)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [expected] * 4)
+
+    def test_dataset_insert_into_mergetree_copies_all_rows(self):
+        ds_insert = ds.dataset(self.parquet_dir, format="parquet")
+        expected = [
+            {"id": r["id"], "grp": r["grp"]}
+            for r in sorted(self.parquet_rows, key=lambda r: r["id"])
+        ]
+        sess = session.Session()
+        try:
+            sess.query("CREATE DATABASE IF NOT EXISTS arrow_ds_insert")
+            sess.query(
+                "CREATE TABLE arrow_ds_insert.dst (id Int64, grp String)"
+                " ENGINE = MergeTree ORDER BY id"
+            )
+            sess.query(
+                "INSERT INTO arrow_ds_insert.dst SELECT id, grp FROM Python(ds_insert)"
+            )
+            out = sess.query(
+                "SELECT id, grp FROM arrow_ds_insert.dst ORDER BY id", "ArrowTable"
+            )
+            self.assertEqual(out.to_pylist(), expected)
+        finally:
+            sess.close()
+
+    def test_dataset_with_explicit_schema_subset_exposes_only_those_columns(self):
+        # The structure comes from Dataset.schema, not from the files, so a
+        # user-narrowed schema hides the remaining columns.
+        ds_subset = ds.dataset(
+            self.parquet_dir,
+            format="parquet",
+            schema=pa.schema([pa.field("id", pa.int64())]),
+        )
+        desc = chdb.query("DESCRIBE Python(ds_subset)", "ArrowTable")
+        self.assertEqual([r["name"] for r in desc.to_pylist()], ["id"])
+        out = chdb.query(
+            "SELECT count() AS c, sum(id) AS s FROM Python(ds_subset)", "ArrowTable"
+        )
+        self.assertEqual(
+            out.to_pylist(),
+            [
+                {
+                    "c": len(self.parquet_rows),
+                    "s": sum(r["id"] for r in self.parquet_rows),
+                }
+            ],
+        )
+
+    def test_dataset_missing_column_in_one_file_reads_as_null(self):
+        evolving = os.path.join(self.tmpdir, "evolving")
+        os.makedirs(evolving, exist_ok=True)
+        pq.write_table(
+            pa.table(
+                {
+                    "id": pa.array([1, 2], pa.int64()),
+                    "extra": pa.array(["p", "q"], pa.string()),
+                }
+            ),
+            os.path.join(evolving, "a.parquet"),
+        )
+        pq.write_table(
+            pa.table({"id": pa.array([3, 4], pa.int64())}),
+            os.path.join(evolving, "b.parquet"),
+        )
+        ds_evolving = ds.dataset(evolving, format="parquet")
+        out = chdb.query(
+            "SELECT id, extra FROM Python(ds_evolving) ORDER BY id", "ArrowTable"
+        )
+        self.assertEqual(
+            out.to_pylist(),
+            [
+                {"id": 1, "extra": "p"},
+                {"id": 2, "extra": "q"},
+                {"id": 3, "extra": None},
+                {"id": 4, "extra": None},
+            ],
+        )
+
+    def test_dataset_parallel_scan_returns_same_rows_as_single_thread(self):
+        ds_threads = ds.dataset(self.parquet_dir, format="parquet")
+        sql = (
+            "SELECT id, grp, val FROM Python(ds_threads) ORDER BY id"
+            " SETTINGS max_threads = {}"
+        )
+        one = chdb.query(sql.format(1), "ArrowTable")
+        many = chdb.query(sql.format(8), "ArrowTable")
+        self.assertEqual(one.to_pylist(), many.to_pylist())
+        self.assertEqual(
+            one.to_pylist(), sorted(self.parquet_rows, key=lambda r: r["id"])
+        )
+
+    def test_empty_directory_dataset_fails_cleanly(self):
+        # A directory with no files gives a zero-field schema; the engine must
+        # reject it with a clear error instead of crashing.
+        no_files = os.path.join(self.tmpdir, "no_files")
+        os.makedirs(no_files, exist_ok=True)
+        ds_no_files = ds.dataset(no_files, format="parquet")
+        self.assertEqual(ds_no_files.schema.names, [])
+        with self.assertRaisesRegex(Exception, "Empty list of columns"):
+            chdb.query("SELECT count() FROM Python(ds_no_files)", "CSV")
+        self.assertEqual(str(chdb.query("SELECT 1", "CSV")), "1\n")
 
     def test_dataset_is_scanned_directly_with_pushed_down_projection(self):
         # Falsifiable structural check for the Dataset branch:
