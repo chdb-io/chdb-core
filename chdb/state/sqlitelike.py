@@ -658,6 +658,59 @@ class Connection:
         self._cursor = Cursor(self._conn)
         return self._cursor
 
+    def register_table(self, name: str, object: Any) -> None:
+        """Make a Python object queryable as ``Python(name)`` on this connection.
+
+        Without a registration, ``Python(name)`` is resolved by walking the
+        calling Python frames for a variable called ``name``. Registering is
+        the way to reach an object no variable names -- an attribute, a dict
+        entry, a temporary -- or to query from a frame the object is not
+        visible in (a worker thread, a callback, a REPL cell that has moved on).
+
+        Args:
+            name (str): Name to use inside ``Python(...)``. Must not contain
+                quotes. Registering a name twice replaces the first object.
+            object: A pandas DataFrame, a pyarrow Table, a polars
+                DataFrame/LazyFrame/Series, a :class:`PyReader`, or any object
+                exposing ``__arrow_c_stream__``.
+
+        Raises:
+            ValueError: If the name or the object is not usable as a table.
+
+        .. note::
+            A registration shadows a variable of the same name, and lives
+            until :meth:`unregister_table` or :meth:`close`. A registered
+            LazyFrame is collected once per query, like a LazyFrame found by
+            the frame walk.
+
+        Examples:
+            >>> import polars as pl
+            >>> conn = connect(":memory:")
+            >>> conn.register_table("t", pl.DataFrame({"a": [1, 2, 3]}))
+            >>> conn.query("SELECT sum(a) FROM Python(t)")
+            6
+
+        .. seealso::
+            :meth:`unregister_table`, :meth:`registered_tables`
+        """
+        self._conn.register_table(name, object)
+
+    def unregister_table(self, name: str) -> bool:
+        """Drop a registration made with :meth:`register_table`.
+
+        Returns:
+            bool: False if the name was not registered.
+
+        .. note::
+            After this, ``Python(name)`` falls back to the frame walk, so a
+            variable of that name becomes visible again.
+        """
+        return self._conn.unregister_table(name)
+
+    def registered_tables(self) -> list:
+        """Names registered with :meth:`register_table` on this connection."""
+        return self._conn.registered_tables()
+
     def _setup_auto_progress_callback(self):
         if not self._auto_progress or self._user_progress_callback:
             return None
@@ -760,59 +813,6 @@ class Connection:
             return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
-
-    def register_table(self, name: str, object: Any) -> None:
-        """Make a Python object queryable as ``Python(name)`` on this connection.
-
-        Without a registration, ``Python(name)`` is resolved by walking the
-        calling Python frames for a variable called ``name``. Registering is
-        the way to reach an object no variable names -- an attribute, a dict
-        entry, a temporary -- or to query from a frame the object is not
-        visible in (a worker thread, a callback, a REPL cell that has moved on).
-
-        Args:
-            name (str): Name to use inside ``Python(...)``. Must not contain
-                quotes. Registering a name twice replaces the first object.
-            object: A pandas DataFrame, a pyarrow Table, a polars
-                DataFrame/LazyFrame/Series, a :class:`PyReader`, or any object
-                exposing ``__arrow_c_stream__``.
-
-        Raises:
-            ValueError: If the name or the object is not usable as a table.
-
-        .. note::
-            A registration shadows a variable of the same name, and lives
-            until :meth:`unregister_table` or :meth:`close`. A registered
-            LazyFrame is collected once per query, like a LazyFrame found by
-            the frame walk.
-
-        Examples:
-            >>> import polars as pl
-            >>> conn = connect(":memory:")
-            >>> conn.register_table("t", pl.DataFrame({"a": [1, 2, 3]}))
-            >>> conn.query("SELECT sum(a) FROM Python(t)")
-            6
-
-        .. seealso::
-            :meth:`unregister_table`, :meth:`registered_tables`
-        """
-        self._conn.register_table(name, object)
-
-    def unregister_table(self, name: str) -> bool:
-        """Drop a registration made with :meth:`register_table`.
-
-        Returns:
-            bool: False if the name was not registered.
-
-        .. note::
-            After this, ``Python(name)`` falls back to the frame walk, so a
-            variable of that name becomes visible again.
-        """
-        return self._conn.unregister_table(name)
-
-    def registered_tables(self) -> list:
-        """Names registered with :meth:`register_table` on this connection."""
-        return self._conn.registered_tables()
 
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
