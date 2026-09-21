@@ -175,6 +175,10 @@ jobs:
             python -m pip install --upgrade pip
             # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
             python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert "fastjsonschema<2.22"
+            # polars gates tests/test_polars_output.py and the polars cases in
+            # tests/test_arrow_c_stream_protocol.py; they skip without it. polars
+            # needs Python 3.10+, so tolerate the versions that have no wheel.
+            python -m pip install polars || echo "polars unavailable for Python $version (polars tests will skip)"
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain

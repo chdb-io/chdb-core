@@ -75,6 +75,21 @@ chDB supports multiple output formats for different use cases:
    print(type(table))  # <class 'pyarrow.lib.Table'>
    print(f"Rows: {len(table)}")
 
+**polars DataFrame**
+
+.. code-block:: python
+
+   df = chdb.query("SELECT number FROM numbers(5)", "polars")
+   print(type(df))  # <class 'polars.dataframe.frame.DataFrame'>
+
+   # Lazily, so that polars can push projection, LIMIT and predicates into chDB
+   import polars as pl
+
+   conn = chdb.connect(":memory:")
+   lf = conn.pl("SELECT number AS n FROM numbers(1_000_000)", lazy=True)
+   print(lf.filter(pl.col("n") > 999_997).collect())
+   conn.close()
+
 **Pretty Format**
 
 .. code-block:: python

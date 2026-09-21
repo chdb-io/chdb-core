@@ -4,13 +4,16 @@ import threading
 
 
 from ._exceptions import ChdbError
+from .polars_io import to_polars, _require_polars
 
 
 _arrow_format = set({"arrowtable"})
+_polars_format = set({"polars"})
 _df_format = set({"dataframe", "datastore"})
 _process_result_format_funs = {
     "arrowtable": lambda x: to_arrowTable(x),
     "datastore": lambda x: to_datastore(x),
+    "polars": lambda x: to_polars(x),
 }
 
 # If any UDF is defined, the path of the UDF will be set to this variable
@@ -134,6 +137,7 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
             - "Parquet" - Parquet format
             - "DataFrame" - Pandas DataFrame
             - "ArrowTable" - PyArrow Table
+            - "polars" - polars DataFrame
             - "Debug" - Enable verbose logging
 
         path (str, optional): Database file path. Defaults to "" (in-memory database).
@@ -152,6 +156,7 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
         - str: For text formats like CSV, JSON
         - pd.DataFrame: When output_format is "DataFrame" or "dataframe"
         - pa.Table: When output_format is "ArrowTable" or "arrowtable"
+        - pl.DataFrame: When output_format is "polars"
         - chdb result object: For other formats
 
     Raises:
@@ -211,7 +216,10 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
 
     lower_output_format = output_format.lower()
     result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
-    if lower_output_format in _arrow_format:
+    if lower_output_format in _polars_format:
+        # Fail before running the query, like Connection.query does.
+        _require_polars(f'output format "{output_format}"')
+    if lower_output_format in _arrow_format or lower_output_format in _polars_format:
         output_format = "Arrow"
 
     with g_conn_lock:
@@ -267,9 +275,9 @@ __all__ = [
     "ExceptionHandling",
     "chdb_version",
     "engine_version",
-    "to_df",
     "to_arrowTable",
     "to_datastore",
+    "to_polars",
     "dbapi",
     "session",
     "udf",
