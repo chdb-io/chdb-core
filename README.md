@@ -349,7 +349,39 @@ arrow_table = pa.table(
 chdb.query("SELECT b, sum(a) FROM Python(arrow_table) GROUP BY b ORDER BY b").show()
 ```
 
-see also: [test_query_py.py](tests/test_query_py.py).
+#### Query on polars DataFrame
+
+```python
+import chdb
+import polars as pl
+df = pl.DataFrame(
+    {
+        "a": [1, 2, 3, 4, 5, 6],
+        "b": ["tom", "jerry", "auxten", "tom", "jerry", "auxten"],
+    }
+)
+
+chdb.query("SELECT b, sum(a) FROM Python(df) GROUP BY b ORDER BY b").show()
+
+# LazyFrames are collected first, Series become a one-column table
+lazy = df.lazy().filter(pl.col("a") > 3)
+chdb.query("SELECT sum(a) FROM Python(lazy)").show()
+```
+
+#### Registering an object explicitly
+
+`Python(name)` normally looks for a variable called `name` in the calling
+frames. Register the object instead when no variable names it, or when the
+query runs somewhere the variable is not visible:
+
+```python
+conn = chdb.connect(":memory:")
+conn.register_table("t", {"inner": df}["inner"])
+conn.query("SELECT sum(a) FROM Python(t)").show()
+conn.unregister_table("t")
+```
+
+see also: [test_query_py.py](tests/test_query_py.py), [test_polars_input.py](tests/test_polars_input.py).
 
 </details>
 

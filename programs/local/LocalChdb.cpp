@@ -1,4 +1,5 @@
 #include "LocalChdb.h"
+#include "PythonTableCache.h"
 #include "PyBorrowGuard.h"
 
 #include <base/scope_guard.h>
@@ -423,6 +424,34 @@ void connection_wrapper::set_progress_callback(const py::object & callback)
                 PyErr_Print();
             }
         });
+}
+
+void connection_wrapper::register_table(const std::string & name, const py::object & object)
+{
+    auto * client = getChdbClient(*conn);
+    if (!client)
+        throw std::runtime_error("Connection is closed");
+    client->getPythonTableCache()->registerTable(name, object);
+}
+
+bool connection_wrapper::unregister_table(const std::string & name)
+{
+    auto * client = getChdbClient(*conn);
+    if (!client)
+        throw std::runtime_error("Connection is closed");
+    return client->getPythonTableCache()->unregisterTable(name);
+}
+
+py::list connection_wrapper::registered_tables()
+{
+    auto * client = getChdbClient(*conn);
+    if (!client)
+        throw std::runtime_error("Connection is closed");
+
+    py::list names;
+    for (const auto & name : client->getPythonTableCache()->listRegisteredTables())
+        names.append(py::str(name));
+    return names;
 }
 
 cursor_wrapper * connection_wrapper::cursor()
@@ -1074,6 +1103,23 @@ PYBIND11_MODULE(_chdb, m)
             py::kw_only(),
             py::arg("params") = py::dict(),
             "Execute a query and return a DataFrame")
+        .def(
+            "register_table",
+            &connection_wrapper::register_table,
+            py::arg("name"),
+            py::arg("object"),
+            "Bind a Python object to a name, so that Python(name) finds it without a frame walk.\n"
+            "Replaces an existing registration of the same name; the registration owns a\n"
+            "reference until it is dropped or the connection closes.")
+        .def(
+            "unregister_table",
+            &connection_wrapper::unregister_table,
+            py::arg("name"),
+            "Drop a registration. Returns False if the name was not registered.")
+        .def(
+            "registered_tables",
+            &connection_wrapper::registered_tables,
+            "Names registered with register_table() on this connection.")
 #if USE_CLIENT_AI
         .def(
             "generate_sql",

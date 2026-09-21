@@ -4,6 +4,7 @@
 #include "DecimalCacheItem.h"
 #include "NumpyCacheItem.h"
 #include "PandasCacheItem.h"
+#include "PolarsCacheItem.h"
 #include "PyArrowCacheItem.h"
 #include "PythonImportCacheItem.h"
 #include "UUIDCacheItem.h"
@@ -27,6 +28,7 @@ public:
 	~PythonImportCache();
 
 	PandasCacheItem pandas;
+	PolarsCacheItem polars;
 	PyarrowCacheItem pyarrow;
 	DatetimeCacheItem datetime;
 	DecimalCacheItem decimal;

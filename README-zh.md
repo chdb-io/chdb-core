@@ -348,7 +348,38 @@ arrow_table = pa.table(
 chdb.query("SELECT b, sum(a) FROM Python(arrow_table) GROUP BY b ORDER BY b").show()
 ```
 
-另见: [test_query_py.py](tests/test_query_py.py)。
+#### 查询 polars DataFrame
+
+```python
+import chdb
+import polars as pl
+df = pl.DataFrame(
+    {
+        "a": [1, 2, 3, 4, 5, 6],
+        "b": ["tom", "jerry", "auxten", "tom", "jerry", "auxten"],
+    }
+)
+
+chdb.query("SELECT b, sum(a) FROM Python(df) GROUP BY b ORDER BY b").show()
+
+# LazyFrame 会先被 collect，Series 会变成单列表
+lazy = df.lazy().filter(pl.col("a") > 3)
+chdb.query("SELECT sum(a) FROM Python(lazy)").show()
+```
+
+#### 显式注册对象
+
+`Python(name)` 默认在调用栈的帧里查找名为 `name` 的变量。如果对象没有对应的
+变量名，或者查询发生在看不到该变量的地方，可以显式注册：
+
+```python
+conn = chdb.connect(":memory:")
+conn.register_table("t", {"inner": df}["inner"])
+conn.query("SELECT sum(a) FROM Python(t)").show()
+conn.unregister_table("t")
+```
+
+另见: [test_query_py.py](tests/test_query_py.py)、[test_polars_input.py](tests/test_polars_input.py)。
 
 </details>
 

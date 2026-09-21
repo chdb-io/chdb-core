@@ -207,6 +207,27 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
     # alias sql = query
     sql = query
 
+    def register_table(self, name, object):
+        """Make a Python object queryable as ``Python(name)`` in this session.
+
+        See :meth:`chdb.state.sqlitelike.Connection.register_table`.
+        """
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        self._conn.register_table(name, object)
+
+    def unregister_table(self, name):
+        """Drop a registration made with :meth:`register_table`."""
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        return self._conn.unregister_table(name)
+
+    def registered_tables(self):
+        """Names registered with :meth:`register_table` in this session."""
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        return self._conn.registered_tables()
+
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
         if self._conn is None:

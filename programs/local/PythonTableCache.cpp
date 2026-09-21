@@ -2,10 +2,13 @@
 #include "NumpyType.h"
 #include "PyBorrowGuard.h"
 #include "PybindWrapper.h"
+#include "PolarsDataFrame.h"
 #include "PythonArrowStream.h"
 #include "PythonUtils.h"
 
 #include <Common/re2.h>
+
+#include <stdexcept>
 
 namespace CHDB {
 
@@ -69,6 +72,8 @@ PythonTableCache::~PythonTableCache()
         (void)leaked;
         for (auto & [name, entry] : py_table_cache)
             entry.obj.release();
+        for (auto & [name, object] : registered_tables)
+            object.release();
         return;
     }
     try
@@ -76,14 +81,17 @@ PythonTableCache::~PythonTableCache()
         py::gil_scoped_acquire acquire;
         std::list<PandasTableMetaPtr> metas;
         std::unordered_map<String, NamedEntry> bindings;
+        std::unordered_map<String, py::object> registrations;
         {
             std::lock_guard lock(state_mutex);
             metas.swap(meta_lru);
             bindings.swap(py_table_cache);
+            registrations.swap(registered_tables);
             bound_names_by_token.clear();
         }
         metas.clear();
         bindings.clear();
+        registrations.clear();
         drainPyBorrowGuardQueue();
     }
     catch (...)
@@ -228,9 +236,16 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
                 }
             }
 
-            auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
+            py::object obj = lookupRegisteredTable(matched);
+            if (obj.is_none())
+                obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
             if (obj.is_none())
                 continue;
+
+            /// A polars LazyFrame or Series is only scannable once collected
+            /// or widened to a frame. Do it here, once per bind, so schema
+            /// inference and the scan are handed the very same object.
+            obj = PolarsDataFrame::normalize(obj);
 
             std::lock_guard lock(state_mutex);
             if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
@@ -321,18 +336,100 @@ py::object PythonTableCache::getQueryableObj(const String & table_name)
     return py::none();
 }
 
+py::object PythonTableCache::lookupRegisteredTable(const String & name)
+{
+    /// Copying the reference increfs, which is C API only (no bytecode), so
+    /// it is safe under state_mutex -- same rule as getQueryableObj.
+    py::gil_assert();
+
+    std::lock_guard lock(state_mutex);
+    auto it = registered_tables.find(name);
+    if (it != registered_tables.end())
+        return it->second;
+    return py::none();
+}
+
+void PythonTableCache::registerTable(const String & name, const py::object & object)
+{
+    py::gil_assert();
+
+    if (name.empty() || name.find('\'') != String::npos || name.find('"') != String::npos)
+        throw std::invalid_argument(
+            "Invalid table name '" + name
+            + "': the name must be non-empty and free of quotes, so that Python('name') can reference it");
+
+    /// str/bytes satisfy the __getitem__ fallback below but are never a data
+    /// source; rejecting them here catches the swapped-arguments mistake.
+    if (py::isinstance<py::str>(object) || py::isinstance<py::bytes>(object))
+        throw std::invalid_argument("Cannot register '" + name + "': a str/bytes is not a data source");
+
+    /// Reject now what the scan would only reject mid-query. The predicate is
+    /// the one the frame walk applies, plus polars' LazyFrame, which reaches
+    /// the scan as the DataFrame normalize() collects it into.
+    if (!(DB::isInheritsFromPyReader(object) || DB::isPandasDf(object) || DB::isPyarrowTable(object)
+          || hasArrowCStreamMethod(object) || PolarsDataFrame::isPolarsLazyFrame(object) || DB::hasGetItem(object)))
+        throw std::invalid_argument(
+            "Object registered as '" + name
+            + "' is not queryable: expected a PyReader, a pandas DataFrame, a pyarrow Table, "
+              "a polars DataFrame/LazyFrame/Series, or any object exposing __arrow_c_stream__");
+
+    py::object replaced;
+    {
+        std::lock_guard lock(state_mutex);
+        auto [it, inserted] = registered_tables.emplace(name, object);
+        if (!inserted)
+        {
+            replaced = std::move(it->second);
+            it->second = object;
+        }
+    }
+    /// The previous registration dies outside the lock: its destructor can run
+    /// arbitrary Python code (__del__), which must not happen under state_mutex.
+    replaced = py::object();
+}
+
+bool PythonTableCache::unregisterTable(const String & name)
+{
+    py::gil_assert();
+
+    py::object dropped;
+    {
+        std::lock_guard lock(state_mutex);
+        auto it = registered_tables.find(name);
+        if (it == registered_tables.end())
+            return false;
+        dropped = std::move(it->second);
+        registered_tables.erase(it);
+    }
+    dropped = py::object();
+    return true;
+}
+
+std::vector<String> PythonTableCache::listRegisteredTables()
+{
+    std::lock_guard lock(state_mutex);
+    std::vector<String> names;
+    names.reserve(registered_tables.size());
+    for (const auto & [name, object] : registered_tables)
+        names.push_back(name);
+    return names;
+}
+
 void PythonTableCache::clear()
 {
     try
     {
         py::gil_scoped_acquire acquire;
         std::unordered_map<String, NamedEntry> dropped;
+        std::unordered_map<String, py::object> unregistered;
         {
             std::lock_guard lock(state_mutex);
             dropped.swap(py_table_cache);
+            unregistered.swap(registered_tables);
             bound_names_by_token.clear();
         }
         dropped.clear();
+        unregistered.clear();
         drainPyBorrowGuardQueue();
     }
     catch (...)

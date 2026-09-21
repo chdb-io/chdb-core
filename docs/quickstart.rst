@@ -156,6 +156,31 @@ Query pandas DataFrames directly:
    
    print(result)
 
+polars works the same way -- a DataFrame is read through the Arrow PyCapsule
+protocol, a LazyFrame is collected first, and a Series becomes a one-column
+table:
+
+.. code-block:: python
+
+   import polars as pl
+
+   df = pl.DataFrame({"product": ["A", "B", "A"], "sales": [100, 200, 300]})
+   print(chdb.query("SELECT product, sum(sales) FROM Python(df) GROUP BY product"))
+
+   lazy = df.lazy().filter(pl.col("sales") > 150)
+   print(chdb.query("SELECT sum(sales) FROM Python(lazy)"))
+
+``Python(name)`` resolves ``name`` by walking the calling Python frames. When
+no variable names the object, or the query runs where the variable is not
+visible, register it on the connection instead:
+
+.. code-block:: python
+
+   conn = chdb.connect(":memory:")
+   conn.register_table("sales", {"inner": df}["inner"])
+   conn.query("SELECT sum(sales) FROM Python(sales)")
+   conn.unregister_table("sales")
+
 Memory vs Persistent Storage
 ----------------------------
 

@@ -71,6 +71,10 @@ public:
     void backup_database(const std::string & database, const std::string & file_path, const std::string & base_file_path);
     void restore_database(const std::string & database, const std::string & file_path);
     py::dict classify_query(const std::string & sql, const std::string & target_database);
+    /// Explicit Python(name) bindings, the alternative to the frame walk.
+    void register_table(const std::string & name, const py::object & object);
+    bool unregister_table(const std::string & name);
+    py::list registered_tables();
     std::string generate_sql(const std::string & prompt);
 
     // Move the private methods declarations here

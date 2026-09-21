@@ -81,7 +81,10 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
         if (instance == nullptr || instance.is_none())
             throw Exception(ErrorCodes::PY_OBJECT_NOT_FOUND,
                             "Python object not found in the Python environment\n"
-                            "Ensure that the object is type of PyReader, pandas DataFrame, or PyArrow Table and is in the global or local scope");
+                            "Ensure that the object is a PyReader, a pandas DataFrame, a pyarrow Table, a polars "
+                            "DataFrame/LazyFrame/Series, or any object exposing __arrow_c_stream__, and that it is "
+                            "either a variable in the global or local scope or registered with "
+                            "connection.register_table(name, object)");
 
         LOG_DEBUG(
             logger,
@@ -198,10 +201,11 @@ void registerTableFunctionPython(TableFunctionFactory & factory)
     factory.registerFunction<TableFunctionPython>(
         {
             .description = R"(
-Passing Pandas DataFrame or Pyarrow Table to ClickHouse engine.
+Passing a pandas DataFrame, a pyarrow Table, a polars DataFrame/LazyFrame/Series, or any object implementing
+the Arrow PyCapsule stream protocol (__arrow_c_stream__) to the ClickHouse engine.
 For any other data structure, you can also create a table interface to a Python data source and reads data
 from a PyReader object.
-This table function requires a single argument which is a PyReader object used to read data from Python.
+This table function requires a single argument which is the name of the Python object to read from.
 )",
             .examples = {{"python", "SELECT * FROM Python(PyReader)", ""}},
             .category = FunctionDocumentation::Category::TableFunction,
