@@ -164,6 +164,9 @@ def main() -> int:
             skipped[reason] += 1
 
     print(f"scoped candidate records: {len(scoped)}")
+    print("scoped candidates:")
+    for change, rendered, reason in scoped:
+        print(f"  {change}\t{rendered} ({reason})")
     if skipped:
         print("excluded/skipped summary:")
         for reason, count in skipped.most_common():
