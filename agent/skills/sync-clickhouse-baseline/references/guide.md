@@ -50,6 +50,49 @@ Discover conflicts in a disposable worktree first. Regenerate and commit a patch
 | Full, lite, WASM | A new function pulls in a missing source, network feature, thread, socket, or OS call | Make an explicit decision for each variant and use separate build directories |
 | Toolchains and packaging | One wheel or cross-build script keeps an old compiler, flag, or dependency pin | Search every workflow and install step, then build with the exact new toolchain |
 
+### Embedded-specific review
+
+Every upstream change under `programs/local/LocalServer.cpp` or
+`programs/local/LocalServer.h` requires a manual comparison with
+`programs/local/EmbeddedServer.cpp` and `programs/local/EmbeddedServer.h`.
+
+Compare:
+
+- server settings and cache setters;
+- Context initialization and registration order;
+- thread pools, MemoryWorker, jemalloc and background workers;
+- user/config/path initialization;
+- logger, signal and shutdown ordering.
+
+Do not copy CLI-only listener, stdin, interactive, or query-loop logic into
+`EmbeddedServer` without an explicit embedded design decision.
+
+### Client boundary
+
+When `ClientBase` or `LocalConnection` changes, review `ChdbClient`.
+
+Compare:
+
+- Session and Context creation;
+- per-connection settings;
+- stdin/input ownership;
+- progress and cancellation callbacks;
+- query context construction;
+- cleanup and streaming worker ownership.
+
+### Host lifecycle
+
+When upstream changes `ThreadPool`, `SignalHandlers`, `Logger`,
+`CurrentMemoryTracker`, jemalloc, atexit or shutdown code, verify that
+embedded mode does not take ownership of host process resources and that all
+embedded workers are stopped before Context and global pool destruction.
+
+### Build/runtime boundaries
+
+When upstream changes registration objects, CMake source lists,
+`CHDB_LITE`/WASM guards, export lists, or static-library linkage, review the
+chDB build and binding surfaces separately.
+
 ## Failure patterns to remember
 
 | Symptom | Cause seen before | Early check |

@@ -30,6 +30,13 @@ Before changing files, read the matching [guide](references/guide.md).
 8. For a CI crash, core dump, hang, or memory error, obtain the CI artifact and symbolicate it when possible. Otherwise reproduce the same build and failure locally. Do not guess from a short error message or push repeated trial commits. If the required platform, toolchain, symbols, or data are unavailable, state the exact gap and ask a person to provide it. Do not skip the test. When CI evidence is too weak, record a follow-up change that improves CI diagnostics.
 9. Do not push or change a remote pull request without confirmation for that exact action.
 
+## Embedded and host-lifecycle review
+
+When upstream changes `LocalServer`, `ClientBase`, `LocalConnection`,
+threading, memory, signal, logger, shutdown, or build/runtime boundaries,
+review the corresponding embedded paths using
+[guide.md](references/guide.md).
+
 ## Workflow
 
 ### 1. Prepare
