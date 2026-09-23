@@ -86,6 +86,13 @@
 #elif defined(sun) || defined(__sun)
 #    define POCO_OS_FAMILY_UNIX 1
 #    define POCO_OS POCO_OS_SOLARIS
+#elif defined(__wasi__) || defined(__wasm__)
+/// WebAssembly. Only the parts of Poco that do not touch the OS are expected to build.
+#    define POCO_OS_FAMILY_UNIX 1
+#    define POCO_OS POCO_OS_UNKNOWN_UNIX
+/// WASI has no Unix domain sockets, so `sockaddr_un` has no `sun_path` there - and unlike the
+/// rest of `POCO_OS_FAMILY_UNIX`, that is a difference the headers have to see.
+#    define POCO_NO_UNIX_SOCKETS 1
 #elif defined(unix) || defined(__unix) || defined(__unix__)
 #    define POCO_OS_FAMILY_UNIX 1
 #    define POCO_OS POCO_OS_UNKNOWN_UNIX
