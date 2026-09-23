@@ -16,6 +16,7 @@
 #include <Core/Settings.h>
 #include <Core/Block.h>
 #include <Formats/FormatFactory.h>
+#include <IO/EmptyReadBuffer.h>
 #include <IO/ReadBufferFromMemory.h>
 #include <IO/ReadHelpers.h>
 #include <Parsers/ASTExplainQuery.h>
@@ -60,6 +61,18 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
     : ClientBase()
     , server(server_ref)
 {
+    /// Detach the client from the host process's stdin (#239).
+    /// ClientBase defaults `std_in` to fd 0, which is right for clickhouse-local as a
+    /// CLI -- a pipe into the process *is* the query input -- but wrong for a library,
+    /// where fd 0 belongs to the embedding application. Left bound, whatever the host
+    /// has on fd 0 becomes external data for an INSERT, so the same SQL succeeds or
+    /// fails depending on how the host was started, and can store rows the application
+    /// never wrote. An empty buffer makes isStdinNotEmptyAndValid() false by
+    /// construction, so INSERT data comes only from the query text; it also covers the
+    /// `input()` table function, which reads this buffer via the pointer connect()
+    /// hands to LocalConnection.
+    std_in = std::make_unique<EmptyReadBuffer>();
+
     query_kind = ClientInfo::QueryKind::INITIAL_QUERY;
     configuration = ConfigHelper::createEmpty();
     layered_configuration = new Poco::Util::LayeredConfiguration();
