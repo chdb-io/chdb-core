@@ -42,8 +42,10 @@
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <Loggers/OwnSplitChannel.h>
+#include <Parsers/registerStatements.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Processors/QueryPlan/QueryPlanStepRegistry.h>
 #include <Storages/System/attachInformationSchemaTables.h>
 #include <Storages/System/attachSystemTables.h>
 #include <Storages/registerStorages.h>
@@ -480,7 +482,10 @@ static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, Co
         = fs::weakly_canonical(context->getPath()) / "store" / DatabaseCatalog::getPathForUUID(default_database_uuid);
 
     overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
-    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context,
+        /// v26.9 added this: true downgrades a missing path to a warning, for the server's own
+        /// metadata replay. chdb is not replaying metadata, and v26.7 always threw, so keep that.
+        /*is_internal_metadata_replay=*/ false));
     return overlay;
 }
 
@@ -759,6 +764,7 @@ try
             chdb_embedded_server_initialized = true;
 
             registerInterpreters();
+            registerStatements();
             /// Don't initialize DateLUT
             registerFunctions();
             registerAggregateFunctions();
@@ -784,6 +790,7 @@ try
             registerDictionaries();
             registerDisks(/* global_skip_access_check= */ true);
             registerFormats();
+            QueryPlanStepRegistry::registerPlanSteps();
         });
 
     processConfig();

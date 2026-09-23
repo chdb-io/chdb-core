@@ -3,6 +3,8 @@
 #if USE_ARROW
 
 #include <Formats/FormatFactory.h>
+/// chdb keeps the Apache Arrow library writer as a fallback; see output_format_arrow_use_native_writer.
+#include <Processors/Formats/Impl/ArrowBlockOutputFormat.h>
 #include <Processors/Formats/Impl/ArrowIPC/FlatBuffersCommon.h>
 #include <Processors/Port.h>
 #include <Core/Block.h>
@@ -464,7 +466,10 @@ void registerOutputFormatArrow(FormatFactory & factory)
            const FormatSettings & format_settings,
            FormatFilterInfoPtr /*format_filter_info*/) -> OutputFormatPtr
         {
-            return std::make_shared<ArrowIPCBlockOutputFormat>(buf, std::make_shared<const Block>(sample), false, format_settings);
+            auto header = std::make_shared<const Block>(sample);
+            if (!format_settings.arrow.output_use_native_writer)
+                return std::make_shared<ArrowBlockOutputFormat>(buf, header, false, format_settings);
+            return std::make_shared<ArrowIPCBlockOutputFormat>(buf, header, false, format_settings);
         });
     factory.markFormatHasNoAppendSupport("Arrow");
     factory.markOutputFormatNotTTYFriendly("Arrow");
@@ -477,7 +482,10 @@ void registerOutputFormatArrow(FormatFactory & factory)
            const FormatSettings & format_settings,
            FormatFilterInfoPtr /*format_filter_info*/) -> OutputFormatPtr
         {
-            return std::make_shared<ArrowIPCBlockOutputFormat>(buf, std::make_shared<const Block>(sample), true, format_settings);
+            auto header = std::make_shared<const Block>(sample);
+            if (!format_settings.arrow.output_use_native_writer)
+                return std::make_shared<ArrowBlockOutputFormat>(buf, header, true, format_settings);
+            return std::make_shared<ArrowIPCBlockOutputFormat>(buf, header, true, format_settings);
         });
     factory.markFormatHasNoAppendSupport("ArrowStream");
     factory.markOutputFormatPrefersLargeBlocks("ArrowStream");

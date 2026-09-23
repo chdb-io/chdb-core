@@ -35,8 +35,6 @@ public:
     LocalServer() = default;
     ~LocalServer() override;
 
-    ~LocalServer() override;
-
     void initialize(Poco::Util::Application & self) override;
 
     int main(const std::vector<String> & /*args*/) override;

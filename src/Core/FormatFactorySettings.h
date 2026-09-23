@@ -1542,6 +1542,11 @@ Buffering blocks can increase memory use and delay the first record batch until 
 `0` (the default) disables the byte target. Try `1048576` (1 MiB) as a starting value.
 )", 0) \
     \
+    DECLARE(Bool, output_format_arrow_use_native_writer, true, R"(
+Use the native ClickHouse writer for the Arrow and ArrowStream formats instead of the one based on the Apache Arrow library.
+chdb keeps the Apache Arrow library writer, which upstream removed in v26.9.
+)", 0) \
+    \
     DECLARE(Bool, output_format_orc_string_as_string, true, R"(
 Use ORC String type instead of Binary for String columns
 )", 0) \
@@ -1772,7 +1777,6 @@ Supported modes:
     MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader_v3, true) \
     MAKE_OBSOLETE(M, Bool, input_format_orc_use_fast_decoder, true) \
     MAKE_OBSOLETE(M, Bool, input_format_arrow_use_native_reader, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_arrow_use_native_writer, true) \
     MAKE_OBSOLETE(M, Bool, output_format_parquet_use_custom_encoder, true) \
     MAKE_OBSOLETE(M, ParquetVersion, output_format_parquet_version, "2.latest") \
     MAKE_OBSOLETE(M, Bool, output_format_parquet_compliant_nested_types, true) \

@@ -143,7 +143,7 @@ void freeImpl(void * buf)
 void checkSize(size_t size)
 {
     /// More obvious exception in case of possible overflow (instead of just "Cannot mmap").
-    if (unlikely(size >= 0x8000000000000000ULL))
+    if (size >= MAX_ALLOCATION_SIZE) [[unlikely]]
         throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Too large size ({}) passed to allocator. It indicates an error.", size);
 }
 

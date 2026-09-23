@@ -23,10 +23,9 @@
 #include "Poco/Foundation.h"
 
 
-// Emscripten/WebAssembly has no hardware floating-point exception support, so its
-// <fenv.h> omits these flag macros (it only defines FE_ALL_EXCEPT == 0 and the
-// rounding modes). Provide them as no-op (0) flags so the C99 implementation still
-// compiles; the corresponding fe*except() calls are no-ops on this platform.
+// WebAssembly has no floating-point exception flags, so Emscripten's <fenv.h> defines
+// FE_ALL_EXCEPT as 0 and omits the individual ones. Define them as no-op flags so the C99
+// implementation still compiles; the corresponding fe*except() calls are no-ops there.
 #ifndef FE_DIVBYZERO
 #    define FE_DIVBYZERO 0
 #endif

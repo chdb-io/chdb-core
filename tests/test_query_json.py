@@ -21,8 +21,16 @@ EXPECTED1 = """"['urgent','important']",100.3,"[]"
 \\N,\\N,"[1,666]"
 """
 EXPECTED2 = '"apple1",3,\\N\n\\N,4,2\n'
+# c3 row 2 is {"mixed_list": ...} - it has no "deep" field at all, so
+# c3.deep.level2.level3 reads back as NULL rather than 0 since ClickHouse v26.9.
+# Attribution: chdb's own outer-validity propagation in ArrowColumnToCHColumn.cpp is
+# byte-identical to before, and the result does not depend on where it runs relative to
+# upstream's new named-tuple matching (verified by swapping them). What changed is
+# upstream: +106/-26 in that file plus the contrib/arrow bump 6a0df9e8 -> 949bccfd.
+# NULL is also what chdb's code comment there says it wants: a NULL struct should read
+# back as a tuple of NULLs, not of default values.
 EXPECTED3 = """"['urgent','important']",100.3,"[]"
-"[]",0,"[1,666]"
+"[]",\\N,"[1,666]"
 """
 
 dict1 = {

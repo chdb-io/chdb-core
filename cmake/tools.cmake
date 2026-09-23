@@ -6,7 +6,7 @@ endif ()
 
 # Print details to output
 if (OS_WASM)
-    # emcc rejects an empty --target=/--sysroot; it already knows its target.
+    # `emcc` knows its own target and sysroot, and rejects being passed an empty one.
     execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version
         OUTPUT_VARIABLE COMPILER_SELF_IDENTIFICATION
         COMMAND_ERROR_IS_FATAL ANY
@@ -75,8 +75,8 @@ endif ()
 if (LINKER_NAME)
     message(STATUS "Using linker: ${LINKER_NAME}")
 elseif (OS_WASM)
-    # Emscripten drives wasm-ld internally via emcc; do not force a linker.
-    message(STATUS "Using linker: <emscripten wasm-ld>")
+    # `emcc` drives `wasm-ld` itself and takes no `--ld-path`.
+    message(STATUS "Using linker: <wasm-ld, through emcc>")
 elseif (NOT ARCH_S390X AND NOT OS_FREEBSD AND NOT OS_SUNOS)
     message (FATAL_ERROR "The only supported linker is LLVM's LLD, but we cannot find it.")
 else ()
