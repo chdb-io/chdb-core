@@ -259,6 +259,12 @@ if (USE_MUSL)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftls-model=global-dynamic")
     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftls-model=global-dynamic")
 endif()
+
+# FiberLocal's fast path reaches thread-local storage from inline assembly that spells the
+# local-exec relocation itself. A shared object cannot carry those, and every chdb artifact is
+# either libchdb.so or an archive a consumer may link into one. Take the portable branch the
+# header already has.
+add_definitions(-DCHDB_PORTABLE_FIBER_LOCAL_TLS=1)
 # chdb_spec
 
 # A compiler without zlib accepts -gz but only warns, so -Werror on that warning makes the check fail.

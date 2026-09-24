@@ -170,13 +170,18 @@ private:
     {
         static_assert(slot < slot_count);
         uintptr_t value = 0;
-#if defined(__x86_64__) && defined(__ELF__)
+        /// chdb_spec: the inline-asm paths below name the TLS symbol with local-exec
+        /// relocations (R_X86_64_TPOFF32, R_AARCH64_TLSLE_*), which a linker refuses in a
+        /// shared object. chdb links this code into libchdb.so, so it takes the portable
+        /// branch. -ftls-model does not help: the relocation is written into the asm, not
+        /// chosen by the compiler.
+#if !defined(CHDB_PORTABLE_FIBER_LOCAL_TLS) && defined(__x86_64__) && defined(__ELF__)
         __asm__ __volatile__(
             "movq %%fs:FiberLocalStorageThreadStorage@tpoff+%c1, %0"
             : "=r"(value)
             : "i"(slot * sizeof(void *))
             : "memory");
-#elif defined(__aarch64__) && defined(__ELF__)
+#elif !defined(CHDB_PORTABLE_FIBER_LOCAL_TLS) && defined(__aarch64__) && defined(__ELF__)
         __asm__ __volatile__(
             "mrs %0, tpidr_el0\n\t"
             "add %0, %0, :tprel_hi12:FiberLocalStorageThreadStorage+%c1\n\t"
@@ -193,13 +198,14 @@ private:
     template <size_t slot>
     static void store(uintptr_t value) noexcept
     {
-#if defined(__x86_64__) && defined(__ELF__)
+        /// chdb_spec: see load() above.
+#if !defined(CHDB_PORTABLE_FIBER_LOCAL_TLS) && defined(__x86_64__) && defined(__ELF__)
         __asm__ __volatile__(
             "movq %1, %%fs:FiberLocalStorageThreadStorage@tpoff+%c0"
             :
             : "i"(slot * sizeof(void *)), "r"(value)
             : "memory");
-#elif defined(__aarch64__) && defined(__ELF__)
+#elif !defined(CHDB_PORTABLE_FIBER_LOCAL_TLS) && defined(__aarch64__) && defined(__ELF__)
         void * address = nullptr;
         __asm__ __volatile__(
             "mrs %0, tpidr_el0\n\t"
