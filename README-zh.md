@@ -143,6 +143,10 @@ print(result)
 df = chdb.query("SELECT number, number * 2 AS double FROM numbers(10)", "DataFrame")
 print(df)
 
+# polars DataFrame 输出
+df = chdb.query("SELECT number, number * 2 AS double FROM numbers(10)", "polars")
+print(df)
+
 # 参数化查询
 df = chdb.query(
     "SELECT toDate({base_date:String}) + number AS date "
