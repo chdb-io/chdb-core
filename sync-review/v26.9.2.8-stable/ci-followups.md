@@ -263,3 +263,52 @@ every attempt.
 **What catches it next time.** Run `node test/browser-run.mjs` in `packages/chdb-wasm` as part
 of the local WASM matrix. Node and Chrome are different execution environments for the same
 bundle, and the thread pool is exactly where they differ.
+
+## 7. A thread pool this sync added to EmbeddedServer should never have been added
+
+**Failure.** `Build & Test Universal Wheel (Linux x86_64)`, step *Test chdb DataStore tests
+against upstream chdb (latest tag)*, run 35987153814. One case out of 11267:
+
+```
+FAILED tests/test_chdb_settings.py::TestChdbSettingsDataStoreInternal
+       ::test_override_setting_via_datastore_dataframe_query
+  E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc0 in position 46
+      ... in _run_chdb_in_subprocess -> subprocess.run -> _translate_newlines
+= 1 failed, 11266 passed, 104 skipped, 79 xfailed, 5 xpassed =
+```
+
+The test reads a child process's stderr as UTF-8. Undecodable bytes there mean the child wrote
+something that is not text, which is what a crash on the way out looks like.
+
+**Root cause.** Entry §2 of this file added two `initialize()` calls to `EmbeddedServer`
+because v26.9 added them to `LocalServer`. One of them was wrong.
+`getDatabaseCatalogShutdownTablesThreadPool()` does not need initializing by a non-server
+binary, and upstream says so at the only place that uses it, in `DatabasesCommon.cpp`:
+
+```cpp
+/// Lazy-init for non-server binaries (client/keeper) that reach this via a Database destructor.
+auto & shared_pool = getDatabaseCatalogShutdownTablesThreadPool();
+shared_pool.initializeWithDefaultSettingsIfNotInitialized();
+```
+
+Initializing it early from `EmbeddedServer` changes the pool's configuration and binds the
+table-shutdown path to a thread pool during process teardown, which is exactly the ordering
+chdb is careful about elsewhere. `getIcebergManifestDecodeThreadPool()` has no such lazy-init
+— that is why leaving it out raised LOGICAL_ERROR — so it stays.
+
+Evidence that this is the cause: the case passes on the run that carried only the TLS fix and
+fails on the run that first carried §2; no other commit between them touches engine behaviour
+on Linux; and the failure is a crash at exit on the path this pool serves.
+
+**Fix.** Remove the `getDatabaseCatalogShutdownTablesThreadPool().initialize()` call, its
+setting declaration and the include it needed. Keep the Iceberg pool.
+
+**Why the local checks missed it.** The case passes on macOS — it is in the 11159 that passed
+locally, not among the 211 skipped — so the local DataStore run was green on the same code
+that fails on Linux.
+
+**What catches it next time.** Before copying an `initialize()` from `LocalServer` into
+`EmbeddedServer`, read the pool's *use site*. Several shared pools lazy-init themselves
+precisely so non-server binaries do not have to, and adding the call is then not a no-op: it
+changes the configuration and the moment of binding. The "calls the release added to
+LocalServer" diff finds candidates, it does not decide them.
