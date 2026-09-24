@@ -35,14 +35,24 @@ def main():
             return str(sess.query(sql, "CSV")).strip()
 
         def runtime_absent(msg):
-            # The system table + module manager exist whenever the experimental flag is on,
-            # but the WASM *engine* is only compiled into the full build. Minimized (lite)
-            # and cross-compiled wheels ship without wasmtime (USE_WASMTIME=0), so loading a
-            # module or creating a function raises SUPPORT_IS_DISABLED ("... support is
-            # disabled" / "WebAssembly support is not enabled"). Treat that as "skip", not a
-            # failure — checking the table alone is not enough (it exists even without the engine).
+            # The WASM *engine* is only compiled into the full build. Minimized (lite) and
+            # cross-compiled wheels ship without wasmtime (USE_WASMTIME=0), and such a build
+            # says so in either of two ways.
+            #
+            # Loading a module or creating a function raises SUPPORT_IS_DISABLED
+            # ("... support is disabled" / "WebAssembly support is not enabled").
+            #
+            # Or system.webassembly_modules is not there to begin with. A build without an
+            # engine now fails closed: Context::initWasmModuleManager returns nullptr, so the
+            # table is never attached and the experimental flag does not bring it back. Until
+            # then the table existed either way and only the engine-touching statements failed,
+            # which is why the absent table used to be worth distrusting and no longer is.
             m = msg.lower()
-            return ("support is disabled" in m) or ("support is not enabled" in m)
+            return (
+                ("support is disabled" in m)
+                or ("support is not enabled" in m)
+                or ("system.webassembly_modules does not exist" in m)
+            )
 
         abs_fixture = FIXTURE.replace("\\", "\\\\").replace("'", "\\'")
 

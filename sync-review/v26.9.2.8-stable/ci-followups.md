@@ -119,3 +119,45 @@ one passes all five tests with only the §2 fix, so testing one bundle would hav
 **What catches it next time.** When a release moves work onto a thread pool, grep the file for
 *every* scheduling point, not the one the error named. And run the WASM suite against both
 bundles: `buildwasm` and `buildwasm-st` differ in exactly the dimension these bugs live in.
+
+## 4. WASM UDF test fails on builds that have no WebAssembly engine
+
+**Failure.** `Test on macOS arm64`, step *Test wheel on all Python versions*, run 35941502864.
+`main-shard-1`, one failure out of 652:
+
+```
+FAIL: test_wasm_udf_end_to_end (test_wasm_udf.TestWasmUDF)
+AssertionError: 1 != 0 : RuntimeError: Code: 60. DB::Exception:
+Table system.webassembly_modules does not exist. (UNKNOWN_TABLE)
+  ... in wasm_udf_worker.py line 54,
+      DELETE FROM system.webassembly_modules WHERE name = '...'
+```
+
+**Root cause.** The macOS wheels are cross-compiled with `ENABLE_RUST=0`
+(`chdb/build_mac_on_linux.sh`), so they carry no wasmtime and `USE_WASMTIME` is 0. That is
+deliberate and unchanged. What changed is how such a build *presents* itself.
+
+v26.9 added a fail-closed branch to `Context::initWasmModuleManager()`: with no engine
+compiled in it returns `nullptr`, so `system.webassembly_modules` is never attached and
+persisted `LANGUAGE WASM` functions are not loaded at startup. At v26.7 the manager was
+created either way — the table existed and only the engine-touching statements raised
+SUPPORT_IS_DISABLED.
+
+`wasm_udf_worker.py` detects "no engine in this build" and asks the test to skip. Its detector
+matched only the SUPPORT_IS_DISABLED wording, and its comment said so explicitly: *"checking
+the table alone is not enough (it exists even without the engine)"*. v26.9 made that sentence
+false. The worker's first statement is a `DELETE` for cleanup, so it now raises UNKNOWN_TABLE
+before reaching the statements the detector wraps.
+
+**Fix.** Teach `runtime_absent()` the second spelling, and replace the comment that asserted
+the old invariant with what the two spellings now mean.
+
+**Why the local checks missed it.** Nothing was skipped this time and nothing was silent — the
+local build simply has the engine. `chdb/build.sh` passes `-DENABLE_RUST=1 -DENABLE_WASMTIME=1`,
+so `test_wasm_udf` really runs and really passes locally. Only a build without wasmtime takes
+the path that broke, and on this machine that is the cross-compiled wheel, which CI produces.
+
+**What catches it next time.** When a release adds a fail-closed branch behind a `USE_*` flag,
+list the build variants where that flag is off — for chdb: the macOS cross-builds
+(`ENABLE_RUST=0`) and the lite wheel — and ask what each one now reports differently. A test
+that probes for an optional feature is written against the *old* wording of its absence.
