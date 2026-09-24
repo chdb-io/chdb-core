@@ -81,7 +81,8 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
         if (instance == nullptr || instance.is_none())
             throw Exception(ErrorCodes::PY_OBJECT_NOT_FOUND,
                             "Python object not found in the Python environment\n"
-                            "Ensure that the object is type of PyReader, pandas DataFrame, or PyArrow Table and is in the global or local scope");
+                            "Ensure that the object is type of PyReader, pandas DataFrame, PyArrow Table/RecordBatch/Dataset,\n"
+                            "or any object exposing __arrow_c_stream__, and is in the global or local scope");
 
         LOG_DEBUG(
             logger,
@@ -166,7 +167,7 @@ ColumnsDescription TableFunctionPython::getActualTableStructure(ContextPtr conte
         return columns;
     }
 
-    if (PyArrowTable::isPyArrowTable(reader))
+    if (PyArrowTable::isPyArrowObject(reader))
         return PyArrowTable::getActualTableStructure(reader, context);
 
     if (PythonDict::isPythonDict(reader))
@@ -198,7 +199,7 @@ void registerTableFunctionPython(TableFunctionFactory & factory)
     factory.registerFunction<TableFunctionPython>(
         {
             .description = R"(
-Passing Pandas DataFrame or Pyarrow Table to ClickHouse engine.
+Passing Pandas DataFrame, Pyarrow Table, Pyarrow RecordBatch or Pyarrow Dataset to ClickHouse engine.
 For any other data structure, you can also create a table interface to a Python data source and reads data
 from a PyReader object.
 This table function requires a single argument which is a PyReader object used to read data from Python.

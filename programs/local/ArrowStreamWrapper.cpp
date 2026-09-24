@@ -103,12 +103,16 @@ std::unique_ptr<ArrowArrayWrapper> ArrowArrayStreamWrapper::getNextChunk()
 {
     chassert(isValid());
 
-    auto chunk = std::make_unique<ArrowArrayWrapper>();
-
-    /// Get next non-empty chunk, skipping empty ones
-    do
+    /// Get next non-empty chunk, skipping empty ones. Zero-length batches are
+    /// legal mid-stream (a dataset directory with an empty file, a chunked
+    /// column with an empty chunk). A fresh wrapper per attempt makes a skipped
+    /// array release itself through the destructor -- reset() only drops the
+    /// release callback without invoking it, which would leak the exported
+    /// array's private_data.
+    while (true)
     {
-        chunk->reset();
+        auto chunk = std::make_unique<ArrowArrayWrapper>();
+
         if (arrow_array_stream.get_next(&arrow_array_stream, &chunk->arrow_array) != 0)
         {
             throw Exception(ErrorCodes::BAD_ARGUMENTS,
@@ -120,10 +124,12 @@ std::unique_ptr<ArrowArrayWrapper> ArrowArrayStreamWrapper::getNextChunk()
         {
             return nullptr;
         }
-    }
-    while (chunk->arrow_array.length == 0);
 
-    return chunk;
+        if (chunk->arrow_array.length != 0)
+        {
+            return chunk;
+        }
+    }
 }
 
 const char* ArrowArrayStreamWrapper::getError()
