@@ -98,6 +98,12 @@ public:
     /// returned token is stashed thread-locally and consumed by the execute
     /// call that follows on the same thread (takePythonTablesBindToken).
     void findQueryableObjFromPyCache(const String & query_str) const;
+
+    /// Backs the explicit Python(name) registration API. Returned rather than
+    /// wrapped so that pybind11 stays out of this header: it is included by
+    /// translation units built without the warning suppressions pybind11's
+    /// own headers need.
+    CHDB::PythonTableCache * getPythonTableCache() const { return python_table_cache.get(); }
 #endif
 
 protected:

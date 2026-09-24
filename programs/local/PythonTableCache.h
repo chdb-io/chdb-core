@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include <base/types.h>
 #include <Storages/ColumnsDescription.h>
 #include <Storages/IStorage.h>
@@ -84,6 +85,15 @@ public:
     /// of the binding (Py_INCREF under state_mutex is C API, no bytecode).
     py::object getQueryableObj(const String & table_name);
 
+    /// Explicit registration, the alternative to the frame walk: it reaches
+    /// objects no variable name can name (an attribute, a dict entry, a
+    /// temporary) and it does not depend on the caller's stack. A registered
+    /// name shadows a variable of the same name. GIL required.
+    void registerTable(const String & name, const py::object & object);
+    /// False if the name was not registered. GIL required.
+    bool unregisterTable(const String & name);
+    std::vector<String> listRegisteredTables();
+
     void clear();
 
     /// Pandas metadata cache. All methods must be called with the GIL held.
@@ -94,6 +104,10 @@ public:
 private:
     /// Locks state_mutex internally; entry destructors run outside the lock.
     void dropMeta(PyObject * df_ptr);
+
+    /// Strong reference to an explicitly registered object, py::none() when
+    /// the name was never registered. GIL required.
+    py::object lookupRegisteredTable(const String & name);
 
     /// Decrement/erase the given name bindings (shared by token release and
     /// the bind-loop exception rollback). GIL not required.
@@ -119,6 +133,12 @@ private:
         size_t refcount = 0;
     };
     std::unordered_map<String, NamedEntry> py_table_cache;
+
+    /// Explicitly registered objects, owned for as long as the registration
+    /// lasts. Consulted before the frame walk; the object still goes through
+    /// the refcounted py_table_cache binding for the duration of a query, so
+    /// the rest of the machinery cannot tell the two sources apart.
+    std::unordered_map<String, py::object> registered_tables;
 
     /// Names each outstanding findQueryableObjFromQuery call actually bound,
     /// keyed by its token. Exact pairing: releasing one query can neither
