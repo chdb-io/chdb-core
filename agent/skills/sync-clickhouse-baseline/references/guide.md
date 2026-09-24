@@ -202,41 +202,13 @@ chDB build and binding surfaces separately.
 | The lite build stops linking after a release adds functions | New `src/Functions/ai*.cpp` (or similar) compile in lite while the helpers they need are on the drop list | Diff the new release's function sources against the `CHDB_LITE` drop list before building |
 | `runDurableAbiTest` says a parser has no row, or that a row names a parser the engine no longer has | The release changed the parser set. Both halves matter: a missing row means an unclassified statement, a stale row means chDB still reasons about a statement that is gone | Run `examples/runDurableAbiTest.sh` after the first successful build, not at PR time; it names every parser in both directions in one run |
 | A chDB classification for an AST the release "deleted" | The type was **renamed**, not removed - v26.9 turned `ASTHypotheticalIndexQuery` into `ASTHypotheticalObjectQuery` and kept the syntax working. Deleting the classification makes the statement fall through to a wrong class, and nothing fails to compile | Before deleting a branch whose header vanished, grep the new tag for the statement's *keywords* rather than its type name. Syntax that still parses means the type moved; only syntax the new parser set rejects (v26.9's `WATCH`, with live views) is a real deletion |
+| `libchdb.so` fails to link with `relocation R_X86_64_TPOFF32 ... cannot be used with -shared` (or `R_AARCH64_TLSLE_*`) | A release added code that reaches thread-local storage from inline assembly, which spells the local-exec relocation itself — legal in the executables upstream builds, illegal in chDB's shared object. v26.9's `src/Common/FiberLocal.h` is the case. `-ftls-model` cannot fix it: the relocation is in the asm, not chosen by the compiler | Build `libchdb.so`, not only `libchdb.a` — the static archive links into an executable and never rejects these. To confirm a suspect header in seconds, compile it `-fPIC` and link it `-shared` alone. Prefer the portable branch such a header usually already carries, gated by a chDB macro, over deleting upstream's fast path |
 | Restart or process exit corrupts memory | Pools, allocator state, and engine owners were destroyed in the wrong order | Run connection churn, shutdown, restart, and exit under ASan and UBSan |
 
-### Reading a failing test suite after a baseline bump
+### Attributing a failing test after a baseline bump
 
-Run it as CI does, or the first pass is mostly noise:
-
-```bash
-cd tests && TZ=UTC PYTHONPATH=.. python3 run_all.py
-```
-
-Without `TZ=UTC` every datetime assertion written against a UTC-ish session fails, and the
-failures read like a date-handling regression rather than a local timezone. On a UTC+12 host
-that was 6 of 9 failures in one sync; they all disappeared with the variable set.
-
-The suite's log carries NUL bytes from engine output, so plain `grep` treats it as binary and
-silently prints nothing. Use `grep -a`, and strip ANSI first, or the failure list looks empty
-while the run clearly failed.
-
-A single failure can manufacture dozens more. `tests/run_all.py` shards modules into four
-processes, and a test that leaves the embedded engine initialized poisons every later test in
-its shard with `EmbeddedServer already initialized with path '<other path>'`. One flaky
-`test_signal_handler` (it SIGINTs its own process and asserts the `KeyboardInterrupt` arrives —
-a heavily loaded machine loses that race) turned into 2 failures and 36 errors. Read the
-*first* failure in the log, not the count, and re-run the affected shard alone before treating
-any of it as real:
-
-```bash
-cd tests && TZ=UTC PYTHONPATH=.. python run_all.py --only <modules of that shard>
-```
-
-Do not run a full suite while a container build is saturating the machine; the timing-sensitive
-tests are the ones that break, and they are not the ones a baseline bump would break.
-
-Then attribute each survivor before touching it. A golden that changed is not automatically an
-upstream change — chDB's own resolution can move behaviour too. What makes attribution solid:
+A golden that changed is not automatically an upstream change — chDB's own resolution can move
+behaviour too. What makes attribution solid:
 
 - the chDB code involved is byte-identical to the base branch;
 - the result does not depend on a choice made while resolving (test it — swapping two merged
@@ -271,7 +243,7 @@ than editing bytes: a hand-edited Parquet blob hides which field actually moved.
 ### Five audits worth scripting
 
 Each of these found a real regression in one sync, and each is a whole-tree pass that costs
-seconds — far cheaper than the build discovering them one rebuild at a time. Run all three after
+seconds — far cheaper than the build discovering them one rebuild at a time. Run all five after
 resolving, before the first build.
 
 1. **Dropped chDB lines** — chDB additions now absent from both the working tree and the new tag
@@ -294,50 +266,9 @@ resolving, before the first build.
    naming libc++ rather than the call site. When a new flag appears, pick the value that
    reproduces the old behaviour and say so at the call site, rather than the one that reads best.
 
-All three compare the merged file against **chDB's version and both upstream tags**, not against
+All five compare the merged file against **chDB's version and both upstream tags**, not against
 one of them. Two-way comparison cannot tell a deliberate chDB difference from upstream drift,
 which is the whole question.
-
-### Where the local runs trip up before they start
-
-CI cross-compiles the macOS artifacts from Linux, so a native macOS build hits requirements CI
-never reports.
-
-- Python 3.9, via pyenv, for anything past the C++ targets. `chdb/build.sh` hard-checks it
-  because the extension is built against the 3.9 abi3 baseline, and the check fires only
-  after `libchdb.so` is already linked - a long way into the build.
-- `gfind` and `ggrep` only if `cmake/tools.cmake` still demands them. chDB downgrades those
-  checks (and the `objcopy` one) from `FATAL_ERROR` to `WARNING`, so a configure that aborts
-  on a missing GNU userland is a sign the merge dropped that patch, not a sign you need
-  `brew install findutils`. Check the file before installing anything.
-- The Linux build image carries no Go and no `curl`, and Go is what makes the cgo check real
-  (its `LDFLAGS` allowlist rejects flags `clang++` accepts). Download the Go tarball on the host
-  and mount it. Put it somewhere Docker Desktop shares — `/Users/...` works, `/tmp` does not.
-- A linked worktree does not share the superproject's submodule objects: it gets its own
-  `.git/worktrees/<name>/modules`, so `git submodule update --init --recursive` re-clones
-  everything. Clone-copy the existing store into that path first, which on APFS costs seconds
-  and no disk:
-
-```bash
-cp -Rc <main>/.git/modules <main>/.git/worktrees/<name>/modules
-```
-
-- A compile that fails with **no diagnostic at all** — the command echoed, then nothing — was
-  killed, not rejected. In a Docker Desktop VM (4 CPU / 8 GB by default) the heavy translation
-  units do this: `Interpreters/Aggregator.cpp` is the usual first casualty. Re-run the compile
-  at `ninja -j2` rather than raising the VM's memory, which needs a Docker restart and takes
-  every other container down with it.
-- A release that adds submodules adds them to `--init --recursive` too. The GPU/RAPIDS set is
-  gated behind `ENABLE_GPU` (off), so it can be skipped; check what a new submodule costs before
-  initialising it.
-
-Before repeating a static build, remove only these generated paths if they exist:
-
-```text
-chdb/build/libchdb_objects_tmp_dir
-chdb/build/create_static_lib_tmp_dir
-chdb/build/go-example/:memory:
-```
 
 On a native crash, stop guessing. Build with symbols, capture the macOS crash report or Linux core/debugger stack, symbolicate the failing thread, and then compare that code with the new upstream path.
 
