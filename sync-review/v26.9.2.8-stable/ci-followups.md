@@ -214,3 +214,52 @@ WASM_THREADS=OFF + split + lite glue) that was never built locally.
 number even when it passes: a gate with 2% of headroom left (9.31 against 9.5) is a gate that
 the next baseline will break. Record the number in the sync review so the trend is visible
 before CI finds it.
+
+## 6. The browser worker pool no longer covers the Parquet reader's peak
+
+**Failure.** `wasm / build-and-test`, step *Build npm package + headless-Chrome test (mt + st)*,
+run 35979687465. The same step passed on the previous push, so it is intermittent on CI; it
+reproduces every time on this machine.
+
+```
+isolated->mt: multi-row-group Parquet seek
+  ERR: Code: 439. DB::Exception: Cannot schedule a task: failed to start ...
+  (version 26.9.2.1) (threads=15, jobs=14). (CANNOT_SCHEDULE_TASK)
+  (version 26.9.2.1) (threads=9, jobs=9): read stage: OffsetIndex: column: n:
+  (in file/uri big.parquet): While executing ParquetV3BlockInputFormat
+```
+
+Confirmed to be the same failure as CI's, not merely a similar one: same test name, same two
+thread/job counts, same stage and file, same expected value.
+
+**Root cause.** v26.9 replaced the Parquet reader with ParquetV3 and made
+`input_format_parquet_use_native_reader_v3` obsolete — "the native reader v3 is now always
+used", so it cannot be switched off. It reads the offset index and column chunks concurrently
+through `FormatParserSharedResources::parsing_runner`, which takes the peak past the browser
+bundle's 16 pre-spawned Web Workers. In a browser the pool cannot grow under a blocking query
+(in Node it can, which is why every Node WASM test passes and only the Chrome step fails).
+
+chdb already handles this for the single-threaded build — `chdb_wasm.cpp` sets
+`max_parsing_threads = 1` and disables row-group prefetch under
+`#if defined(CHDB_WASM_SINGLE_THREADED)` — and deliberately does not for the threaded one,
+whose pthreads are supposed to run these tasks.
+
+**Fix.** `WASM_PTHREAD_POOL_SIZE` 16 -> 24, which is what `programs/wasm/CMakeLists.txt` says
+to do: *"Raise it if you raise CHDB_WASM_MAX_THREADS or hit 'Cannot schedule a task' in the
+browser."* Costs 16 MB of baseline memory (2 MB stack per worker). Verified locally: the
+browser test fails every run at 16 and passes at 24, for both bundles.
+
+**A risk this fix does not remove.** `max_parsing_threads` defaults to auto, which follows the
+host core count, while the worker pool is a fixed number chosen at link time. On a machine
+with many more cores than the 18 this was verified on, the peak can be higher again. If this
+step fails once more, the durable fix is to clamp `max_parsing_threads` for the threaded WASM
+build too, rather than to keep raising the pool.
+
+**Why the local checks missed it.** The Chrome step was never run locally — the WASM
+validation stopped at the Node suites, and this failure exists only where the pool cannot
+grow. Running it locally took one command once puppeteer was there, and then reproduced on
+every attempt.
+
+**What catches it next time.** Run `node test/browser-run.mjs` in `packages/chdb-wasm` as part
+of the local WASM matrix. Node and Chrome are different execution environments for the same
+bundle, and the thread pool is exactly where they differ.
