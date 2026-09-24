@@ -71,6 +71,7 @@
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
 #include <Common/Exception.h>
+#include <Common/getNumberOfCPUCoresToUse.h>
 #include <Common/Macros.h>
 #include <Common/NamedCollections/NamedCollectionsFactory.h>
 #include <Common/PoolId.h>
@@ -118,6 +119,7 @@ extern const ServerSettingsDouble cache_size_to_ram_max_ratio;
 extern const ServerSettingsUInt64 compiled_expression_cache_elements_size;
 extern const ServerSettingsUInt64 compiled_expression_cache_size;
 extern const ServerSettingsUInt64 database_catalog_drop_table_concurrency;
+extern const ServerSettingsUInt64 database_catalog_shutdown_table_concurrency;
 extern const ServerSettingsString default_database;
 extern const ServerSettingsString index_mark_cache_policy;
 extern const ServerSettingsUInt64 index_mark_cache_size;
@@ -188,6 +190,9 @@ extern const ServerSettingsUInt64 prefixes_deserialization_thread_pool_thread_po
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_size;
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_free_size;
 extern const ServerSettingsUInt64 format_parsing_thread_pool_queue_size;
+extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_size;
+extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_free_size;
+extern const ServerSettingsUInt64 iceberg_manifest_decode_thread_pool_queue_size;
 extern const ServerSettingsUInt64 memory_worker_period_ms;
 extern const ServerSettingsDouble memory_worker_purge_dirty_pages_threshold_ratio;
 extern const ServerSettingsDouble memory_worker_purge_total_memory_threshold_ratio;
@@ -440,6 +445,15 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         0, // We don't need any threads if there are no DROP queries.
         server_settings[ServerSetting::database_catalog_drop_table_concurrency]);
 
+    /// Zero means the number of CPU cores.
+    const size_t shutdown_concurrency = server_settings[ServerSetting::database_catalog_shutdown_table_concurrency]
+        ? server_settings[ServerSetting::database_catalog_shutdown_table_concurrency]
+        : getNumberOfCPUCoresToUse();
+    getDatabaseCatalogShutdownTablesThreadPool().initialize(
+        shutdown_concurrency,
+        0, // Threads are only needed during server shutdown.
+        shutdown_concurrency);
+
     getMergeTreePrefixesDeserializationThreadPool().initialize(
         server_settings[ServerSetting::max_prefixes_deserialization_thread_pool_size],
         server_settings[ServerSetting::max_prefixes_deserialization_thread_pool_free_size],
@@ -449,6 +463,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_format_parsing_thread_pool_size],
         server_settings[ServerSetting::max_format_parsing_thread_pool_free_size],
         server_settings[ServerSetting::format_parsing_thread_pool_queue_size]);
+
+    getIcebergManifestDecodeThreadPool().initialize(
+        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_size],
+        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_free_size],
+        server_settings[ServerSetting::iceberg_manifest_decode_thread_pool_queue_size]);
 }
 
 static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const String & database_name)

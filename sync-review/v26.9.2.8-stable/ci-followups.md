@@ -48,3 +48,44 @@ configuration linked an ELF shared object, which is the only one that fails.
 different link modes and only one of them rejects these relocations. Cheaper still, and what
 was used to confirm this root cause before touching the tree: compile the TLS-touching code
 `-fPIC` and link it `-shared` on its own. It reproduces in seconds, on either architecture.
+
+## 2. Iceberg queries fail: EmbeddedServer missed two thread pools new in v26.9
+
+**Failure.** `wasm / build-and-test`, step *Iceberg local table via MEMFS (mt + st)*, run
+35941502811:
+
+```
+ChdbError: Code: 49. DB::Exception: Iceberg iterator is failed with exception:
+Code: 49. DB::Exception: The IcebergManifestDecodeThreadPool is not initialized.
+(LOGICAL_ERROR) ... While executing ReadFromObjectStorage
+```
+
+**Root cause.** v26.9 moved Iceberg manifest decoding onto a shared thread pool and added its
+`initialize()` to `LocalServer`. `EmbeddedServer` is chdb's own entry point and appears in no
+upstream diff, so the call arrived in one and not the other. Comparing only the calls v26.9
+*added* to `LocalServer` against `EmbeddedServer` found a second one with it:
+
+| Missing | Effect |
+| --- | --- |
+| `getIcebergManifestDecodeThreadPool().initialize()` | every Iceberg read raises LOGICAL_ERROR |
+| `getDatabaseCatalogShutdownTablesThreadPool().initialize()` | only reached while shutting tables down |
+
+Neither pool exists at v26.7. The other nine additions in that diff are CLI-only
+(`ThreadFuzzer`, `seedListenerDefaultFormat`, `makeFormatOptionsPrivateToTheClient`, the three
+`setSetting` calls that serve the client configuration and the protocol listeners,
+`getClientConfiguration().keys()`) or `registerEmbeddedConfig`, which chdb skips deliberately.
+
+**Fix.** Both `initialize()` calls in `EmbeddedServer::initializeThreadPools`, in the order
+`LocalServer` uses, with the same settings and the same "zero means CPU cores" rule.
+
+**Why the local checks missed it.** Twice over. The Hazard-5 comparison as run matched
+`register*` and `global_context->set*`; a thread pool is initialized through neither. And the
+WASM tests that would have caught it — `iceberg-local`, `datalake`, `datalake-unity` — **skip
+silently when `.iceberg-venv` is absent**, so running them without the venv looks like a pass.
+Only `smoke` and `matrix` had actually run.
+
+**What catches it next time.** Compare the call vocabulary the release *added* to
+`LocalServer`, not the whole vocabulary: the whole one is 71 lines of CLI noise, the added one
+was 11 and named both gaps. Include `get*ThreadPool().initialize` in that comparison. And
+build the data-lake venv before running the WASM suite — a skip is not a pass, and this suite
+does not say which it gave you.
