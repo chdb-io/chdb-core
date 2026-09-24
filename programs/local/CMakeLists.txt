@@ -74,7 +74,11 @@ if (USE_PYTHON)
         PythonDict.cpp
         ChdbGlobalFunctions.cpp
         ChdbPyType.cpp
+        PythonAggregateUDF.cpp
         PythonScalarUDF.cpp
+        PythonUDAFRegistry.cpp
+        PythonUDFCommon.cpp
+        PythonUDFConversion.cpp
         PythonUDFRegistry.cpp
         PyBorrowGuard.cpp
         PythonArrowStream.cpp
