@@ -89,3 +89,33 @@ Only `smoke` and `matrix` had actually run.
 was 11 and named both gaps. Include `get*ThreadPool().initialize` in that comparison. And
 build the data-lake venv before running the WASM suite — a skip is not a pass, and this suite
 does not say which it gave you.
+
+## 3. Iceberg fails again on the single-threaded WASM bundle
+
+**Failure.** Found locally, before CI reached it: `iceberg-local` and `datalake` against
+`buildwasm-st`, after the fix in §2.
+
+```
+Code: 439. DB::Exception: Iceberg iterator is failed with exception:
+Code: 439. DB::Exception: Cannot schedule a task: thread creation unavailable
+in the single-threaded WASM build (threads=0, jobs=0). (CANNOT_SCHEDULE_TASK)
+```
+
+**Root cause.** v26.9's Iceberg reader has **two** layers of concurrency, and the sync only
+adapted the outer one. `DataFileEntriesStream`'s constructor spawns a producer thread — chdb's
+`CHDB_WASM_SINGLE_THREADED` branch calls `run()` inline instead, and that was ported during
+the merge. What the release added *inside* `run()` is a second layer: each manifest is decoded
+through `threadPoolCallbackRunnerUnsafe` on the pool from §2. Initializing that pool is what
+let execution reach the second layer at all, where a build with no threads refuses.
+
+**Fix.** Under `CHDB_WASM_SINGLE_THREADED`, replace the runner with one that decodes in place
+and returns a ready future. The loop below it keeps its shape and `decode_concurrency` degrades
+to one manifest at a time, which is all a single thread can do.
+
+**Why the local checks missed it.** The first pass missed it because the whole suite was
+skipping (see §2). The second pass caught it, because it ran both bundles — the multi-threaded
+one passes all five tests with only the §2 fix, so testing one bundle would have looked clean.
+
+**What catches it next time.** When a release moves work onto a thread pool, grep the file for
+*every* scheduling point, not the one the error named. And run the WASM suite against both
+bundles: `buildwasm` and `buildwasm-st` differ in exactly the dimension these bugs live in.

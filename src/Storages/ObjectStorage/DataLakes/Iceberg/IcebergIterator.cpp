@@ -285,7 +285,28 @@ void DataFileEntriesStream::run()
     if (prepare)
         prepare();
 
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// v26.9 decodes each manifest on a thread pool. This build has no threads, so scheduling
+    /// onto that pool raises CANNOT_SCHEDULE_TASK. Decode where the caller stands and hand back
+    /// a ready future: the loop below keeps its shape, and decode_concurrency degrades to
+    /// "one manifest at a time", which is all a single thread can do anyway.
+    auto stream_runner = [](auto && callback, Priority) -> std::future<void>
+    {
+        std::promise<void> promise;
+        try
+        {
+            callback();
+            promise.set_value();
+        }
+        catch (...)
+        {
+            promise.set_exception(std::current_exception());
+        }
+        return promise.get_future();
+    };
+#else
     auto stream_runner = threadPoolCallbackRunnerUnsafe<void>(getIcebergManifestDecodeThreadPool().get(), DB::ThreadName::ICEBERG_ITERATOR);
+#endif
 
     std::deque<std::unique_ptr<InFlightManifest>> in_flight;
     SCOPE_EXIT({
