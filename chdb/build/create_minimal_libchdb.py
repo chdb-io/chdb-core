@@ -83,8 +83,12 @@ def extract_objects_from_archive(archive_path, required_objects, temp_dir):
     # Find object files that need to be extracted
     objects_to_extract = required_objects.intersection(available_objects)
 
-    # Force exclude any object files containing ASTSQLSecurity
-    objects_to_extract = {obj for obj in objects_to_extract if 'ASTSQLSecurity' not in obj}
+    # An unconditional exclusion of ASTSQLSecurity.cpp.o used to live here, added without a
+    # reason in 5099e89e1a5c. It was survivable only while nothing in the kept set needed that
+    # object: v26.9's AST JSON serialization made ASTAlterQuery.cpp instantiate
+    # JSONObjectReader::readChildOfType<ASTSQLSecurity>, and the cgo --whole-archive link then
+    # failed on `typeinfo for DB::ASTSQLSecurity`. The object is listed in chdb_objects.txt like
+    # any other, so dropping it here contradicted the link map the list was built from.
 
     # NOTE: single-function REGISTER_FUNCTION TUs (e.g. FunctionMD5.cpp, split out upstream in
     # v26.5) register only via a file-scope static initializer and have no static reference from

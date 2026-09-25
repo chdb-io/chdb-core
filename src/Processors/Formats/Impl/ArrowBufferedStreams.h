@@ -27,6 +27,8 @@ class WriteBuffer;
 class SeekableReadBuffer;
 struct FormatSettings;
 
+/// chdb keeps the Apache Arrow library writer that ClickHouse v26.9 removed, and this is the
+/// arrow::io::OutputStream it writes through. Removed upstream together with that writer.
 class ArrowBufferedOutputStream : public arrow::io::OutputStream
 {
 public:
@@ -49,6 +51,7 @@ private:
 
     ARROW_DISALLOW_COPY_AND_ASSIGN(ArrowBufferedOutputStream);
 };
+
 
 class RandomAccessFileFromSeekableReadBuffer : public arrow::io::RandomAccessFile
 {

@@ -93,20 +93,35 @@ class TestConnectionArgvSettings(unittest.TestCase):
         finally:
             conn_b.close()
 
-    def test_experimental_setting_via_connection_arg(self):
-        # Without the setting, Nullable(Tuple(...)) is rejected outright.
+    def test_gating_setting_via_connection_arg(self):
+        # ClickHouse v26.9 renamed allow_experimental_nullable_tuple_type to
+        # enable_nullable_tuple_type (the old name survives as an alias) and flipped its
+        # default to true, so Nullable(Tuple(...)) is now accepted out of the box. The
+        # connection argument is still what this test is about, so it drives the setting
+        # in both directions instead of relying on the old default.
         plain = connect(":memory:")
         try:
-            with self.assertRaisesRegex(Exception, "Nullable Tuple type is not allowed"):
-                plain.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")
+            self.assertEqual(
+                str(
+                    plain.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")
+                ).strip(),
+                "\\N",
+            )
         finally:
             plain.close()
+        off = connect(":memory:?enable_nullable_tuple_type=0")
+        try:
+            self.assertEqual(setting_row(off, "enable_nullable_tuple_type"), ("0", 1))
+            with self.assertRaisesRegex(Exception, "Nullable Tuple type is not allowed"):
+                off.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")
+        finally:
+            off.close()
         conn = connect(":memory:?allow_experimental_nullable_tuple_type=1")
         try:
+            # The pre-v26.9 name still reaches the setting through its alias.
             self.assertEqual(
-                setting_row(conn, "allow_experimental_nullable_tuple_type"), ("1", 1)
+                setting_row(conn, "enable_nullable_tuple_type"), ("1", 1)
             )
-            # And the gated type actually works on this connection.
             self.assertEqual(
                 str(
                     conn.query("SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV")

@@ -19,22 +19,23 @@ if (OS_FREEBSD)
 endif()
 option (ENABLE_PARQUET "Enable parquet" ${ENABLE_PARQUET_DEFAULT})
 
-# ORC (a) is the only consumer of protobuf/protoc here and (b) is not needed for
-# Parquet read. Default ON — matches the previous unconditional ORC build, so non-wasm
-# builds are unchanged; the wasm build forces it OFF in cmake/target.cmake to drop the
-# protobuf/protoc bootstrap.
-option (ENABLE_ORC "Enable ORC (needs protobuf/protoc)" ON)
-
 if (NOT ENABLE_PARQUET)
     message(STATUS "Not using parquet")
     return()
+endif()
+
+# ORC lives here because Arrow has an adapter for it, but nothing about reading Parquet needs it.
+# It is also the only thing in the whole tree that runs `protoc`, and on a cross-compile that means
+# bootstrapping a native protobuf first, so turning it off is what makes a Parquet-only build cheap.
+option (ENABLE_ORC "Enable ORC (pulls in protobuf and, when cross-compiling, a native protoc)" ON)
+if (NOT ENABLE_ORC)
+    message(STATUS "Not using ORC")
 endif()
 
 # Support C11
 if(NOT DEFINED CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
 endif()
-
 
 # This ensures that a standard higher than the minimum can be passed correctly
 if(NOT DEFINED CMAKE_CXX_STANDARD)
@@ -46,12 +47,12 @@ endif()
 # We require a C++20 compliant compiler
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(ARROW_VERSION "23.0.1")
+set(ARROW_VERSION "25.0.0")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" ARROW_BASE_VERSION "${ARROW_VERSION}")
 
-set(ARROW_VERSION_MAJOR "23")
+set(ARROW_VERSION_MAJOR "25")
 set(ARROW_VERSION_MINOR "0")
-set(ARROW_VERSION_PATCH "1")
+set(ARROW_VERSION_PATCH "0")
 
 if(ARROW_VERSION_MAJOR STREQUAL "0")
     # Arrow 0.x.y => SO version is "x", full SO version is "x.y.0"
@@ -86,11 +87,14 @@ endif()
 set(PROTO_DIR "${ORC_SOURCE_DIR}/../proto")
 
 if (ENABLE_ORC)
-add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
-        COMMAND ${PROTOBUF_EXECUTABLE}
-        -I ${PROTO_DIR}
-        --cpp_out="${CMAKE_CURRENT_BINARY_DIR}"
-        "${PROTO_DIR}/orc_proto.proto")
+    add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
+            COMMAND ${PROTOBUF_EXECUTABLE}
+            -I ${PROTO_DIR}
+            --cpp_out="${CMAKE_CURRENT_BINARY_DIR}"
+            "${PROTO_DIR}/orc_proto.proto"
+            # Without these, the generated sources are not regenerated when the schema or
+            # `protoc` itself changes, and a stale `orc_proto.pb.h` is compiled instead.
+            DEPENDS "${PROTO_DIR}/orc_proto.proto" ${PROTOBUF_EXECUTABLE})
 endif()
 
 # === flatbuffers
@@ -125,6 +129,10 @@ add_library(ch_contrib::arrow_ipc_metadata ALIAS _arrow_ipc_metadata)
 # ===  hdfs
 # NOTE: cannot use ch_contrib::hdfs since it's INCLUDE_DIRECTORIES does not includes trailing "hdfs/"
 set(HDFS_INCLUDE_DIR "${ClickHouse_SOURCE_DIR}/contrib/libhdfs3/include/hdfs/")
+
+# Everything down to the end of the `_orc` target below is ORC. Left un-indented inside the
+# condition to keep it comparable with the Arrow build description it was transcribed from.
+if (ENABLE_ORC)
 
 # arrow-cmake cmake file calling orc cmake subroutine which detects certain compiler features.
 # Apple Clang compiler failed to compile this code without specifying c++11 standard.
@@ -167,6 +175,8 @@ set(ORC_SRCS
         "${ORC_SOURCE_SRC_DIR}/ColumnWriter.cc"
         "${ORC_SOURCE_SRC_DIR}/ColumnWriter.hh"
         "${ORC_SOURCE_SRC_DIR}/Common.cc"
+        "${ORC_SOURCE_SRC_DIR}/Dictionary.cc"
+        "${ORC_SOURCE_SRC_DIR}/DictionaryLoader.cc"
         "${ORC_SOURCE_SRC_DIR}/Compression.cc"
         "${ORC_SOURCE_SRC_DIR}/Compression.hh"
         "${ORC_SOURCE_SRC_DIR}/ConvertColumnReader.cc"
@@ -175,6 +185,7 @@ set(ORC_SRCS
         "${ORC_SOURCE_SRC_DIR}/CpuInfoUtil.hh"
         "${ORC_SOURCE_SRC_DIR}/Dispatch.hh"
         "${ORC_SOURCE_SRC_DIR}/Exceptions.cc"
+        "${ORC_SOURCE_SRC_DIR}/Geospatial.cc"
         "${ORC_SOURCE_SRC_DIR}/Int128.cc"
         "${ORC_SOURCE_SRC_DIR}/LzoDecompressor.cc"
         "${ORC_SOURCE_SRC_DIR}/LzoDecompressor.hh"
@@ -225,7 +236,6 @@ set(ORC_SRCS
         "${ORC_SOURCE_SRC_DIR}/sargs/TruthValue.cc"
         )
 
-if (ENABLE_ORC)
 add_library(_orc ${ORC_SRCS})
 target_link_libraries(_orc PRIVATE
     ch_contrib::protobuf
@@ -249,7 +259,8 @@ target_include_directories(_orc SYSTEM PRIVATE
     ${ORC_BUILD_SRC_DIR}
     ${ORC_ADDITION_SOURCE_DIR}
     ${ARROW_SRC_DIR})
-endif()
+
+endif() # ENABLE_ORC
 
 # === arrow
 
@@ -263,7 +274,9 @@ configure_file("${LIBRARY_DIR}/util/config_internal.h.cmake" "${ARROW_GENERATED_
 # find . \( -iname \*.cc -o -iname \*.cpp -o -iname \*.c \) | sort | awk '{print "\"${LIBRARY_DIR}" substr($1,2) "\"" }' | grep -v 'test.cc' | grep -v 'json' | grep -v 'flight' \|
 # grep -v 'csv' | grep -v 'acero' | grep -v 'dataset' | grep -v 'testing' | grep -v 'gpu' | grep -v 'engine' | grep -v 'filesystem' | grep -v 'benchmark.cc'
 set(ARROW_SRCS
-        # adapters/orc/*.cc need orc/OrcFile.hh; appended below only when ENABLE_ORC.
+        "${LIBRARY_DIR}/adapters/orc/adapter.cc"
+        "${LIBRARY_DIR}/adapters/orc/options.cc"
+        "${LIBRARY_DIR}/adapters/orc/util.cc"
         "${LIBRARY_DIR}/array/array_base.cc"
         "${LIBRARY_DIR}/array/array_binary.cc"
         "${LIBRARY_DIR}/array/array_decimal.cc"
@@ -365,6 +378,7 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/extension_type.cc"
         "${LIBRARY_DIR}/extension/bool8.cc"
         "${LIBRARY_DIR}/extension/json.cc"
+        "${LIBRARY_DIR}/extension/parquet_variant.cc"
         "${LIBRARY_DIR}/extension/uuid.cc"
         "${LIBRARY_DIR}/integration/c_data_integration_internal.cc"
         "${LIBRARY_DIR}/io/buffered.cc"
@@ -414,7 +428,7 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/util/bitmap_ops.cc"
         "${LIBRARY_DIR}/util/bpacking.cc"
         "${LIBRARY_DIR}/util/bpacking_scalar.cc"
-        "${LIBRARY_DIR}/util/bpacking_simd_default.cc"
+        "${LIBRARY_DIR}/util/bpacking_simd_128.cc"
         "${LIBRARY_DIR}/util/byte_size.cc"
         "${LIBRARY_DIR}/util/byte_stream_split_internal.cc"
         "${LIBRARY_DIR}/util/cancel.cc"
@@ -453,6 +467,7 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/util/trie.cc"
         "${LIBRARY_DIR}/util/union_util.cc"
         "${LIBRARY_DIR}/util/unreachable.cc"
+        "${LIBRARY_DIR}/util/ulp_distance.cc"
         "${LIBRARY_DIR}/util/uri.cc"
         "${LIBRARY_DIR}/util/utf8.cc"
         "${LIBRARY_DIR}/util/value_parsing.cc"
@@ -483,19 +498,30 @@ set(ARROW_SRCS
         "${LIBRARY_DIR}/vendored/uriparser/UriResolve.c"
         "${LIBRARY_DIR}/vendored/uriparser/UriShorten.c"
         "${LIBRARY_DIR}/visitor.cc"
-        )
 
-# The Arrow<->ORC adapter pulls in orc/OrcFile.hh; only compile it when ORC is on.
-if (ENABLE_ORC)
-    list (APPEND ARROW_SRCS
         "${ARROW_SRC_DIR}/arrow/adapters/orc/adapter.cc"
         "${ARROW_SRC_DIR}/arrow/adapters/orc/util.cc"
-        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc")
-endif()
+        "${ARROW_SRC_DIR}/arrow/adapters/orc/options.cc"
+        )
 
+if (NOT ENABLE_ORC)
+    # The Arrow-to-ORC adapter is the one part of Arrow that includes `orc/OrcFile.hh`.
+    list (FILTER ARROW_SRCS EXCLUDE REGEX "/adapters/orc/")
+endif()
 
 add_definitions(-DARROW_WITH_BROTLI)
 SET(ARROW_SRCS "${LIBRARY_DIR}/util/compression_brotli.cc" ${ARROW_SRCS})
+
+# file_to_stream.cc / stream_to_file.cc are standalone Arrow CLI tools - each has its own
+# main(). chdb_wasm is an executable with its own (stub) main; in the wasm link one of these
+# tool main()s shadows it and runs on module init (prints a usage line and returns 1). Drop
+# them for wasm - chdb never uses them. Native keeps them (they sit unreferenced in
+# libarrow.a), so non-wasm builds are byte-unaffected.
+if (OS_WASM)
+    list (REMOVE_ITEM ARROW_SRCS
+        "${LIBRARY_DIR}/ipc/file_to_stream.cc"
+        "${LIBRARY_DIR}/ipc/stream_to_file.cc")
+endif ()
 
 if (TARGET ch_contrib::bzip2)
     add_definitions(-DARROW_WITH_BZ2)
@@ -583,17 +609,6 @@ if (TARGET ch_contrib::jemalloc)
 endif()
 
 
-# file_to_stream.cc / stream_to_file.cc are standalone Arrow CLI tools — each has its own
-# main(). chdb_wasm is an executable with its own (stub) main; in the wasm link one of these
-# tool main()s shadows it and runs on module init (prints a usage line and returns 1). Drop
-# them for wasm — chdb never uses them. Native keeps them (they sit unreferenced in
-# libarrow.a), so non-wasm builds are byte-unaffected.
-if (OS_WASM)
-    list (REMOVE_ITEM ARROW_SRCS
-        "${LIBRARY_DIR}/ipc/file_to_stream.cc"
-        "${LIBRARY_DIR}/ipc/stream_to_file.cc")
-endif ()
-
 # Enable Arrow's SIMD codepaths (bit unpacking, byte stream split, UTF-8 validation); otherwise they fall back
 # to scalar. These headers include <xsimd/xsimd.hpp>, hence the xsimd dependency. Our production target is ARM,
 # where NEON is part of the aarch64 baseline. On x86 we follow X86_ARCH_LEVEL: the build already targets
@@ -612,7 +627,7 @@ elseif (ARCH_AMD64 AND X86_ARCH_LEVEL VERSION_GREATER_EQUAL 3)
         ARROW_HAVE_RUNTIME_SSE4_2 ARROW_HAVE_RUNTIME_AVX2 ARROW_HAVE_RUNTIME_BMI2)
     # bpacking's unpack() has no compile-time AVX2 path, only a runtime-dispatched one, so its source is needed.
     SET(ARROW_SRCS ${ARROW_SRCS}
-        "${LIBRARY_DIR}/util/bpacking_simd_avx2.cc"
+        "${LIBRARY_DIR}/util/bpacking_simd_256.cc"
         "${LIBRARY_DIR}/util/byte_stream_split_internal_avx2.cc")
     if (X86_ARCH_LEVEL VERSION_GREATER_EQUAL 4)
         list (APPEND ARROW_SIMD_DEFS ARROW_HAVE_AVX512 ARROW_HAVE_RUNTIME_AVX512)
@@ -645,9 +660,9 @@ target_link_libraries(_arrow PRIVATE
 # PUBLIC so the xsimd headers are visible to _parquet too (it links _arrow PUBLIC).
 target_link_libraries(_arrow PUBLIC ch_contrib::xsimd)
 
-# ORC carries the protobuf/protoc dependency; only link/depend on it when enabled.
 if (ENABLE_ORC)
     target_link_libraries(_arrow PUBLIC _orc)
+    # ORC is the only thing here with generated protobuf sources.
     add_dependencies(_arrow protoc)
 endif()
 
@@ -655,7 +670,6 @@ target_include_directories(_arrow SYSTEM BEFORE PUBLIC ${ARROW_SRC_DIR})
 target_include_directories(_arrow SYSTEM BEFORE PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/arrow-cmake/cpp/src")
 
 target_include_directories(_arrow SYSTEM PRIVATE ${ARROW_SRC_DIR})
-
 target_include_directories(_arrow SYSTEM PRIVATE ${HDFS_INCLUDE_DIR})
 
 # === arrow flight
@@ -674,7 +688,6 @@ set(PARQUET_SRCS
         "${LIBRARY_DIR}/arrow/reader_internal.cc"
         "${LIBRARY_DIR}/arrow/schema.cc"
         "${LIBRARY_DIR}/arrow/schema_internal.cc"
-        "${LIBRARY_DIR}/arrow/variant_internal.cc"
         "${LIBRARY_DIR}/arrow/writer.cc"
         "${LIBRARY_DIR}/benchmark_util.cc"
         "${LIBRARY_DIR}/bloom_filter.cc"
@@ -727,6 +740,14 @@ set(PARQUET_SRCS
         "${GEN_LIBRARY_DIR}/parquet_types.cpp"
         )
 #list(TRANSFORM PARQUET_SRCS PREPEND "${LIBRARY_DIR}/") # cmake 3.12
+
+# The Bloom filter dispatch table references `FindHashBlockAvx2` whenever AVX2 is available, so the
+# kernel has to be built. Unlike `level_comparison_avx2.cc` this one is x86-only (it instantiates
+# `xsimd::batch<uint32_t, xsimd::avx2>`), so it must not be added on other architectures.
+if (ARCH_AMD64 AND X86_ARCH_LEVEL VERSION_GREATER_EQUAL 3)
+    list (APPEND PARQUET_SRCS "${LIBRARY_DIR}/bloom_filter_avx2.cc")
+endif ()
+
 add_library(_parquet ${PARQUET_SRCS})
 add_library(ch_contrib::parquet ALIAS _parquet)
 target_include_directories(_parquet SYSTEM BEFORE
@@ -743,7 +764,6 @@ target_link_libraries(_parquet
         OpenSSL::Crypto OpenSSL::SSL
         ch_contrib::rapidjson
         $<$<TARGET_EXISTS:ch_contrib::jemalloc>:ch_contrib::jemalloc>)
-
 
 if (SANITIZE STREQUAL "undefined" OR SANITIZE STREQUAL "address,undefined")
     target_compile_options(_parquet PRIVATE -fno-sanitize=undefined)

@@ -42,8 +42,10 @@
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <Loggers/OwnSplitChannel.h>
+#include <Parsers/registerStatements.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Processors/QueryPlan/QueryPlanStepRegistry.h>
 #include <Storages/System/attachInformationSchemaTables.h>
 #include <Storages/System/attachSystemTables.h>
 #include <Storages/registerStorages.h>
@@ -186,6 +188,9 @@ extern const ServerSettingsUInt64 prefixes_deserialization_thread_pool_thread_po
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_size;
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_free_size;
 extern const ServerSettingsUInt64 format_parsing_thread_pool_queue_size;
+extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_size;
+extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_free_size;
+extern const ServerSettingsUInt64 iceberg_manifest_decode_thread_pool_queue_size;
 extern const ServerSettingsUInt64 memory_worker_period_ms;
 extern const ServerSettingsDouble memory_worker_purge_dirty_pages_threshold_ratio;
 extern const ServerSettingsDouble memory_worker_purge_total_memory_threshold_ratio;
@@ -447,6 +452,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_format_parsing_thread_pool_size],
         server_settings[ServerSetting::max_format_parsing_thread_pool_free_size],
         server_settings[ServerSetting::format_parsing_thread_pool_queue_size]);
+
+    getIcebergManifestDecodeThreadPool().initialize(
+        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_size],
+        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_free_size],
+        server_settings[ServerSetting::iceberg_manifest_decode_thread_pool_queue_size]);
 }
 
 static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const String & database_name)
@@ -480,7 +490,10 @@ static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, Co
         = fs::weakly_canonical(context->getPath()) / "store" / DatabaseCatalog::getPathForUUID(default_database_uuid);
 
     overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
-    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context,
+        /// v26.9 added this: true downgrades a missing path to a warning, for the server's own
+        /// metadata replay. chdb is not replaying metadata, and v26.7 always threw, so keep that.
+        /*is_internal_metadata_replay=*/ false));
     return overlay;
 }
 
@@ -759,6 +772,7 @@ try
             chdb_embedded_server_initialized = true;
 
             registerInterpreters();
+            registerStatements();
             /// Don't initialize DateLUT
             registerFunctions();
             registerAggregateFunctions();
@@ -784,6 +798,7 @@ try
             registerDictionaries();
             registerDisks(/* global_skip_access_check= */ true);
             registerFormats();
+            QueryPlanStepRegistry::registerPlanSteps();
         });
 
     processConfig();

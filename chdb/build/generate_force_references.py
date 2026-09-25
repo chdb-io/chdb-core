@@ -17,6 +17,11 @@ def extract_register_functions(functions_dir):
 
     # Functions that cause linker errors due to missing dependencies
     excluded_functions = {
+        # AI SQL functions: CHDB_LITE drops src/Functions/ai*.cpp and src/Functions/AI/,
+        # so force-referencing them leaves the lite link unresolved.
+        'AiFilter',
+        'AiRedact',
+        'AiSimilarity',
         'UniqTheta',
         'Idna',
         'Sqid',

@@ -61,6 +61,7 @@ namespace DB
     extern void registerFunctionArrayFirst(FunctionFactory & factory);
     extern void registerFunctionArrayFirstIndex(FunctionFactory & factory);
     extern void registerFunctionArrayFlatten(FunctionFactory & factory);
+    extern void registerFunctionArrayFlattenedLength(FunctionFactory & factory);
     extern void registerFunctionArrayFold(FunctionFactory & factory);
     extern void registerFunctionArrayIntersect(FunctionFactory & factory);
     extern void registerFunctionArrayJaccardIndex(FunctionFactory & factory);
@@ -90,6 +91,7 @@ namespace DB
     extern void registerFunctionAscii(FunctionFactory & factory);
     extern void registerFunctionAsin(FunctionFactory & factory);
     extern void registerFunctionAsinh(FunctionFactory & factory);
+    extern void registerFunctionAssignCentroid(FunctionFactory & factory);
     extern void registerFunctionAssumeNotNull(FunctionFactory & factory);
     extern void registerFunctionAtan(FunctionFactory & factory);
     extern void registerFunctionAtan2(FunctionFactory & factory);
@@ -133,7 +135,6 @@ namespace DB
     extern void registerFunctionCaseWithExpression(FunctionFactory & factory);
     extern void registerFunctionCastOrDefault(FunctionFactory & factory);
     extern void registerFunctionCastOverloadResolvers(FunctionFactory & factory);
-    extern void registerFunctionCatBoostEvaluate(FunctionFactory & factory);
     extern void registerFunctionCbrt(FunctionFactory & factory);
     extern void registerFunctionChangeDate(FunctionFactory & factory);
     extern void registerFunctionChar(FunctionFactory & factory);
@@ -158,7 +159,9 @@ namespace DB
     extern void registerFunctionCountSubstringsCaseInsensitive(FunctionFactory & factory);
     extern void registerFunctionCountSubstringsCaseInsensitiveUTF8(FunctionFactory & factory);
     extern void registerFunctionCurrentDatabase(FunctionFactory & factory);
+    extern void registerFunctionCurrentHandler(FunctionFactory & factory);
     extern void registerFunctionCurrentQueryID(FunctionFactory & factory);
+    extern void registerFunctionCurrentRequestURL(FunctionFactory & factory);
     extern void registerFunctionCurrentRoles(FunctionFactory & factory);
     extern void registerFunctionCurrentSchema(FunctionFactory & factory);
     extern void registerFunctionCurrentUser(FunctionFactory & factory);
@@ -237,6 +240,7 @@ namespace DB
     extern void registerFunctionFlipCoordinates(FunctionFactory & factory);
     extern void registerFunctionFormat(FunctionFactory & factory);
     extern void registerFunctionFormatDateTime(FunctionFactory & factory);
+    extern void registerFunctionFormatQueryFromJSON(FunctionFactory & factory);
     extern void registerFunctionFormatReadableDecimalSize(FunctionFactory & factory);
     extern void registerFunctionFormatReadableQuantity(FunctionFactory & factory);
     extern void registerFunctionFormatReadableSize(FunctionFactory & factory);
@@ -281,6 +285,7 @@ namespace DB
     extern void registerFunctionGreater(FunctionFactory & factory);
     extern void registerFunctionGreaterOrEquals(FunctionFactory & factory);
     extern void registerFunctionGreatest(FunctionFactory & factory);
+    extern void registerFunctionGroupingSpecializations(FunctionFactory & factory);
     extern void registerFunctionH3CellAreaM2(FunctionFactory & factory);
     extern void registerFunctionH3CellAreaRads2(FunctionFactory & factory);
     extern void registerFunctionH3Distance(FunctionFactory & factory);
@@ -382,6 +387,13 @@ namespace DB
     extern void registerFunctionJSONPaths(FunctionFactory & factory);
     extern void registerFunctionJoinGet(FunctionFactory & factory);
     extern void registerFunctionJumpConsistentHash(FunctionFactory & factory);
+    extern void registerFunctionKQLBin(FunctionFactory & factory);
+    extern void registerFunctionKQLBinAt(FunctionFactory & factory);
+    extern void registerFunctionKQLDivide(FunctionFactory & factory);
+    extern void registerFunctionKQLMultiply(FunctionFactory & factory);
+    extern void registerFunctionKQLParameterCast(FunctionFactory & factory);
+    extern void registerFunctionKQLRangeCount(FunctionFactory & factory);
+    extern void registerFunctionKQLToTimespan(FunctionFactory & factory);
     extern void registerFunctionKostikConsistentHash(FunctionFactory & factory);
     extern void registerFunctionLCM(FunctionFactory & factory);
     extern void registerFunctionLGamma(FunctionFactory & factory);
@@ -419,6 +431,7 @@ namespace DB
     extern void registerFunctionMapOp(FunctionFactory & factory);
     extern void registerFunctionMapPopulateSeries(FunctionFactory & factory);
     extern void registerFunctionMatch(FunctionFactory & factory);
+    extern void registerFunctionMatchCaseInsensitive(FunctionFactory & factory);
     extern void registerFunctionMaterialize(FunctionFactory & factory);
     extern void registerFunctionMax2(FunctionFactory & factory);
     extern void registerFunctionMergeTreePartInfoTools(FunctionFactory & factory);
@@ -468,8 +481,11 @@ namespace DB
     extern void registerFunctionNormalizedGini(FunctionFactory & factory);
     extern void registerFunctionNormalizedQueryHash(FunctionFactory & factory);
     extern void registerFunctionNotEquals(FunctionFactory & factory);
+    extern void registerFunctionNotHas(FunctionFactory & factory);
     extern void registerFunctionNotILike(FunctionFactory & factory);
     extern void registerFunctionNotLike(FunctionFactory & factory);
+    extern void registerFunctionNotMatch(FunctionFactory & factory);
+    extern void registerFunctionNotMatchCaseInsensitive(FunctionFactory & factory);
     extern void registerFunctionNow(FunctionFactory & factory);
     extern void registerFunctionNow64(FunctionFactory & factory);
     extern void registerFunctionNowInBlock(FunctionFactory & factory);
@@ -479,6 +495,8 @@ namespace DB
     extern void registerFunctionOverlay(FunctionFactory & factory);
     extern void registerFunctionPadString(FunctionFactory & factory);
     extern void registerFunctionParseDateTime(FunctionFactory & factory);
+    extern void registerFunctionParseISO8601Duration(FunctionFactory & factory);
+    extern void registerFunctionParseQueryToJSON(FunctionFactory & factory);
     extern void registerFunctionParseReadableSize(FunctionFactory & factory);
     extern void registerFunctionParseTimeDelta(FunctionFactory & factory);
     extern void registerFunctionPartitionId(FunctionFactory & factory);
@@ -486,6 +504,8 @@ namespace DB
     extern void registerFunctionPath(FunctionFactory & factory);
     extern void registerFunctionPathFull(FunctionFactory & factory);
     extern void registerFunctionPerimeter(FunctionFactory & factory);
+    extern void registerFunctionPgGetUserById(FunctionFactory & factory);
+    extern void registerFunctionPgTableIsVisible(FunctionFactory & factory);
     extern void registerFunctionPi(FunctionFactory & factory);
     extern void registerFunctionPlus(FunctionFactory & factory);
     extern void registerFunctionPointInEllipses(FunctionFactory & factory);
@@ -612,6 +632,8 @@ namespace DB
     extern void registerFunctionTimeSeriesIdToGroup(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesIdToTags(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesJoinTags(FunctionFactory & factory);
+    extern void registerFunctionTimeSeriesMetricTypeToSuffixes(FunctionFactory & factory);
+    extern void registerFunctionTimeSeriesPrometheusValueToString(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesRange(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesRemoveAllTagsExcept(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesRemoveTag(FunctionFactory & factory);
@@ -619,6 +641,7 @@ namespace DB
     extern void registerFunctionTimeSeriesReplaceTag(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesStoreTags(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesTagsToGroup(FunctionFactory & factory);
+    extern void registerFunctionTimeSeriesTagsToMap(FunctionFactory & factory);
     extern void registerFunctionTimeSlot(FunctionFactory & factory);
     extern void registerFunctionTimeSlots(FunctionFactory & factory);
     extern void registerFunctionTimeWindow(FunctionFactory & factory);
@@ -770,19 +793,43 @@ namespace DB
         {
             &::registerFunctionIsValidASCII,
             &registerFunctionArrayBottomK,
+            &registerFunctionArrayFlattenedLength,
             &registerFunctionArrayTopK,
+            &registerFunctionAssignCentroid,
+            &registerFunctionCurrentHandler,
+            &registerFunctionCurrentRequestURL,
             &registerFunctionDigits,
+            &registerFunctionFormatQueryFromJSON,
             &registerFunctionGeoToMGRS,
             &registerFunctionGeoToUTM,
+            &registerFunctionGroupingSpecializations,
+            &registerFunctionKQLBin,
+            &registerFunctionKQLBinAt,
+            &registerFunctionKQLDivide,
+            &registerFunctionKQLMultiply,
+            &registerFunctionKQLParameterCast,
+            &registerFunctionKQLRangeCount,
+            &registerFunctionKQLToTimespan,
             &registerFunctionLocalTime,
             &registerFunctionMGRSToGeo,
             &registerFunctionMVTBoundingBox,
             &registerFunctionMVTEncodeGeom,
+            &registerFunctionMatchCaseInsensitive,
             &registerFunctionNaiveBayesNgrams,
+            &registerFunctionNotHas,
+            &registerFunctionNotMatch,
+            &registerFunctionNotMatchCaseInsensitive,
+            &registerFunctionParseISO8601Duration,
+            &registerFunctionParseQueryToJSON,
+            &registerFunctionPgGetUserById,
+            &registerFunctionPgTableIsVisible,
             &registerFunctionQuantizeLloydMax,
             &registerFunctionRandomHadamardTransform,
             &registerFunctionSHA1,
             &registerFunctionSqr,
+            &registerFunctionTimeSeriesMetricTypeToSuffixes,
+            &registerFunctionTimeSeriesPrometheusValueToString,
+            &registerFunctionTimeSeriesTagsToMap,
             &registerFunctionToMicrosecond,
             &registerFunctionToNanosecond,
             &registerFunctionToYearCalendarOnly,
@@ -906,7 +953,6 @@ namespace DB
             &registerFunctionCaseWithExpression,
             &registerFunctionCastOrDefault,
             &registerFunctionCastOverloadResolvers,
-            &registerFunctionCatBoostEvaluate,
             &registerFunctionCbrt,
             &registerFunctionChangeDate,
             &registerFunctionChar,

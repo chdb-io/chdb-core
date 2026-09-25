@@ -29,8 +29,12 @@
 
 #include <Poco/String.h>
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
-static_assert(STD_EXCEPTION_HAS_STACK_TRACE == 1);
+/// Every supported platform builds `contrib/libcxx-cmake` (see `cmake/cxx.cmake`, which every
+/// `cmake/*/default_libs.cmake` includes), so losing this would silently strip the throw-site
+/// stack trace from every exception. Only a port linking a foreign C++ standard library - the
+/// standalone parser in `utils/wasm-parser`, for one - is allowed to be without it.
+#if defined(OS_LINUX) || defined(OS_DARWIN) || defined(OS_FREEBSD) || defined(OS_SUNOS)
+static_assert(STD_EXCEPTION_HAS_STACK_TRACE == 1, "ClickHouse's patched libc++ is not being linked");
 #endif
 
 namespace fs = std::filesystem;
@@ -89,6 +93,22 @@ bool isShuttingDown()
     return g_is_shutting_down.load(std::memory_order_acquire);
 }
 
+namespace
+{
+thread_local bool suppress_error_codes = false;
+}
+
+Exception::SuppressErrorCodesScope::SuppressErrorCodesScope()
+    : previous(suppress_error_codes)
+{
+    suppress_error_codes = true;
+}
+
+Exception::SuppressErrorCodesScope::~SuppressErrorCodesScope()
+{
+    suppress_error_codes = previous;
+}
+
 constexpr bool debug_or_sanitizer_build =
 #ifdef DEBUG_OR_SANITIZER_BUILD
 true
@@ -100,7 +120,7 @@ false
 
 /// - Aborts the process if error code is LOGICAL_ERROR.
 /// - Increments error codes statistics.
-static size_t handle_error_code(
+size_t Exception::handleErrorCode(
     const std::string & msg, std::string_view format_string, int code, bool remote, const Exception::Trace & trace)
 {
     // In debug builds and builds with sanitizers, treat LOGICAL_ERROR as an assertion failure.
@@ -117,6 +137,9 @@ static size_t handle_error_code(
         /// So it does not include customer queries.
         Exception::callback(format_string, code, remote, trace);
     }
+
+    if (suppress_error_codes)
+        return static_cast<size_t>(Exception::ErrorIndexState::Suppressed);
 
     return ErrorCodes::increment(code, remote, msg, std::string(format_string), trace);
 }
@@ -150,7 +173,7 @@ Exception::Exception(const MessageMasked & msg_masked, int code, bool remote_)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
     message_format_string = msg_masked.format_string;
-    error_index = handle_error_code(msg_masked.msg, message_format_string, code, remote, getStackFramePointers());
+    error_index = handleErrorCode(msg_masked.msg, message_format_string, code, remote, getStackFramePointers());
 }
 
 Exception::Exception(MessageMasked && msg_masked, int code, bool remote_)
@@ -161,7 +184,13 @@ Exception::Exception(MessageMasked && msg_masked, int code, bool remote_)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
     message_format_string = msg_masked.format_string;
-    error_index = handle_error_code(message(), message_format_string, code, remote, getStackFramePointers());
+    error_index = handleErrorCode(message(), message_format_string, code, remote, getStackFramePointers());
+}
+
+void Exception::recordToSystemErrors()
+{
+    if (error_index == static_cast<size_t>(ErrorIndexState::Suppressed))
+        error_index = ErrorCodes::increment(code(), remote, message(), std::string(message_format_string), getStackFramePointers());
 }
 
 Exception::Exception(CreateFromPocoTag, const Poco::Exception & exc)
@@ -170,12 +199,7 @@ Exception::Exception(CreateFromPocoTag, const Poco::Exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    auto * stack_trace_frames = exc.get_stack_trace_frames();
-    auto stack_trace_size = exc.get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
-    set_stack_trace(stack_trace_frames, stack_trace_size);
-#endif
+    copyStackTraceOfThrow(exc, *this);
 }
 
 static int getCodeForSTDException(const std::exception & exc)
@@ -193,18 +217,14 @@ Exception::Exception(CreateFromSTDTag, const std::exception & exc)
     if (terminate_on_any_exception)
         std::_Exit(terminate_status_code);
     capture_thread_frame_pointers = getThreadFramePointers();
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    auto * stack_trace_frames = exc.get_stack_trace_frames();
-    auto stack_trace_size = exc.get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
-    set_stack_trace(stack_trace_frames, stack_trace_size);
-#endif
+    copyStackTraceOfThrow(exc, *this);
 }
 
 void Exception::addMessage(const MessageMasked & msg_masked)
 {
     extendedMessage(msg_masked.msg);
-    if (error_index != static_cast<size_t>(-1))
+    if (error_index != static_cast<size_t>(ErrorIndexState::NotRecorded)
+        && error_index != static_cast<size_t>(ErrorIndexState::Suppressed))
         ErrorCodes::extendedMessage(code(), remote, error_index, message());
 }
 
@@ -214,14 +234,8 @@ std::string getExceptionStackTraceString(const std::exception & e)
     /// Explicitly block MEMORY_LIMIT_EXCEEDED
     LockMemoryExceptionInThread lock(VariableContext::Global);
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    auto * stack_trace_frames = e.get_stack_trace_frames();
-    auto stack_trace_size = e.get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
-    return StackTrace::toString(stack_trace_frames, 0, stack_trace_size);
-#else
-    return {};
-#endif
+    const auto trace = getStackTraceOfThrow(e);
+    return StackTrace::toString(trace.data(), 0, trace.size());
 }
 
 std::string getExceptionStackTraceString(std::exception_ptr e)
@@ -243,6 +257,7 @@ std::string getExceptionStackTraceString(std::exception_ptr e)
 
 std::string Exception::getStackTraceString() const
 {
+    const auto trace = getStackTraceOfThrow(*this);
     String thread_stack_trace;
     std::for_each(capture_thread_frame_pointers.rbegin(), capture_thread_frame_pointers.rend(),
         [&thread_stack_trace](FramePointers & frame_pointers)
@@ -253,28 +268,13 @@ std::string Exception::getStackTraceString() const
         }
     );
 
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    auto * stack_trace_frames = get_stack_trace_frames();
-    auto stack_trace_size = get_stack_trace_size();
-    __msan_unpoison(stack_trace_frames, stack_trace_size * sizeof(stack_trace_frames[0]));
-    return StackTrace::toString(stack_trace_frames, 0, stack_trace_size) + thread_stack_trace;
-#else
-    return thread_stack_trace;
-#endif
+    return StackTrace::toString(trace.data(), 0, trace.size()) + thread_stack_trace;
 }
 
 Exception::Trace Exception::getStackFramePointers() const
 {
-    Trace frame_pointers;
-#if STD_EXCEPTION_HAS_STACK_TRACE
-    frame_pointers.resize(get_stack_trace_size());
-    for (size_t i = 0; i < frame_pointers.size(); ++i)
-    {
-        frame_pointers[i] = get_stack_trace_frames()[i];
-    }
-    __msan_unpoison(frame_pointers.data(), frame_pointers.size() * sizeof(frame_pointers[0]));
-#endif
-    return frame_pointers;
+    const auto trace = getStackTraceOfThrow(*this);
+    return Trace(trace.begin(), trace.end());
 }
 
 thread_local bool Exception::enable_job_stack_trace = false;

@@ -18,70 +18,69 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "SunOS")
     set (OS_SUNOS 1)
     add_definitions(-D OS_SUNOS)
 elseif (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
-    # WebAssembly target (browser / node) via the Emscripten toolchain.
-    # Invoke with `emcmake cmake ...`, which sets CMAKE_SYSTEM_NAME=Emscripten
-    # and points CMAKE_TOOLCHAIN_FILE at Emscripten.cmake.
+    # WebAssembly, through the Emscripten toolchain. Configure with `emcmake cmake ...`, which
+    # sets CMAKE_SYSTEM_NAME and points CMAKE_TOOLCHAIN_FILE at Emscripten's own toolchain file.
     set (OS_WASM 1)
     add_definitions(-D OS_WASM)
-    # MAP_ANONYMOUS for the mmap fallback shim.
-    add_definitions(-D _GNU_SOURCE)
+    # Note: unlike the other platforms, no `_GNU_SOURCE`. Emscripten's musl-derived libc declares
+    # everything this tree needs without it (`MAP_ANONYMOUS`, for one), and defining it makes
+    # OpenSSL select the GNU `strerror_r`, which returns `char *` and which musl does not have.
 
-    # ClickHouse assumes a 64-bit size_t / pointer width pervasively (e.g. `1e12uz`
-    # literals in src/Core/Defines.h, sizeof-equality static_asserts in ProfileEvents).
-    # The 32-bit wasm32 ABI breaks thousands of these. Build for wasm64 (Memory64)
-    # so size_t and pointers are 64-bit, matching the codebase's assumptions.
-    # Requires a recent runtime (Node >= 23, Chrome >= 133). Set WASM_MEMORY64=OFF to
-    # attempt the (much harder) 32-bit port instead.
+    # chdb ships WASM as a product, so the three ABI choices below are options rather than
+    # fixed settings. They are consumed by the OS_WASM block further down and by programs/wasm.
+    #
+    # WASM_MEMORY64: 64-bit Memory64 ABI. OFF attempts the (much harder) wasm32 port.
     option (WASM_MEMORY64 "Build the WASM target for the 64-bit Memory64 ABI" ON)
-    if (WASM_MEMORY64)
-        add_compile_options(-sMEMORY64=1)
-        add_link_options(-sMEMORY64=1)
-    endif ()
-
-    # ClickHouse relies pervasively on C++ exception *catching*. Emscripten
-    # disables catching by default (only throwing works), turning every try/catch
-    # into a no-op so exceptions escape to JS. Enable native WebAssembly exception
-    # handling (supported by Node >= 23 and modern browsers). It must be applied at
-    # both compile and link so landing pads are emitted in every translation unit.
-    add_compile_options(-fwasm-exceptions)
-    add_link_options(-fwasm-exceptions)
-
-    # ClickHouse is pervasively multi-threaded (global thread pool, background
-    # schedule pools, the query pipeline).
-    # WASM_THREADS=ON (default): real pthreads (Web Workers + SharedArrayBuffer).
-    #   -pthread is an ABI flag and must be applied to every translation unit at
-    #   compile and link. Needs the page to be cross-origin isolated (COOP/COEP).
-    #   The worker pool size is set on the final link target (programs/wasm).
-    # WASM_THREADS=OFF: single-threaded build with no -pthread and no
-    #   SharedArrayBuffer dependency, so it runs on pages that are NOT cross-origin
-    #   isolated. Emscripten without pthreads makes every thread creation fail, so
-    #   the global thread pool degrades to running jobs inline and the optional
-    #   background pools are not started (gated on CHDB_WASM_SINGLE_THREADED).
+    # WASM_THREADS: real pthreads (Web Workers + SharedArrayBuffer), which needs the page to be
+    #   cross-origin isolated. OFF builds single-threaded so it runs on pages that are not:
+    #   thread creation fails, the global pool runs jobs inline and the optional background
+    #   pools are not started (gated on CHDB_WASM_SINGLE_THREADED).
     option (WASM_THREADS "Build the WASM target with pthreads (requires cross-origin isolation)" ON)
-    # WASM_JSPI: use JavaScript Promise Integration for the HTTP bridge — the
-    # wasm stack suspends on an async fetch() instead of requiring synchronous
-    # XHR / a subprocess. The only transport that works on Cloudflare Workers;
-    # requires a JSPI-enabled engine (Chrome 137+, workerd, Node with
-    # --experimental-wasm-jspi). Adds -sJSPI at link (programs/wasm) and
-    # switches WasmHTTPBridge.cpp to the async transport.
+    # WASM_JSPI: JavaScript Promise Integration for the HTTP bridge - the wasm stack suspends on
+    #   an async fetch() instead of requiring synchronous XHR. The only transport that works on
+    #   Cloudflare Workers; needs a JSPI-enabled engine (Chrome 137+, workerd, Node with
+    #   --experimental-wasm-jspi). Adds -sJSPI at link (programs/wasm).
     option (WASM_JSPI "Use JSPI (async fetch) for the WASM HTTP bridge" OFF)
-    if (WASM_THREADS)
-        add_compile_options(-pthread)
-        add_link_options(-pthread)
-    else ()
-        add_definitions(-D CHDB_WASM_SINGLE_THREADED)
-    endif ()
 else ()
     message (FATAL_ERROR "Platform ${CMAKE_SYSTEM_NAME} is not supported")
 endif ()
 
-# WebAssembly cannot use threads-by-default, jemalloc, any networked storage,
-# the embedded LLVM JIT, Rust, or hardware-specific code paths. Force these off
-# unconditionally so the rest of the tree configures consistently for WASM.
 if (OS_WASM)
+    # ClickHouse assumes a 64-bit `size_t` and 64-bit pointers pervasively - `1e12uz` literals in
+    # `Core/Defines.h`, sizeof-equality static_asserts in ProfileEvents, and so on - so build for
+    # the 64-bit Memory64 ABI rather than wasm32. Needs a recent engine (Node >= 23, Chrome >= 133).
+    if (WASM_MEMORY64)
+        add_compile_options (-sMEMORY64=1)
+        add_link_options (-sMEMORY64=1)
+    endif ()
+
+    # ClickHouse catches exceptions everywhere. Emscripten only emits throws by default and turns
+    # every `catch` into a no-op, so enable the native WebAssembly exception-handling proposal.
+    # It is an ABI flag: it has to be on for every translation unit and at the link.
+    add_compile_options (-fwasm-exceptions)
+    add_link_options (-fwasm-exceptions)
+
+    # Emscripten implements pthreads on Web Workers plus SharedArrayBuffer, which needs the page
+    # to be cross-origin isolated. Also an ABI flag, so compile and link both.
+    if (WASM_THREADS)
+        add_compile_options (-pthread)
+        add_link_options (-pthread)
+    else ()
+        add_definitions (-D CHDB_WASM_SINGLE_THREADED)
+    endif ()
+
+    # Nothing here can work in a WebAssembly sandbox: there are no raw sockets, no subprocesses,
+    # no `dlopen`, no JIT and no architecture-specific code paths.
     set (ENABLE_JEMALLOC OFF CACHE INTERNAL "")
     set (ENABLE_TCMALLOC OFF CACHE INTERNAL "")
     set (ENABLE_GRPC OFF CACHE INTERNAL "")
+    # Protobuf needs a `protoc` that runs on the host, and the nested native configure at the
+    # bottom of the top-level `CMakeLists.txt` would be handed `emcc` as its host compiler.
+    # ORC hard-depends on it and goes with it; chdb keeps Parquet, see the format block below.
+    set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
+    # Its `kj` library uses `fallocate` and friends unconditionally in its POSIX branch,
+    # which the Emscripten libc does not provide.
+    set (ENABLE_CAPNP OFF CACHE INTERNAL "")
     set (ENABLE_ARROW_FLIGHT OFF CACHE INTERNAL "")
     set (ENABLE_HDFS OFF CACHE INTERNAL "")
     set (ENABLE_MYSQL OFF CACHE INTERNAL "")
@@ -91,6 +90,10 @@ if (OS_WASM)
     set (ENABLE_AMQPCPP OFF CACHE INTERNAL "")
     set (ENABLE_NATS OFF CACHE INTERNAL "")
     set (ENABLE_CASSANDRA OFF CACHE INTERNAL "")
+    # Raw sockets like the rest, and its `mlib` has an explicit #error for platforms
+    # it does not recognize (`mlib/time_point.h`: "We do not know how to get the
+    # current time on this platform").
+    set (USE_MONGODB OFF CACHE INTERNAL "")
     set (ENABLE_AZURE_BLOB_STORAGE OFF CACHE INTERNAL "")
     set (ENABLE_AWS_S3 OFF CACHE INTERNAL "")
     set (ENABLE_S3 OFF CACHE INTERNAL "")
@@ -100,6 +103,11 @@ if (OS_WASM)
     set (ENABLE_KRB5 OFF CACHE INTERNAL "")
     set (ENABLE_GSASL_LIBRARY OFF CACHE INTERNAL "")
     set (ENABLE_CURL OFF CACHE INTERNAL "")
+    # `libssh` needs raw sockets, and its config headers are pregenerated per platform.
+    set (ENABLE_SSH OFF CACHE INTERNAL "")
+    # This also turns off `wasmtime`, the engine behind WebAssembly UDFs: a host WebAssembly
+    # runtime inside a WebAssembly sandbox would need to run guest modules from native code,
+    # which this target cannot provide.
     set (ENABLE_RUST OFF CACHE INTERNAL "")
     set (ENABLE_DELTA_KERNEL_RS OFF CACHE INTERNAL "")
     set (ENABLE_EMBEDDED_COMPILER OFF CACHE INTERNAL "")
@@ -128,10 +136,6 @@ if (OS_WASM)
     # to DummyJSONParser, which fails every parse and returns defaults.
     set (ENABLE_SIMDJSON ON CACHE INTERNAL "")
 
-    # Libs that WASM can't use at all (native protoc bootstrap, networked object
-    # stores, heavy columnar formats).
-    set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
-    set (ENABLE_CAPNP OFF CACHE INTERNAL "")
     # Avro ON: pure C++ (boost::iostreams + snappy, both already built for WASM).
     # It is the gate for Iceberg/Paimon metadata reading and, together with
     # Parquet, for the DataLakeCatalog database engine.
@@ -152,6 +156,13 @@ if (OS_WASM)
     # Emscripten's libc++ is not the chdb-patched libcxx, so the exception ABI
     # has no embedded stack trace. base/src expect this macro to be defined.
     add_definitions (-DSTD_EXCEPTION_HAS_STACK_TRACE=0)
+
+    # Upstream additionally sets -sSTACK_SIZE / -sINITIAL_MEMORY / -sALLOW_MEMORY_GROWTH /
+    # -sMAXIMUM_MEMORY / -sPROXY_TO_PTHREAD / -sEXIT_RUNTIME / -g0 globally here, for its own
+    # `clickhouse` executable. chdb does not build that target for WASM; it links
+    # programs/wasm, which sets the equivalents on the target itself (WASM_STACK_SIZE,
+    # WASM_INITIAL_MEMORY, WASM_PTHREAD_POOL_SIZE, ...). Setting them globally too would
+    # put two values for each flag on the same link line.
 endif ()
 
 # Since we always use toolchain files to generate hermetic builds, cmake will
@@ -213,7 +224,8 @@ if (CMAKE_CROSSCOMPILING)
         set (ENABLE_EMBEDDED_COMPILER OFF CACHE INTERNAL "")
         set (ENABLE_DWARF_PARSER OFF CACHE INTERNAL "")
     elseif (OS_WASM)
-        # All WASM-specific disables are handled in the OS_WASM block above.
+        # Handled in the OS_WASM block above: it has to run before this one, because the
+        # `CMAKE_CROSSCOMPILING` check below it needs `OS_WASM` to already be set.
     else ()
         message (FATAL_ERROR "Trying to cross-compile to unsupported system: ${CMAKE_SYSTEM_NAME}!")
     endif ()

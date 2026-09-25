@@ -373,55 +373,6 @@ void ArrowBlockOutputFormat::prepareWriter(const std::shared_ptr<arrow::Schema> 
 
     writer = *writer_status;
 }
-
-void registerOutputFormatArrow(FormatFactory & factory);
-void registerOutputFormatArrow(FormatFactory & factory)
-{
-    factory.registerOutputFormat(
-        "Arrow",
-        [](WriteBuffer & buf,
-           const Block & sample,
-           const FormatSettings & format_settings,
-           FormatFilterInfoPtr /*format_filter_info*/) -> OutputFormatPtr
-        {
-            auto header = std::make_shared<const Block>(sample);
-            if (format_settings.arrow.output_use_native_writer)
-                return std::make_shared<ArrowIPCBlockOutputFormat>(buf, header, false, format_settings);
-            return std::make_shared<ArrowBlockOutputFormat>(buf, header, false, format_settings);
-        });
-    factory.markFormatHasNoAppendSupport("Arrow");
-    factory.markOutputFormatNotTTYFriendly("Arrow");
-    factory.setContentType("Arrow", "application/octet-stream");
-
-    factory.registerOutputFormat(
-        "ArrowStream",
-        [](WriteBuffer & buf,
-           const Block & sample,
-           const FormatSettings & format_settings,
-          FormatFilterInfoPtr /*format_filter_info*/) -> OutputFormatPtr
-        {
-            auto header = std::make_shared<const Block>(sample);
-            if (format_settings.arrow.output_use_native_writer)
-                return std::make_shared<ArrowIPCBlockOutputFormat>(buf, header, true, format_settings);
-            return std::make_shared<ArrowBlockOutputFormat>(buf, header, true, format_settings);
-        });
-    factory.markFormatHasNoAppendSupport("ArrowStream");
-    factory.markOutputFormatPrefersLargeBlocks("ArrowStream");
-    factory.markOutputFormatNotTTYFriendly("ArrowStream");
-    factory.setContentType("ArrowStream", "application/octet-stream");
-}
-
-}
-
-#else
-
-namespace DB
-{
-class FormatFactory;
-void registerOutputFormatArrow(FormatFactory &);
-void registerOutputFormatArrow(FormatFactory &)
-{
-}
 }
 
 #endif

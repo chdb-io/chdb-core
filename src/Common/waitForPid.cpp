@@ -235,7 +235,7 @@ static PollPidResult pollPid(pid_t pid, int timeout_in_ms)
 namespace DB
 {
 
-/// WASM has no child processes (no fork/exec); pollPid never succeeds.
+/// WebAssembly has no child processes: there is no `fork` and no `exec`, so nothing to wait for.
 static PollPidResult pollPid(pid_t /*pid*/, int /*timeout_in_ms*/)
 {
     return PollPidResult::FAILED;

@@ -310,8 +310,7 @@ void collectMapKeysOrValuesFromBucketsWithOrder(
 }
 
 void SerializationMapKeysOrValues::deserializeBinaryBulkWithMultipleStreams(
-    ColumnPtr & column,
-    size_t rows_offset,
+    IColumn & column,
     size_t limit,
     DeserializeBinaryBulkSettings & settings,
     DeserializeBinaryBulkStatePtr & state,
@@ -320,7 +319,7 @@ void SerializationMapKeysOrValues::deserializeBinaryBulkWithMultipleStreams(
     /// BASIC format has no bucketing, delegate directly.
     if (serialization_version == MergeTreeMapSerializationVersion::BASIC)
     {
-        keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(column, rows_offset, limit, settings, state, cache);
+        keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(column, limit, settings, state, cache);
         return;
     }
 
@@ -332,7 +331,7 @@ void SerializationMapKeysOrValues::deserializeBinaryBulkWithMultipleStreams(
     {
         settings.path.push_back(Substream::Bucket);
         settings.path.back().bucket = 0;
-        keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(column, rows_offset, limit, settings, map_keys_or_values_with_buckets_state->bucket_keys_or_values_states[0], cache);
+        keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(column, limit, settings, map_keys_or_values_with_buckets_state->bucket_keys_or_values_states[0], cache);
         settings.path.pop_back();
     }
     /// Multiple buckets. Deserialize each bucket, then reassemble into a single Array column.
@@ -345,8 +344,9 @@ void SerializationMapKeysOrValues::deserializeBinaryBulkWithMultipleStreams(
         {
             settings.path.push_back(Substream::Bucket);
             settings.path.back().bucket = bucket;
-            keys_or_values_buckets[bucket] = column->cloneEmpty();
-            keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(keys_or_values_buckets[bucket], rows_offset, limit, settings, map_keys_or_values_with_buckets_state->bucket_keys_or_values_states[bucket], cache);
+            auto mutable_bucket = column.cloneEmpty();
+            keys_or_values_serialization->deserializeBinaryBulkWithMultipleStreams(*mutable_bucket, limit, settings, map_keys_or_values_with_buckets_state->bucket_keys_or_values_states[bucket], cache);
+            keys_or_values_buckets[bucket] = std::move(mutable_bucket);
             settings.path.pop_back();
         }
 
@@ -362,17 +362,17 @@ void SerializationMapKeysOrValues::deserializeBinaryBulkWithMultipleStreams(
             }
 
             /// Read bucket indexes (flat array, one per key-value pair).
-            ColumnPtr bucket_index_column = map_keys_or_values_with_buckets_state->bucket_index_type->createColumn();
+            auto bucket_index_column = map_keys_or_values_with_buckets_state->bucket_index_type->createColumn();
             settings.path.push_back(Substream::MapBucketIndexes);
             map_keys_or_values_with_buckets_state->bucket_index_serialization->deserializeBinaryBulkWithMultipleStreams(
-                bucket_index_column, 0, total_kv_pairs, settings, map_keys_or_values_with_buckets_state->bucket_index_state, cache);
+                *bucket_index_column, total_kv_pairs, settings, map_keys_or_values_with_buckets_state->bucket_index_state, cache);
             settings.path.pop_back();
 
-            collectMapKeysOrValuesFromBucketsWithOrder(keys_or_values_buckets, *bucket_index_column, *column->assumeMutable());
+            collectMapKeysOrValuesFromBucketsWithOrder(keys_or_values_buckets, *bucket_index_column, column);
         }
         else
         {
-            collectMapKeysOrValuesFromBuckets(keys_or_values_buckets, *column->assumeMutable());
+            collectMapKeysOrValuesFromBuckets(keys_or_values_buckets, column);
         }
     }
 }
