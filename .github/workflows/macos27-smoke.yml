@@ -31,7 +31,7 @@ jobs:
           gh run download "$SOURCE_RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
             --name "$SOURCE_ARTIFACT" \
-            --dir .
+            --dir ./chdb
 
       - name: Show environment
         run: |
