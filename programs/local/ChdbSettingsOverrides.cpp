@@ -17,6 +17,7 @@ namespace DB
 {
 namespace Setting
 {
+extern const SettingsBool materialize_statistics_on_insert;
 extern const SettingsMaxThreads max_threads;
 extern const SettingsBool output_format_arrow_use_native_writer;
 }
@@ -95,6 +96,26 @@ void applySettingsOverridesForChdb(ContextMutablePtr context)
     /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
     /// libarrow writer until that is root-caused. Users can still opt in.
     setAdjustedDefault(settings, Setting::output_format_arrow_use_native_writer, false);
+
+    /// 26.9 turned materialize_statistics_on_insert on by default so that
+    /// cost-based join reordering has estimates on freshly loaded tables. For an
+    /// embedded engine that trade is inverted: every insert-produced part gains a
+    /// statistics.packed, and loading a part reads that one packed file once per
+    /// column - 106-211 opens per part on a 105-column table. A fresh process
+    /// therefore pays the whole cost before its first query, and chdb callers that
+    /// run one query per process pay it on every query. Measured on ClickBench
+    /// hits (13 parts, 105 columns, merges stopped): first-query 43.3 ms -> 7.7 ms,
+    /// FileOpen 1665 -> 626, which is 26.7.3's 623. On the full 100M-row table the
+    /// per-query floor it removes is ~2.5 ms per statistics-carrying part. Merges
+    /// still materialize statistics (materialize_statistics_on_merge), so this
+    /// defers them rather than dropping them, leaving the optimizer exactly where
+    /// 26.7.3 left it - join reordering is configured identically in both versions.
+    /// The cost is that optimize_trivial_count_with_sparsity_filter gives part of
+    /// its win back (ClickBench Q1 0.010 s -> 0.049 s, still 2.1x better than
+    /// 26.7.3) because only merge-produced parts keep the counters. Revert once
+    /// upstream reads the packed statistics file once per part instead of once per
+    /// column. Users can opt back in with materialize_statistics_on_insert=1.
+    setAdjustedDefault(settings, Setting::materialize_statistics_on_insert, false);
 
 #if defined(OS_LINUX)
     /// On multi-socket machines a default of "one thread per core" backfires:
