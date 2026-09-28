@@ -176,9 +176,12 @@ jobs:
             # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
             python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert "fastjsonschema<2.22"
             # polars gates tests/test_polars_output.py and the polars cases in
-            # tests/test_arrow_c_stream_protocol.py; they skip without it. polars
-            # needs Python 3.10+, so tolerate the versions that have no wheel.
-            python -m pip install polars || echo "polars unavailable for Python $version (polars tests will skip)"
+            # tests/test_arrow_c_stream_protocol.py; they skip without it. Current
+            # polars needs Python 3.10+, so Python 3.9 tests the oldest release chdb
+            # supports instead (1.10.0, the first whose Arrow stream import reads
+            # every record batch) and the other versions test the latest.
+            if [ "$version" = "3.9" ]; then polars_spec="polars==1.10.0"; else polars_spec="polars"; fi
+            python -m pip install "$polars_spec" || echo "polars unavailable for Python $version (polars tests will skip)"
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain

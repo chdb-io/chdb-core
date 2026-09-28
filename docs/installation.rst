@@ -44,8 +44,8 @@ This enables:
 
    pip install chdb[polars]
 
-This enables the ``"polars"`` output format. Querying a polars DataFrame with
-``Python(df)`` needs no extra dependency.
+This enables the ``"polars"`` output format, which needs polars 1.10 or newer.
+Querying a polars DataFrame with ``Python(df)`` needs no extra dependency.
 
 Supported Platforms
 -------------------

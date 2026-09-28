@@ -8,7 +8,19 @@ neither pyarrow nor pandas.
 
 from __future__ import annotations
 
+import re
+
 __all__ = ["to_polars"]
+
+# polars gained Arrow PyCapsule import in 1.3.0, but until 1.10.0 it reads only
+# the first record batch of the stream -- silently, and chdb results carry one
+# batch per block, so multi-block results would come back truncated.
+_MIN_POLARS_VERSION = (1, 10)
+
+
+def _polars_version(pl):
+    match = re.match(r"(\d+)\.(\d+)", getattr(pl, "__version__", ""))
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 def _require_polars(feature):
@@ -18,6 +30,13 @@ def _require_polars(feature):
         raise ImportError(
             f'{feature} requires polars. Install it via "pip install polars".'
         ) from e
+    version = _polars_version(pl)
+    if version is not None and version < _MIN_POLARS_VERSION:
+        raise ImportError(
+            f"{feature} requires polars>=1.10.0, found {pl.__version__}: earlier "
+            "releases do not import Arrow streams correctly. "
+            'Upgrade it via "pip install -U polars".'
+        )
     return pl
 
 

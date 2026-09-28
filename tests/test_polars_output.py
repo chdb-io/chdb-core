@@ -90,6 +90,15 @@ class TestPolarsOutputFormat(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_multi_block_result_is_read_completely(self):
+        # One record batch per block: polars releases that import only the
+        # first batch of a stream would return 8192 of these rows.
+        df = chdb.query(
+            "SELECT number AS n FROM numbers(100000) SETTINGS max_block_size = 8192", "polars"
+        )
+        self.assertEqual(df.height, 100000)
+        self.assertEqual(df["n"].sum(), 100000 * 99999 // 2)
+
     def test_send_query_polars_does_not_offer_record_batches(self):
         # The chunks are already polars frames, so the pyarrow reader on the
         # stream has nothing to read; it must say so instead of failing later.
@@ -162,6 +171,44 @@ class TestPolarsOutputFormat(unittest.TestCase):
         self.assertEqual(row["dec"], decimal.Decimal("1.25"))
         self.assertIsNone(row["n"])
         self.assertEqual(row["arr"], ["a", "b"])
+
+
+@unittest.skipIf(pl is None, "polars not installed")
+class TestPolarsMinimumVersion(unittest.TestCase):
+    """polars 1.3-1.9 import only the first record batch of an Arrow stream."""
+
+    def with_polars_version(self, version, fn):
+        real = pl.__version__
+        pl.__version__ = version
+        try:
+            return fn()
+        finally:
+            pl.__version__ = real
+
+    def test_releases_before_1_10_are_rejected_on_every_entry_point(self):
+        conn = chdb.connect(":memory:")
+        try:
+            arrow_result = chdb.query("SELECT 1 AS a", "Arrow")
+            calls = {
+                "chdb.query": lambda: chdb.query("SELECT 1", "polars"),
+                "Connection.query": lambda: conn.query("SELECT 1", "polars"),
+                "Connection.send_query": lambda: conn.send_query("SELECT 1", "polars"),
+                "to_polars": lambda: to_polars(arrow_result),
+            }
+            for name, call in calls.items():
+                with self.subTest(entry_point=name):
+                    with self.assertRaisesRegex(ImportError, r"polars>=1\.10\.0, found 1\.9\.0"):
+                        self.with_polars_version("1.9.0", call)
+        finally:
+            conn.close()
+
+    def test_release_1_10_is_accepted(self):
+        df = self.with_polars_version("1.10.0", lambda: chdb.query("SELECT 1 AS a", "polars"))
+        self.assertEqual(df.to_dicts(), [{"a": 1}])
+
+    def test_unparseable_version_is_not_blocked(self):
+        df = self.with_polars_version("dev", lambda: chdb.query("SELECT 1 AS a", "polars"))
+        self.assertEqual(df.to_dicts(), [{"a": 1}])
 
 
 class TestPolarsFormatWithoutPolars(unittest.TestCase):
