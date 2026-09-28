@@ -156,20 +156,6 @@ Query pandas DataFrames directly:
    
    print(result)
 
-polars (1.3 or newer) works the same way -- a DataFrame is read through the
-Arrow PyCapsule protocol, a LazyFrame is collected first, and a Series becomes
-a one-column table:
-
-.. code-block:: python
-
-   import polars as pl
-
-   df = pl.DataFrame({"product": ["A", "B", "A"], "sales": [100, 200, 300]})
-   print(chdb.query("SELECT product, sum(sales) FROM Python(df) GROUP BY product"))
-
-   lazy = df.lazy().filter(pl.col("sales") > 150)
-   print(chdb.query("SELECT sum(sales) FROM Python(lazy)"))
-
 Memory vs Persistent Storage
 ----------------------------
 
