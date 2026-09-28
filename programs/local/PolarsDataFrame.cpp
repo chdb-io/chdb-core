@@ -71,7 +71,7 @@ py::object PolarsDataFrame::normalize(const py::object & object)
     {
         auto version = py::str(py::getattr(cache(), "__version__", py::str("unknown"))).cast<std::string>();
         throw py::import_error(
-            "Querying polars objects requires polars>=1.3.0, found " + version
+            "Querying Polars objects requires polars>=1.3.0, found " + version
             + ": earlier releases do not export the Arrow PyCapsule interface");
     }
 

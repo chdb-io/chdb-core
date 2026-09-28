@@ -129,7 +129,7 @@ class TestObjectNotFoundMessage(unittest.TestCase):
         with self.assertRaises(Exception) as ctx:
             chdb.query("SELECT count() FROM Python(no_such_object_here)")
         message = str(ctx.exception)
-        self.assertIn("polars", message)
+        self.assertIn("Polars DataFrame/LazyFrame/Series", message)
         self.assertIn("__arrow_c_stream__", message)
 
 
