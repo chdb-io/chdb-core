@@ -42,10 +42,10 @@ This enables:
 
 .. code-block:: bash
 
-   pip install chdb[polars]
+   pip install "polars>=1.10"
 
-This enables the ``"polars"`` output format, which needs polars 1.10 or newer.
-Querying a polars DataFrame with ``Python(df)`` needs no extra dependency.
+chDB does not depend on polars. Install it to use the ``"polars"`` output
+format, which needs polars 1.10 or newer.
 
 Supported Platforms
 -------------------

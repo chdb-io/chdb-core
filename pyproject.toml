@@ -34,7 +34,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-polars = ["polars>=1.10.0"]
 dev = ["pytest", "pytest-cov"]
 ci = ["cibuildwheel"]
 publish = ["twine", "wheel"]
