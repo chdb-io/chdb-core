@@ -17,7 +17,7 @@ env:
 
 jobs:
   test_on_macos27:
-    name: Build and test existing arm64 artifact on macOS 27
+    name: Import and query existing arm64 artifact on macOS 27
     # actionlint versions shipped before the public preview do not know this label.
     runs-on: ${{ 'xcode-27' }}
     timeout-minutes: 30
@@ -40,17 +40,23 @@ jobs:
           uname -m
           python3 --version
 
-      - name: Build wheel in a virtual environment
+      - name: Verify Mach-O layout
         run: |
-          python3 -m venv .build-venv
-          .build-venv/bin/python -m pip install --upgrade pip build
-          .build-venv/bin/python -m build --wheel
+          python3 chdb/build/check_macho_linkedit_alignment.py \
+            chdb/_chdb.abi3.so \
+            chdb/*.dylib
 
-      - name: Install and smoke test
+      - name: Sign cross-compiled binaries
         run: |
-          python3 -m venv .test-venv
-          .test-venv/bin/python -m pip install --no-deps dist/chdb_core-*.whl
-          .test-venv/bin/python - <<'PY'
+          for binary in chdb/*.dylib; do
+            codesign -f -s - "$binary"
+          done
+          codesign -f -s - chdb/_chdb.abi3.so
+          codesign --verify --strict chdb/_chdb.abi3.so
+
+      - name: Import and smoke test directly from artifact
+        run: |
+          python3 - <<'PY'
           import platform
           import chdb
 
