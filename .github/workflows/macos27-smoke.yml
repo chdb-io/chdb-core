@@ -8,102 +8,30 @@ on:
       - main
 
 permissions:
+  actions: read
   contents: read
 
+env:
+  SOURCE_RUN_ID: "36387533651"
+  SOURCE_ARTIFACT: macos27-wheel-inputs
+
 jobs:
-  build_wheel_inputs:
-    name: Cross-compile wheel inputs on Linux
-    runs-on: [self-hosted, linux, arm64, ubuntu-latest]
-    timeout-minutes: 170
-    steps:
-      - name: Install Python build dependencies
-        run: |
-          sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y \
-            make build-essential libssl-dev zlib1g-dev libbz2-dev \
-            libreadline-dev libsqlite3-dev wget curl llvm \
-            libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
-            libffi-dev liblzma-dev p7zip-full
-
-      - name: Upgrade Rust toolchain
-        run: |
-          rustup toolchain install nightly-2026-03-22
-          rustup default nightly-2026-03-22
-          rustup component add rust-src
-
-      - name: Install clang and build tools
-        run: |
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 21
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y \
-            make cmake ccache ninja-build yasm gawk wget lld-21
-          sudo ln -sf /usr/bin/wasm-ld-21 /usr/bin/wasm-ld
-
-      - name: Update git
-        run: |
-          sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
-
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Update submodules
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: .github/scripts/update-submodules.sh
-
-      - name: Configure ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: macos27-smoke-ubuntu-24.04-aarch64
-          max-size: 5G
-          append-timestamp: true
-
-      - name: Select clang 21
-        run: |
-          sudo ln -sf /usr/bin/clang-21 /usr/bin/clang
-          sudo ln -sf /usr/bin/clang++-21 /usr/bin/clang++
-          clang++ --version
-
-      - name: Cross-compile macOS arm64 dynamic artifacts
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          source ~/.cargo/env
-          bash ./chdb/build_mac_on_linux.sh arm64
-
-      - name: Upload wheel inputs
-        uses: actions/upload-artifact@v7
-        with:
-          name: macos27-wheel-inputs
-          retention-days: 7
-          path: |
-            ./chdb/_chdb.abi3.so
-            ./chdb/libpybind11nonlimitedapi_stubs.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.9.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.10.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.11.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.12.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.13.dylib
-            ./chdb/libpybind11nonlimitedapi_chdb_3.14.dylib
-
   test_on_macos27:
-    name: Import and query on macOS 27
-    needs: build_wheel_inputs
+    name: Build and test existing arm64 artifact on macOS 27
     # actionlint versions shipped before the public preview do not know this label.
     runs-on: ${{ 'xcode-27' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download wheel inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: macos27-wheel-inputs
-          path: .
+      - name: Download existing cross-compile artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$SOURCE_ARTIFACT" \
+            --dir .
 
       - name: Show environment
         run: |
@@ -112,16 +40,17 @@ jobs:
           uname -m
           python3 --version
 
-      - name: Build wheel from cross-compiled inputs
+      - name: Build wheel in a virtual environment
         run: |
-          python3 -m pip install --upgrade pip build
-          python3 -m build --wheel
+          python3 -m venv .build-venv
+          .build-venv/bin/python -m pip install --upgrade pip build
+          .build-venv/bin/python -m build --wheel
 
       - name: Install and smoke test
         run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --no-deps dist/chdb_core-*.whl
-          .venv/bin/python - <<'PY'
+          python3 -m venv .test-venv
+          .test-venv/bin/python -m pip install --no-deps dist/chdb_core-*.whl
+          .test-venv/bin/python - <<'PY'
           import platform
           import chdb
 
