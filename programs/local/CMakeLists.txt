@@ -7,6 +7,7 @@ if (OS_WASM)
     set (CLICKHOUSE_LOCAL_SOURCES
         chdb.cpp
         ChunkCollectorOutputFormat.cpp
+        ChdbSettingsOverrides.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
         ChdbClient.cpp
@@ -19,6 +20,7 @@ else()
         ArrowStreamWrapper.cpp
         ArrowTableReader.cpp
         ChunkCollectorOutputFormat.cpp
+        ChdbSettingsOverrides.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
         ChdbClient.cpp
