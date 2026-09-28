@@ -57,10 +57,28 @@ py::object PolarsDataFrame::normalize(const py::object & object)
 
     auto & cache = PythonImporter::ImportCache().polars;
 
-    if (isInstanceOfLoadedPolarsClass(object, cache.LazyFrame))
+    const bool is_lazy = isInstanceOfLoadedPolarsClass(object, cache.LazyFrame);
+    const bool is_series = !is_lazy && isInstanceOfLoadedPolarsClass(object, cache.Series);
+    if (!is_lazy && !is_series && !isInstanceOfLoadedPolarsClass(object, cache.DataFrame))
+        return object;
+
+    /// The scan reads polars through the Arrow PyCapsule interface, which polars
+    /// exports since 1.3.0. Checked before collect() so that an older polars
+    /// fails fast with the real reason, rather than after running the plan, in
+    /// the duck-typed fallback, with an unrelated TypeError.
+    auto frame_class = cache.DataFrame();
+    if (frame_class.ptr() && !py::hasattr(frame_class, "__arrow_c_stream__"))
+    {
+        auto version = py::str(py::getattr(cache(), "__version__", py::str("unknown"))).cast<std::string>();
+        throw py::import_error(
+            "Querying polars objects requires polars>=1.3.0, found " + version
+            + ": earlier releases do not export the Arrow PyCapsule interface");
+    }
+
+    if (is_lazy)
         return object.attr("collect")();
 
-    if (isInstanceOfLoadedPolarsClass(object, cache.Series))
+    if (is_series)
         return object.attr("to_frame")();
 
     return object;

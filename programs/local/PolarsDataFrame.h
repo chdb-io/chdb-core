@@ -25,7 +25,8 @@ public:
     /// Requires the GIL. A failure inside polars (a LazyFrame whose plan does
     /// not resolve, say) propagates as py::error_already_set; only the type
     /// checks are silent, so that a polars build without one of these classes
-    /// leaves the object alone instead of failing the query.
+    /// leaves the object alone instead of failing the query. Any polars object
+    /// raises py::import_error on polars < 1.3.0, which cannot export it.
     static py::object normalize(const py::object & object);
 };
 

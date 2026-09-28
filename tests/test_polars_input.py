@@ -99,6 +99,31 @@ class TestPolarsSeriesInput(unittest.TestCase):
         )
 
 
+@unittest.skipIf(pl is None, "polars not installed")
+class TestPolarsWithoutPyCapsuleExport(unittest.TestCase):
+    """polars < 1.3.0 has no __arrow_c_stream__; simulated on the installed polars."""
+
+    def test_polars_objects_raise_a_version_error_and_leave_the_engine_usable(self):
+        frame = pl.DataFrame({"a": [1, 2, 3]})
+        lazy = frame.lazy()  # noqa: F841 - found by the frame walk
+        series = pl.Series("a", [1, 2, 3])  # noqa: F841 - found by the frame walk
+        plain = {"a": [1, 2, 3]}  # noqa: F841 - not a polars object
+
+        saved = pl.DataFrame.__dict__["__arrow_c_stream__"]
+        del pl.DataFrame.__arrow_c_stream__
+        try:
+            for name in ("frame", "lazy", "series"):
+                with self.subTest(obj=name):
+                    with self.assertRaisesRegex(ImportError, r"polars>=1\.3\.0, found "):
+                        chdb.query(f"SELECT count() FROM Python({name})")
+            # Only polars objects are affected by the check.
+            self.assertEqual(csv(chdb.query("SELECT sum(a) FROM Python(plain)")), "6")
+        finally:
+            pl.DataFrame.__arrow_c_stream__ = saved
+
+        self.assertEqual(csv(chdb.query("SELECT sum(a) FROM Python(frame)")), "6")
+
+
 class TestObjectNotFoundMessage(unittest.TestCase):
     def test_message_names_polars_and_the_arrow_protocol(self):
         with self.assertRaises(Exception) as ctx:

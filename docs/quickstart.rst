@@ -156,9 +156,9 @@ Query pandas DataFrames directly:
    
    print(result)
 
-polars works the same way -- a DataFrame is read through the Arrow PyCapsule
-protocol, a LazyFrame is collected first, and a Series becomes a one-column
-table:
+polars (1.3 or newer) works the same way -- a DataFrame is read through the
+Arrow PyCapsule protocol, a LazyFrame is collected first, and a Series becomes
+a one-column table:
 
 .. code-block:: python
 
