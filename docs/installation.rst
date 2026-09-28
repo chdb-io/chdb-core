@@ -38,15 +38,6 @@ This enables:
 - PyArrow table support
 - Efficient data interchange between formats
 
-**For polars Support:**
-
-.. code-block:: bash
-
-   pip install "polars>=1.10"
-
-chDB does not depend on polars. Install it to use the ``"polars"`` output
-format, which needs polars 1.10 or newer.
-
 Supported Platforms
 -------------------
 

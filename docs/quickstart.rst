@@ -75,13 +75,6 @@ chDB supports multiple output formats for different use cases:
    print(type(table))  # <class 'pyarrow.lib.Table'>
    print(f"Rows: {len(table)}")
 
-**polars DataFrame**
-
-.. code-block:: python
-
-   df = chdb.query("SELECT number FROM numbers(5)", "polars")
-   print(type(df))  # <class 'polars.dataframe.frame.DataFrame'>
-
 **Pretty Format**
 
 .. code-block:: python

@@ -5,7 +5,7 @@ Core Query Functions
 --------------------
 
 .. automodule:: chdb
-   :members: query, sql, to_arrowTable, to_polars
+   :members: query, sql, to_df, to_arrowTable
    :show-inheritance:
 
 Connection and Session Management
@@ -27,7 +27,7 @@ Connection and Session Management
    :exclude-members: __init__
 
 .. automodule:: chdb.state.sqlitelike
-   :members: to_arrowTable, to_polars, Connection, Cursor
+   :members: to_arrowTable, to_df, Connection, Cursor
    :show-inheritance:
    :exclude-members: __init__
 
