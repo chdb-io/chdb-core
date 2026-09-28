@@ -44,9 +44,8 @@ This enables:
 
    pip install chdb[polars]
 
-This enables the ``"polars"`` output format, :meth:`Connection.pl` and the
-lazy polars source. Querying a polars DataFrame with ``Python(df)`` needs no
-extra dependency.
+This enables the ``"polars"`` output format. Querying a polars DataFrame with
+``Python(df)`` needs no extra dependency.
 
 Supported Platforms
 -------------------

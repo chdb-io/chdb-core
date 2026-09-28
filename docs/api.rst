@@ -31,13 +31,6 @@ Connection and Session Management
    :show-inheritance:
    :exclude-members: __init__
 
-polars Integration
-------------------
-
-.. automodule:: chdb.polars_io
-   :members: to_polars, chdb_source
-   :show-inheritance:
-
 DataFrame Integration
 ---------------------
 

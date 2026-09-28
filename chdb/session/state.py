@@ -208,18 +208,6 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
     # alias sql = query
     sql = query
 
-    def pl(self, sql, lazy: bool = False, params=None):
-        """Execute a SQL query and return the results as polars.
-
-        See :meth:`chdb.state.sqlitelike.Connection.pl` for the full
-        semantics. With ``lazy=True`` the returned LazyFrame runs the query on
-        this session every time it is collected, so the session must still be
-        open then.
-        """
-        if self._conn is None:
-            raise RuntimeError("Session is closed.")
-        return self._conn.pl(sql, lazy=lazy, params=params)
-
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
         if self._conn is None:

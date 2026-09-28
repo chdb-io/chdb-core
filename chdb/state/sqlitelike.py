@@ -6,11 +6,7 @@ from decimal import Decimal
 from urllib.parse import parse_qsl
 from chdb import _chdb
 from chdb._exceptions import ChdbError
-from chdb.polars_io import (
-    chdb_source as _chdb_polars_source,
-    to_polars,
-    _require_polars,
-)
+from chdb.polars_io import to_polars, _require_polars
 from chdb.progress_display import (
     get_notebook_display as _get_notebook_display,
     is_notebook as _is_notebook,
@@ -772,51 +768,6 @@ class Connection:
             return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
-
-    def pl(self, query: str, lazy: bool = False, params=None) -> Any:
-        """Execute a SQL query and return the results as polars.
-
-        Args:
-            query (str): SQL query string to execute.
-            lazy (bool, optional): When False (the default) the query runs
-                immediately and a ``pl.DataFrame`` is returned. When True the
-                query is deferred: a ``pl.LazyFrame`` is returned and nothing
-                runs until it is collected, at which point polars pushes the
-                columns it needs, a row limit and -- where it translates to
-                SQL -- the predicate down into the query.
-            params (dict, optional): Named query parameters matching
-                placeholders like ``{key:Type}``.
-
-        Returns:
-            pl.DataFrame when ``lazy`` is False, pl.LazyFrame when it is True.
-
-        Raises:
-            ChdbError: If query execution fails.
-            ImportError: If polars is not installed.
-
-        .. note::
-            ``lazy=True`` wraps the query in a subquery, so it takes a single
-            SELECT statement without a trailing ``FORMAT`` clause, and it runs
-            the query once per collect. The connection must still be open then.
-
-        Examples:
-            >>> conn = connect(":memory:")
-            >>> conn.pl("SELECT number AS n FROM numbers(3)")
-            shape: (3, 1)
-            ...
-            >>> import polars as pl
-            >>> lf = conn.pl("SELECT number AS n FROM numbers(1000)", lazy=True)
-            >>> lf.filter(pl.col("n") > 996).collect()  # WHERE runs in chdb
-            shape: (3, 1)
-            ...
-
-        .. seealso::
-            :meth:`query` - ``conn.query(sql, "polars")`` is the same as
-            ``conn.pl(sql)``
-        """
-        if lazy:
-            return _chdb_polars_source(self, query, params=params)
-        return self.query(query, "polars", params=params)
 
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
