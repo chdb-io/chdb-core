@@ -92,9 +92,13 @@ fi
 CCTOOLS_INSTALL_DIR="${HOME}/cctools"
 CCTOOLS_BIN="${CCTOOLS_INSTALL_DIR}/bin"
 
-# Override tools with cross-compilation versions from cctools
-# export STRIP="${CCTOOLS_BIN}/${DARWIN_TRIPLE}-strip"
-export STRIP="llvm-strip-21"
+# Keep Mach-O post-processing in the same toolchain as the linker.  llvm-strip
+# 21 rewrites the indirect-symbol table without preserving the padding before
+# LC_SYMTAB's string pool.  If the table has an odd number of 32-bit entries,
+# the resulting stroff is only 4-byte aligned and macOS 27's dyld rejects the
+# image with "mis-aligned LINKEDIT string pool".  The Darwin strip from the
+# cctools toolchain preserves the linker-produced padding.
+export STRIP="${CCTOOLS_BIN}/${DARWIN_TRIPLE}-strip"
 export AR="${CCTOOLS_BIN}/${DARWIN_TRIPLE}-ar"
 export NM="${CCTOOLS_BIN}/${DARWIN_TRIPLE}-nm"
 export LDD="${CCTOOLS_BIN}/${DARWIN_TRIPLE}-otool -L"
@@ -352,6 +356,10 @@ else
     ${STRIP} -S -x ${PYCHDB}
     [ "${CHDB_LITE}" != "1" ] && ${STRIP} -S -x ${LIBCHDB}
 fi
+
+echo -e "\nChecking Mach-O LINKEDIT string-pool alignment..."
+python3 "${DIR}/build/check_macho_linkedit_alignment.py" "${PYCHDB}"
+[ "${CHDB_LITE}" != "1" ] && python3 "${DIR}/build/check_macho_linkedit_alignment.py" "${LIBCHDB}"
 
 echo -e "\nPYCHDB: ${PYCHDB}"
 ls -lh ${PYCHDB}
