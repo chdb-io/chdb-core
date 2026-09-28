@@ -599,6 +599,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Every step is a fresh shell, so the ulimit set beside kern.corefile
+          # does not reach here, and a crash in the test subprocess writes no
+          # core at all.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -606,6 +610,163 @@ jobs:
           PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           pyenv shell --unset
         continue-on-error: false
+      # The abort above leaves nothing behind on its own: chdb no longer installs
+      # deadly-signal handlers, so a SIGABRT prints no ClickHouse stack, and the
+      # subprocess dies with both streams empty. Three captures follow, in order
+      # of how much they depend on the runner cooperating.
+      #
+      # lldb is the one that depends on nothing. It re-runs the same script the
+      # failing test runs, stops on the signal and prints every thread already
+      # symbolicated, so it works whether or not ReportCrash is alive and whether
+      # or not a core can be written. It also retries, which the suite does not:
+      # the suite executes this path once per run.
+      - name: Reproduce the DataStore crash under lldb
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          ulimit -c unlimited
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+          pyenv shell 3.11
+          PY311=$(pyenv which python)
+          # datastore and chdb are installed into site-packages, so this still
+          # imports after the test script removes its clone.
+          "$PY311" -c "import datastore, chdb; print('datastore', datastore.__file__); print('chdb', chdb.__file__)" || exit 0
+          cat > /tmp/chdb_crash_repro.py <<'PY'
+          import pandas as pd
+          from datastore import DataStore
+          from datastore.config import set_chdb_setting
+          from datastore.executor import get_executor
+
+          set_chdb_setting('memory_worker_correct_memory_tracker', 0)
+          print('STEP setting set', flush=True)
+
+          pd_df = pd.DataFrame({'x': [1, 2, 3]})
+          ds = DataStore(pd_df)
+          pd_result = pd_df[pd_df['x'] > 1]
+          ds_result = ds[ds['x'] > 1]
+          assert list(ds_result['x']) == list(pd_result['x'])
+          print('STEP filter ok', flush=True)
+
+          executor = get_executor()
+          executor._ensure_connected()
+          print('STEP connected', flush=True)
+          r = executor.connection._conn.query(
+              "SELECT value FROM system.server_settings "
+              "WHERE name = 'memory_worker_correct_memory_tracker'",
+              'CSV',
+          )
+          print('STEP query ok', r, flush=True)
+          assert '"0"' in str(r), r
+          print('STEP done', flush=True)
+          PY
+          for i in 1 2 3 4 5; do
+            echo "==================== lldb attempt $i ===================="
+            lldb -b \
+              -o "process handle SIGABRT -n true -p false -s true" \
+              -o "run" \
+              -o "thread backtrace all" \
+              -o "quit" \
+              -- "$PY311" /tmp/chdb_crash_repro.py > "/tmp/lldb_$i.log" 2>&1 || true
+            if grep -qE "stop reason = (signal SIGABRT|hit program assert)" "/tmp/lldb_$i.log"; then
+              echo "CRASH REPRODUCED under lldb on attempt $i"
+              cat "/tmp/lldb_$i.log"
+              break
+            fi
+            echo "attempt $i: no crash"
+            tail -20 "/tmp/lldb_$i.log"
+          done
+          pyenv shell --unset
+      - name: Upload lldb logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: lldb-logs-macos-arm64
+          path: /tmp/lldb_*.log
+          if-no-files-found: ignore
+      # ReportCrash's .ips is the second capture: it needs no core and carries
+      # every thread, so it is printed inline rather than shipped as an artifact.
+      # Symbolication is one atos call per image and not one per frame, because
+      # the cost is loading the multi-gigabyte DWARF (~10s) and does not grow
+      # with the number of addresses asked for.
+      - name: Collect and symbolicate macOS crash reports
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          sleep 15
+          mkdir -p crash-reports
+          cp ~/Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          sudo cp /Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          ls -l crash-reports/ || echo "no .ips files"
+          python3 - <<'PY'
+          import glob, json, os, subprocess
+          dwarfs = {os.path.basename(p): p
+                    for p in glob.glob('*.dSYM/Contents/Resources/DWARF/*')}
+          print('dSYM DWARF files:', dwarfs)
+          for path in sorted(glob.glob('crash-reports/*.ips')):
+              raw = open(path, errors='replace').read()
+              print('=' * 72)
+              print('===', path)
+              print('=' * 72)
+              try:
+                  d = json.loads(raw.split('\n', 1)[1])
+              except Exception as exc:
+                  print('  body not parseable:', exc)
+                  print(raw[:200000])
+                  continue
+              for k in ('procName', 'pid', 'parentProc', 'exception',
+                        'termination', 'asi', 'asiBacktraces', 'vmRegionInfo'):
+                  if k in d:
+                      print('  %s: %s' % (k, d[k]))
+              images = d.get('usedImages', [])
+              wanted = {}
+              for t in d.get('threads', []):
+                  for f in t.get('frames', []):
+                      idx = f.get('imageIndex')
+                      if not isinstance(idx, int) or idx >= len(images):
+                          continue
+                      nm = images[idx].get('name') or ''
+                      if nm in dwarfs:
+                          wanted.setdefault(nm, set()).add(f.get('imageOffset', 0))
+              resolved = {}
+              for nm, offs in wanted.items():
+                  offs = sorted(offs)
+                  print('  atos: %d addresses in %s' % (len(offs), nm))
+                  try:
+                      r = subprocess.run(
+                          ['atos', '-o', dwarfs[nm], '-offset'] + [hex(o) for o in offs],
+                          capture_output=True, text=True, timeout=1800)
+                      for o, line in zip(offs, r.stdout.strip().split('\n')):
+                          resolved[(nm, o)] = line
+                  except Exception as exc:
+                      print('  atos failed for %s: %s' % (nm, exc))
+              for t in d.get('threads', []):
+                  mark = '   <<< TRIGGERED' if t.get('triggered') else ''
+                  print('--- thread %s %s%s' % (t.get('id'), t.get('name', ''), mark))
+                  for i, f in enumerate(t.get('frames', [])):
+                      idx = f.get('imageIndex')
+                      img = images[idx] if isinstance(idx, int) and idx < len(images) else {}
+                      nm = img.get('name') or '?'
+                      off = f.get('imageOffset', 0)
+                      out = '  %3d  %s +0x%x' % (i, nm, off)
+                      if f.get('symbol'):
+                          out += '  ' + f['symbol']
+                      hit = resolved.get((nm, off))
+                      if hit:
+                          out += '  ->  ' + hit
+                      print(out)
+          PY
+      - name: Upload macOS crash reports
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-reports-macos-arm64
+          path: crash-reports/
+          if-no-files-found: ignore
       - name: Run notebook tests
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
