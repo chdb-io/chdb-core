@@ -30,6 +30,19 @@ using namespace DB;
 namespace
 {
 
+/// Adjust a *default* without claiming the user asked for it. `changed` is what
+/// ClickHouse serializes to remote servers (BaseSettings iteration is
+/// allChanged(), see Connection::sendQuery) and what system.settings reports as
+/// user-set, so leaving it raised would push chdb's local judgement onto a real
+/// ClickHouse server in remote()/Distributed queries and make a chdb default
+/// look like an explicit choice.
+template <typename SettingType, typename ValueType>
+void setAdjustedDefault(Settings & settings, const SettingType & setting, const ValueType & value)
+{
+    settings[setting] = value;
+    settings[setting].changed = false;
+}
+
 #if defined(OS_LINUX)
 /// Total logical CPUs across NUMA nodes, or 0 when the topology is unknown
 /// or only one node has CPUs. Enumerates the node directories (ids can be
@@ -81,7 +94,7 @@ void applySettingsOverridesForChdb(ContextMutablePtr context)
     /// v26.7's native Arrow IPC writer emits corrupt date32 buffers in the macOS
     /// x86_64 cross-build (pyarrow reads zeros or garbage); default to the mature
     /// libarrow writer until that is root-caused. Users can still opt in.
-    settings[Setting::output_format_arrow_use_native_writer] = false;
+    setAdjustedDefault(settings, Setting::output_format_arrow_use_native_writer, false);
 
 #if defined(OS_LINUX)
     /// On multi-socket machines a default of "one thread per core" backfires:
@@ -104,13 +117,7 @@ void applySettingsOverridesForChdb(ContextMutablePtr context)
         /// already logical/2; unchanged).
         const size_t cap = logical_cpus / 2;
         if (cap > 0 && cap < upstream_default)
-        {
-            settings[Setting::max_threads] = cap;
-            /// This is an adjusted *default*, not a user choice: leave the
-            /// setting unmarked so it neither propagates to remote servers
-            /// in distributed queries nor masquerades as an explicit value.
-            settings[Setting::max_threads].changed = false;
-        }
+            setAdjustedDefault(settings, Setting::max_threads, cap);
     }
 #endif
 
