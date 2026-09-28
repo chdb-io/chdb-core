@@ -48,7 +48,7 @@ review the corresponding embedded paths using
 - Run the read-only inventory:
 
 ```bash
-python3 agent/skills/sync-clickhouse-baseline/scripts/sync_preflight.py \
+python3 .agents/skills/sync-clickhouse-baseline/scripts/sync_preflight.py \
   --from-ref refs/tags/<old-tag> \
   --to-ref refs/tags/<new-tag> \
   --base-ref origin/main
