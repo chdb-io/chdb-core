@@ -115,9 +115,9 @@ elseif (OS_FREEBSD)
 elseif (OS_SUNOS)
     target_include_directories(_c-ares SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/c-ares-cmake/solaris")
 elseif (OS_WASM)
-    # Emscripten's libc is musl-based; the Linux ares_config.h is the closest fit.
-    # c-ares' socket/DNS code is never exercised on WASM (no networking), so this
-    # only needs to compile, not resolve.
+    # Emscripten's libc is musl-derived, so the Linux configuration is the closest fit. There are
+    # no sockets in a WebAssembly sandbox, so none of this resolver is ever reached at run time -
+    # it only has to compile, because gRPC and the rest of the tree link it unconditionally.
     target_include_directories(_c-ares SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/c-ares-cmake/linux")
     target_compile_definitions(_c-ares PRIVATE -D_GNU_SOURCE -D_POSIX_C_SOURCE=199309L -D_XOPEN_SOURCE=600)
 endif()

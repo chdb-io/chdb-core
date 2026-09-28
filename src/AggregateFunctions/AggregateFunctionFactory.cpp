@@ -1,5 +1,6 @@
 #include <AggregateFunctions/AggregateFunctionNothing.h>
 #include <AggregateFunctions/AggregateFunctionFactory.h>
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <AggregateFunctions/Combinators/AggregateFunctionCombinatorFactory.h>
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeLowCardinality.h>
@@ -40,7 +41,7 @@ void AggregateFunctionFactory::registerFunction(const String & name, Value creat
 {
     if (creator_with_properties.creator == nullptr)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "AggregateFunctionFactory: "
-            "the aggregate function {} has been provided  a null constructor", name);
+            "the aggregate function {} has been provided a null constructor", name);
 
     if (!aggregate_functions.emplace(name, creator_with_properties).second)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "AggregateFunctionFactory: the aggregate function name '{}' is not unique",
@@ -171,12 +172,22 @@ String AggregateFunctionFactory::getAssociatedNameByNullsAction(const String & n
     /// combinator can name the shared tuple state after the action-adjusted base aggregate without
     /// instantiating a specific element. `name` is expected to be already alias-resolved by the caller;
     /// the lowercase fallbacks mirror how getImpl() looks up case-insensitive functions.
+    ///
+    /// The maps hold only base aggregate names, but the -Tuple combinator's nested name can itself
+    /// carry further combinator suffixes (e.g. anyRespectNullsStateTuple nests anyRespectNullsState).
+    /// getImpl() applies `action` at the base of that chain when it instantiates the elements, so the
+    /// shared name must be adjusted at the base of the chain too: strip combinator suffixes, adjust,
+    /// and re-append. Otherwise the name would identify a different state than the elements actually
+    /// hold, and a -State type-name round-trip (e.g. via a distributed query) would reconstruct a
+    /// mismatched function.
     if (action == NullsAction::RESPECT_NULLS)
     {
         if (auto it = respect_nulls.find(name); it != respect_nulls.end())
             return it->second;
         if (auto it = respect_nulls.find(Poco::toLower(name)); it != respect_nulls.end())
             return it->second;
+        if (auto adjusted = getAssociatedNameUnderCombinatorSuffix(name, action))
+            return *adjusted;
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Function {} does not support RESPECT NULLS", name);
     }
 
@@ -186,10 +197,32 @@ String AggregateFunctionFactory::getAssociatedNameByNullsAction(const String & n
             return it->second;
         if (auto it = ignore_nulls.find(Poco::toLower(name)); it != ignore_nulls.end())
             return it->second;
+        if (auto adjusted = getAssociatedNameUnderCombinatorSuffix(name, action))
+            return *adjusted;
         /// IGNORE NULLS is the default for functions without an explicit transform.
     }
 
     return name;
+}
+
+std::optional<String> AggregateFunctionFactory::getAssociatedNameUnderCombinatorSuffix(const String & name, NullsAction action) const
+{
+    /// A name that is a registered function (or alias) is a base name: `action` applies to it directly,
+    /// so its combinator-looking tail (e.g. sumMap) must not be stripped.
+    const String resolved = getAliasToOrName(name);
+    if (aggregate_functions.contains(resolved) || case_insensitive_aggregate_functions.contains(Poco::toLower(resolved)))
+        return {};
+
+    AggregateFunctionCombinatorPtr combinator = AggregateFunctionCombinatorFactory::instance().tryFindSuffix(name);
+    if (!combinator)
+        return {};
+
+    const String & suffix = combinator->getName();
+    String nested_name = name.substr(0, name.size() - suffix.size());
+    if (nested_name.empty())
+        return {};
+
+    return getAssociatedNameByNullsAction(getAliasToOrName(nested_name), action) + suffix;
 }
 
 
@@ -226,6 +259,35 @@ AggregateFunctionPtr AggregateFunctionFactory::getImpl(
     ContextPtr query_context;
     if (CurrentThread::isInitialized())
         query_context = CurrentThread::get().tryGetQueryContext();
+
+    /// Python UDAFs are registered at runtime and live in their own lock-protected registry
+    /// (see CHDB::PythonUDAFFactory). Consulting it here - after the builtin maps and before
+    /// the combinator branch - is what makes `myudafIf`, `AggregateFunction(myudaf, ...)` type
+    /// parsing and `arrayReduce('myudaf', ...)` work. A single lookup builds the function and
+    /// fills the properties, so a concurrent drop cannot strand us between the two.
+    if (!found.creator)
+    {
+        AggregateFunctionProperties python_udaf_properties;
+        if (auto python_udaf
+            = CHDB::PythonUDAFFactory::instance().tryGet(name, argument_types, parameters, python_udaf_properties))
+        {
+            if (action == NullsAction::RESPECT_NULLS)
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Function {} does not support RESPECT NULLS", name);
+
+            out_properties = python_udaf_properties;
+
+            /// Same contract as the builtin branch below: `get` turns an argument that is
+            /// only ever NULL into AggregateFunctionNothing. Building the function first is
+            /// harmless - Nothing is the bottom type, so its argument check always passes.
+            if (!out_properties.returns_default_when_only_null && has_null_arguments)
+                return nullptr;
+
+            if (query_context && query_context->getSettingsRef()[Setting::log_queries])
+                query_context->addQueryFactoriesInfo(Context::QueryLogFactories::AggregateFunction, name);
+
+            return python_udaf;
+        }
+    }
 
     if (found.creator)
     {
@@ -382,6 +444,9 @@ std::optional<AggregateFunctionProperties> AggregateFunctionFactory::tryGetPrope
             return found.properties;
         }
 
+        if (auto python_udaf_properties = CHDB::PythonUDAFFactory::instance().tryGetProperties(name))
+            return python_udaf_properties;
+
         /// Combinators of aggregate functions.
         /// For every aggregate function 'agg' and combiner '-Comb' there is a combined aggregate function with the name 'aggComb',
         ///  that can have different number and/or types of arguments, different result type and different behaviour.
@@ -412,6 +477,10 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name_) con
     if (case_insensitive_aggregate_functions.contains(name_lowercase) || isAlias(name_lowercase))
         return true;
 
+    /// Python UDAFs are case-sensitive, like Python scalar UDFs.
+    if (CHDB::PythonUDAFFactory::instance().has(name_))
+        return true;
+
     String name = name_;
     while (AggregateFunctionCombinatorPtr combinator = AggregateFunctionCombinatorFactory::instance().tryFindSuffix(name))
     {
@@ -421,8 +490,19 @@ bool AggregateFunctionFactory::isAggregateFunctionName(const String & name_) con
         if (aggregate_functions.contains(name) || isAlias(name) || case_insensitive_aggregate_functions.contains(name_lowercase)
             || isAlias(name_lowercase))
             return true;
+
+        if (CHDB::PythonUDAFFactory::instance().has(name))
+            return true;
     }
     return false;
+}
+
+bool AggregateFunctionFactory::hasNameOrAlias(const String & name) const
+{
+    if (IFactoryWithAliases<AggregateFunctionWithProperties>::hasNameOrAlias(name))
+        return true;
+
+    return CHDB::PythonUDAFFactory::instance().has(name);
 }
 
 AggregateFunctionFactory & AggregateFunctionFactory::instance()

@@ -706,6 +706,27 @@ FunctionCast::WrapperType FunctionCast::createDecimalWrapper(const DataTypePtr &
                     return true;
                 }
             }
+            else if constexpr (std::is_same_v<LeftDataType, DataTypeDate32> && std::is_same_v<RightDataType, DataTypeDateTime64>)
+            {
+                /// The only conversion handled by this wrapper that can overflow the target: the whole-seconds value
+                /// of a `Date32` day does not always fit the `Int64` ticks of a high-precision `DateTime64` (a scale-9
+                /// one ends at 2262-04-11), so `date_time_overflow_behavior` has to reach the transform - unlike the
+                /// other branches here, which cannot lose a value and therefore use the default mode.
+#define GENERATE_OVERFLOW_MODE_CASE(OVERFLOW_MODE) \
+    case FormatSettings::DateTimeOverflowBehavior::OVERFLOW_MODE: \
+        result_column = ConvertImpl<LeftDataType, RightDataType, FunctionCastName, FormatSettings::DateTimeOverflowBehavior::OVERFLOW_MODE>::execute( \
+            arguments, result_type, input_rows_count, BehaviourOnErrorFromString::ConvertDefaultBehaviorTag, settings, scale); \
+        break;
+                switch (settings.date_time_overflow_behavior)
+                {
+                    GENERATE_OVERFLOW_MODE_CASE(Throw)
+                    GENERATE_OVERFLOW_MODE_CASE(Ignore)
+                    GENERATE_OVERFLOW_MODE_CASE(Saturate)
+                }
+#undef GENERATE_OVERFLOW_MODE_CASE
+
+                return true;
+            }
             else if constexpr (std::is_same_v<LeftDataType, DataTypeString>)
             {
                 if (requested_result_is_nullable)
@@ -818,6 +839,49 @@ FunctionCast::WrapperType FunctionCast::createAggregateFunctionWrapper(const Dat
             from_type_untyped->getName(), to_type->getName());
 }
 
+namespace
+{
+
+/// The number of `Array` dimensions of a type as `CAST` sees it. It is a range rather than a single
+/// number, because `Map(K, V)` is physically an `Array(Tuple(K, V))` and `CAST` converts between the
+/// two spellings: a `Map` can be matched either by another `Map`, contributing no dimension of its
+/// own, or by the `Array(Tuple(K, V))` it stands for, contributing one. A `Tuple` adds no dimension,
+/// hence a `Map` is at most one dimension whatever its value type is.
+///
+/// The array spelling is how a `Map` constant is written down when the analyzer serializes a query
+/// for a remote server: `ConstantNode::toASTImpl` renders the field as an array of tuples and wraps
+/// it into `_CAST(..., 'Array(Map(K, V))')`.
+struct DimensionsRange
+{
+    size_t min;
+    size_t max;
+};
+
+DimensionsRange getNumberOfDimensionsForCast(const IDataType & type)
+{
+    if (const auto * type_array = typeid_cast<const DataTypeArray *>(&type))
+    {
+        const DimensionsRange nested = getNumberOfDimensionsForCast(*type_array->getNestedType());
+        return {nested.min + 1, nested.max + 1};
+    }
+    if (typeid_cast<const DataTypeMap *>(&type))
+        return {0, 1};
+    return {0, 0};
+}
+
+/// The nesting depths have to be reconcilable under some spelling of the `Map`s the two types
+/// contain. This rejects a genuine depth mismatch, such as `Array(String)` to `Array(Array(String))`,
+/// before an element wrapper does something unexpected with it (`CAST` from a `String` parses it).
+/// Anything else is left to the element wrappers, which name the types that cannot be converted.
+bool canHaveSameNumberOfDimensions(const IDataType & from, const IDataType & to)
+{
+    const DimensionsRange from_dimensions = getNumberOfDimensionsForCast(from);
+    const DimensionsRange to_dimensions = getNumberOfDimensionsForCast(to);
+    return from_dimensions.min <= to_dimensions.max && to_dimensions.min <= from_dimensions.max;
+}
+
+}
+
 FunctionCast::WrapperType FunctionCast::createArrayWrapper(const DataTypePtr & from_type_untyped, const DataTypeArray & to_type) const
 {
     /// Conversion from String through parsing.
@@ -871,7 +935,7 @@ FunctionCast::WrapperType FunctionCast::createArrayWrapper(const DataTypePtr & f
     /// In query SELECT CAST([] AS Array(Array(String))) from type is Array(Nothing)
     bool from_empty_array = isNothing(from_nested_type);
 
-    if (from_type->getNumberOfDimensions() != to_type.getNumberOfDimensions() && !from_empty_array)
+    if (!canHaveSameNumberOfDimensions(*from_type, to_type) && !from_empty_array)
         throw Exception(ErrorCodes::TYPE_MISMATCH,
             "CAST AS Array can only be performed between same-dimensional array types");
 
@@ -953,10 +1017,19 @@ FunctionCast::WrapperType FunctionCast::createTupleWrapper(const DataTypePtr & f
     ElementWrappers element_wrappers;
     VectorWithMemoryTracking<std::optional<size_t>> to_reverse_index;
 
-    /// For named tuples allow conversions for tuples with
-    /// different sets of elements. If element exists in @to_type
-    /// and doesn't exist in @to_type it will be filled by default values.
-    if (from_type->hasExplicitNames() && to_type->hasExplicitNames())
+    /// For named tuples with at least one element name in common allow conversions for tuples
+    /// with different sets of elements: elements are matched by name, source elements without
+    /// a counterpart are dropped, and target elements without a counterpart are filled by default
+    /// values (schema evolution: adding, dropping and renaming elements of a Tuple or a Nested
+    /// column with ALTER).
+    /// For named tuples with disjoint sets of element names, matching by name cannot be meant,
+    /// and elements are converted positionally, as for unnamed tuples (e.g. the result of function
+    /// tuple with enable_named_columns_in_function_tuple inserted into a column whose tuple
+    /// elements are named differently). Previously such conversions silently filled the whole
+    /// result by default values, losing all the data (see issue #70830).
+    bool convert_positionally = !(from_type->hasExplicitNames() && to_type->hasExplicitNames());
+
+    if (!convert_positionally)
     {
         const auto & from_names = from_type->getElementNames();
         UnorderedMapWithMemoryTracking<String, size_t> from_positions;
@@ -965,25 +1038,38 @@ FunctionCast::WrapperType FunctionCast::createTupleWrapper(const DataTypePtr & f
             from_positions[from_names[i]] = i;
 
         const auto & to_names = to_type->getElementNames();
-        element_wrappers.reserve(to_names.size());
-        to_reverse_index.reserve(from_names.size());
 
-        for (size_t i = 0; i < to_names.size(); ++i)
+        size_t common_names_count = 0;
+        for (const auto & to_name : to_names)
+            common_names_count += from_positions.contains(to_name);
+
+        if (common_names_count == 0)
         {
-            auto it = from_positions.find(to_names[i]);
-            if (it != from_positions.end())
+            convert_positionally = true;
+        }
+        else
+        {
+            element_wrappers.reserve(to_names.size());
+            to_reverse_index.reserve(from_names.size());
+
+            for (size_t i = 0; i < to_names.size(); ++i)
             {
-                element_wrappers.emplace_back(prepareUnpackDictionaries(from_element_types[it->second], to_element_types[i]));
-                to_reverse_index.emplace_back(it->second);
-            }
-            else
-            {
-                element_wrappers.emplace_back();
-                to_reverse_index.emplace_back();
+                auto it = from_positions.find(to_names[i]);
+                if (it != from_positions.end())
+                {
+                    element_wrappers.emplace_back(prepareUnpackDictionaries(from_element_types[it->second], to_element_types[i]));
+                    to_reverse_index.emplace_back(it->second);
+                }
+                else
+                {
+                    element_wrappers.emplace_back();
+                    to_reverse_index.emplace_back();
+                }
             }
         }
     }
-    else
+
+    if (convert_positionally)
     {
         if (from_element_types.size() != to_element_types.size())
             throw Exception(ErrorCodes::TYPE_MISMATCH, "CAST AS Tuple can only be performed between tuple types "
@@ -3202,14 +3288,20 @@ FunctionCast::WrapperType FunctionCast::prepareImpl(const DataTypePtr & from_typ
 
 }
 
+FunctionConvertSettingsPtr createFunctionConvertSettings(
+    const ContextPtr & context,
+    FormatSettings::DateTimeOverflowBehavior date_time_overflow_behavior)
+{
+    return std::make_shared<const FunctionConvertSettings>(context, date_time_overflow_behavior);
+}
+
 FunctionBasePtr createFunctionBaseCast(
-    ContextPtr context,
+    const FunctionConvertSettingsPtr & settings,
     const char * name,
     const ColumnsWithTypeAndName & arguments,
     const DataTypePtr & return_type,
     std::optional<CastDiagnostic> diagnostic,
-    CastType cast_type,
-    FormatSettings::DateTimeOverflowBehavior date_time_overflow_behavior)
+    CastType cast_type)
 {
     DataTypes data_types(arguments.size());
 
@@ -3264,7 +3356,7 @@ FunctionBasePtr createFunctionBaseCast(
     }
 
     return std::make_unique<detail::FunctionCast>(
-        context, name, std::move(monotonicity), data_types, return_type, diagnostic, cast_type, date_time_overflow_behavior);
+        *settings, name, std::move(monotonicity), data_types, return_type, diagnostic, cast_type);
 }
 
 
@@ -3308,6 +3400,34 @@ bool castBothTypes(const IDataType * left, const IDataType * right, F && f)
     return castType(left, [&](const auto & left_) { return castType(right, [&](const auto & right_) { return f(left_, right_); }); });
 }
 
+/// Whether a numeric conversion `from` -> `to` can be JIT-compiled. A float source is refused for an
+/// integer or `Decimal` destination, because `fptosi` / `fptoui` have no defined result outside the
+/// destination range. A `Bool` destination stays allowed, it is compiled through `nativeBoolCast`.
+static bool isCompilableNumericConversion(const IDataType * from, const IDataType * to)
+{
+    return castBothTypes(from, to, [](const auto & left, const auto & right)
+    {
+        using LeftDataType = std::decay_t<decltype(left)>;
+        using RightDataType = std::decay_t<decltype(right)>;
+
+        if constexpr (IsDataTypeDecimalOrNumber<LeftDataType> && IsDataTypeDecimalOrNumber<RightDataType>)
+        {
+            if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeNumber<RightDataType>)
+            {
+                if constexpr (is_floating_point<typename LeftDataType::FieldType>
+                    && !is_floating_point<typename RightDataType::FieldType>)
+                    return isBool(right.getPtr());
+                return true;
+            }
+            else if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeDecimal<RightDataType>)
+                return !is_floating_point<typename LeftDataType::FieldType>;
+            else if constexpr (IsDataTypeDecimal<LeftDataType> && IsDataTypeNumber<RightDataType>)
+                return true;
+        }
+        return false;
+    });
+}
+
 bool convertIsCompilableImpl(const DataTypes & types, const DataTypePtr & result_type)
 {
     if (types.empty())
@@ -3316,25 +3436,7 @@ bool convertIsCompilableImpl(const DataTypes & types, const DataTypePtr & result
     if (!canBeNativeType(types[0]) || !canBeNativeType(result_type))
         return false;
 
-    return castBothTypes(
-        types[0].get(),
-        result_type.get(),
-        [](const auto & left, const auto & right)
-        {
-            using LeftDataType = std::decay_t<decltype(left)>;
-            using RightDataType = std::decay_t<decltype(right)>;
-
-            if constexpr (IsDataTypeDecimalOrNumber<LeftDataType> && IsDataTypeDecimalOrNumber<RightDataType>)
-            {
-                if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeNumber<RightDataType>)
-                    return true;
-                else if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeDecimal<RightDataType>)
-                    return true;
-                else if constexpr (IsDataTypeDecimal<LeftDataType> && IsDataTypeNumber<RightDataType>)
-                    return true;
-            }
-            return false;
-        });
+    return isCompilableNumericConversion(types[0].get(), result_type.get());
 }
 
 llvm::Value * convertCompileImpl(llvm::IRBuilderBase & builder, const ValuesWithType & arguments, const DataTypePtr & result_type)
@@ -3431,26 +3533,18 @@ bool FunctionCast::isCompilable() const
 
     const auto & input_type = argument_types[0];
     const auto & result_type = getResultType();
+
+    /// Converting a NULL to a non-Nullable type raises CANNOT_INSERT_NULL_IN_ORDINARY_COLUMN,
+    /// and a compiled expression produces a value with no way to raise.
+    if (isNullableOrLowCardinalityNullable(input_type) && !isNullableOrLowCardinalityNullable(result_type))
+        return false;
+
     auto denull_input_type = removeNullable(input_type);
     auto denull_result_type = removeNullable(result_type);
     if (!canBeNativeType(denull_input_type) || !canBeNativeType(denull_result_type))
         return false;
 
-    return castBothTypes(denull_input_type.get(), denull_result_type.get(), [](const auto & left, const auto & right)
-    {
-        using LeftDataType = std::decay_t<decltype(left)>;
-        using RightDataType = std::decay_t<decltype(right)>;
-        if constexpr (IsDataTypeDecimalOrNumber<LeftDataType> && IsDataTypeDecimalOrNumber<RightDataType>)
-        {
-            if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeNumber<RightDataType>)
-                return true;
-            else if constexpr (IsDataTypeNumber<LeftDataType> && IsDataTypeDecimal<RightDataType>)
-                return true;
-            else if constexpr (IsDataTypeDecimal<LeftDataType> && IsDataTypeNumber<RightDataType>)
-                return true;
-        }
-        return false;
-    });
+    return isCompilableNumericConversion(denull_input_type.get(), denull_result_type.get());
 }
 
 llvm::Value * FunctionCast::compile(llvm::IRBuilderBase & builder, const ValuesWithType & arguments) const

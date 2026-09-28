@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PybindWrapper.h"
+#include "PythonUDFCommon.h"
 
 #include <Functions/IFunction.h>
 #include <DataTypes/IDataType.h>
@@ -10,18 +11,6 @@
 
 namespace CHDB
 {
-
-enum class NullHandling : uint8_t
-{
-    SKIP,
-    PASS,
-};
-
-enum class ExceptionHandling : uint8_t
-{
-    PROPAGATE,
-    IGNORE,
-};
 
 class PythonScalarUDF : public DB::IFunction
 {
@@ -69,12 +58,5 @@ private:
     NullHandling null_handling;
     ExceptionHandling exception_handling;
 };
-
-DB::DataTypePtr annotationToDataType(const py::object & annotation);
-
-/// If the annotation is `Optional[X]` / `Union[X, None]` (or PEP 604 `X | None`),
-/// returns the inner base type `X`; any other annotation is returned unchanged.
-/// A union with more than one non-None member (e.g. `Union[int, str]`) is rejected.
-py::object unwrapOptionalAnnotation(const py::object & annotation);
 
 } // namespace CHDB

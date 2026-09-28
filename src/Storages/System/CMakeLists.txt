@@ -37,22 +37,24 @@ set(GENERATED_LICENSES_SRC "${CMAKE_CURRENT_BINARY_DIR}/StorageSystemLicenses.ge
 
 if (CHDB_LITE)
     # chdb embedded build: don't ship 11 MB of contributor license text in the binary.
-    # system.licenses will be empty.
+    # system.licenses will be empty. Written to .tmp so the shared rename below applies.
     message(STATUS "CHDB_LITE: stubbing system.licenses (empty)")
-    file(WRITE ${GENERATED_LICENSES_SRC} "// chdb stub: system.licenses empty\nconst char * library_licenses[] = { nullptr };\n")
+    file(WRITE ${GENERATED_LICENSES_SRC}.tmp "// chdb stub: system.licenses empty\nconst char * library_licenses[] = { nullptr };\n")
 else()
     # Generate license data at configure time to avoid creating a build-time dependency
     # that blocks all downstream targets (table_functions, server-lib, etc.) via the
     # CMake order-only dependency chain.
     execute_process(
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/StorageSystemLicenses.sh "${CMAKE_SOURCE_DIR}"
-        OUTPUT_FILE ${GENERATED_LICENSES_SRC}
+        OUTPUT_FILE ${GENERATED_LICENSES_SRC}.tmp
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         RESULT_VARIABLE LICENSES_RESULT)
     if (NOT LICENSES_RESULT EQUAL 0)
-        message(WARNING "Failed to generate StorageSystemLicenses.generated.cpp")
+        file(REMOVE ${GENERATED_LICENSES_SRC}.tmp)
+        message(FATAL_ERROR "Failed to generate StorageSystemLicenses.generated.cpp")
     endif()
 endif()
+file(RENAME ${GENERATED_LICENSES_SRC}.tmp ${GENERATED_LICENSES_SRC})
 
 list (APPEND storages_system_sources ${GENERATED_LICENSES_SRC})
 

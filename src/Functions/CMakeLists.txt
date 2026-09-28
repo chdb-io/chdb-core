@@ -1,6 +1,9 @@
 include("${ClickHouse_SOURCE_DIR}/cmake/dbms_glob_sources.cmake")
 add_headers_and_sources(clickhouse_functions .)
 
+# Kusto/ is new in v26.9; picked up unconditionally, as upstream does.
+add_headers_and_sources(clickhouse_functions Kusto)
+
 # Big-type comparison/arithmetic matrix trim (Int128/Int256/UInt128/UInt256/Decimal128/Decimal256/BFloat16)
 # is gated in FunctionsComparison.h / FunctionBinaryArithmetic.h via
 # `#if defined(CHDB_LITE) && CHDB_LITE` — umbrella's add_compile_definitions(CHDB_LITE=1) is enough.
@@ -48,9 +51,10 @@ if (CHDB_LITE)
         widthBucket.cpp
         bitTestAny.cpp
         bitTestAll.cpp
-        # IS [NOT] DISTINCT FROM — niche null-safe equality, big templated
-        isDistinctFrom.cpp
-        isNotDistinctFrom.cpp
+        # IS [NOT] DISTINCT FROM used to be dropped here as niche null-safe equality, but
+        # ClickHouse v26.9 made equals.cpp/notEquals.cpp reference the null-safe instantiation
+        # (`FunctionComparison<EqualsOp, NameEquals, true>`) that these two TUs define, so
+        # dropping them now leaves the kept files with an undefined vtable at load time.
         # OrZero / OrNull arithmetic variants
         intDivOrZero.cpp
         intDivOrNull.cpp
@@ -140,7 +144,10 @@ if (CHDB_LITE)
         aiClassify.cpp
         aiEmbed.cpp
         aiExtract.cpp
+        aiFilter.cpp
         aiGenerate.cpp
+        aiRedact.cpp
+        aiSimilarity.cpp
         aiTranslate.cpp
         FunctionBaseAI.cpp
     )
@@ -216,10 +223,12 @@ endif()
 # These files are moved from clickhouse_functions into dbms to make dbms self-contained (not depend on clickhouse_functions)
 # This allows less dependency and linker work (specially important when building many example executables)
 set(DBMS_FUNCTIONS
+    ComparisonOrderDomain.cpp # ComparisonOrderDomain::operator== (Used by LogicalExpressionOptimizerPass.cpp)
     IFunction.cpp # IFunctionOverloadResolver::getLambdaArgumentTypes, IExecutableFunction::execute... (Many AST visitors, analyzer passes, some storages...)
     IFunctionAdaptors.cpp # FunctionToFunctionBaseAdaptor (Used by FunctionFactory.cpp)
     FunctionDynamicAdaptor.cpp # IFunctionOverloadResolver::getLambdaArgumentTypes, IExecutableFunction::execute... (Many AST visitors, analyzer passes, some storages...)
     FunctionVariantAdaptor.cpp # IFunctionOverloadResolver::build, IExecutableFunction::execute... (For Variant type support)
+    TypeMismatchStrictness.cpp # shouldThrowOnVariantTypeMismatch, shouldThrowOnDynamicTypeMismatch (Used by the Variant/Dynamic adaptors above)
     FunctionFactory.cpp # FunctionFactory::instance() (Many AST visitors, analyzer passes, some storages...)
     FunctionHelpers.cpp # convertConstTupleToConstantElements, checkAndGetColumnConstStringOrFixedString, checkAndGetNestedArrayOffset ...)
     FunctionsLogical.cpp # createInternalFunctionAndOverloadResolve / createInternalFunctionOrOverloadResolver ... (Multiple)
@@ -269,6 +278,7 @@ set(DBMS_FUNCTIONS
 )
 extract_into_parent_list(clickhouse_functions_sources dbms_sources ${DBMS_FUNCTIONS})
 extract_into_parent_list(clickhouse_functions_headers dbms_headers
+    ComparisonOrderDomain.h
     IFunction.h
     FunctionFactory.h
     FunctionHelpers.h

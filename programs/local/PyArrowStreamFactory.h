@@ -17,8 +17,10 @@ public:
         const DB::Names & column_names);
 
 private:
-    static std::unique_ptr<ArrowArrayStreamWrapper> createFromTable(
-        pybind11::object & table,
+    /// Scans a pyarrow.dataset.Dataset, pushing the projection down into the
+    /// scanner. Tables and RecordBatches reach this through an InMemoryDataset.
+    static std::unique_ptr<ArrowArrayStreamWrapper> createFromDataset(
+        pybind11::object & dataset,
         const DB::Names & column_names);
 };
 

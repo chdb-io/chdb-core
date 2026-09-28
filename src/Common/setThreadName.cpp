@@ -169,16 +169,13 @@ void setThreadName(ThreadName name)
     // cached thread-local name. Note: revert if illumos learns a fast path for thread renaming.
     if ((false))
 #elif defined(OS_WASM)
-    /// Emscripten (single-threaded) has no pthread_setname_np; setting the name is a no-op.
+    // Emscripten has no `pthread_setname_np`.
     if ((false))
 #else
     if (0 != prctl(PR_SET_NAME, thread_name_str.data(), 0, 0, 0))
 #endif
-    {
-        // Error handling intentionally disabled
-        // if (errno != ENOSYS && errno != EPERM)    /// It's ok if the syscall is unsupported or not allowed in some environments.
-        //    throw DB::ErrnoException(DB::ErrorCodes::PTHREAD_ERROR, "Cannot set thread name with prctl(PR_SET_NAME, ...)");
-    }
+        if (errno != ENOSYS && errno != EPERM)    /// It's ok if the syscall is unsupported or not allowed in some environments.
+            throw DB::ErrnoException(DB::ErrorCodes::PTHREAD_ERROR, "Cannot set thread name with prctl(PR_SET_NAME, ...)");
 
     thread_name = name;
 
@@ -197,10 +194,10 @@ ThreadName getThreadName()
 #if defined(OS_DARWIN)
     if (pthread_getname_np(pthread_self(), tmp_thread_name, THREAD_NAME_SIZE))
         throw DB::Exception(DB::ErrorCodes::PTHREAD_ERROR, "Cannot get thread name with pthread_getname_np()");
-#elif defined(OS_WASM)
-    /// Emscripten (single-threaded) has no pthread_getname_np; leave the name empty.
 #elif defined(OS_SUNOS)
     // Skip os-level thread name lookup on illumos, since we skip thread renames in setThreadName.
+#elif defined(OS_WASM)
+    // Emscripten has no `pthread_getname_np`; the cached thread-local name is all there is.
 #elif defined(OS_FREEBSD)
 // TODO: make test. freebsd will have this function soon https://freshbsd.org/commit/freebsd/r337983
 //    if (pthread_get_name_np(pthread_self(), thread_name, THREAD_NAME_SIZE))

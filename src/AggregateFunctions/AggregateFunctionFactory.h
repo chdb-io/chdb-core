@@ -97,6 +97,15 @@ public:
 
     bool isAggregateFunctionName(const String & name) const;
 
+    /// Hides IFactoryWithAliases::hasNameOrAlias (which is not virtual, and which every
+    /// caller reaches through this concrete factory) so that the "is this name already
+    /// taken by an aggregate function?" guards spread around the codebase - SQL UDFs,
+    /// executable UDFs loaded from config or created with a driver, FunctionFactory
+    /// registration - also see Python UDAFs. Those live in a separate runtime registry, so
+    /// the base implementation, which only looks at `aggregate_functions`, misses them.
+    /// Exact names only, matching the base semantics (`sumIf` is not a registered name).
+    bool hasNameOrAlias(const String & name) const;
+
     FunctionDocumentation getDocumentation(const String & name) const;
 
 private:
@@ -121,6 +130,9 @@ private:
     std::optional<AggregateFunctionWithProperties> getAssociatedFunctionByNullsAction(const String & name, NullsAction action) const;
     /// Name-only variant: the registered name that `name` resolves to under `action` (see the definition).
     String getAssociatedNameByNullsAction(const String & name, NullsAction action) const;
+    /// Helper for the above: adjusts a name that still carries combinator suffixes (strip the suffix,
+    /// adjust the nested name for `action`, re-append). Returns nothing for base function names.
+    std::optional<String> getAssociatedNameUnderCombinatorSuffix(const String & name, NullsAction action) const;
 
     /// Case insensitive aggregate functions will be additionally added here with lowercased name.
     AggregateFunctions case_insensitive_aggregate_functions;

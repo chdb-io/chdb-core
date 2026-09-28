@@ -2,6 +2,7 @@
 #include <PybindWrapper.h>
 #include "PythonScalarUDF.h"
 
+#include <AggregateFunctions/PythonUDAFFactory.h>
 #include <Functions/IFunctionAdaptors.h>
 #include <Common/Exception.h>
 
@@ -44,6 +45,15 @@ void PythonUDFRegistry::registerUDF(
         if (udfs.contains(name))
             throw DB::Exception(DB::ErrorCodes::FUNCTION_ALREADY_EXISTS, "Python UDF '{}' is already registered", name);
     }
+
+    /// Ordinary functions are resolved before aggregate ones (see resolveFunction), so this
+    /// scalar UDF would take every call and shadow the aggregate. The aggregate registry
+    /// rejects the mirror image of this collision.
+    if (isPythonUDAFName(name))
+        throw DB::Exception(
+            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+            "Python UDF '{}' cannot be registered: a Python aggregate function with that name already exists",
+            name);
 
     /// Build the UDF (initSignature runs Python: inspect.signature) BEFORE
     /// taking the registry lock. On free-threaded builds, running Python while

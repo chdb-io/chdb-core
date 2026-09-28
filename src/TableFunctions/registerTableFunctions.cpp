@@ -32,6 +32,7 @@ void registerTableFunctions()
     registerTableFunctionMongoDB(factory);
 #endif
     registerTableFunctionRedis(factory);
+    registerTableFunctionBigQuery(factory);
 
 #if USE_ARROWFLIGHT
     registerTableFunctionArrowFlight(factory);
@@ -41,6 +42,7 @@ void registerTableFunctions()
     registerTableFunctionMergeTreeAnalyzeIndexes(factory);
     registerTableFunctionMergeTreeProjection(factory);
     registerTableFunctionMergeTreeTextIndex(factory);
+    registerTableFunctionMergeTreeCodecBlockCounts(factory);
     registerTableFunctionFuzzQuery(factory);
 #if USE_RAPIDJSON || USE_SIMDJSON
     registerTableFunctionFuzzJSON(factory);

@@ -71,7 +71,8 @@ public:
 
     void removeObjectIfExists(const StoredObject & object) override;
 
-    void removeObjectsIfExist(const StoredObjects & objects) override;
+    /// v26.9 added the optional out-parameter; this storage is read-only so it is ignored.
+    void removeObjectsIfExist(const StoredObjects & objects, StoredObjects * successful_objects = nullptr) override;
 
     ObjectMetadata getObjectMetadata(const std::string & path, bool with_tags) const override;
 
@@ -81,7 +82,8 @@ public:
     /// versions / log files when the catalog does not pin them explicitly).
     void listObjects(const std::string & path, RelativePathsWithMetadata & children, size_t max_keys) const override;
 
-    void copyObject( /// NOLINT
+    /// v26.9 returns the created generation's ETag; read-only here, so it never returns.
+    String copyObject( /// NOLINT
         const StoredObject & object_from,
         const StoredObject & object_to,
         const ReadSettings & read_settings,

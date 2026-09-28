@@ -4,6 +4,7 @@
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTBackupQuery.h>
 #include <Parsers/ASTCreateFunctionWithDriverQuery.h>
+#include <Parsers/ASTCreateHandlerQuery.h>
 #include <Parsers/ASTCreateNamedCollectionQuery.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTCreateResourceQuery.h>
@@ -12,12 +13,13 @@
 #include <Parsers/ASTCreateWorkloadQuery.h>
 #include <Parsers/ASTDescribeCacheQuery.h>
 #include <Parsers/ASTDropFunctionQuery.h>
+#include <Parsers/ASTDropHandlerQuery.h>
 #include <Parsers/ASTDropNamedCollectionQuery.h>
 #include <Parsers/ASTDropQuery.h>
 #include <Parsers/ASTDropResourceQuery.h>
 #include <Parsers/ASTDropWorkloadQuery.h>
-#include <Parsers/ASTHypotheticalIndexQuery.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Parsers/ASTHypotheticalObjectQuery.h>
 #include <Parsers/ASTKillQueryQuery.h>
 #include <Parsers/ASTParallelWithQuery.h>
 #include <Parsers/ASTQueryWithOutput.h>
@@ -28,7 +30,6 @@
 #include <Parsers/ASTSystemQuery.h>
 #include <Parsers/ASTTransactionControl.h>
 #include <Parsers/ASTUseQuery.h>
-#include <Parsers/ASTWatchQuery.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Parsers/ASTRenameQuery.h>
 #include <Parsers/ASTExpressionList.h>
@@ -42,6 +43,7 @@
 #include <Parsers/Access/ASTCreateRoleQuery.h>
 #include <Parsers/Access/ASTCreateRowPolicyQuery.h>
 #include <Parsers/Access/ASTCreateSettingsProfileQuery.h>
+#include <Parsers/Access/ASTCreateTokenQuery.h>
 #include <Parsers/Access/ASTCreateUserQuery.h>
 #include <Parsers/Access/ASTDropAccessEntityQuery.h>
 #include <Parsers/Access/ASTExecuteAsQuery.h>
@@ -76,10 +78,15 @@ bool isGlobalMutatingStatement(const IAST & ast)
         /// Workload / resource scheduling objects.
         || ast.as<ASTCreateWorkloadQuery>() || ast.as<ASTDropWorkloadQuery>() || ast.as<ASTCreateResourceQuery>()
         || ast.as<ASTDropResourceQuery>()
-        /// Access management.
+        /// SQL-defined HTTP handlers: SQLDefinedHandlersFactory holds them for the
+        /// whole server, so no database checkpoint carries one.
+        || ast.as<ASTCreateHandlerQuery>() || ast.as<ASTDropHandlerQuery>()
+        /// Access management. CREATE TOKEN adds an authentication method to the
+        /// current user, so it changes the same store CREATE USER does.
         || ast.as<ASTCreateUserQuery>() || ast.as<ASTCreateRoleQuery>() || ast.as<ASTCreateQuotaQuery>()
         || ast.as<ASTCreateRowPolicyQuery>() || ast.as<ASTCreateMaskingPolicyQuery>()
-        || ast.as<ASTCreateSettingsProfileQuery>() || ast.as<ASTDropAccessEntityQuery>()
+        || ast.as<ASTCreateSettingsProfileQuery>() || ast.as<ASTCreateTokenQuery>()
+        || ast.as<ASTDropAccessEntityQuery>()
         /// CHECK GRANT only evaluates an authorization and changes nothing;
         /// its QueryKind::Check already lands it in READ_ONLY.
         || ast.as<ASTMoveAccessEntityQuery>() || ast.as<ASTGrantQuery>();
@@ -92,12 +99,11 @@ bool isControlStatement(const IAST & ast)
     return ast.as<ASTUseQuery>() || ast.as<ASTSetQuery>() || ast.as<ASTSetRoleQuery>() || ast.as<ASTSystemQuery>()
         || ast.as<ASTBackupQuery>() || ast.as<ASTSnapshotQuery>() || ast.as<ASTKillQueryQuery>()
         || ast.as<ASTTransactionControl>() || ast.as<ASTExecuteAsQuery>()
-        /// WATCH streams a live view for as long as the session lasts; it ends
-        /// no more than a SYSTEM statement does.
-        || ast.as<ASTWatchQuery>()
-        /// Advisor state for EXPLAIN, held outside the databases and outside
-        /// any backup.
-        || ast.as<ASTHypotheticalIndexQuery>();
+        /// Advisor state for EXPLAIN, held outside the databases and outside any backup.
+        /// v26.9 generalised ASTHypotheticalIndexQuery into ASTHypotheticalObjectQuery
+        /// (upstream 97629aace93e, CREATE/DROP HYPOTHETICAL PROJECTION).
+        || ast.as<ASTHypotheticalObjectQuery>();
+        /// WATCH was listed here too until v26.9 removed live views and the query type with them.
 }
 
 /// Every database a statement writes to, with unqualified names resolved the

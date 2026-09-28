@@ -11,7 +11,9 @@ namespace CHDB
 enum class PyArrowObjectType
 {
     Invalid,
-    Table
+    Table,
+    RecordBatch,
+    Dataset
 };
 
 class PyArrowTable
@@ -19,7 +21,9 @@ class PyArrowTable
 public:
     static DB::ColumnsDescription getActualTableStructure(const py::object & object, DB::ContextPtr & context);
 
-    static bool isPyArrowTable(const py::object & object);
+    /// True for every PyArrow object the Python() table engine scans natively:
+    /// pyarrow.Table, pyarrow.RecordBatch and pyarrow.dataset.Dataset.
+    static bool isPyArrowObject(const py::object & object);
 
     static PyArrowObjectType getArrowType(const py::object & object);
 };

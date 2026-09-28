@@ -25,7 +25,6 @@ void registerStorageView(StorageFactory & factory);
 void registerStorageMaterializedView(StorageFactory & factory);
 void registerStorageGenerateRandom(StorageFactory & factory);
 void registerStorageExecutable(StorageFactory & factory);
-void registerStorageWindowView(StorageFactory & factory);
 void registerStorageLoop(StorageFactory & factory);
 void registerStorageFuzzQuery(StorageFactory & factory);
 void registerStorageTimeSeries(StorageFactory & factory);
@@ -81,6 +80,7 @@ void registerStorageYTsaurus(StorageFactory & factory);
 #endif
 
 void registerStorageRedis(StorageFactory & factory);
+void registerStorageBigQuery(StorageFactory & factory);
 
 
 #if USE_RDKAFKA
@@ -140,7 +140,6 @@ void registerStorages()
     registerStorageGenerateRandom(factory);
 #if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageExecutable(factory);
-    registerStorageWindowView(factory);
 #endif
     registerStorageLoop(factory);
 #if !defined(CHDB_LITE) || !CHDB_LITE
@@ -197,6 +196,7 @@ void registerStorages()
 #if !defined(CHDB_LITE) || !CHDB_LITE
     registerStorageYTsaurus(factory);
     registerStorageRedis(factory);
+    registerStorageBigQuery(factory);
 #endif
 
 #if USE_RDKAFKA

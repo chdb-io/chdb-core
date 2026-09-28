@@ -115,8 +115,9 @@ static void test_memory_path(void)
 
     /// Connection B: two-token form with a negative value, open on the same
     /// path while A is open.
-    char * argv_b[] = {"clickhouse", "--max_threads", "2", "--max_partitions_to_read", "-1"};
-    chdb_connection * b = chdb_connect(5, argv_b);
+    char * argv_b[] = {"clickhouse", "--max_threads", "2", "--max_partitions_to_read", "-1",
+                       "--enable_nullable_tuple_type=0"};
+    chdb_connection * b = chdb_connect(6, argv_b);
     CHECK(b != NULL, "connection B with two-token argv connects");
     if (!b)
         return;
@@ -144,8 +145,13 @@ static void test_memory_path(void)
     CHECK(strcmp(buf, "2") == 0, "B: two-token --max_threads 2 applied");
     query_into(*b, "SELECT getSetting('max_partitions_to_read')", "CSV", buf, sizeof(buf));
     CHECK(strcmp(buf, "-1") == 0, "B: two-token negative value parsed as -1, not mangled to 1");
+    /// ClickHouse v26.9 renamed allow_experimental_nullable_tuple_type to
+    /// enable_nullable_tuple_type (the old name survives as an alias) and flipped its default
+    /// to true, so "rejected unless asked for" no longer holds. B now switches it off through
+    /// its own argv instead: the negative case stays, and A enabling it under the old name
+    /// while B disables it under the new one is a stronger isolation check than before.
     query_into(*b, "SELECT CAST(NULL, 'Nullable(Tuple(Int32))') AS t", "CSV", buf, sizeof(buf));
-    CHECK(is_error(buf), "B: experimental type still rejected without the setting");
+    CHECK(is_error(buf), "B: Nullable(Tuple) rejected when B's argv turns the setting off");
 
     /// A's isolated view is intact after B's queries.
     query_into(*a, "SELECT getSetting('max_threads')", "CSV", buf, sizeof(buf));

@@ -145,10 +145,7 @@ namespace ErrorCodes
     extern const int NOT_IMPLEMENTED;
 }
 
-/// Emscripten/WASM defines SIGEV_THREAD_ID but its `sigevent` struct lacks the
-/// `_sigev_un` member (and there are no POSIX per-thread timers, signals or stack
-/// unwinding), so the timer-based sampling profiler cannot work there. Disable it.
-#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
+#if defined(SIGEV_THREAD_ID) && defined(OS_HAS_SIGNAL_HANDLERS)
 Timer::Timer()
     : log(getLogger("Timer"))
 {}
@@ -478,7 +475,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
     [[maybe_unused]] UInt64 thread_id, [[maybe_unused]] int clock_type, [[maybe_unused]] UInt64 period, [[maybe_unused]] int pause_signal_)
     : log(getLogger("QueryProfiler")), pause_signal(pause_signal_)
 {
-#if defined(QUERY_PROFILER_SUPPORTED) && !defined(OS_WASM)
+#if defined(QUERY_PROFILER_SUPPORTED)
     /// Under TSan we use frame-pointer-based unwinding (via abseil) which does not
     /// call dl_iterate_phdr in the signal handler, so the PHDR cache is not needed for
     /// stack capture. Symbolization happens later in a normal thread context.
@@ -521,7 +518,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
 
     try
     {
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && defined(OS_HAS_SIGNAL_HANDLERS)
         timer.createIfNecessary(thread_id, clock_type, pause_signal);
         timer.set(period);
 #else
@@ -532,7 +529,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
     }
     catch (...)
     {
-#if defined(SIGEV_THREAD_ID)
+#if defined(SIGEV_THREAD_ID) && defined(OS_HAS_SIGNAL_HANDLERS)
         timer.cleanup();
 #else
         ProfilerSampler::instance().removeThread(pthread_self(), pause_signal);
@@ -540,7 +537,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
         throw;
     }
 #else
-    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler requires SIGEV_THREAD_ID");
+    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "QueryProfiler is not supported in this build, see QUERY_PROFILER_SUPPORTED");
 #endif
 }
 
@@ -548,7 +545,7 @@ QueryProfilerBase<ProfilerImpl>::QueryProfilerBase(
 template <typename ProfilerImpl>
 void QueryProfilerBase<ProfilerImpl>::setPeriod([[maybe_unused]] UInt64 period_)
 {
-#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
+#if defined(SIGEV_THREAD_ID) && defined(OS_HAS_SIGNAL_HANDLERS)
     timer.set(period_);
 #elif defined(OS_DARWIN)
     ProfilerSampler::instance().setThreadPeriod(pthread_self(), pause_signal, period_);
@@ -573,7 +570,7 @@ QueryProfilerBase<ProfilerImpl>::~QueryProfilerBase()
 template <typename ProfilerImpl>
 void QueryProfilerBase<ProfilerImpl>::cleanup()
 {
-#if defined(SIGEV_THREAD_ID) && !defined(OS_WASM)
+#if defined(SIGEV_THREAD_ID) && defined(OS_HAS_SIGNAL_HANDLERS)
     timer.stop();
     signal_handler_disarmed = true;
 #elif defined(OS_DARWIN)

@@ -48,6 +48,9 @@ private:
     /// When set, the table function sends this query directly instead of
     /// creating a StorageDistributed for SELECT/INSERT.
     String remote_query;
+    /// Changes from a SETTINGS clause among the arguments, applied to the `DistributedSettings`
+    /// of the created `StorageDistributed`, e.g. SETTINGS skip_unavailable_shards = 1.
+    SettingsChanges settings_changes;
 };
 
 }

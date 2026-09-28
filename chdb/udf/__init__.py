@@ -5,6 +5,6 @@ in chDB. It allows you to extend chDB's capabilities by writing custom Python fu
 that can be called from SQL queries.
 """
 
-from .udf import chdb_udf, generate_udf, func
+from .udf import agg, chdb_udf, generate_udf, func
 
-__all__ = ["chdb_udf", "generate_udf", "func"]
+__all__ = ["agg", "chdb_udf", "generate_udf", "func"]

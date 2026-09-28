@@ -299,7 +299,10 @@ namespace Poco {
 void EnvironmentImpl::nodeIdImpl(NodeId& id)
 {
 	std::memset(&id, 0, sizeof(id));
-#if !defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__)
+	// No networking and no ARP in a WebAssembly sandbox; leave the node id zeroed.
+	return;
+#else
 	char name[MAXHOSTNAMELEN];
 	if (gethostname(name, sizeof(name)))
 		return;
@@ -319,8 +322,7 @@ void EnvironmentImpl::nodeIdImpl(NodeId& id)
 	close(s);
 	if (rc < 0) return;
 	std::memcpy(&id, ar.arp_ha.sa_data, sizeof(id));
-#endif // !defined(__EMSCRIPTEN__)
-	// WebAssembly: no networking/ARP; leave the node id zeroed.
+#endif
 }
 
 

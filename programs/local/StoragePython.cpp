@@ -344,7 +344,7 @@ Pipe StoragePython::readImpl(
     ArrowTableReaderPtr arrow_table_reader;
     {
         py::gil_scoped_acquire acquire;
-        if (PyArrowTable::isPyArrowTable(data_source))
+        if (PyArrowTable::isPyArrowObject(data_source))
         {
             auto arrow_stream = PyArrowStreamFactory::createFromPyObject(data_source, sample_block.getNames());
             arrow_table_reader = std::make_shared<ArrowTableReader>(

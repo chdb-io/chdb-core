@@ -25,10 +25,14 @@ target_link_libraries (chdb_wasm PRIVATE clickhouse-local-lib)
 #   value verified to work in a browser. PTHREAD_POOL_SIZE_STRICT=2 turns any
 #   overflow into a clean error rather than a deadlock. Raise it if you raise
 #   CHDB_WASM_MAX_THREADS or hit "Cannot schedule a task" in the browser.
+#   Raised 16 -> 24 for the v26.9 baseline: its Parquet reader (ParquetV3, which
+#   replaced the old one and can no longer be switched off) reads the offset
+#   index and the column chunks concurrently, which took the peak past 16 and
+#   failed the browser test with "Cannot schedule a task (threads=15, jobs=14)".
 # WASM_PTHREAD_STACK_SIZE: per-worker stack (there are WASM_PTHREAD_POOL_SIZE of
 #   these, so this dominates baseline memory — keep it as small as queries allow).
 set (WASM_STACK_SIZE "8MB" CACHE STRING "chdb-wasm main-thread stack size")
-set (WASM_PTHREAD_POOL_SIZE "16" CACHE STRING "chdb-wasm pre-spawned worker pool size")
+set (WASM_PTHREAD_POOL_SIZE "24" CACHE STRING "chdb-wasm pre-spawned worker pool size")
 set (WASM_PTHREAD_STACK_SIZE "2MB" CACHE STRING "chdb-wasm per-worker stack size")
 set (WASM_INITIAL_MEMORY "128MB" CACHE STRING "chdb-wasm initial heap size")
 

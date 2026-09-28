@@ -118,27 +118,6 @@ inline bool isPandasDf(const py::object & obj)
         });
 }
 
-// Helper function to check if object is a PyArrow Table
-inline bool isPyarrowTable(const py::object & obj)
-{
-    return execWithGIL(
-        [&]()
-        {
-            try
-            {
-                auto table_type = py::module_::import("pyarrow").attr("Table");
-                return py::isinstance(obj, table_type);
-            }
-            catch (const py::error_already_set & e)
-            {
-                if (!e.matches(PyExc_ImportError))
-                    throw;
-                /// pyarrow is not installed: the object cannot be a Table.
-                return false;
-            }
-        });
-}
-
 inline bool hasGetItem(const py::object & obj)
 {
     return execWithGIL(

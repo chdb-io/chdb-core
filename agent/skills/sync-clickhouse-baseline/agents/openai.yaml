@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync ClickHouse Baseline"
+  short_description: "Safely sync chdb-core to a ClickHouse baseline"
+  default_prompt: "Use $sync-clickhouse-baseline to plan and validate a chdb-core ClickHouse baseline sync."
