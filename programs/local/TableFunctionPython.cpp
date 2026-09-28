@@ -83,8 +83,7 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
                             "Python object not found in the Python environment\n"
                             "Ensure that the object is a PyReader, a pandas DataFrame, a pyarrow Table, a polars "
                             "DataFrame/LazyFrame/Series, or any object exposing __arrow_c_stream__, and that it is "
-                            "either a variable in the global or local scope or registered with "
-                            "connection.register_table(name, object)");
+                            "in the global or local scope");
 
         LOG_DEBUG(
             logger,
