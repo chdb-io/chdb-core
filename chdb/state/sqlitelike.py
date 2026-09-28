@@ -705,7 +705,7 @@ class Connection:
                 - "Arrow" - Apache Arrow format (bytes)
                 - "Dataframe" - Pandas DataFrame (requires pandas)
                 - "Arrowtable" - PyArrow Table (requires pyarrow)
-                - "polars" - polars DataFrame (requires polars)
+                - "Polars" - Polars DataFrame (requires polars)
 
         Returns:
             Query results in the specified format. Type depends on format:
@@ -816,7 +816,7 @@ class Connection:
                 - "Arrow" - Apache Arrow format (enables record_batch() method)
                 - "dataframe" - Pandas DataFrame chunks
                 - "arrowtable" - PyArrow Table chunks
-                - "polars" - polars DataFrame chunks
+                - "polars" - Polars DataFrame chunks
 
         Returns:
             StreamingResult: A streaming iterator for query results that supports:

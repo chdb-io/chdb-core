@@ -137,7 +137,7 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
             - "Parquet" - Parquet format
             - "DataFrame" - Pandas DataFrame
             - "ArrowTable" - PyArrow Table
-            - "polars" - polars DataFrame
+            - "Polars" - Polars DataFrame
             - "Debug" - Enable verbose logging
 
         path (str, optional): Database file path. Defaults to "" (in-memory database).
@@ -156,7 +156,7 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
         - str: For text formats like CSV, JSON
         - pd.DataFrame: When output_format is "DataFrame" or "dataframe"
         - pa.Table: When output_format is "ArrowTable" or "arrowtable"
-        - pl.DataFrame: When output_format is "polars"
+        - pl.DataFrame: When output_format is "Polars" or "polars"
         - chdb result object: For other formats
 
     Raises:
