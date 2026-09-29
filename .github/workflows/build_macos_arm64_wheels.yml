@@ -599,6 +599,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Each step runs in a fresh shell, so the `ulimit -c unlimited` from
+          # "Setup core dump collection" never reached this step, and a crash in
+          # the test subprocess wrote no core file (see #254).
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -606,6 +610,94 @@ jobs:
           PYTHON=$(pyenv which python) bash ./chdb/test_chdb_datastore.sh
           pyenv shell --unset
         continue-on-error: false
+      # The DataStore suite runs several tests in a child Python process and only
+      # checks its exit code. When that child dies of SIGABRT during interpreter
+      # teardown (#254), chdb's own signal handlers have already been reset to
+      # SIG_DFL, so nothing is printed and the stream capture is empty. macOS
+      # ReportCrash still writes an .ips report for it, and that report carries
+      # every thread's frames as image offsets. Symbolicate them against the dSYMs
+      # restored from the build artifacts and print the result inline, so the next
+      # occurrence leaves a stack trace in the job log instead of "exit -6".
+      - name: Collect and symbolicate macOS crash reports
+        if: failure()
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          # ReportCrash writes the .ips asynchronously; give it a moment.
+          sleep 15
+          mkdir -p crash-reports
+          cp ~/Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          sudo cp /Library/Logs/DiagnosticReports/*.ips crash-reports/ 2>/dev/null || true
+          ls -l crash-reports/ || echo "no .ips files"
+          python3 - <<'PY'
+          import glob, json, os, subprocess
+
+          # One atos call per image, not per frame: the cost is loading the
+          # multi-gigabyte DWARF, not the number of addresses resolved.
+          dwarfs = {os.path.basename(p): p
+                    for p in glob.glob('*.dSYM/Contents/Resources/DWARF/*')}
+          print('dSYM DWARF files:', dwarfs)
+          for path in sorted(glob.glob('crash-reports/*.ips')):
+              raw = open(path, errors='replace').read()
+              print('=' * 72)
+              print('===', path)
+              print('=' * 72)
+              try:
+                  d = json.loads(raw.split('\n', 1)[1])
+              except Exception as exc:
+                  print('  body not parseable:', exc)
+                  print(raw[:200000])
+                  continue
+              for k in ('procName', 'pid', 'parentProc', 'exception',
+                        'termination', 'asi', 'asiBacktraces', 'vmRegionInfo'):
+                  if k in d:
+                      print('  %s: %s' % (k, d[k]))
+              images = d.get('usedImages', [])
+              wanted = {}
+              for t in d.get('threads', []):
+                  for f in t.get('frames', []):
+                      idx = f.get('imageIndex')
+                      if not isinstance(idx, int) or idx >= len(images):
+                          continue
+                      nm = images[idx].get('name') or ''
+                      if nm in dwarfs:
+                          wanted.setdefault(nm, set()).add(f.get('imageOffset', 0))
+              resolved = {}
+              for nm, offs in wanted.items():
+                  offs = sorted(offs)
+                  print('  atos: %d addresses in %s' % (len(offs), nm))
+                  try:
+                      r = subprocess.run(
+                          ['atos', '-o', dwarfs[nm], '-offset'] + [hex(o) for o in offs],
+                          capture_output=True, text=True, timeout=1500)
+                      for o, line in zip(offs, r.stdout.strip().split('\n')):
+                          resolved[(nm, o)] = line
+                  except Exception as exc:
+                      print('  atos failed for %s: %s' % (nm, exc))
+              for t in d.get('threads', []):
+                  mark = '   <<< TRIGGERED' if t.get('triggered') else ''
+                  print('--- thread %s %s%s' % (t.get('id'), t.get('name', ''), mark))
+                  for i, f in enumerate(t.get('frames', [])):
+                      idx = f.get('imageIndex')
+                      img = images[idx] if isinstance(idx, int) and idx < len(images) else {}
+                      nm = img.get('name') or '?'
+                      off = f.get('imageOffset', 0)
+                      out = '  %3d  %s +0x%x' % (i, nm, off)
+                      if f.get('symbol'):
+                          out += '  ' + f['symbol']
+                      hit = resolved.get((nm, off))
+                      if hit:
+                          out += '  ->  ' + hit
+                      print(out)
+          PY
+      - name: Upload macOS crash reports
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-reports-macos-arm64
+          path: crash-reports/
+          if-no-files-found: ignore
       - name: Run notebook tests
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
@@ -712,6 +804,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
