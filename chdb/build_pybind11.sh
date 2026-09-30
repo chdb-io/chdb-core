@@ -133,7 +133,7 @@ build_all_pybind11_nonlimitedapi() {
     if [ -n "${CHDB_PYBIND11_PYTHON_VERSIONS:-}" ]; then
         read -r -a python_versions <<< "${CHDB_PYBIND11_PYTHON_VERSIONS}"
     else
-        python_versions=("3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
+        python_versions=("3.9" "3.10" "3.11" "3.12" "3.13" "3.14" "3.15")
     fi
 
     echo "Building pybind11 nonlimitedapi libraries for all Python versions..."
