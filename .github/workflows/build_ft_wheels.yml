@@ -46,6 +46,13 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 600
     steps:
+      # First step in the job: a cutoff recorded later is skipped when an
+      # earlier step fails, and the collector then falls back to reporting
+      # everything it finds, which on a self-hosted runner means the previous
+      # job's cores and crash reports attributed to this one.
+      - name: Record the crash-diagnostics cutoff
+        if: always()
+        run: echo "CRASH_SINCE=$(date +%s)" >> "$GITHUB_ENV"
       - name: Install Python build dependencies
         run: |
           # Fresh self-hosted runners often have unattended-upgrades holding the
@@ -149,6 +156,23 @@ jobs:
           sudo cp /tmp/patchelf-install/bin/patchelf /usr/bin/
           sudo chmod +x /usr/bin/patchelf
           patchelf --version
+      # This job builds and tests in one step and had no core-dump setup at
+      # all, so a free-threading crash -- the build most likely to have one --
+      # left nothing behind.
+      - name: Setup core dump collection
+        run: |
+          # 1777, because the directory outlives the job and may have been
+          # created by a root-owned step: a runner-owned test process cannot
+          # write into it and the kernel drops the dump without saying so.
+          sudo mkdir -p /tmp/core && sudo chmod 1777 /tmp/core
+          # Shared too, so clear it before the tests rather than reporting
+          # whatever the last job left.
+          sudo rm -f /tmp/core/core.* || true
+          # core_pattern is global and outlives the job. Remember what the
+          # runner had so the cleanup step can put it back, rather than leaving
+          # every later process on this machine dumping into /tmp/core.
+          echo "CORE_PATTERN_PREV=$(cat /proc/sys/kernel/core_pattern)" >> "$GITHUB_ENV"
+          echo "/tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
       - name: Build & test FT wheels
         timeout-minutes: 600
         env:
@@ -157,6 +181,8 @@ jobs:
           # Restrict FT publishing to Python 3.14t only (see workflow header).
           FT_VERSIONS: 3.14t
         run: |
+          # ulimit does not survive a step boundary.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           source ~/.cargo/env
@@ -173,6 +199,45 @@ jobs:
       #     done
       #   env:
       #     GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Collect crash diagnostics
+        if: failure()
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          .github/scripts/collect-crash-diagnostics.sh \
+            crash-diagnostics "${{ env.CRASH_SINCE || 0 }}"
+      - name: Upload crash diagnostics
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-diagnostics-ft-linux-x86_64
+          path: crash-diagnostics/
+          if-no-files-found: ignore
+      # Unconditional, unlike the collection above. A dump of this engine runs
+      # to gigabytes and /tmp/core is shared and outlives the job on a
+      # self-hosted runner, so leaving one behind fills the disk and fails some
+      # later job for a reason that has nothing to do with it. That is most
+      # likely on exactly the runs that collect nothing: a crash that did not
+      # fail its step leaves a dump no one will ever come looking for.
+      - name: Remove core dumps
+        if: always()
+        continue-on-error: true
+        run: |
+          for d in /tmp/core tmp/core; do
+            [ -d "$d" ] || continue
+            echo "$d holds $(du -sh "$d" 2>/dev/null | cut -f1)"
+            rm -f "$d"/core.* 2>/dev/null || sudo rm -f "$d"/core.* 2>/dev/null || true
+          done
+          echo "core dumps removed"
+          # Put the runner's core_pattern back. Leaving ours in place would
+          # send every later process on this machine into a directory this job
+          # owns and clears.
+          if [ -n "${CORE_PATTERN_PREV:-}" ] && [ -w /proc/sys/kernel/core_pattern ]; then
+            printf '%s' "$CORE_PATTERN_PREV" | sudo tee /proc/sys/kernel/core_pattern >/dev/null || true
+          elif [ -n "${CORE_PATTERN_PREV:-}" ]; then
+            echo "$CORE_PATTERN_PREV" | sudo tee /proc/sys/kernel/core_pattern >/dev/null || true
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: chdb-ft-linux-x86_64
