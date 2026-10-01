@@ -56,6 +56,9 @@ jobs:
     runs-on: [self-hosted, linux, arm64, ubuntu-latest]
     if: ${{ !github.event.pull_request.draft }}
     steps:
+      - name: Record the crash-diagnostics cutoff
+        if: always()
+        run: echo "CRASH_SINCE=$(date +%s)" >> "$GITHUB_ENV"
       - name: Check CPU capabilities and requirements
         run: |
           echo "=== CPU Information ==="
@@ -268,9 +271,26 @@ jobs:
           V=${GITHUB_REF#refs/tags/v}
           echo "CHDB_VERSION=$V" >> "$GITHUB_ENV"
 
+      - name: Setup core dump collection
+        run: |
+          # core_pattern must be absolute: the kernel resolves a relative
+          # pattern against the crashing process's cwd, so cores from test
+          # subprocesses (different cwd) were silently dropped.
+          sudo mkdir -p /tmp/core && sudo chmod 1777 /tmp/core
+          # Runners are persistent and /tmp/core is shared: drop stale cores
+          # so the collection step only ever reports this run's crashes.
+          sudo rm -f /tmp/core/core.*
+          # core_pattern is global and outlives the job. Remember what the
+          # runner had so the cleanup step can put it back, rather than leaving
+          # every later process on this machine dumping into /tmp/core.
+          echo "CORE_PATTERN_PREV=$(cat /proc/sys/kernel/core_pattern)" >> "$GITHUB_ENV"
+          echo "/tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
+          ulimit -c unlimited
       - name: Run chdb/build.sh
         timeout-minutes: 600
         run: |
+          # This step ends with chdb/test_smoke.sh, so it is a test step too.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           source ~/.cargo/env
@@ -333,6 +353,8 @@ jobs:
         continue-on-error: false
       - name: Run libchdb stub in examples dir
         run: |
+          # ulimit does not survive a step boundary.
+          ulimit -c unlimited
           bash -x ./examples/runStub.sh
           bash -x ./examples/runArrowTest.sh
           bash -x ./examples/runArrowStreamParse.sh
@@ -356,6 +378,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          # ulimit does not survive a step boundary.
+          ulimit -c unlimited
           set -eo pipefail
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -429,17 +453,6 @@ jobs:
           sudo rm -f dist/*linux_aarch64.whl
           ls -lh dist
         shell: bash
-      - name: Setup core dump collection
-        run: |
-          # core_pattern must be absolute: the kernel resolves a relative
-          # pattern against the crashing process's cwd, so cores from test
-          # subprocesses (different cwd) were silently dropped.
-          sudo mkdir -p /tmp/core && sudo chmod 1777 /tmp/core
-          # Runners are persistent and /tmp/core is shared: drop stale cores
-          # so the collection step only ever reports this run's crashes.
-          sudo rm -f /tmp/core/core.*
-          echo "/tmp/core/core.%p" | sudo tee /proc/sys/kernel/core_pattern
-          ulimit -c unlimited
       - name: Start MinIO for S3 streaming-insert tests
         continue-on-error: true
         run: |
@@ -552,6 +565,9 @@ jobs:
       - name: Run benchmarks on Python 3.14 (pandas 2.x and 3.x)
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
+          # ulimit does not survive a step boundary, so the core limit set
+          # beside kern.corefile / core_pattern never reaches here.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.14
@@ -568,6 +584,9 @@ jobs:
         continue-on-error: true
       - name: Test torch compatibility on Python 3.11
         run: |
+          # ulimit does not survive a step boundary, so the core limit set
+          # beside kern.corefile / core_pattern never reaches here.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.11
@@ -595,6 +614,9 @@ jobs:
       - name: Run notebook tests
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
+          # ulimit does not survive a step boundary, so the core limit set
+          # beside kern.corefile / core_pattern never reaches here.
+          ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv shell 3.9
@@ -738,18 +760,68 @@ jobs:
         if: always() && steps.checkout.outcome == 'success'
         run: |
           git checkout -- pyproject.toml
-      - name: Check and upload core files if present
-        if: always()
+      # Only when something failed, so a green run pays nothing at all.
+      # The trade is real and one-sided: a subprocess can die on a signal
+      # while the step around it still exits 0, and such a crash now goes
+      # unreported. The dump it leaves is still removed below, so at least
+      # it does not sit on a shared disk that nobody is going to read.
+      - name: Collect crash diagnostics
+        if: failure()
+        continue-on-error: true
+        timeout-minutes: 30
         run: |
-          if ls /tmp/core/core.* >/dev/null 2>&1; then
-            echo "CORE_FILES_FOUND=true" >> $GITHUB_ENV
-            tar -czvf core-files-linux-aarch64.tar.gz /tmp/core/core.*
-            echo "Core files tar created: core-files-linux-aarch64.tar.gz"
-            ls -lh core-files-linux-aarch64.tar.gz
-          else
+          .github/scripts/collect-crash-diagnostics.sh \
+            crash-diagnostics "${{ env.CRASH_SINCE || 0 }}"
+      - name: Upload crash diagnostics
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: crash-diagnostics-linux-arm64
+          path: crash-diagnostics/
+          if-no-files-found: ignore
+      - name: Check and upload core files if present
+        if: failure()
+        run: |
+          # The symbolicated backtrace is already in the job log, so the dump
+          # is a convenience for digging interactively rather than the evidence
+          # itself. Archiving one costs minutes and needs as much free disk
+          # again for the archive, and a crash loop leaves several, so the
+          # archive is skipped when the dumps are large or the disk is tight.
+          # Skipping loses the convenience; failing the upload or filling a
+          # shared runner's disk costs someone else's build.
+          CORE_DIR=/tmp/core
+          # 8 GiB: one dump of this engine has been measured at 4.7 GiB, so the
+          # cap admits a single crash comfortably and stops a repeat.
+          MAX_BYTES=${CORE_ARCHIVE_MAX_BYTES:-8589934592}
+          df -Pk "$CORE_DIR" 2>/dev/null || true
+          df -Pk . || true
+          if ! ls "$CORE_DIR"/core.* >/dev/null 2>&1; then
             echo "CORE_FILES_FOUND=false" >> $GITHUB_ENV
-            echo "No core files found in /tmp/core"
+            echo "No core files found in $CORE_DIR"
+            exit 0
           fi
+          raw=$(( $(du -ck "$CORE_DIR"/core.* 2>/dev/null | tail -1 | cut -f1) * 1024 ))
+          # The archive is written here, not into CORE_DIR, and on these
+          # runners that is a different filesystem: measuring the wrong one
+          # lets tar fail past the guard and leave a partial archive behind.
+          avail=$(( $(df -Pk . | tail -1 | awk '{print $4}') * 1024 ))
+          echo "core dumps: $raw bytes | free where the archive goes: $avail bytes | cap: $MAX_BYTES bytes"
+          if [ "$raw" -gt "$MAX_BYTES" ]; then
+            echo "CORE_FILES_FOUND=false" >> $GITHUB_ENV
+            echo "Not archiving: $raw bytes of dumps is over the $MAX_BYTES cap."
+            echo "The stack is in the Collect crash diagnostics step above."
+            exit 0
+          fi
+          if [ "$avail" -lt "$raw" ]; then
+            echo "CORE_FILES_FOUND=false" >> $GITHUB_ENV
+            echo "Not archiving: $avail bytes free is less than the $raw bytes to compress."
+            echo "The stack is in the Collect crash diagnostics step above."
+            exit 0
+          fi
+          echo "CORE_FILES_FOUND=true" >> $GITHUB_ENV
+          tar -czf core-files-linux-aarch64.tar.gz "$CORE_DIR"/core.*
+          ls -lh core-files-linux-aarch64.tar.gz
         continue-on-error: true
       - name: Keep killall ccache and wait for ccache to finish
         if: always()
@@ -760,11 +832,42 @@ jobs:
             sleep 10; \
           done
       - name:  Upload core files if present
-        if: always() && env.CORE_FILES_FOUND == 'true'
+        if: failure() && env.CORE_FILES_FOUND == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: core-files-linux-aarch64
           path: core-files-linux-aarch64.tar.gz
+      # First step in the job: a cutoff recorded later is skipped when an
+      # earlier step fails, and the collector then falls back to reporting
+      # everything it finds, which on a self-hosted runner means the previous
+      # job's cores and crash reports attributed to this one.
+      # Unconditional, unlike the collection above. A dump of this engine runs
+      # to gigabytes and /tmp/core is shared and outlives the job on a
+      # self-hosted runner, so leaving one behind fills the disk and fails some
+      # later job for a reason that has nothing to do with it. That is most
+      # likely on exactly the runs that collect nothing: a crash that did not
+      # fail its step leaves a dump no one will ever come looking for.
+          # A dump is only worth keeping while someone is still
+          # looking at the failure it came from.
+          retention-days: 7
+      - name: Remove core dumps
+        if: always()
+        continue-on-error: true
+        run: |
+          for d in /tmp/core tmp/core; do
+            [ -d "$d" ] || continue
+            echo "$d holds $(du -sh "$d" 2>/dev/null | cut -f1)"
+            rm -f "$d"/core.* 2>/dev/null || sudo rm -f "$d"/core.* 2>/dev/null || true
+          done
+          echo "core dumps removed"
+          # Put the runner's core_pattern back. Leaving ours in place would
+          # send every later process on this machine into a directory this job
+          # owns and clears.
+          if [ -n "${CORE_PATTERN_PREV:-}" ] && [ -w /proc/sys/kernel/core_pattern ]; then
+            printf '%s' "$CORE_PATTERN_PREV" | sudo tee /proc/sys/kernel/core_pattern >/dev/null || true
+          elif [ -n "${CORE_PATTERN_PREV:-}" ]; then
+            echo "$CORE_PATTERN_PREV" | sudo tee /proc/sys/kernel/core_pattern >/dev/null || true
+          fi
       - name: Upload wheels to release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
