@@ -17,6 +17,8 @@
 #endif
 
 #include <Disks/DiskObjectStorage/ObjectStorages/Web/WebObjectStorage.h>
+#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorage.h>
+#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageRegistry.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Local/LocalObjectStorage.h>
 #include <Disks/loadLocalDiskConfig.h>
 
@@ -271,6 +273,39 @@ static void registerLocalObjectStorage(ObjectStorageFactory & factory)
     factory.registerObjectStorageType("local_plain_rewritable", creator);
 }
 
+/// Blobs are served by a host callback table registered under `storage_name` (see chdb_register_object_storage).
+static void registerCallbackObjectStorage(ObjectStorageFactory & factory)
+{
+    factory.registerObjectStorageType("callback", [](
+        const std::string & name,
+        const Poco::Util::AbstractConfiguration & config,
+        const std::string & config_prefix,
+        const ContextPtr & /* context */,
+        bool /* skip_access_check */) -> ObjectStoragePtr
+    {
+        if (!config.has(config_prefix + ".storage_name"))
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "Callback disk requires storage_name = '<name>' naming a store registered with chdb_register_object_storage");
+
+        const auto storage_name = config.getString(config_prefix + ".storage_name");
+        auto ops = CallbackObjectStorageRegistry::instance().tryGet(storage_name);
+        if (!ops)
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "Callback object storage '{}' is not registered; call chdb_register_object_storage(\"{}\", ...) before chdb_connect",
+                storage_name,
+                storage_name);
+
+        /// Keys cross the C ABI as NUL-terminated strings; an interior NUL would cut every key the engine creates.
+        const auto key_prefix = config.getString(config_prefix + ".key_prefix", "");
+        if (key_prefix.find('\0') != String::npos)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "key_prefix of a callback disk must not contain NUL bytes");
+
+        return std::make_shared<CallbackObjectStorage>(name, key_prefix, std::move(ops));
+    });
+}
+
 void registerObjectStorages();
 
 void registerObjectStorages()
@@ -291,6 +326,7 @@ void registerObjectStorages()
 
     registerWebObjectStorage(factory);
     registerLocalObjectStorage(factory);
+    registerCallbackObjectStorage(factory);
 }
 
 void ObjectStorageFactory::clearRegistry()

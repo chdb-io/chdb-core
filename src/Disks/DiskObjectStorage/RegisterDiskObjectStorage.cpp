@@ -138,6 +138,10 @@ void registerDiskObjectStorage(DiskFactory & factory, bool global_skip_access_ch
         .description = "A disk backed by a local directory treated as object storage. Retained for compatibility; equivalent to `object_storage` with `object_storage_type = local`.",
         .syntax = "disk(type = local_blob_storage, path = '/var/lib/clickhouse/disk_local_blob/')",
         .related = {"object_storage", "local"}}); /// For compatibility
+    factory.registerDiskType("callback", creator, Documentation{
+        .description = "A disk whose blobs are stored by callbacks that the embedding host registered, with directory metadata kept in the same store (`plain_rewritable`). Immutable for MergeTree (no ALTER beyond settings/comment, no mutations; DELETE via lightweight updates only).",
+        .syntax = "disk(type = callback, storage_name = '...'[, key_prefix = '...'])",
+        .related = {"object_storage", "s3_plain_rewritable"}});
     factory.registerDiskType("web", creator, Documentation{
         .description = "A read-only disk backed by a static website: a directory of exported table parts served over HTTP. Retained for compatibility; equivalent to `object_storage` with `object_storage_type = web`.",
         .syntax = "disk(type = web, endpoint = 'https://.../')",
