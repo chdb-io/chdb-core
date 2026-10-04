@@ -1164,12 +1164,210 @@ CHDB_EXPORT void chdb_reset_signal_handlers(void);
  * gets in first and is counted, or arrives later and is refused.
  *
  * Skipping it stays as safe as it has always been for a process that just exits:
- * the threads left running are reaped by process exit.
+ * the threads left running are reaped by process exit, unless a callback
+ * object storage is in use; see the lifetime note below.
  *
  * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
  *         connection is still open or some thread could not be stopped
  */
 CHDB_EXPORT chdb_state chdb_shutdown(void);
+
+/**
+ * Host-supplied object storage ("callback disk").
+ *
+ * A host registers a table of blob operations under a name, then creates a
+ * table on a disk that resolves them by that name:
+ *
+ *   CREATE TABLE t (...) ENGINE = MergeTree ORDER BY k
+ *   SETTINGS disk = disk(type = 'callback', storage_name = 'my_store'[, key_prefix = 'tenant_a']);
+ *
+ * The disk stores blobs through the callbacks and keeps its directory tree in
+ * the same store (ClickHouse's plain_rewritable metadata), so the host only
+ * implements flat, opaque string keys. Keys are NUL-terminated UTF-8 strings
+ * the engine chooses; the host must not interpret or rewrite them. A prefix
+ * listing is a plain string prefix match over the whole store (recursive).
+ *
+ * key_prefix (optional, default '') is joined with '/' in front of every key
+ * the engine creates, including its __meta/ and __root/ entries, so keys look
+ * like <key_prefix>/__meta/... and <key_prefix>/<dir>/<file>; choose it once
+ * per store and never change it for an existing store. With no prefix all
+ * keys of the disk live at the store root next to __meta/ and __root/, so
+ * keep host-owned blobs out of that namespace. A disk claims its whole
+ * prefix: the engine refuses a second disk on the same store whose prefix
+ * overlaps an existing one (one empty, or one a prefix of the other), so a
+ * host that wants several disks over one store gives every disk its own
+ * prefix from the start.
+ *
+ * Return codes: every callback returns 0 on success and nonzero on failure.
+ * The engine then raises an exception (error code CALLBACK_OBJECT_STORAGE_ERROR)
+ * whose message carries the text from last_error(), when provided. Hosts
+ * should recognise these failures by the symbolic name
+ * CALLBACK_OBJECT_STORAGE_ERROR in the chdb_result_error() text; the numeric
+ * 'Code: N.' prefix is not part of the ABI.
+ *
+ * Threading: callbacks run (a) on the thread that called any chdb_* function
+ * (INSERT ... VALUES and other single-threaded pipelines execute on the
+ * caller, and CREATE TABLE lists the store on it), (b) on engine pool threads
+ * while that caller is blocked inside chdb_*, and (c) on background
+ * merge/mutation threads with no chdb_* call in flight, for as long as the
+ * connection is open. Calls may be concurrent, including on the same key, but
+ * never on one write handle. A callback must not call any chdb_* function
+ * (the connection mutex is not recursive) and must never block waiting for
+ * the thread that is inside a chdb_* call: a host whose store may only be
+ * touched from one thread must make that a dedicated service thread that
+ * never calls chdb_*, or guard the store with a lock. Running callbacks on
+ * the thread that calls chdb_query is not supported by this API.
+ *
+ * A main-thread-bound host (e.g. a PostgreSQL worker) therefore calls chdb_*
+ * from a helper thread and drains a callback queue on its main thread for
+ * the whole life of the connection, idle periods included; chdb_close_conn
+ * waits for background tasks and hangs if the queue is not drained.
+ *
+ * Lifetime: the engine copies the callback table at registration. `ud` and the
+ * functions must stay valid until the name is unregistered AND every disk
+ * created from it is gone (all connections closed). Unregistering does not
+ * detach disks that already exist. If the process exits while a connection
+ * is open, the engine is torn down from an atexit handler and may still call
+ * write_abort and remove to cancel in-flight merges. Close every connection
+ * (then chdb_shutdown) from the host's own exit hook, before the host's store
+ * becomes unusable (before_shmem_exit for PostgreSQL). After that point the
+ * callbacks must return nonzero rather than touch freed state; unregistering
+ * does not fence disks that already exist.
+ *
+ * Visibility: write_commit makes the blob visible atomically; a blob that was
+ * never committed or was aborted must not be visible to
+ * exists/metadata/read/list. write_commit must make the blob durable before
+ * returning, or at least durable in commit order (PostgreSQL WAL ordering
+ * suffices): the engine never fsyncs and treats a returned commit as
+ * persisted. A directory rename is one small blob commit per directory in
+ * unspecified order, so a part with projections is not renamed atomically
+ * across a crash; the engine recovers the half-state as a broken projection
+ * or a detached broken part, never as acknowledged-data loss.
+ *
+ * MergeTree limits: the disk uses plain_rewritable metadata, which has no
+ * hard links, so MergeTree treats it as immutable. ALTER TABLE is refused
+ * except MODIFY/RESET SETTING and COMMENT (no ADD/DROP/MODIFY COLUMN,
+ * ADD/DROP INDEX, MODIFY TTL/ORDER BY) and every mutation is refused (ALTER
+ * UPDATE/DELETE, MATERIALIZE INDEX/COLUMN/PROJECTION). DELETE FROM works only
+ * as a lightweight update: the table needs enable_block_number_column = 1 and
+ * enable_block_offset_column = 1 (at CREATE or later via ALTER TABLE ...
+ * MODIFY SETTING, the one ALTER that is allowed) and the session needs
+ * lightweight_delete_mode = 'lightweight_update_force' (the plain
+ * 'lightweight_update' mode falls back to ALTER UPDATE and reports the
+ * immutable-disk error instead of the missing settings). Deleted rows live in
+ * patch parts until a merge or OPTIMIZE TABLE ... FINAL folds them in. Hosts
+ * can make the mode the connection default with
+ * --lightweight_delete_mode=lightweight_update_force in chdb_connect's argv.
+ * Passing metadata_type = 'local' in disk(...) lifts the restriction but keeps
+ * the table's metadata in a local directory under --path, outside the host
+ * store.
+ *
+ * Crash recovery: after an unclean exit the store may hold (i) keys under
+ * <key_prefix>/__tmp/, scratch copies the engine never reads back; the engine
+ * deletes them the first time the disk starts, and the host may delete them
+ * whenever no connection is open; (ii) abandoned directories whose
+ * __meta/<id>/prefix.path content is a bare 16-character random name at the
+ * root, holding a dropped part the engine does not reclaim; hosts should
+ * budget for them (S3 plain_rewritable relies on bucket lifecycle rules for
+ * the same).
+ */
+
+// Called by `list` for each matching blob. mtime is the host's wall-clock
+// time, Unix seconds, at which write_commit published the blob.
+// Returns nonzero to ask the host to stop listing; `list` then returns 0.
+typedef int (*chdb_object_storage_list_sink)(void * sink_ud, const char * key, uint64_t size, int64_t mtime);
+
+typedef struct chdb_object_storage_callbacks
+{
+    // Caller sets to sizeof(chdb_object_storage_callbacks). An engine accepts a
+    // struct at least as large as its own and ignores fields it does not know
+    // (gate optional additions on chdb_version()); a smaller struct is a
+    // header/library mismatch and is refused.
+    uint32_t struct_size;
+    // Opaque pointer handed back as the first argument of every callback.
+    void * ud;
+
+    // Sets *out to 1 if the blob exists, else 0.
+    int (*exists)(void * ud, const char * key, int * out);
+    // Sets *found to 1 and fills *size (bytes) and *mtime if the blob exists;
+    // sets *found to 0 otherwise (not an error). mtime is the host's wall-clock
+    // time, Unix seconds, at which write_commit published this blob. Return the
+    // real commit time, not 0 or a constant: after a restart the engine uses it
+    // as the part modification time (system.parts.modification_time,
+    // min_age_to_force_merge_* rules, old-part lifetimes).
+    int (*metadata)(void * ud, const char * key, int * found, uint64_t * size, int64_t * mtime);
+    // Reads up to len bytes starting at offset into buf and sets *out to the
+    // count. Must return min(len, size - offset) bytes (0 at or past the end);
+    // a missing blob is an error. Must never write more than len bytes into
+    // buf nor set *out > len: the read then fails with
+    // CALLBACK_OBJECT_STORAGE_ERROR, and bytes already written past buf have
+    // corrupted engine memory.
+    int (*read)(void * ud, const char * key, uint64_t offset, void * buf, size_t len, size_t * out);
+
+    // Starts writing a blob, replacing any existing one on commit. *handle is
+    // opaque to the engine and identifies this write until commit or abort.
+    // Called when the engine opens a file, before any data: a MergeTree part
+    // writer opens two handles per column substream plus index streams up
+    // front and holds them until the part is finished, and concurrent inserts
+    // and merges add their own, so hosts must not bound pending handles or
+    // block here waiting for one. write_commit may follow write_begin with no
+    // write_append; store a zero-length blob.
+    int (*write_begin)(void * ud, const char * key, void ** handle);
+    // Appends len bytes in order.
+    int (*write_append)(void * ud, void * handle, const void * buf, size_t len);
+    // Publishes the blob and releases the handle, whether or not it succeeds.
+    // On failure the host discards the pending blob itself; the engine never
+    // calls write_abort for a handle that was passed to write_commit.
+    int (*write_commit)(void * ud, void * handle);
+    // Discards the pending blob and releases the handle. Called exactly once
+    // for a handle that was never passed to write_commit (failed append,
+    // abandoned write); its return value is ignored.
+    int (*write_abort)(void * ud, void * handle);
+
+    // Removes the blob. Removing a missing blob is success.
+    int (*remove)(void * ud, const char * key);
+    // Calls sink once per blob whose key starts with prefix (any order).
+    int (*list)(void * ud, const char * prefix, chdb_object_storage_list_sink sink, void * sink_ud);
+
+    // Optional (may be NULL). Atomically replaces to_key with a byte-identical
+    // copy of from_key; a missing from_key is an error. When NULL the engine
+    // streams the blob out through read and back in through write_*, which
+    // happens for every file of a part when the part is removed (after a
+    // merge, OPTIMIZE, DROP PART or TRUNCATE: plain_rewritable copies each
+    // blob aside before it unlinks it) and whenever a file is moved. No
+    // generation/ETag token is involved: this storage is treated like Local.
+    int (*copy)(void * ud, const char * from_key, const char * to_key);
+
+    // Optional (may be NULL). Text describing the most recent failure on the
+    // calling thread; read right after a callback returns nonzero. Must stay
+    // valid until the next callback invocation on that thread.
+    const char * (*last_error)(void * ud);
+} chdb_object_storage_callbacks;
+
+/**
+ * Registers a callback object storage under `name`, for `storage_name = '<name>'`
+ * in a callback disk. The table is copied.
+ *
+ * Must be registered before the chdb_connect() that opens a --path whose
+ * metadata already contains tables on this storage_name: metadata load
+ * instantiates the disk at attach, an unknown name fails the attach, and
+ * chdb_connect() returns NULL (cause only in the engine log). Registering
+ * after connect only serves tables created later in that session. Recovery:
+ * register, then connect again.
+ *
+ * @return CHDBError if name is empty or already registered, struct_size is
+ *         smaller than sizeof(chdb_object_storage_callbacks), or a required
+ *         callback is NULL (all but last_error are required).
+ */
+CHDB_EXPORT chdb_state chdb_register_object_storage(const char * name, const chdb_object_storage_callbacks * cb);
+
+/**
+ * Removes a registration. Disks already created from it keep working; see the
+ * lifetime note above.
+ *
+ * @return CHDBError if name is not registered.
+ */
+CHDB_EXPORT chdb_state chdb_unregister_object_storage(const char * name);
 
 #ifdef __cplusplus
 }

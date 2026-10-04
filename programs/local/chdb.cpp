@@ -3,6 +3,7 @@
 #include "ChunkCollectorOutputFormat.h"
 #include "LocalServer.h"
 
+#include <algorithm>
 #include <csignal>
 #include <cstddef>
 #include <cstring>
@@ -12,6 +13,7 @@
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
+#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageRegistry.h>
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
 #include <Common/MemoryTracker.h>
@@ -1631,4 +1633,57 @@ void chdb_reset_signal_handlers(void)
     }
 
     instance->handled_signals.clear();
+}
+
+chdb_state chdb_register_object_storage(const char * name, const chdb_object_storage_callbacks * cb)
+{
+    if (!name || !*name || !cb || cb->struct_size < sizeof(chdb_object_storage_callbacks))
+        return CHDBError;
+
+    /// A newer caller's extra fields are ignored. When a field is appended later, accept the exact
+    /// earlier sizeof values or anything >= the current sizeof, never a size in between.
+    chdb_object_storage_callbacks table{};
+    memcpy(&table, cb, std::min<size_t>(cb->struct_size, sizeof(table)));
+
+    if (!table.exists || !table.metadata || !table.read || !table.write_begin || !table.write_append || !table.write_commit
+        || !table.write_abort || !table.remove || !table.list)
+        return CHDBError;
+
+    try
+    {
+        auto ops = std::make_shared<DB::CallbackObjectStorageOps>();
+        ops->name = name;
+        ops->ud = table.ud;
+        ops->exists = table.exists;
+        ops->metadata = table.metadata;
+        ops->read = table.read;
+        ops->write_begin = table.write_begin;
+        ops->write_append = table.write_append;
+        ops->write_commit = table.write_commit;
+        ops->write_abort = table.write_abort;
+        ops->remove = table.remove;
+        ops->list = table.list;
+        ops->copy = table.copy;
+        ops->last_error = table.last_error;
+        return DB::CallbackObjectStorageRegistry::instance().add(name, std::move(ops)) ? CHDBSuccess : CHDBError;
+    }
+    catch (...)
+    {
+        return CHDBError;
+    }
+}
+
+chdb_state chdb_unregister_object_storage(const char * name)
+{
+    if (!name)
+        return CHDBError;
+
+    try
+    {
+        return DB::CallbackObjectStorageRegistry::instance().remove(name) ? CHDBSuccess : CHDBError;
+    }
+    catch (...)
+    {
+        return CHDBError;
+    }
 }
