@@ -1,9 +1,12 @@
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorage.h>
 
+#include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/PlainRewritableLayout.h>
+#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageRegistry.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/ReadBufferFromCallback.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/WriteBufferToCallback.h>
 #include <IO/copyData.h>
 #include <Common/ObjectStorageKeyGenerator.h>
+#include <Common/logger_useful.h>
 
 namespace DB
 {
@@ -53,6 +56,7 @@ CallbackObjectStorage::CallbackObjectStorage(String disk_name_, String key_prefi
     : disk_name(std::move(disk_name_))
     , key_prefix(std::move(key_prefix_))
     , ops(std::move(ops_))
+    , log(getLogger("CallbackObjectStorage(" + disk_name + ")"))
 {
 }
 
@@ -134,6 +138,12 @@ String CallbackObjectStorage::copyObject( /// NOLINT
     const WriteSettings & write_settings,
     std::optional<ObjectAttributes>)
 {
+    if (ops->copy)
+    {
+        ops->check(ops->copy(ops->ud, object_from.remote_path.c_str(), object_to.remote_path.c_str()), "copy", object_from.remote_path);
+        return {};
+    }
+
     auto in = readObject(object_from, read_settings);
     auto out = writeObject(object_to, WriteMode::Rewrite, /* attributes= */ {}, DBMS_DEFAULT_BUFFER_SIZE, write_settings);
     copyData(*in, *out);
@@ -144,6 +154,32 @@ String CallbackObjectStorage::copyObject( /// NOLINT
 ObjectStorageKeyGeneratorPtr CallbackObjectStorage::createKeyGenerator() const
 {
     return createObjectStorageKeyGeneratorByPrefix(key_prefix);
+}
+
+/// plain_rewritable copies a blob to <key_prefix>/__tmp/<random> before each unlink and deletes the
+/// copy only when the operation finalizes, so a crash in between leaves blobs that load() skips by
+/// design and nothing else reclaims. The sweep runs after the metadata load and before any
+/// transaction (DiskObjectStorage::startupImpl), once per keyspace in this process.
+void CallbackObjectStorage::startup()
+{
+    if (!CallbackObjectStorageRegistry::instance().markScratchSwept(ops->name, key_prefix))
+        return;
+
+    const String prefix = std::filesystem::path(key_prefix) / PlainRewritableLayout::SCRATCH_DIRECTORY_TOKEN / "";
+    try
+    {
+        RelativePathsWithMetadata children;
+        listObjects(prefix, children, /* max_keys= */ 0);
+        StoredObjects objects;
+        for (const auto & child : children)
+            objects.emplace_back(child->relative_path);
+        removeObjectsIfExist(objects);
+        LOG_INFO(log, "Swept {} scratch objects under '{}'", objects.size(), prefix);
+    }
+    catch (...)
+    {
+        tryLogCurrentException(log, fmt::format("Could not sweep scratch objects under '{}'", prefix));
+    }
 }
 
 }

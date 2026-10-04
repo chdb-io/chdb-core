@@ -56,7 +56,8 @@ public:
         std::optional<ObjectAttributes> object_to_attributes = {}) override;
 
     void shutdown() override { }
-    void startup() override {}
+    /// Deletes the `__tmp` scratch copies a crashed operation left behind, once per keyspace.
+    void startup() override;
 
     String getObjectsNamespace() const override { return ""; }
     ObjectStorageKeyGeneratorPtr createKeyGenerator() const override;
@@ -65,6 +66,7 @@ private:
     const String disk_name;
     const String key_prefix;
     const CallbackObjectStorageOpsPtr ops;
+    const LoggerPtr log;
 };
 
 }

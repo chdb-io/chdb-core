@@ -28,6 +28,8 @@ struct CallbackObjectStorageOps
     int (*write_abort)(void * ud, void * handle) = nullptr;
     int (*remove)(void * ud, const char * key) = nullptr;
     int (*list)(void * ud, const char * prefix, ListSink sink, void * sink_ud) = nullptr;
+    /// Optional: a host-side copy; without it `copyObject` streams through `read` and `write_*`.
+    int (*copy)(void * ud, const char * from_key, const char * to_key) = nullptr;
     const char * (*last_error)(void * ud) = nullptr;
 
     /// Throws CALLBACK_OBJECT_STORAGE_ERROR, with the host's last_error text, if `code` is nonzero.
