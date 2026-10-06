@@ -10,7 +10,8 @@
  * the blobs in its own durable pages instead of malloc.
  *
  * Build: clang examples/chdbObjectStorageTest.c examples/objectStorageMemStore.c examples/objectStorageDiskTests.c \
- *          examples/objectStorageFaultTests.c -I./programs/local -L. -lchdb -lpthread -o examples/chdbObjectStorageTest
+ *          examples/objectStorageFaultTests.c examples/objectStorageLifecycleTests.c -I./programs/local -L. -lchdb \
+ *          -lpthread -o examples/chdbObjectStorageTest
  * Run:   LD_LIBRARY_PATH=. ./examples/chdbObjectStorageTest
  */
 
@@ -107,32 +108,31 @@ int main(void)
 {
     time_t start = time(NULL);
     chdb_object_storage_callbacks cb;
-    mem_store_fill(&cb);
+    mem_store_fill(&cb, NULL);
+    printf("callbacks run on %s\n", mem_store_service_thread() ? "one service thread" : "the engine threads");
 
     /* Registration works before any connection exists. */
-    check(chdb_register_object_storage("mem_store", &cb) == CHDBSuccess, "register before connect");
-    check(chdb_register_object_storage("mem_store", &cb) == CHDBError, "duplicate registration is refused");
+    char err[512] = "";
+    check(chdb_register_object_storage("mem_store", &cb, NULL, 0) == CHDBSuccess, "register before connect");
+    check(chdb_register_object_storage("mem_store", &cb, err, sizeof(err)) == CHDBError && strstr(err, "already registered"),
+        "duplicate registration is refused with a reason");
+    registration_api_tests(&cb);
 
-    /* A commit with no append stores a zero-byte blob, which reads back as 0 bytes (no NULL memcpy). */
+    /* A commit with no append stores a zero-byte blob, which reads back as 0 bytes (no NULL memcpy);
+     * a missing key is NOT_FOUND, which remove treats as success. */
+    char message[128];
+    chdb_object_storage_call call = {sizeof(call), message, sizeof(message)};
     void * handle;
-    int found = 0;
     uint64_t size = 1;
     int64_t mtime = 0;
     size_t got = 1;
     char byte;
-    check(cb.write_begin(cb.ud, "empty", &handle) == 0 && cb.write_commit(cb.ud, handle) == 0
-            && cb.metadata(cb.ud, "empty", &found, &size, &mtime) == 0 && found && size == 0
-            && cb.read(cb.ud, "empty", 0, &byte, 1, &got) == 0 && got == 0 && cb.remove(cb.ud, "empty") == 0,
+    check(cb.write_begin(cb.ud, &call, "empty", &handle) == CHDB_OBJECT_STORAGE_OK && cb.write_commit(cb.ud, &call, handle) == CHDB_OBJECT_STORAGE_OK
+            && cb.metadata(cb.ud, &call, "empty", &size, &mtime) == CHDB_OBJECT_STORAGE_OK && size == 0
+            && cb.read(cb.ud, &call, "empty", 0, &byte, 1, &got) == CHDB_OBJECT_STORAGE_OK && got == 0
+            && cb.remove(cb.ud, &call, "empty") == CHDB_OBJECT_STORAGE_OK
+            && cb.metadata(cb.ud, &call, "empty", &size, &mtime) == CHDB_OBJECT_STORAGE_NOT_FOUND,
         "zero-byte blob round-trips through the table");
-
-    /* struct_size below the engine's sizeof is a header/library mismatch; a larger struct is a newer
-     * caller whose extra fields are ignored (the engine copies only sizeof bytes). */
-    chdb_object_storage_callbacks cb2 = cb;
-    cb2.struct_size = sizeof(cb2) - 4;
-    check(chdb_register_object_storage("mem_store_short", &cb2) == CHDBError, "short struct_size is refused");
-    cb2.struct_size = sizeof(cb2) + 8;
-    check(chdb_register_object_storage("mem_store_big", &cb2) == CHDBSuccess, "larger struct_size is accepted");
-    chdb_unregister_object_storage("mem_store_big");
 
     char path_template[] = "/tmp/chdb_object_storage_test_XXXXXX";
     if (!mkdtemp(path_template))
@@ -169,6 +169,7 @@ int main(void)
     if (!created)
         return finish(1, path_template);
     check(!mem_store_has("main/__tmp/orphan"), "startup sweeps __tmp scratch blobs");
+    keyspace_tests(*conn);
     check(run_ok(*conn, "USE db"), "USE db");
 
     check(run_ok(*conn, INSERT_100K_ROWS), "INSERT 100000 rows");
@@ -179,6 +180,8 @@ int main(void)
     metrics_test(*conn);
     verify(*conn, "after insert", "100000", "100");
     prefixed_table_test(*conn);
+    reentrancy_test(*conn);
+    fence_test(*conn);
 
     /* Host failures surface as the dedicated error and release every handle. */
     fault_tests(*conn);
@@ -202,14 +205,17 @@ int main(void)
     /* Shutdown joined the parts-cleanup thread, whose delete_tmp_ renames also open handles. */
     mem_store_snapshot(&counts);
     check(counts.open_writes == 0, "no write handle left open");
+    /* Every disk closed its keyspace at disconnect, except the fenced one: nothing reaches its host. */
+    check(counts.keyspace_opens == counts.keyspace_closes + 1, "keyspaces are closed at disconnect");
 
     /* Reopening the --path attaches the table, which needs the store: registration must come first. */
-    check(chdb_unregister_object_storage("mem_store") == CHDBSuccess, "unregister between runs");
+    check(chdb_unregister_object_storage("mem_store", NULL, 0) == CHDBSuccess, "unregister between runs");
     conn = chdb_connect(2, args);
     check(!conn || !*conn, "reconnect without registration is refused");
     if (conn && *conn)
         chdb_close_conn(conn);
-    check(chdb_register_object_storage("mem_store", &cb) == CHDBSuccess, "re-register");
+    check(chdb_register_object_storage("mem_store", &cb, NULL, 0) == CHDBSuccess, "re-register");
+    fence_reregister();
 
     list_fault_at_reconnect(2, args);
     mem_store_put("main/__tmp/orphan2", "x", 1);
@@ -249,6 +255,8 @@ int main(void)
     expect(*conn, "after restart, read method: reverse scan", "SELECT sum(k) FROM (SELECT k FROM t ORDER BY k DESC LIMIT 99000)",
         "4999450500");
 
+    fence_test_after_reconnect(*conn);
+
     /* Removal paths: TRUNCATE writes the 0-byte covering part, and DROP SYNC removes the table tree.
      * Only directory markers of the store/ ancestors may remain. */
     check(run_ok(*conn, "TRUNCATE TABLE t"), "TRUNCATE on callback disk");
@@ -275,8 +283,11 @@ int main(void)
     if (stopped != CHDBSuccess)
         printf("  note: chdb_shutdown left some thread running\n");
     check(chdb_connect(2, args) == NULL, "shutdown before unregister closes the engine");
-    check(chdb_unregister_object_storage("mem_store") == CHDBSuccess, "unregister");
-    check(chdb_unregister_object_storage("mem_store") == CHDBError, "unregister of an unknown name is an error");
+    mem_store_snapshot(&counts);
+    check(counts.keyspace_opens == counts.keyspace_closes + 1, "the reconnected disks closed their keyspaces");
+    check(chdb_unregister_object_storage("mem_store", NULL, 0) == CHDBSuccess, "unregister");
+    check(chdb_unregister_object_storage("mem_fence", NULL, 0) == CHDBSuccess, "unregister the second store");
+    check(chdb_unregister_object_storage("mem_store", NULL, 0) == CHDBError, "unregister of an unknown name is an error");
 
     printf("%s\n", g_failed ? "FAIL" : "PASS");
     return finish(g_failed ? 1 : 0, path_template);

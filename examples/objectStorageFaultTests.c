@@ -106,6 +106,15 @@ void fault_tests(chdb_connection conn)
     fault_case(conn, "over-long read is a callback error", &store.fail.read_overcount, "SELECT sum(k) FROM t", "returned");
     check(run_ok(conn, "SELECT sum(k) FROM t"), "readable again once the over-long read is cleared");
 
+    /* A host may return fewer bytes than asked; only a 0-byte read ends a blob. */
+    pthread_mutex_lock(&store.lock);
+    store.max_read = 1000;
+    pthread_mutex_unlock(&store.lock);
+    verify(conn, "reads of at most 1000 bytes", "100000", "100");
+    pthread_mutex_lock(&store.lock);
+    store.max_read = 0;
+    pthread_mutex_unlock(&store.lock);
+
     expect(conn, "row count unchanged by the failed statements", "SELECT count() FROM t", rows ? rows : "(error)");
     free(rows);
     run_ok(conn, "SYSTEM START MERGES t");

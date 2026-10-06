@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include "chdb.h"
 
-/* Shared by chdbObjectStorageTest.c (the definitions) and objectStorageFaultTests.c. */
+/* Shared by chdbObjectStorageTest.c (the definitions) and the objectStorage*Tests.c files. */
 
 extern int g_failed;
 
@@ -37,3 +37,11 @@ void detach_attach_test(chdb_connection conn);
 void fault_tests(chdb_connection conn);
 void attach_fault_test(chdb_connection conn, const char * part);
 void list_fault_at_reconnect(int argc, char ** argv);
+
+/* objectStorageLifecycleTests.c: registration, keyspaces, re-entrancy and fencing. */
+void registration_api_tests(const chdb_object_storage_callbacks * cb);
+void keyspace_tests(chdb_connection conn);
+void reentrancy_test(chdb_connection conn);
+void fence_test(chdb_connection conn);
+void fence_reregister(void);
+void fence_test_after_reconnect(chdb_connection conn);
