@@ -292,6 +292,7 @@ test_main
 /examples/chdbShutdownTest
 /examples/chdbDurableAbiTest
 /examples/chdbObjectStorageTest
+/examples/chdbObjectStorageMinimal
 /examples/chdb_durable_abi_test_db
 /examples/chdb_durable_abi_test_backups
 libchdb.so

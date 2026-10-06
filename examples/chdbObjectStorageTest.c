@@ -273,12 +273,16 @@ int main(void)
                 printf("  leftover %s (%zu bytes)\n", store.blobs[i].key, store.blobs[i].size);
         pthread_mutex_unlock(&store.lock);
     }
+    char * ro_uuid = read_only_source(*conn);
     chdb_close_conn(conn);
+    read_only_attach_test(ro_uuid);
+    free(ro_uuid);
 
-    /* The order a host's exit hook must follow: close connections, stop the engine, then unregister.
-     * chdb_shutdown() reports CHDBError when a thread it cannot reach is still parked (it does after
-     * any MergeTree insert in this build, callback disk or not); either way the engine is closed for
-     * the rest of the process, which is what the exit hook relies on. */
+    /* A clean exit hook: close connections, stop the engine, then unregister. Only the unregister is
+     * needed for safety (it fences the store); the first two let merges finish. chdb_shutdown()
+     * reports CHDBError when a thread it cannot reach is still parked (it does after any MergeTree
+     * insert in this build, callback disk or not); either way the engine is closed for the rest of
+     * the process. */
     chdb_state stopped = chdb_shutdown();
     if (stopped != CHDBSuccess)
         printf("  note: chdb_shutdown left some thread running\n");

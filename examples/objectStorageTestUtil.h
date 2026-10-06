@@ -45,3 +45,5 @@ void reentrancy_test(chdb_connection conn);
 void fence_test(chdb_connection conn);
 void fence_reregister(void);
 void fence_test_after_reconnect(chdb_connection conn);
+char * read_only_source(chdb_connection conn);
+void read_only_attach_test(const char * uuid);

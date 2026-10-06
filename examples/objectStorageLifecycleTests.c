@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "chdb.h"
 #include "objectStorageMemStore.h"
 #include "objectStorageTestUtil.h"
@@ -161,4 +162,58 @@ void fence_test_after_reconnect(chdb_connection conn)
 {
     expect(conn, "rows committed before the fence are intact", "SELECT sum(k) FROM db.tf", "499500");
     check(run_ok(conn, "DROP TABLE db.tf SYNC"), "DROP the second store's table");
+}
+
+/* Writes a table under key_prefix 'ro' for read_only_attach_test; returns its UUID (caller frees). */
+char * read_only_source(chdb_connection conn)
+{
+    check(run_ok(conn,
+              "CREATE TABLE db.t_ro (k UInt64) ENGINE = MergeTree ORDER BY k"
+              " SETTINGS disk = disk(type = 'callback', storage_name = 'mem_store', key_prefix = 'ro')"),
+        "CREATE TABLE for the read-only attach");
+    check(run_ok(conn, "INSERT INTO db.t_ro SELECT number FROM numbers(100)"), "INSERT for the read-only attach");
+    return run(conn, "SELECT uuid FROM system.tables WHERE database = 'db' AND name = 't_ro'", NULL, 0);
+}
+
+/* A second engine, on its own --path, attaches the same table from a read_only = 1 disk: the host is
+ * told so in open_keyspace, reads work and writes are refused. Needs every connection closed first. */
+void read_only_attach_test(const char * uuid)
+{
+    char path[] = "/tmp/chdb_object_storage_ro_XXXXXX";
+    if (!uuid || !mkdtemp(path))
+    {
+        check(0, "read-only attach set up");
+        return;
+    }
+    char arg0[] = "chdb";
+    char arg1[600];
+    snprintf(arg1, sizeof(arg1), "--path=%s", path);
+    char * args[] = {arg0, arg1};
+    chdb_connection * conn = chdb_connect(2, args);
+    check(conn && *conn, "connect a second --path to the same store");
+    if (conn && *conn)
+    {
+        struct mem_store_counts before, after;
+        mem_store_snapshot(&before);
+        char sql[512];
+        snprintf(sql, sizeof(sql),
+            "ATTACH TABLE db.t_ro UUID '%s' (k UInt64) ENGINE = MergeTree ORDER BY k"
+            " SETTINGS disk = disk(type = 'callback', storage_name = 'mem_store', key_prefix = 'ro', read_only = 1)",
+            uuid);
+        check(run_ok(*conn, "CREATE DATABASE db") && run_ok(*conn, sql), "ATTACH from a read_only = 1 disk");
+        mem_store_snapshot(&after);
+        pthread_mutex_lock(&store.lock);
+        unsigned flags = store.last_open_flags;
+        pthread_mutex_unlock(&store.lock);
+        check(after.keyspace_opens == before.keyspace_opens + 1 && flags == CHDB_OBJECT_STORAGE_READ_ONLY,
+            "open_keyspace is told the disk is read-only");
+        expect(*conn, "the read-only table reads the rows", "SELECT count(), sum(k) FROM db.t_ro", "100\t4950");
+        char err[512] = "";
+        free(run(*conn, "INSERT INTO db.t_ro VALUES (1000)", err, sizeof(err)));
+        check(strstr(err, "readonly") != NULL, "the read-only table refuses writes");
+        chdb_close_conn(conn);
+    }
+    char cmd[700];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", path);
+    if (system(cmd) != 0) { /* best effort */ }
 }

@@ -25,8 +25,13 @@ SANITIZE=${CHDB_TEST_UBSAN:+-fsanitize=undefined -fno-sanitize-recover=all}
 ${CC:-clang} ${SANITIZE} chdbObjectStorageTest.c objectStorageMemStore.c objectStorageDiskTests.c objectStorageFaultTests.c \
     objectStorageLifecycleTests.c -o chdbObjectStorageTest -I../programs/local/ -L../ -lchdb -lpthread
 
+${CC:-clang} ${SANITIZE} chdbObjectStorageMinimal.c -o chdbObjectStorageMinimal -I../programs/local/ -L../ -lchdb -lpthread
+
 export ${LIB_PATH}=..
 ${LDD} chdbObjectStorageTest
+
+echo "Run the minimal host from docs/callback-object-storage.md"
+./chdbObjectStorageMinimal
 
 # The test makes its own temporary --path and prints PASS or FAIL. Each mode is a separate process,
 # since the engine cannot be restarted after chdb_shutdown.

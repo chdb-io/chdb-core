@@ -1181,6 +1181,9 @@ CHDB_EXPORT chdb_state chdb_shutdown(void);
  *   CREATE TABLE t (...) ENGINE = MergeTree ORDER BY k
  *   SETTINGS disk = disk(type = 'callback', storage_name = 'my_store'[, key_prefix = 'tenant_a']);
  *
+ * docs/callback-object-storage.md walks through a complete host
+ * (examples/chdbObjectStorageMinimal.c); this comment is the contract.
+ *
  * The disk stores blobs through the callbacks and keeps its directory tree in
  * the same store (ClickHouse's plain_rewritable metadata), so the host only
  * implements flat, opaque string keys. Keys are NUL-terminated UTF-8 strings
