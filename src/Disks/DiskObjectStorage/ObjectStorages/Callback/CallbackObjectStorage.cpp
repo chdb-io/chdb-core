@@ -1,7 +1,6 @@
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorage.h>
 
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/PlainRewritableLayout.h>
-#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageRegistry.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/ReadBufferFromCallback.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/WriteBufferToCallback.h>
 #include <IO/copyData.h>
@@ -28,52 +27,43 @@ ObjectMetadata toObjectMetadata(const CallbackObjectStat & stat)
     return metadata;
 }
 
-struct ListContext
-{
-    RelativePathsWithMetadata * children;
-    size_t max_keys;
-    std::exception_ptr error;
-};
-
-int collectListed(void * sink_ud, const char * key, uint64_t size, int64_t mtime)
-{
-    auto & context = *static_cast<ListContext *>(sink_ud);
-    try
-    {
-        context.children->push_back(std::make_shared<RelativePathWithMetadata>(key, toObjectMetadata(CallbackObjectStat{size, mtime})));
-        return context.max_keys && context.children->size() >= context.max_keys;
-    }
-    catch (...)
-    {
-        context.error = std::current_exception();
-        return 1;
-    }
 }
 
-}
-
-CallbackObjectStorage::CallbackObjectStorage(String disk_name_, String key_prefix_, CallbackObjectStorageOpsPtr ops_)
+CallbackObjectStorage::CallbackObjectStorage(String disk_name_, String key_prefix_, CallbackObjectStorageOpsPtr ops_, bool read_only_)
     : disk_name(std::move(disk_name_))
     , key_prefix(std::move(key_prefix_))
     , ops(std::move(ops_))
+    , read_only(read_only_)
     , log(getLogger("CallbackObjectStorage(" + disk_name + ")"))
 {
+    ops->attachDisk(key_prefix, read_only);
+}
+
+CallbackObjectStorage::~CallbackObjectStorage()
+{
+    detach();
+}
+
+void CallbackObjectStorage::detach() noexcept
+{
+    if (!detached.exchange(true))
+        ops->detachDisk(key_prefix, read_only);
 }
 
 bool CallbackObjectStorage::exists(const StoredObject & object) const
 {
-    int out = 0;
-    ops->check(ops->exists(ops->ud, object.remote_path.c_str(), &out), "exists", object.remote_path);
-    return out != 0;
+    return ops->stat(object.remote_path).has_value();
 }
 
 void CallbackObjectStorage::listObjects(const std::string & path, RelativePathsWithMetadata & children, size_t max_keys) const
 {
-    ListContext context{&children, max_keys, nullptr};
-    const int code = ops->list(ops->ud, path.c_str(), collectListed, &context);
-    if (context.error)
-        std::rethrow_exception(context.error);
-    ops->check(code, "list", path);
+    ops->list(
+        path,
+        [&](const char * key, uint64_t size, int64_t mtime)
+        {
+            children.push_back(std::make_shared<RelativePathWithMetadata>(key, toObjectMetadata(CallbackObjectStat{size, mtime})));
+            return max_keys && children.size() >= max_keys;
+        });
 }
 
 ObjectMetadata CallbackObjectStorage::getObjectMetadata(const std::string & path, bool with_tags) const
@@ -86,7 +76,7 @@ ObjectMetadata CallbackObjectStorage::getObjectMetadata(const std::string & path
 
 std::optional<ObjectMetadata> CallbackObjectStorage::tryGetObjectMetadata(const std::string & path, bool) const
 {
-    auto stat = statCallbackObject(*ops, path);
+    auto stat = ops->stat(path);
     if (!stat)
         return std::nullopt;
     return toObjectMetadata(*stat);
@@ -118,7 +108,7 @@ std::unique_ptr<WriteBufferFromFileBase> CallbackObjectStorage::writeObject( ///
 
 void CallbackObjectStorage::removeObjectIfExists(const StoredObject & object)
 {
-    ops->check(ops->remove(ops->ud, object.remote_path.c_str()), "remove", object.remote_path);
+    ops->remove(object.remote_path);
 }
 
 void CallbackObjectStorage::removeObjectsIfExist(const StoredObjects & objects, StoredObjects * successful_objects)
@@ -138,9 +128,9 @@ String CallbackObjectStorage::copyObject( /// NOLINT
     const WriteSettings & write_settings,
     std::optional<ObjectAttributes>)
 {
-    if (ops->copy)
+    if (ops->hasCopy())
     {
-        ops->check(ops->copy(ops->ud, object_from.remote_path.c_str(), object_to.remote_path.c_str()), "copy", object_from.remote_path);
+        ops->copy(object_from.remote_path, object_to.remote_path);
         return {};
     }
 
@@ -156,13 +146,19 @@ ObjectStorageKeyGeneratorPtr CallbackObjectStorage::createKeyGenerator() const
     return createObjectStorageKeyGeneratorByPrefix(key_prefix);
 }
 
+void CallbackObjectStorage::shutdown()
+{
+    detach();
+}
+
 /// plain_rewritable copies a blob to <key_prefix>/__tmp/<random> before each unlink and deletes the
 /// copy only when the operation finalizes, so a crash in between leaves blobs that load() skips by
 /// design and nothing else reclaims. The sweep runs after the metadata load and before any
-/// transaction (DiskObjectStorage::startupImpl), once per keyspace in this process.
+/// transaction (DiskObjectStorage::startupImpl). The keyspace claim taken in the constructor makes
+/// this disk the only writer of these keys in the process, so no live scratch copy can be swept.
 void CallbackObjectStorage::startup()
 {
-    if (!CallbackObjectStorageRegistry::instance().markScratchSwept(ops->name, key_prefix))
+    if (read_only)
         return;
 
     const String prefix = std::filesystem::path(key_prefix) / PlainRewritableLayout::SCRATCH_DIRECTORY_TOKEN / "";
@@ -183,4 +179,3 @@ void CallbackObjectStorage::startup()
 }
 
 }
-

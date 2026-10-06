@@ -15,33 +15,35 @@ public:
         : WriteBufferFromFileBase(buf_size, nullptr, 0)
         , ops(std::move(ops_))
         , key(std::move(key_))
+        , handle(ops->writeBegin(key))
     {
-        ops->check(ops->write_begin(ops->ud, key.c_str(), &handle), "write_begin", key);
     }
 
     std::string getFileName() const override { return key; }
     void sync() override { next(); }
 
 private:
-    void nextImpl() override { ops->check(ops->write_append(ops->ud, handle, working_buffer.begin(), offset()), "write_append", key); }
+    void nextImpl() override { ops->writeAppend(handle, key, working_buffer.begin(), offset()); }
 
     void finalizeImpl() override
     {
         next();
         /// The handle is released by commit even when it fails, so it must not be aborted afterwards.
-        void * committing = std::exchange(handle, nullptr);
-        ops->check(ops->write_commit(ops->ud, committing), "write_commit", key);
+        pending = false;
+        ops->writeCommit(handle, key);
     }
 
+    /// The handle is opaque, so "released" is tracked here rather than by nulling it.
     void cancelImpl() noexcept override
     {
-        if (void * pending = std::exchange(handle, nullptr))
-            ops->write_abort(ops->ud, pending);
+        if (std::exchange(pending, false))
+            ops->writeAbort(handle);
     }
 
     const CallbackObjectStorageOpsPtr ops;
     const String key;
-    void * handle = nullptr;
+    void * const handle;
+    bool pending = true;
 };
 
 }

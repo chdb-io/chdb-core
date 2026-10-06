@@ -302,7 +302,9 @@ static void registerCallbackObjectStorage(ObjectStorageFactory & factory)
         if (key_prefix.find('\0') != String::npos)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "key_prefix of a callback disk must not contain NUL bytes");
 
-        return std::make_shared<CallbackObjectStorage>(name, key_prefix, std::move(ops));
+        /// The same key the disk creator reads to wrap the disk in ReadOnlyDiskWrapper.
+        const bool read_only = config.getBool(config_prefix + ".read_only", false);
+        return std::make_shared<CallbackObjectStorage>(name, key_prefix, std::move(ops), read_only);
     });
 }
 

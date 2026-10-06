@@ -3,11 +3,19 @@
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageOps.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/IObjectStorage.h>
 
+#include <atomic>
+
 namespace DB
 {
 
 /// An object storage whose blobs live in the host process, reached through `CallbackObjectStorageOps`.
 /// It is meant to sit under the `plain_rewritable` metadata storage, so it only offers flat opaque keys.
+///
+/// The disk attaches to its keyspace (CallbackObjectStorageOps::attachDisk) in the constructor, because
+/// plain_rewritable lists the store while its metadata storage is constructed, before any startup(). A
+/// second read-write disk over an overlapping prefix is refused there, before it can load a second
+/// directory tree or sweep the first disk's scratch blobs. It detaches at shutdown(): the engine may keep
+/// the object referenced past the teardown that shuts it down.
 ///
 /// `isRemote()` is true: callbacks are an opaque, possibly slow call-out, and `DiskObjectStorage` reports
 /// itself remote whatever its storage says, so MergeTree already treats the disk as remote (no fsync of
@@ -17,13 +25,14 @@ namespace DB
 class CallbackObjectStorage : public IObjectStorage
 {
 public:
-    CallbackObjectStorage(String disk_name_, String key_prefix_, CallbackObjectStorageOpsPtr ops_);
+    CallbackObjectStorage(String disk_name_, String key_prefix_, CallbackObjectStorageOpsPtr ops_, bool read_only_);
+    ~CallbackObjectStorage() override;
 
     std::string getName() const override { return "Callback"; }
     std::string getDiskName() const override { return disk_name; }
     ObjectStorageType getType() const override { return ObjectStorageType::Callback; }
     std::string getCommonKeyPrefix() const override { return key_prefix; }
-    std::string getDescription() const override { return "callback:" + ops->name; }
+    std::string getDescription() const override { return "callback:" + ops->getName(); }
     bool isRemote() const override { return true; }
 
     bool exists(const StoredObject & object) const override;
@@ -55,18 +64,23 @@ public:
         const WriteSettings & write_settings,
         std::optional<ObjectAttributes> object_to_attributes = {}) override;
 
-    void shutdown() override { }
-    /// Deletes the `__tmp` scratch copies a crashed operation left behind, once per keyspace.
+    /// Detaches from the keyspace: closes it in the host and releases the claim.
+    void shutdown() override;
+    /// Deletes the `__tmp` scratch copies a crashed operation left behind (read-write disks only).
     void startup() override;
 
     String getObjectsNamespace() const override { return ""; }
     ObjectStorageKeyGeneratorPtr createKeyGenerator() const override;
 
 private:
+    void detach() noexcept;
+
     const String disk_name;
     const String key_prefix;
     const CallbackObjectStorageOpsPtr ops;
+    const bool read_only;
     const LoggerPtr log;
+    std::atomic<bool> detached = false;
 };
 
 }

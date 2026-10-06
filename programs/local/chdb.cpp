@@ -205,6 +205,8 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
     try
     {
+        if (DB::CallbackObjectStorageOps::isInsideCallback())
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "chdb_connect must not be called from an object storage callback");
         DB::ThreadStatus thread_status;
         auto & server = DB::EmbeddedServer::getInstance(argc, argv);
         std::unique_ptr<DB::ChdbClient> client;
@@ -347,6 +349,13 @@ void close_conn(chdb_conn ** conn)
 {
     if (!conn || !*conn)
         return;
+
+    /// Tearing the engine down would wait for the callback that is making this call.
+    if (DB::CallbackObjectStorageOps::isInsideCallback())
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_close_conn must not be called from an object storage callback; ignored");
+        return;
+    }
 
     try
     {
@@ -1548,6 +1557,9 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
 chdb_state chdb_shutdown(void)
 {
+    if (DB::CallbackObjectStorageOps::isInsideCallback())
+        return CHDBError;
+
     /// Serializes the whole transition. Without it two first callers would both
     /// reach the joins, and a second caller could be told the engine is stopped
     /// while the first is still joining.
@@ -1635,55 +1647,205 @@ void chdb_reset_signal_handlers(void)
     instance->handled_signals.clear();
 }
 
-chdb_state chdb_register_object_storage(const char * name, const chdb_object_storage_callbacks * cb)
+namespace
 {
-    if (!name || !*name || !cb || cb->struct_size < sizeof(chdb_object_storage_callbacks))
+
+/// Copies a failure reason into the caller's optional buffer, truncated.
+void setObjectStorageApiError(char * error, size_t error_size, std::string_view message)
+{
+    if (!error || error_size == 0)
+        return;
+    const size_t length = std::min(message.size(), error_size - 1);
+    memcpy(error, message.data(), length);
+    error[length] = '\0';
+}
+
+/// The callback table of chdb_register_object_storage behind the engine's host interface.
+class CApiObjectStorageHost final : public DB::ICallbackObjectStorageHost
+{
+public:
+    explicit CApiObjectStorageHost(const chdb_object_storage_callbacks & table_)
+        : table(table_)
+    {
+    }
+
+    Status metadata(const char * key, DB::CallbackObjectStat & stat, String & error) override
+    {
+        Call call;
+        return call.finish(table.metadata(table.ud, &call.c, key, &stat.size, &stat.mtime), error);
+    }
+
+    Status read(const char * key, uint64_t offset, char * buf, size_t len, size_t & bytes_read, String & error) override
+    {
+        Call call;
+        return call.finish(table.read(table.ud, &call.c, key, offset, buf, len, &bytes_read), error);
+    }
+
+    Status writeBegin(const char * key, void *& handle, String & error) override
+    {
+        Call call;
+        return call.finish(table.write_begin(table.ud, &call.c, key, &handle), error);
+    }
+
+    Status writeAppend(void * handle, const char * buf, size_t len, String & error) override
+    {
+        Call call;
+        return call.finish(table.write_append(table.ud, &call.c, handle, buf, len), error);
+    }
+
+    Status writeCommit(void * handle, String & error) override
+    {
+        Call call;
+        return call.finish(table.write_commit(table.ud, &call.c, handle), error);
+    }
+
+    void writeAbort(void * handle) override { table.write_abort(table.ud, handle); }
+
+    Status remove(const char * key, String & error) override
+    {
+        Call call;
+        return call.finish(table.remove(table.ud, &call.c, key), error);
+    }
+
+    Status list(const char * prefix, const ListSink & sink, String & error) override
+    {
+        Call call;
+        void * sink_ud = const_cast<void *>(static_cast<const void *>(&sink));
+        return call.finish(table.list(table.ud, &call.c, prefix, &CApiObjectStorageHost::listSink, sink_ud), error);
+    }
+
+    bool hasCopy() const override { return table.copy != nullptr; }
+
+    Status copy(const char * from_key, const char * to_key, String & error) override
+    {
+        Call call;
+        return call.finish(table.copy(table.ud, &call.c, from_key, to_key), error);
+    }
+
+    bool hasKeyspaceHooks() const override { return table.open_keyspace != nullptr; }
+
+    Status openKeyspace(const char * key_prefix, bool read_only, String & error) override
+    {
+        Call call;
+        const uint32_t flags = read_only ? CHDB_OBJECT_STORAGE_READ_ONLY : 0u;
+        return call.finish(table.open_keyspace(table.ud, &call.c, key_prefix, flags), error);
+    }
+
+    void closeKeyspace(const char * key_prefix) override { table.close_keyspace(table.ud, key_prefix); }
+
+private:
+    /// The context of one callback, with room for the host's message.
+    struct Call
+    {
+        char message[1024] = {};
+        chdb_object_storage_call c{sizeof(chdb_object_storage_call), message, sizeof(message)};
+
+        Call() = default;
+        Call(const Call &) = delete;
+        Call & operator=(const Call &) = delete;
+
+        Status finish(int code, String & error)
+        {
+            if (code == CHDB_OBJECT_STORAGE_OK)
+                return Status::Ok;
+            message[sizeof(message) - 1] = '\0';
+            error = message;
+            if (code == CHDB_OBJECT_STORAGE_NOT_FOUND)
+                return Status::NotFound;
+            if (code != CHDB_OBJECT_STORAGE_ERROR)
+                error += fmt::format("{}(status {})", error.empty() ? "" : " ", code);
+            return Status::Error;
+        }
+    };
+
+    static int listSink(void * sink_ud, const char * key, uint64_t size, int64_t mtime)
+    {
+        return (*static_cast<const ListSink *>(sink_ud))(key, size, mtime) ? 1 : 0;
+    }
+
+    const chdb_object_storage_callbacks table;
+};
+
+}
+
+chdb_state chdb_register_object_storage(const char * name, const chdb_object_storage_callbacks * cb, char * error, size_t error_size)
+{
+    auto fail = [&](std::string_view message)
+    {
+        setObjectStorageApiError(error, error_size, message);
         return CHDBError;
+    };
+
+    if (DB::CallbackObjectStorageOps::isInsideCallback())
+        return fail("chdb_register_object_storage must not be called from an object storage callback");
+    if (!name || !*name)
+        return fail("name must be a non-empty string");
+    if (!cb)
+        return fail("the callback table is NULL");
+    if (cb->struct_size < sizeof(chdb_object_storage_callbacks))
+        return fail(fmt::format(
+            "struct_size {} is smaller than sizeof(chdb_object_storage_callbacks) = {}: chdb.h does not match this libchdb",
+            cb->struct_size,
+            sizeof(chdb_object_storage_callbacks)));
 
     /// A newer caller's extra fields are ignored. When a field is appended later, accept the exact
     /// earlier sizeof values or anything >= the current sizeof, never a size in between.
     chdb_object_storage_callbacks table{};
-    memcpy(&table, cb, std::min<size_t>(cb->struct_size, sizeof(table)));
+    memcpy(&table, cb, sizeof(table));
 
-    if (!table.exists || !table.metadata || !table.read || !table.write_begin || !table.write_append || !table.write_commit
-        || !table.write_abort || !table.remove || !table.list)
-        return CHDBError;
+    std::string missing;
+    auto require = [&](bool present, std::string_view field)
+    {
+        if (!present)
+            missing += fmt::format("{}{}", missing.empty() ? "" : ", ", field);
+    };
+    require(table.metadata != nullptr, "metadata");
+    require(table.read != nullptr, "read");
+    require(table.write_begin != nullptr, "write_begin");
+    require(table.write_append != nullptr, "write_append");
+    require(table.write_commit != nullptr, "write_commit");
+    require(table.write_abort != nullptr, "write_abort");
+    require(table.remove != nullptr, "remove");
+    require(table.list != nullptr, "list");
+    if (!missing.empty())
+        return fail("required callbacks are NULL: " + missing);
+    if ((table.open_keyspace == nullptr) != (table.close_keyspace == nullptr))
+        return fail("open_keyspace and close_keyspace must be set together");
 
     try
     {
-        auto ops = std::make_shared<DB::CallbackObjectStorageOps>();
-        ops->name = name;
-        ops->ud = table.ud;
-        ops->exists = table.exists;
-        ops->metadata = table.metadata;
-        ops->read = table.read;
-        ops->write_begin = table.write_begin;
-        ops->write_append = table.write_append;
-        ops->write_commit = table.write_commit;
-        ops->write_abort = table.write_abort;
-        ops->remove = table.remove;
-        ops->list = table.list;
-        ops->copy = table.copy;
-        ops->last_error = table.last_error;
-        return DB::CallbackObjectStorageRegistry::instance().add(name, std::move(ops)) ? CHDBSuccess : CHDBError;
+        auto ops = std::make_shared<DB::CallbackObjectStorageOps>(name, std::make_unique<CApiObjectStorageHost>(table));
+        DB::CallbackObjectStorageRegistry::instance().add(name, std::move(ops));
+        return CHDBSuccess;
     }
     catch (...)
     {
-        return CHDBError;
+        return fail(DB::getCurrentExceptionMessage(false));
     }
 }
 
-chdb_state chdb_unregister_object_storage(const char * name)
+chdb_state chdb_unregister_object_storage(const char * name, char * error, size_t error_size)
 {
-    if (!name)
+    if (DB::CallbackObjectStorageOps::isInsideCallback())
+    {
+        /// Fencing waits for the callbacks in flight, this one included.
+        setObjectStorageApiError(error, error_size, "chdb_unregister_object_storage must not be called from an object storage callback");
         return CHDBError;
+    }
+    if (!name)
+    {
+        setObjectStorageApiError(error, error_size, "name is NULL");
+        return CHDBError;
+    }
 
     try
     {
-        return DB::CallbackObjectStorageRegistry::instance().remove(name) ? CHDBSuccess : CHDBError;
+        DB::CallbackObjectStorageRegistry::instance().remove(name);
+        return CHDBSuccess;
     }
     catch (...)
     {
+        setObjectStorageApiError(error, error_size, DB::getCurrentExceptionMessage(false));
         return CHDBError;
     }
 }

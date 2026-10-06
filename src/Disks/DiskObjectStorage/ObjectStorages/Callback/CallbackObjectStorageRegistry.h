@@ -1,8 +1,7 @@
 #pragma once
 
-#include <shared_mutex>
+#include <mutex>
 #include <unordered_map>
-#include <unordered_set>
 
 #include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageOps.h>
 
@@ -15,21 +14,21 @@ class CallbackObjectStorageRegistry
 public:
     static CallbackObjectStorageRegistry & instance();
 
-    /// False if the name is already registered.
-    bool add(const String & name, CallbackObjectStorageOpsPtr ops);
-    /// Also forgets the scratch sweeps done for `name`: a store registered again is a new store.
-    bool remove(const String & name);
+    /// Throws BAD_ARGUMENTS if the name is registered, or if disks made from an earlier registration under
+    /// it are still open: a disk keeps the table it was created with, and the engine reuses a disk for
+    /// every disk(...) with the same arguments, so new tables would land on the fenced one. Disks close
+    /// when the last connection closes.
+    void add(const String & name, CallbackObjectStorageOpsPtr ops);
+    /// Removes the name and fences its table (CallbackObjectStorageOps::fence): once this returns, no
+    /// callback of that registration runs again. Throws BAD_ARGUMENTS if the name is not registered.
+    void remove(const String & name);
     CallbackObjectStorageOpsPtr tryGet(const String & name) const;
 
-    /// True the first time it is called for this (name, key_prefix) since registration. The `__tmp`
-    /// scratch sweep runs once per keyspace, so a second disk over the same keys cannot delete a
-    /// sibling disk's in-flight scratch copy.
-    bool markScratchSwept(const String & name, const String & key_prefix);
-
 private:
-    mutable std::shared_mutex mutex;
+    mutable std::mutex mutex;
     std::unordered_map<String, CallbackObjectStorageOpsPtr> storages;
-    std::unordered_set<String> swept_keyspaces;
+    /// Unregistered tables, alive for as long as a disk object still holds them.
+    std::unordered_map<String, std::weak_ptr<CallbackObjectStorageOps>> retired;
 };
 
 }

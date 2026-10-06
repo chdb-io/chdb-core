@@ -11,12 +11,12 @@ namespace DB
 
 namespace ErrorCodes
 {
-    extern const int CALLBACK_OBJECT_STORAGE_ERROR;
     extern const int CANNOT_SEEK_THROUGH_FILE;
     extern const int FILE_DOESNT_EXIST;
 }
 
-/// Reads a blob at arbitrary offsets. Seeks only move the offset: every refill is one `read` callback.
+/// Reads a blob at arbitrary offsets. Seeks only move the offset: every refill is one `read` callback,
+/// which may return less than asked; only 0 ends the blob.
 class ReadBufferFromCallback : public ReadBufferFromFileBase
 {
 public:
@@ -46,7 +46,7 @@ public:
     {
         if (!file_size)
         {
-            auto stat = statCallbackObject(*ops, key);
+            auto stat = ops->stat(key);
             if (!stat)
                 throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "Callback object '{}' does not exist", key);
             file_size = stat->size;
@@ -86,20 +86,9 @@ private:
             len = std::min(len, *read_until_position - offset);
         }
 
-        size_t read = 0;
-        ops->check(ops->read(ops->ud, key.c_str(), offset, internal_buffer.begin(), len, &read), "read", key);
+        const size_t read = ops->read(key, offset, internal_buffer.begin(), len);
         if (read == 0)
             return false;
-        /// A host that overruns the buffer broke the contract; it is an external failure, not an engine invariant.
-        if (read > len)
-            throw Exception(
-                ErrorCodes::CALLBACK_OBJECT_STORAGE_ERROR,
-                "Callback object storage '{}': read of '{}' at offset {} returned {} bytes for a {} byte buffer",
-                ops->name,
-                key,
-                offset,
-                read,
-                len);
 
         /// Re-base the window on the allocation: after an EOF `ReadBuffer::next()` leaves `working_buffer`
         /// as an empty window at the old end, and under the gather's `SwapHelper` it is the caller's window.
