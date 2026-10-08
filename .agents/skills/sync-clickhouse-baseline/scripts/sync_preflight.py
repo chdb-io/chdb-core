@@ -18,7 +18,7 @@ RISK_RULES = collections.OrderedDict(
         ("embedded-lifecycle", re.compile(r"^(programs/local/|src/Interpreters/Context|src/Core/ServerSettings)")),
         ("memory-allocator", re.compile(r"^(src/Common/(Allocator|AllocationInterceptors|CurrentMemoryTracker|MemoryTracker|MemoryWorker|malloc|memory|ThreadPool|SignalHandlers)|src/IO/SharedThreadPools|src/Core/BackgroundSchedulePool|contrib/jemalloc-cmake/)")),
         ("c-abi-exports", re.compile(r"^(programs/local/chdb|chdb/libchdb_export|chdb/build(_mac_on_linux)?\.sh)")),
-        ("static-archive", re.compile(r"^(programs/local/ForceFunctionReferences|chdb/build/(create_minimal_libchdb|create_static_libchdb|extract_chdb_objects|generate_force_references|check_static_lib_hermetic|test_go_example|go-example/)|contrib/libcxx|contrib/libcxxabi|contrib/libunwind)")),
+        ("static-archive", re.compile(r"^(programs/local/ForceFunctionReferences|chdb/build/(create_minimal_libchdb|create_static_libchdb|extract_chdb_objects|generate_force_references|check_static_lib_hermetic|prelink_static_lib|static-probe/|test_go_example|go-example/)|contrib/libcxx|contrib/libcxxabi|contrib/libunwind)")),
         ("arrow-parquet-python", re.compile(r"^(contrib/(arrow|pybind11)|src/Processors/Formats/Impl/(Arrow|CHColumnToArrow)|programs/local/(StorageArrow|Python|Pandas|ListScan)|tests/.*(arrow|parquet|python|pandas))")),
         ("lite-wasm-registration", re.compile(r"^(CMakeLists\.txt|src/(Functions|AggregateFunctions)/CMakeLists\.txt|programs/local/ForceFunctionReferences|chdb/build-wasm|\.github/workflows/wasm|tests/test_chdb_core_lite)")),
         ("toolchain-packaging", re.compile(r"^(cmake/|pyproject\.toml|chdb/vars\.sh|\.github/workflows/|contrib/corrosion-cmake/)")),

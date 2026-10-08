@@ -147,6 +147,14 @@ else
     fi
 fi
 
+# Linux: merge the archive into one object that keeps only the C API global, so a
+# consumer's own references can no longer bind to the bundled libc++/libc++abi/libunwind
+# (chdb-io/chdb-rust#53). After minimisation, which needs the per-member layout, and before
+# the Go test and the gates, which must see the archive as shipped.
+if [ "$(uname)" == "Linux" ]; then
+    bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
+fi
+
 
 # Test with Go example
 bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_minimal.a

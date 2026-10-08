@@ -14,7 +14,11 @@
 #           libc++/libc++abi instead of the bundled copy.
 #   ELF     default-visibility definitions land in `.dynsym` and become interposable. A
 #           plain executable link does not expose them; `-rdynamic`, or repackaging the
-#           archive into a shared object, does.
+#           archive into a shared object, does. Hidden is not the whole answer here: a
+#           hidden definition in an archive member still satisfies the consumer's own
+#           references in a static link (chdb-io/chdb-rust#53), so the Linux archive is
+#           also prelinked into one object that keeps only the C API global
+#           (chdb/build/prelink_static_lib.sh).
 #
 # `-fvisibility=hidden` on its own is not enough: the LLVM runtimes annotate their ABI
 # symbols `__attribute__((visibility("default")))`, which beats the command-line default.
