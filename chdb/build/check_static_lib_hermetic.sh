@@ -16,15 +16,16 @@
 #   Gate 3b every symbol in that contract is still reachable from libchdb.a
 #   Gate 4  the linked probe connects and runs a query
 #   Gate 5  the archive does not override libc's posix_spawn
-#   Gate 6  Linux: a consumer's own runtime references still bind to the host runtime, and
-#           C, C++ and Rust consumers can unwind, throw and panic after chDB has run
+#   Gate 6  a consumer's own runtime references still bind to the host runtime, and C, C++
+#           and Rust consumers can unwind, throw and panic after chDB has run (fatal on
+#           Linux, report-only on macOS)
 #
 # Gates 3 and 4 are the same on both platforms, and gate 1 asks the same question with a
 # platform-specific scope; only the tools and the condition that exposes the hazard differ.
 # Gate 5 has nothing to find on macOS - base/glibc-compatibility is a Linux-only target -
 # but its behavioural half is a real check there too, and it is the half that keeps working
-# if the archive is ever assembled a different way. Gate 6 is Linux-only because the macOS
-# archive is not prelinked (see prelink_static_lib.sh).
+# if the archive is ever assembled a different way. Gate 6 only reports on macOS because the
+# macOS archive is not prelinked (see prelink_static_lib.sh).
 #
 #   Mach-O  weak definitions that stay external land in the export trie and dyld may bind
 #           them to the system libc++/libc++abi. Exposed by a deployment target of 12.0 or
@@ -523,27 +524,66 @@ echo
 # the probes: an unwinder walk, C++ throw/catch, and the Rust backtrace and panic of the
 # issue.
 #
-# Linux only: the macOS archive is not prelinked, and its split binding is between two
-# copies of LLVM libunwind (see prelink_static_lib.sh).
+# Fatal on Linux. On macOS it only reports: the macOS archive is not prelinked (see
+# prelink_static_lib.sh), and what its split binding - between chDB's LLVM libunwind and the
+# system's, itself LLVM libunwind - does to a consumer at run time is what this finds out.
+# A macOS finding is printed as REPORT and does not fail the build.
+reported=0
+gate6_fail () {
+    if [ "${PLATFORM}" = Linux ]; then
+        fail "$@"
+    else
+        echo "REPORT: $*"
+        reported=$((reported + 1))
+    fi
+}
+
+# A probe that crashes in report-only mode must not leave a multi-gigabyte core behind for
+# the job's crash collector to mistake for the failure it is looking for.
+gate6_run () {
+    if [ "${PLATFORM}" = Linux ]; then
+        run_probe "$1"
+    else
+        (ulimit -c 0; run_probe "$1")
+    fi
+}
+
 check_host_bindings () {
     local object=$1 probe=$2 name
     name=$(basename "${probe}")
     if ! nm -u "${object}" > "${WORK_DIR}/${name}_undefined_raw.txt" 2>/dev/null; then
-        fail "${name}: nm could not read ${object}; the symbol half was not evaluated"
+        gate6_fail "${name}: nm could not read ${object}; the symbol half was not evaluated"
         return
     fi
-    awk 'NF { n = $NF; sub(/@.*/, "", n); print n }' "${WORK_DIR}/${name}_undefined_raw.txt" \
+    awk -v prefix="${SYM_PREFIX}" 'NF {
+             n = $NF; sub(/@.*/, "", n)
+             if (prefix != "" && substr(n, 1, 1) == prefix) n = substr(n, 2)
+             print n
+         }' "${WORK_DIR}/${name}_undefined_raw.txt" \
         | sort -u | comm -12 - "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/${name}_refs.txt"
     if [ ! -s "${WORK_DIR}/${name}_refs.txt" ]; then
-        fail "${name}: its object references nothing in the system runtime - the symbol half would pass vacuously"
+        gate6_fail "${name}: its object references nothing in the system runtime - the symbol half would pass vacuously"
         return
     fi
-    if ! readelf --dyn-syms -W "${probe}" > "${WORK_DIR}/${name}_dynsym.txt" 2>/dev/null; then
-        fail "${name}: readelf could not read the linked probe; the symbol half was not evaluated"
-        return
+    # What the linked binary imports. ELF: a versioned .dynsym entry (a reference bound
+    # inside the executable has none; a COPY-relocated one still carries its version).
+    # Mach-O: an undefined symbol, which nm -m shows with the dylib it comes from.
+    if [ "${PLATFORM}" = Darwin ]; then
+        if ! nm -m "${probe}" > "${WORK_DIR}/${name}_symbols.txt" 2>/dev/null; then
+            gate6_fail "${name}: nm could not read the linked probe; the symbol half was not evaluated"
+            return
+        fi
+        awk '/\(undefined\)/ {
+                 for (i = 1; i < NF; i++) if ($i == "external") { n = $(i + 1); sub(/^_/, "", n); print n; break }
+             }' "${WORK_DIR}/${name}_symbols.txt" | sort -u > "${WORK_DIR}/${name}_imported.txt"
+    else
+        if ! readelf --dyn-syms -W "${probe}" > "${WORK_DIR}/${name}_dynsym.txt" 2>/dev/null; then
+            gate6_fail "${name}: readelf could not read the linked probe; the symbol half was not evaluated"
+            return
+        fi
+        awk '$1 ~ /^[0-9]+:$/ && $8 ~ /@/ { n = $8; sub(/@.*/, "", n); print n }' "${WORK_DIR}/${name}_dynsym.txt" \
+            | sort -u > "${WORK_DIR}/${name}_imported.txt"
     fi
-    awk '$1 ~ /^[0-9]+:$/ && $8 ~ /@/ { n = $8; sub(/@.*/, "", n); print n }' "${WORK_DIR}/${name}_dynsym.txt" \
-        | sort -u > "${WORK_DIR}/${name}_imported.txt"
     comm -23 "${WORK_DIR}/${name}_refs.txt" "${WORK_DIR}/${name}_imported.txt" \
         > "${WORK_DIR}/${name}_bound_inside.txt"
     local refs inside
@@ -553,7 +593,7 @@ check_host_bindings () {
         echo "PASS (${name}: all ${refs} references into the system runtime are imported from it)"
     else
         head -20 "${WORK_DIR}/${name}_bound_inside.txt" | sed 's/^/    /'
-        fail "${name}: ${inside} of its ${refs} references into the system runtime were bound inside the executable - to libchdb.a"
+        gate6_fail "${name}: ${inside} of its ${refs} references into the system runtime were bound inside the executable - to libchdb.a"
     fi
 }
 
@@ -561,33 +601,50 @@ if [ "${PLATFORM}" = Linux ]; then
     echo "== Gate 6: a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
     HOST_CC=${HOST_CC:-gcc}
     HOST_CXX=${HOST_CXX:-g++}
+    host_cflags=()
     consumer_flags=(-L. -lchdb -lpthread -ldl -lm -lrt)
-    cp "${MY_DIR}/static-probe/host_unwind_probe.c" "${MY_DIR}/static-probe/host_cxx_probe.cpp" \
-        "${MY_DIR}/static-probe/rust_unwind_probe.rs" "${WORK_DIR}/"
-    # The C++ probe goes through chdb.hpp, which ships next to chdb.h in the static tarball.
-    cp "$(dirname "${CHDB_H}")/chdb.hpp" "${WORK_DIR}/"
+    # chdb-rust's `static` feature on Linux.
+    rust_link_flags=(-l static=chdb -l dylib=stdc++)
+else
+    echo "== Gate 6 (report only on macOS): a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
+    HOST_CC=${HOST_CC:-clang}
+    HOST_CXX=${HOST_CXX:-clang++}
+    host_cflags=(-mmacosx-version-min="${DEPLOYMENT_TARGET}")
+    consumer_flags=(-L. -lchdb "${platform_flags[@]}")
+    # chdb-rust's `static` feature on macOS.
+    rust_link_flags=(-l static=chdb -l dylib=c++ -l dylib=iconv -l framework=CoreFoundation -l framework=Security)
+fi
+cp "${MY_DIR}/static-probe/host_unwind_probe.c" "${MY_DIR}/static-probe/host_cxx_probe.cpp" \
+    "${MY_DIR}/static-probe/rust_unwind_probe.rs" "${WORK_DIR}/"
+# The C++ probe goes through chdb.hpp, which ships next to chdb.h in the static tarball.
+cp "$(dirname "${CHDB_H}")/chdb.hpp" "${WORK_DIR}/"
+# GitHub's macOS images install Rust without always putting it on a step's PATH.
+RUSTC=$(command -v rustc 2>/dev/null || true)
+if [ -z "${RUSTC}" ] && [ -x "${HOME}/.cargo/bin/rustc" ]; then
+    RUSTC=${HOME}/.cargo/bin/rustc
+fi
 
-    # Built concurrently: with Ubuntu 24.04's GNU ld every link of this archive takes minutes
-    # on aarch64, where binutils walks its whole stub table for every input section.
-    (cd "${WORK_DIR}" && { "${HOST_CC}" -I. -c host_unwind_probe.c -o host_unwind_probe.o \
-            && "${HOST_CC}" host_unwind_probe.o -o host_unwind_probe "${consumer_flags[@]}"; } \
-        > "${WORK_DIR}/host_unwind_link.log" 2>&1) &
-    unwind_build=$!
-    (cd "${WORK_DIR}" && { "${HOST_CXX}" -std=c++20 -I. -c host_cxx_probe.cpp -o host_cxx_probe.o \
-            && "${HOST_CXX}" host_cxx_probe.o -o host_cxx_probe "${consumer_flags[@]}"; } \
-        > "${WORK_DIR}/host_cxx_link.log" 2>&1) &
-    cxx_build=$!
-    # Linked exactly like chdb-rust's `static` feature.
-    rust_build=
-    if command -v rustc > /dev/null 2>&1; then
-        (cd "${WORK_DIR}" && rustc --edition=2021 -C debuginfo=1 rust_unwind_probe.rs -o rust_unwind_probe \
-                -L native=. -l static=chdb -l dylib=stdc++ \
-            > "${WORK_DIR}/rust_link.log" 2>&1) &
-        rust_build=$!
-    fi
+# Built concurrently: with Ubuntu 24.04's GNU ld every link of this archive takes minutes
+# on aarch64, where binutils walks its whole stub table for every input section.
+(cd "${WORK_DIR}" && { "${HOST_CC}" ${host_cflags[@]+"${host_cflags[@]}"} -I. -c host_unwind_probe.c -o host_unwind_probe.o \
+        && "${HOST_CC}" host_unwind_probe.o -o host_unwind_probe "${consumer_flags[@]}"; } \
+    > "${WORK_DIR}/host_unwind_link.log" 2>&1) &
+unwind_build=$!
+(cd "${WORK_DIR}" && { "${HOST_CXX}" ${host_cflags[@]+"${host_cflags[@]}"} -std=c++20 -I. -c host_cxx_probe.cpp -o host_cxx_probe.o \
+        && "${HOST_CXX}" host_cxx_probe.o -o host_cxx_probe "${consumer_flags[@]}"; } \
+    > "${WORK_DIR}/host_cxx_link.log" 2>&1) &
+cxx_build=$!
+rust_build=
+if [ -n "${RUSTC}" ]; then
+    (cd "${WORK_DIR}" && "${RUSTC}" --edition=2021 -C debuginfo=1 rust_unwind_probe.rs -o rust_unwind_probe \
+            -L native=. "${rust_link_flags[@]}" \
+        > "${WORK_DIR}/rust_link.log" 2>&1) &
+    rust_build=$!
+fi
 
-    if wait "${unwind_build}"; then
-        check_host_bindings "${WORK_DIR}/host_unwind_probe.o" "${WORK_DIR}/host_unwind_probe"
+if wait "${unwind_build}"; then
+    check_host_bindings "${WORK_DIR}/host_unwind_probe.o" "${WORK_DIR}/host_unwind_probe"
+    if [ "${PLATFORM}" = Linux ]; then
         # The archive used to give every GNU ld consumer an executable stack: dozens of its
         # assembly members carry no .note.GNU-stack. prelink_static_lib.sh passes -z noexecstack.
         stack_flags=$(readelf -lW "${WORK_DIR}/host_unwind_probe" | awk '$1 == "GNU_STACK" { print $7 }')
@@ -596,49 +653,52 @@ if [ "${PLATFORM}" = Linux ]; then
             *E*) fail "host_unwind_probe: linking libchdb.a made the consumer's stack executable (${stack_flags})" ;;
             *) echo "PASS (host_unwind_probe: stack is not executable)" ;;
         esac
-        if run_probe host_unwind_probe; then
-            echo "PASS (host_unwind_probe: behaviour)"
-        else
-            fail "host_unwind_probe: the host unwinder could not walk the consumer's stack"
-        fi
-    else
-        sed 's/^/    /' "${WORK_DIR}/host_unwind_link.log" | tail -40
-        fail "could not build host_unwind_probe with ${HOST_CC}"
     fi
-
-    if wait "${cxx_build}"; then
-        check_host_bindings "${WORK_DIR}/host_cxx_probe.o" "${WORK_DIR}/host_cxx_probe"
-        if run_probe host_cxx_probe; then
-            echo "PASS (host_cxx_probe: behaviour)"
-        else
-            fail "host_cxx_probe: the consumer's own C++ exceptions broke"
-        fi
+    if gate6_run host_unwind_probe; then
+        echo "PASS (host_unwind_probe: behaviour)"
     else
-        sed 's/^/    /' "${WORK_DIR}/host_cxx_link.log" | tail -40
-        fail "could not build host_cxx_probe with ${HOST_CXX}"
+        gate6_fail "host_unwind_probe: the host unwinder could not walk the consumer's stack"
     fi
-
-    # Its references come from std's rlibs rather than one object, so it only has the
-    # behavioural half - which is the issue's reproducer itself. Both Linux CI jobs put rustc
-    # on PATH, so there a missing rustc is a failure rather than a skip.
-    if [ -n "${rust_build}" ]; then
-        if wait "${rust_build}"; then
-            if run_probe rust_unwind_probe; then
-                echo "PASS (rust_unwind_probe: behaviour)"
-            else
-                fail "rust_unwind_probe: a Rust backtrace or panic broke"
-            fi
-        else
-            sed 's/^/    /' "${WORK_DIR}/rust_link.log" | tail -40
-            fail "could not build rust_unwind_probe with $(command -v rustc)"
-        fi
-    elif [ -n "${CI:-}" ]; then
-        fail "rust_unwind_probe: rustc is not on PATH"
-    else
-        echo "SKIP (rust_unwind_probe: rustc is not on PATH)"
-    fi
-    echo
+else
+    sed 's/^/    /' "${WORK_DIR}/host_unwind_link.log" | tail -40
+    gate6_fail "could not build host_unwind_probe with ${HOST_CC}"
 fi
+
+if wait "${cxx_build}"; then
+    check_host_bindings "${WORK_DIR}/host_cxx_probe.o" "${WORK_DIR}/host_cxx_probe"
+    if gate6_run host_cxx_probe; then
+        echo "PASS (host_cxx_probe: behaviour)"
+    else
+        gate6_fail "host_cxx_probe: the consumer's own C++ exceptions broke"
+    fi
+else
+    sed 's/^/    /' "${WORK_DIR}/host_cxx_link.log" | tail -40
+    gate6_fail "could not build host_cxx_probe with ${HOST_CXX}"
+fi
+
+# Its references come from std's rlibs rather than one object, so it only has the
+# behavioural half - which is the issue's reproducer itself. Both Linux CI jobs put rustc on
+# PATH, so there a missing rustc is a failure rather than a skip.
+if [ -n "${rust_build}" ]; then
+    if wait "${rust_build}"; then
+        if gate6_run rust_unwind_probe; then
+            echo "PASS (rust_unwind_probe: behaviour)"
+        else
+            gate6_fail "rust_unwind_probe: a Rust backtrace or panic broke"
+        fi
+    else
+        sed 's/^/    /' "${WORK_DIR}/rust_link.log" | tail -40
+        gate6_fail "could not build rust_unwind_probe with ${RUSTC}"
+    fi
+elif [ "${PLATFORM}" = Linux ] && [ -n "${CI:-}" ]; then
+    fail "rust_unwind_probe: rustc is not on PATH"
+else
+    echo "SKIP (rust_unwind_probe: rustc is not on PATH)"
+fi
+if [ "${reported}" -ne 0 ]; then
+    echo "  ${reported} gate 6 finding(s) reported on macOS; not failing the build"
+fi
+echo
 
 if [ "${failures}" -ne 0 ]; then
     echo "${failures} gate(s) failed"
