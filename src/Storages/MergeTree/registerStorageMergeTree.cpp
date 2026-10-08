@@ -103,6 +103,26 @@ namespace ErrorCodes
 }
 
 
+/// chDB: a new table gets no implicit statistics unless the query or <merge_tree> config asks for them.
+/// Building them on insert and loading them on every part open costs more than they return in a
+/// process that may live for seconds. The value is written into the table definition, so tables
+/// created before this default keep the ClickHouse default when reopened.
+static void applyChDBAutoStatisticsDefault(ASTStorage & storage_def, const MergeTreeSettings & config_settings, MergeTreeSettings & storage_settings)
+{
+    static constexpr std::string_view name = "auto_statistics_types";
+
+    auto & changes = storage_def.settings->changes;
+    if (std::any_of(changes.begin(), changes.end(), [](const SettingChange & c) { return c.name == name; }))
+        return;
+
+    const auto config_changes = config_settings.changes();
+    if (std::any_of(config_changes.begin(), config_changes.end(), [](const SettingChange & c) { return c.name == name; }))
+        return;
+
+    changes.push_back(SettingChange{name, String{}});
+    storage_settings[MergeTreeSetting::auto_statistics_types] = "";
+}
+
 /** Get the list of column names.
   * It can be specified in the tuple: (Clicks, Cost),
   * or as one column: Clicks.
@@ -961,6 +981,9 @@ static StoragePtr create(const StorageFactory::Arguments & args)
         storage_settings->loadFromQuery(
             *args.storage_def, args.getLocalContext(), isLoadingFromExistingMetadata(args.mode),
             args.table_id.database_name == DatabaseCatalog::SYSTEM_DATABASE);
+
+        if (args.mode == LoadingStrictnessLevel::CREATE && args.table_id.database_name != DatabaseCatalog::SYSTEM_DATABASE)
+            applyChDBAutoStatisticsDefault(*args.storage_def, initial_storage_settings, *storage_settings);
 
         /// What this query changes from the settings the server has in effect, which already include the
         /// `merge_tree` config section and `compatibility`: those are not changes made by the query. A

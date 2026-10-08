@@ -16,7 +16,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Core/UUID.h>
@@ -47,6 +49,8 @@
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Processors/QueryPlan/QueryPlanStepRegistry.h>
+#include <Storages/MergeTree/MergeList.h>
+#include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/System/attachInformationSchemaTables.h>
 #include <Storages/System/attachSystemTables.h>
 #include <Storages/registerStorages.h>
@@ -509,8 +513,73 @@ void EmbeddedServer::tryInitPath()
 }
 
 
+/// Shutdown cancels running merges and drops the ones not yet scheduled, so record per table what
+/// layout work is being abandoned. Must run before setShuttingDown(), which silences logging.
+void EmbeddedServer::logMergeTreeStateAtShutdown() const
+{
+    if (!global_context)
+        return;
+
+    auto log = getLogger("EmbeddedServer");
+    if (!log->is(Poco::Message::PRIO_INFORMATION))
+        return;
+
+    struct RunningMerges
+    {
+        size_t merges = 0;
+        size_t source_parts = 0;
+        UInt64 source_bytes = 0;
+    };
+    std::map<std::pair<String, String>, RunningMerges> running;
+    for (const auto & merge : global_context->getMergeList().get())
+    {
+        auto & entry = running[{merge.database, merge.table}];
+        ++entry.merges;
+        entry.source_parts += merge.num_parts;
+        entry.source_bytes += merge.total_size_bytes_compressed;
+    }
+
+    for (const auto & [database_name, database] : DatabaseCatalog::instance().getDatabases(GetDatabasesOptions{.with_datalake_catalogs = false}))
+    {
+        if (database->isExternal() || database_name == DatabaseCatalog::SYSTEM_DATABASE)
+            continue;
+
+        for (auto it = database->getTablesIterator(global_context, {}, true); it->isValid(); it->next())
+        {
+            const auto * data = dynamic_cast<const MergeTreeData *>(it->table().get());
+            if (!data)
+                continue;
+
+            const auto parts = data->getDataPartsVectorForInternalUsage();
+            std::set<String> partitions;
+            for (const auto & part : parts)
+                partitions.insert(part->info.getPartitionId());
+
+            const auto merges_it = running.find({database_name, it->name()});
+            const RunningMerges merges = merges_it == running.end() ? RunningMerges{} : merges_it->second;
+            if (parts.size() <= partitions.size() && merges.merges == 0)
+                continue;
+
+            LOG_INFO(
+                log,
+                "Shutting down {}.{} with {} active parts in {} partitions ({}), {} outdated parts, "
+                "cancelling {} running merges over {} parts ({})",
+                backQuoteIfNeed(database_name), backQuoteIfNeed(it->name()),
+                parts.size(), partitions.size(), ReadableSize(data->getTotalActiveSizeInBytes()),
+                data->getOutdatedPartsCount(),
+                merges.merges, merges.source_parts, ReadableSize(merges.source_bytes));
+        }
+    }
+}
+
 void EmbeddedServer::cleanup()
 {
+    try
+    {
+        logMergeTreeStateAtShutdown();
+    }
+    catch (...) {}
+
     /// Mark that we're shutting down to prevent logging operations from
     /// crashing when Poco::Logger's internal data structures are destroyed
     /// (which can happen during Python interpreter exit).
