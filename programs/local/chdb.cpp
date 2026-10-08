@@ -264,18 +264,29 @@ using namespace CHDB;
 
 local_result * query_stable(int argc, char ** argv)
 {
-    auto query_result = pyEntryClickHouseLocal(argc, argv);
-    if (!query_result->getError().empty() || query_result->result_buffer == nullptr)
-        return nullptr;
+    /// pyEntryClickHouseLocal reports bad arguments and engine errors by throwing. No C++
+    /// exception may leave a C API function: the host has its own C++ runtime, and an
+    /// exception thrown by chDB's private one terminates the process when it reaches the
+    /// host's frames. nullptr is this function's only error signal.
+    try
+    {
+        auto query_result = pyEntryClickHouseLocal(argc, argv);
+        if (!query_result->getError().empty() || query_result->result_buffer == nullptr)
+            return nullptr;
 
-    local_result * res = new local_result;
-    res->len = query_result->result_buffer->size();
-    res->buf = query_result->result_buffer->data();
-    res->_vec = query_result->result_buffer.release();
-    res->rows_read = query_result->rows_read;
-    res->bytes_read = query_result->bytes_read;
-    res->elapsed = query_result->elapsed;
-    return res;
+        local_result * res = new local_result;
+        res->len = query_result->result_buffer->size();
+        res->buf = query_result->result_buffer->data();
+        res->_vec = query_result->result_buffer.release();
+        res->rows_read = query_result->rows_read;
+        res->bytes_read = query_result->bytes_read;
+        res->elapsed = query_result->elapsed;
+        return res;
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
 }
 
 void free_result(local_result * result)
