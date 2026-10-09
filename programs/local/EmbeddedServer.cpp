@@ -831,7 +831,10 @@ void EmbeddedServer::processConfig()
         = (config().has("logger.console") || config().has("logger.level")
            || config().has("log-level") || config().has("logger.log"));
 
-    auto level = config().getString("log-level", config().getString("send_logs_level", "trace"));
+    /// An explicit log-level wins, then the <logger><level> of a config file, which used to be
+    /// overwritten with "trace".
+    auto level = config().getString(
+        "log-level", config().getString("logger.level", config().getString("send_logs_level", "trace")));
     config().setString("logger", "logger");
     config().setString("logger.level", logging ? level : "fatal");
     buildLoggers(config(), logger(), "clickhouse-embedded");
