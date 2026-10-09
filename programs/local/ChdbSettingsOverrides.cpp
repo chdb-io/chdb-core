@@ -18,6 +18,7 @@ namespace DB
 namespace Setting
 {
 extern const SettingsBool materialize_statistics_on_insert;
+extern const SettingsMaxThreads max_insert_threads;
 extern const SettingsMaxThreads max_threads;
 extern const SettingsBool output_format_arrow_use_native_writer;
 }
@@ -116,6 +117,13 @@ void applySettingsOverridesForChdb(ContextMutablePtr context)
     /// upstream reads the packed statistics file once per part instead of once per
     /// column. Users can opt back in with materialize_statistics_on_insert=1.
     setAdjustedDefault(settings, Setting::materialize_statistics_on_insert, false);
+
+    /// 26.8 changed the default from 1 to one INSERT thread per core. On many-core machines the
+    /// table a parallel bulk INSERT SELECT leaves behind is slower to query: ClickBench on c6a.metal
+    /// measured hot x0.72 and cold x0.47 with 1 thread, for a 1.5x longer load. Machines with
+    /// little memory already drop to 1 thread through max_insert_threads_min_free_memory_per_thread.
+    /// Users can still raise it per query.
+    setAdjustedDefault(settings, Setting::max_insert_threads, 1);
 
 #if defined(OS_LINUX)
     /// On multi-socket machines a default of "one thread per core" backfires:

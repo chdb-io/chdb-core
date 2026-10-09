@@ -103,24 +103,31 @@ namespace ErrorCodes
 }
 
 
-/// chDB: a new table gets no implicit statistics unless the query or <merge_tree> config asks for them.
-/// Building them on insert and loading them on every part open costs more than they return in a
-/// process that may live for seconds. The value is written into the table definition, so tables
-/// created before this default keep the ClickHouse default when reopened.
-static void applyChDBAutoStatisticsDefault(ASTStorage & storage_def, const MergeTreeSettings & config_settings, MergeTreeSettings & storage_settings)
+/// chDB: defaults written into the definition of a new MergeTree table unless the CREATE query or
+/// <merge_tree> config sets them, so tables created by older versions keep the ClickHouse defaults
+/// when reopened.
+///  - auto_statistics_types = '': building statistics on merge and loading them on every part open
+///    costs more than they return in a process that may live for seconds.
+///  - default_compression_codec = 'LZ4': otherwise merged parts above 100 MiB switch to ZSTD(3),
+///    whose decompression makes queries on 2-4 vCPU machines markedly slower.
+static void applyChDBTableDefaults(ASTStorage & storage_def, const MergeTreeSettings & config_settings, MergeTreeSettings & storage_settings)
 {
-    static constexpr std::string_view name = "auto_statistics_types";
+    static constexpr std::pair<std::string_view, std::string_view> defaults[] = {
+        {"auto_statistics_types", ""},
+        {"default_compression_codec", "LZ4"},
+    };
 
     auto & changes = storage_def.settings->changes;
-    if (std::any_of(changes.begin(), changes.end(), [](const SettingChange & c) { return c.name == name; }))
-        return;
-
     const auto config_changes = config_settings.changes();
-    if (std::any_of(config_changes.begin(), config_changes.end(), [](const SettingChange & c) { return c.name == name; }))
-        return;
+    for (const auto & [name, value] : defaults)
+    {
+        const auto is_set = [&](const SettingChange & change) { return change.name == name; };
+        if (std::any_of(changes.begin(), changes.end(), is_set) || std::any_of(config_changes.begin(), config_changes.end(), is_set))
+            continue;
 
-    changes.push_back(SettingChange{name, String{}});
-    storage_settings[MergeTreeSetting::auto_statistics_types] = "";
+        changes.push_back(SettingChange{name, String{value}});
+        storage_settings.set(name, String{value});
+    }
 }
 
 /** Get the list of column names.
@@ -983,7 +990,7 @@ static StoragePtr create(const StorageFactory::Arguments & args)
             args.table_id.database_name == DatabaseCatalog::SYSTEM_DATABASE);
 
         if (args.mode == LoadingStrictnessLevel::CREATE && args.table_id.database_name != DatabaseCatalog::SYSTEM_DATABASE)
-            applyChDBAutoStatisticsDefault(*args.storage_def, initial_storage_settings, *storage_settings);
+            applyChDBTableDefaults(*args.storage_def, initial_storage_settings, *storage_settings);
 
         /// What this query changes from the settings the server has in effect, which already include the
         /// `merge_tree` config section and `compatibility`: those are not changes made by the query. A
