@@ -268,9 +268,6 @@ public:
         {
             argv.push_back(const_cast<char *>(arg.data()));
         }
-        /// Only the C API is exported. The library's internal C++ connect function is not
-        /// visible from libchdb.so or libchdb.a, and its exceptions must not cross the
-        /// library boundary into this header's code anyway.
         chdb_connection * conn_ptr = chdb_connect(static_cast<int>(argv.size()), argv.data());
         if (!conn_ptr)
         {
