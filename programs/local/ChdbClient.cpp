@@ -3,6 +3,7 @@
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #include <Client/Connection.h>
+#include <Disks/DiskObjectStorage/ObjectStorages/Callback/CallbackObjectStorageOps.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/Session.h>
 #include <base/getFQDNOrHostName.h>
@@ -55,6 +56,19 @@ namespace Setting
     extern const SettingsUInt64 min_insert_block_size_bytes;
     extern const SettingsUInt64 max_parser_backtracks;
     extern const SettingsUInt64 max_parser_depth;
+}
+
+namespace
+{
+
+/// The connection mutex is not recursive: a callback of a callback disk that called back into a
+/// connection running a statement would wait for itself forever.
+void throwIfInsideObjectStorageCallback()
+{
+    if (CallbackObjectStorageOps::isInsideCallback())
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "chDB functions must not be called from an object storage callback");
+}
+
 }
 
 ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
@@ -274,6 +288,9 @@ void ChdbClient::processError(std::string_view) const
 
 bool ChdbClient::hasStreamingQuery() const
 {
+    /// Answers without the connection mutex, which a callback of a statement on this connection would wait for.
+    if (CallbackObjectStorageOps::isInsideCallback())
+        return false;
     std::lock_guard<std::mutex> lock(client_mutex);
     return streaming_query_context != nullptr;
 }
@@ -300,6 +317,7 @@ size_t ChdbClient::getStorageBytesRead() const
 
 void ChdbClient::setQueryParameters(const NameToNameMap & params)
 {
+    throwIfInsideObjectStorageCallback();
     std::lock_guard<std::mutex> lock(client_mutex);
     query_parameters = params;
     if (client_context)
@@ -375,6 +393,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     const char * query, size_t query_len,
     const char * format, size_t format_len)
 {
+    throwIfInsideObjectStorageCallback();
 #if USE_PYTHON
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
@@ -480,6 +499,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const char * query, size_t query_len,
     const char * format, size_t format_len, bool dataframe_over_chunks)
 {
+    throwIfInsideObjectStorageCallback();
 #if USE_PYTHON
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
@@ -550,6 +570,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
 
 CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result, bool is_canceled)
 {
+    throwIfInsideObjectStorageCallback();
     std::lock_guard<std::mutex> lock(client_mutex);
 
     if (!streaming_query_context)
@@ -699,6 +720,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
 
 void ChdbClient::cancelStreamingQuery(void * streaming_result)
 {
+    throwIfInsideObjectStorageCallback();
     std::lock_guard<std::mutex> lock(client_mutex);
 
     cancelStreamingQueryWithoutLock(streaming_result);
@@ -738,6 +760,7 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    throwIfInsideObjectStorageCallback();
     std::lock_guard<std::mutex> lock(client_mutex);
 
     String query_str(query, query_len);
@@ -1001,6 +1024,7 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
 
 bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char * data, size_t len)
 {
+    throwIfInsideObjectStorageCallback();
     CHDB::InsertStreamContextPtr ctx;
     {
         std::lock_guard<std::mutex> lock(client_mutex);
@@ -1022,6 +1046,7 @@ bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char *
 
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream)
 {
+    throwIfInsideObjectStorageCallback();
     auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
     CHDB::InsertStreamContextPtr ctx =
         (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
@@ -1081,6 +1106,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
 
 void ChdbClient::cancelInsertStream(void * insert_stream)
 {
+    throwIfInsideObjectStorageCallback();
     auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
     CHDB::InsertStreamContextPtr ctx =
         (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
@@ -1174,6 +1200,7 @@ const char * findStatementEnd(const IAST & ast, const char * parsed_end, const c
 void ChdbClient::analyzeQuery(
     const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out)
 {
+    throwIfInsideObjectStorageCallback();
     out.statement_count = 0;
     out.flags = 0;
     out.query_class = CHDB_QUERY_UNKNOWN;

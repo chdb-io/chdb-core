@@ -20,7 +20,8 @@ For each conflict:
 - take upstream when the chDB side is leftover text from an older sync;
 - keep the behavior, adapted to the new API, when chDB added a real feature or fix;
 - keep both when the changes are independent;
-- decide words or arguments separately when one line contains several changes.
+- decide words or arguments separately when one line contains several changes;
+- keep chDB's own error codes in the 800-899 gap of `src/Common/ErrorCodes.cpp` (`PY_*`, `CALLBACK_OBJECT_STORAGE_ERROR`) and never bump `END` for them: upstream allocates the next free value above 1000, so a chDB code placed there collides with the next release.
 
 Write the decision before editing. Use this shape in `sync-review/<tag>/conflicts.md`:
 

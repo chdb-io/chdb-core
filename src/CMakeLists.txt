@@ -258,6 +258,7 @@ add_headers_and_sources(dbms Databases/DataLake)
 
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Cached)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Local)
+add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Callback)
 add_headers_and_sources(dbms Disks/DiskObjectStorage/ObjectStorages/Web)
 if (OS_WASM)
     # WASM web-fetch data plane.

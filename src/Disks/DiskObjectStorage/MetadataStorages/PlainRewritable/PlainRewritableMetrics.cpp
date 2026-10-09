@@ -5,6 +5,8 @@ namespace ProfileEvents
 {
     extern const Event DiskPlainRewritableAzureDirectoryCreated;
     extern const Event DiskPlainRewritableAzureDirectoryRemoved;
+    extern const Event DiskPlainRewritableCallbackDirectoryCreated;
+    extern const Event DiskPlainRewritableCallbackDirectoryRemoved;
     extern const Event DiskPlainRewritableLocalDirectoryCreated;
     extern const Event DiskPlainRewritableLocalDirectoryRemoved;
     extern const Event DiskPlainRewritableS3DirectoryCreated;
@@ -15,6 +17,8 @@ namespace CurrentMetrics
 {
     extern const Metric DiskPlainRewritableAzureDirectoryMapSize;
     extern const Metric DiskPlainRewritableAzureFileCount;
+    extern const Metric DiskPlainRewritableCallbackDirectoryMapSize;
+    extern const Metric DiskPlainRewritableCallbackFileCount;
     extern const Metric DiskPlainRewritableLocalDirectoryMapSize;
     extern const Metric DiskPlainRewritableLocalFileCount;
     extern const Metric DiskPlainRewritableS3DirectoryMapSize;
@@ -49,6 +53,15 @@ std::shared_ptr<PlainRewritableMetrics> createPlainRewritableMetrics(ObjectStora
                 .directory_removed = ProfileEvents::DiskPlainRewritableAzureDirectoryRemoved,
                 .directory_map_size = CurrentMetrics::DiskPlainRewritableAzureDirectoryMapSize,
                 .file_count = CurrentMetrics::DiskPlainRewritableAzureFileCount,
+            });
+        }
+        case ObjectStorageType::Callback:
+        {
+            return std::make_shared<PlainRewritableMetrics>(PlainRewritableMetrics{
+                .directory_created = ProfileEvents::DiskPlainRewritableCallbackDirectoryCreated,
+                .directory_removed = ProfileEvents::DiskPlainRewritableCallbackDirectoryRemoved,
+                .directory_map_size = CurrentMetrics::DiskPlainRewritableCallbackDirectoryMapSize,
+                .file_count = CurrentMetrics::DiskPlainRewritableCallbackFileCount,
             });
         }
         case ObjectStorageType::Local:
