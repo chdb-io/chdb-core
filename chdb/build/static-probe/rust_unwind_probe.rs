@@ -59,16 +59,23 @@ fn main() {
         failed
     };
 
-    let ok = query_failed
-        && backtrace_works("with a connection open")
-        && panics_unwind("with a connection open");
-    unsafe { chdb_close_conn(conn) };
-
     if !query_failed {
         eprintln!("rust_unwind_probe: the failing query did not report an error");
     }
-    if !ok {
+    // Every check runs and reports on its own line, so a report-only run says which of them
+    // broke. The backtrace goes first: a panic that cannot start aborts the process, and the
+    // line printed before it has already been flushed.
+    let backtrace_ok = report("backtrace", backtrace_works("with a connection open"));
+    let panic_ok = report("panic", panics_unwind("with a connection open"));
+    unsafe { chdb_close_conn(conn) };
+
+    if !(query_failed && backtrace_ok && panic_ok) {
         std::process::exit(1);
     }
     println!("rust_unwind_probe: backtraces and panics work after a chDB exception");
+}
+
+fn report(check: &str, ok: bool) -> bool {
+    println!("rust_unwind_probe: {check}: {}", if ok { "ok" } else { "BROKEN" });
+    ok
 }
