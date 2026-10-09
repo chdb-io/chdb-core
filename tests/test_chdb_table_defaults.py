@@ -321,7 +321,8 @@ class TestMaxInsertThreadsDefault(unittest.TestCase):
         self.assertEqual(self.sinks(), 1)
 
     def test_query_setting_raises_it(self):
-        self.assertEqual(self.sinks("SETTINGS max_insert_threads = 4"), 4)
+        # The memory gate (4 GiB per insert thread) would cap the threads on a small CI machine.
+        self.assertEqual(self.sinks("SETTINGS max_insert_threads = 4, max_insert_threads_min_free_memory_per_thread = 0"), 4)
 
 
 if __name__ == "__main__":
