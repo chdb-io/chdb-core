@@ -55,11 +55,8 @@
 #                     .llvm_addrsig: ld -r concatenates those tables without remapping their
 #                     symbol indices.
 #
-# Linux only. macOS is not prelinked: ld64 -r drops MH_SUBSECTIONS_VIA_SYMBOLS when any
-# input lacks it (arm64 then fails to place branch islands in the merged __text), and ld64
-# looks personalities up by name, so localizing __gxx_personality_v0 does not work there.
-# Both sides of the macOS split are LLVM libunwind, so the split binding is not known to
-# crash there - see the PR that introduced this script.
+# Linux only. ld64 cannot do the same; rename_runtime_symbols_macos.py explains why and
+# what macOS does instead.
 #
 # Usage: prelink_static_lib.sh <path/to/libchdb.a>    (rewritten in place)
 

@@ -147,12 +147,17 @@ else
     fi
 fi
 
-# Linux: merge the archive into one object that keeps only the C API global, so a
-# consumer's own references can no longer bind to the bundled libc++/libc++abi/libunwind
-# (chdb-io/chdb-rust#53). After minimisation, which needs the per-member layout, and before
+# Make sure a consumer's own references can no longer bind to the bundled
+# libc++/libc++abi/libunwind (chdb-io/chdb-rust#53). Linux merges the archive into one object
+# that keeps only the C API global; ld64 cannot do the same (see
+# rename_runtime_symbols_macos.py), so on macOS the runtime's symbols are renamed instead.
+# After minimisation, which needs the per-member layout and the original names, and before
 # the Go test and the gates, which must see the archive as shipped.
 if [ "$(uname)" == "Linux" ]; then
     bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
+else
+    python3 ${MY_DIR}/rename_runtime_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
+        --sdk "$(xcrun --show-sdk-path)" --objcopy llvm-objcopy --nm llvm-nm
 fi
 
 

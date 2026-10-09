@@ -3,29 +3,28 @@
 # Release gates for the static library.
 #
 # libchdb.so gates its exported surface at link time. libchdb.a is handed to a linker we do
-# not control, so the gate has to be baked into the archive itself. On macOS that is the
-# hidden visibility of cmake/bundled_runtime_visibility.cmake; on Linux the archive is also
-# prelinked into one object that keeps only the C API global (prelink_static_lib.sh),
-# because a hidden definition in an archive member still satisfies the consumer's own
-# references in a static link (chdb-io/chdb-rust#53). These checks verify that it was.
+# not control, so the gate has to be baked into the archive itself. The bundled runtime is
+# compiled hidden (cmake/bundled_runtime_visibility.cmake), but a hidden definition in an
+# archive member still satisfies the consumer's own references in a static link
+# (chdb-io/chdb-rust#53). So on Linux the archive is also prelinked into one object that
+# keeps only the C API global (prelink_static_lib.sh), and on macOS the runtime's symbols
+# are renamed (rename_runtime_symbols_macos.py). These checks verify that it was done.
 #
 #   Gate 1  nothing in the probe can bind the bundled runtime to the system runtime
-#   Gate 2  macOS: the bundled runtime objects export nothing at all
+#   Gate 2  macOS: the bundled runtime objects export nothing at all, and nothing in the
+#                  archive carries a name the system C++ runtime or unwinder exports
 #           Linux: the archive defines nothing global outside the C API contract
 #   Gate 3a the two checked-in export allow-lists describe the same C API contract
 #   Gate 3b every symbol in that contract is still reachable from libchdb.a
 #   Gate 4  the linked probe connects and runs a query
 #   Gate 5  the archive does not override libc's posix_spawn
 #   Gate 6  a consumer's own runtime references still bind to the host runtime, and C, C++
-#           and Rust consumers can unwind, throw and panic after chDB has run (fatal on
-#           Linux, report-only on macOS)
+#           and Rust consumers can unwind, throw and panic after chDB has run
 #
-# Gates 3 and 4 are the same on both platforms, and gate 1 asks the same question with a
-# platform-specific scope; only the tools and the condition that exposes the hazard differ.
-# Gate 5 has nothing to find on macOS - base/glibc-compatibility is a Linux-only target -
-# but its behavioural half is a real check there too, and it is the half that keeps working
-# if the archive is ever assembled a different way. Gate 6 only reports on macOS because the
-# macOS archive is not prelinked (see prelink_static_lib.sh).
+# Gates 1, 3, 4 and 6 are the same on both platforms; only the tools and the condition that
+# exposes the hazard differ. Gate 5 has nothing to find on macOS - base/glibc-compatibility
+# is a Linux-only target - but its behavioural half is a real check there too, and it is the
+# half that keeps working if the archive is ever assembled a different way.
 #
 #   Mach-O  weak definitions that stay external land in the export trie and dyld may bind
 #           them to the system libc++/libc++abi. Exposed by a deployment target of 12.0 or
@@ -218,18 +217,13 @@ if [ "${PLATFORM}" = Darwin ]; then
                 fail "extracted ${extracted} of ${runtime_member_count} runtime members"
             fi
 
-            # Two sets come out of the same dump. runtime_exports is what is still visible
-            # from outside the object, which is what this gate asserts is empty.
-            # runtime_defined is every definition regardless of visibility, which gate 1
-            # uses to scope itself to the bundled runtime. Only the -m listing spells out
-            # "private external"; -g alone shows hidden symbols too and would report a
-            # hardened archive as unprotected.
+            # What is still visible from outside the object, which this gate asserts is
+            # empty. Only the -m listing spells out "private external"; -g alone shows hidden
+            # symbols too and would report a hardened archive as unprotected.
             find "${WORK_DIR}/objs" -name '*.o' -print0 \
                 | xargs -0 nm -m -g --defined-only > "${WORK_DIR}/nm.txt"
             awk '!/private external/ && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
                 | sort -u > "${WORK_DIR}/runtime_exports.txt"
-            awk '$NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
-                | sort -u > "${WORK_DIR}/runtime_defined.txt"
 
             # Asserted at zero, not merely "disjoint from this host's system runtime". These
             # three targets are built to have no externally visible definitions at all, and a
@@ -251,6 +245,32 @@ if [ "${PLATFORM}" = Darwin ]; then
                 fi | sed 's/^/    /'
                 fail "${visible} bundled runtime symbols are still externally visible"
             fi
+        fi
+    fi
+
+    # Hidden is not enough here either: a private-external definition in an archive member
+    # still satisfies the consumer's own references in a static link (chdb-io/chdb-rust#53).
+    # Only a name the consumer never asks for is safe, so rename_runtime_symbols_macos.py
+    # renames the runtime's symbols, and anything else that collides, from the SDK's stubs.
+    # Checked here against this machine's own dylibs, across the whole archive and at every
+    # visibility - `nm -g` lists private externs too.
+    echo "== Gate 2: nothing in the archive carries a name the system C++ runtime exports =="
+    if ! nm -m -g --defined-only "${LIBCHDB_A}" > "${WORK_DIR}/archive_nm.txt" 2>/dev/null; then
+        fail "nm could not read the archive; the name check was not evaluated"
+    elif [ ! -s "${WORK_DIR}/archive_nm.txt" ]; then
+        fail "nm read no definitions out of the archive - the name check would pass vacuously"
+    else
+        awk '/ external / && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/archive_nm.txt" \
+            | sort -u > "${WORK_DIR}/archive_defined.txt"
+        comm -12 "${WORK_DIR}/archive_defined.txt" "${WORK_DIR}/system_exports.txt" \
+            > "${WORK_DIR}/archive_runtime_names.txt"
+        runtime_names=$(wc -l < "${WORK_DIR}/archive_runtime_names.txt" | tr -d ' ')
+        echo "  definitions: $(wc -l < "${WORK_DIR}/archive_defined.txt" | tr -d ' '), carrying a system runtime name: ${runtime_names}"
+        if [ "${runtime_names}" -eq 0 ]; then
+            echo "PASS"
+        else
+            head -20 "${WORK_DIR}/archive_runtime_names.txt" | sed 's/^/    /'
+            fail "${runtime_names} archive definitions carry a name the system C++ runtime or unwinder exports - was the archive renamed by rename_runtime_symbols_macos.py?"
         fi
     fi
 else
@@ -396,21 +416,12 @@ probe_visible_symbols () {
 }
 
 echo "== Gate 1: no bundled runtime symbol is visible from the linked probe =="
-if [ "${PLATFORM}" = Darwin ]; then
-    # Scoped to symbols the bundled runtime actually defines. Intersecting the probe's whole
-    # visible set with the system runtime instead would flag the replaceable global operator
-    # new/delete, which clickhouse_new_delete provides at default visibility on purpose on
-    # macOS and which is outside these three targets; gate 2 is what covers the runtime's
-    # own copies.
-    SCOPE="${WORK_DIR}/runtime_defined.txt"
-    SCOPE_NAME="runtime definitions"
-else
-    # The prelinked archive has no runtime members left to scope by, and gate 2 already
-    # requires everything but the contract to be local. What a linked consumer must still not
-    # re-export is anything the system runtime itself exports.
-    SCOPE="${WORK_DIR}/system_exports.txt"
-    SCOPE_NAME="system runtime exports"
-fi
+# Scoped to what the system runtime itself exports: a linked consumer must not re-export any
+# of it. The bundled runtime no longer has those names - the Linux archive keeps only the
+# C API global, and on macOS the runtime, and ClickHouse's default-visible replaceable
+# operator new/delete with it, are renamed.
+SCOPE="${WORK_DIR}/system_exports.txt"
+SCOPE_NAME="system runtime exports"
 if [ ! -s "${SCOPE}" ]; then
     fail "no ${SCOPE_NAME} to scope gate 1 to"
 elif ! probe_visible_symbols "${PROBE}" > "${WORK_DIR}/probe_visible_unsorted.txt"; then
@@ -518,41 +529,18 @@ echo
 # --allow-multiple-definition.
 #
 # Two halves again. The symbol half takes every reference the probe's own object makes into
-# the system runtime and requires the linked binary to import it from the versioned system
-# library; a reference bound inside the executable has no versioned .dynsym entry. That
-# catches a split binding even where the mix happens not to crash. The behavioural half runs
-# the probes: an unwinder walk, C++ throw/catch, and the Rust backtrace and panic of the
+# the system runtime and requires the linked binary to import it from the system library
+# rather than bind it inside the executable. That catches a split binding even where the mix
+# happens not to crash - on macOS x86_64 the two copies of LLVM libunwind happened to agree,
+# while on arm64 the bundled one returned still-signed return addresses. The behavioural half
+# runs the probes: an unwinder walk, C++ throw/catch, and the Rust backtrace and panic of the
 # issue.
 #
-# Fatal on Linux. On macOS it only reports: the macOS archive is not prelinked (see
-# prelink_static_lib.sh), and what its split binding - between chDB's LLVM libunwind and the
-# system's, itself LLVM libunwind - does to a consumer at run time is what this finds out.
-# A macOS finding is printed as REPORT and does not fail the build.
-reported=0
-gate6_fail () {
-    if [ "${PLATFORM}" = Linux ]; then
-        fail "$@"
-    else
-        echo "REPORT: $*"
-        reported=$((reported + 1))
-    fi
-}
-
-# A probe that crashes in report-only mode must not leave a multi-gigabyte core behind for
-# the job's crash collector to mistake for the failure it is looking for.
-gate6_run () {
-    if [ "${PLATFORM}" = Linux ]; then
-        run_probe "$1"
-    else
-        (ulimit -c 0; run_probe "$1")
-    fi
-}
-
 check_host_bindings () {
     local object=$1 probe=$2 name
     name=$(basename "${probe}")
     if ! nm -u "${object}" > "${WORK_DIR}/${name}_undefined_raw.txt" 2>/dev/null; then
-        gate6_fail "${name}: nm could not read ${object}; the symbol half was not evaluated"
+        fail "${name}: nm could not read ${object}; the symbol half was not evaluated"
         return
     fi
     awk -v prefix="${SYM_PREFIX}" 'NF {
@@ -562,7 +550,7 @@ check_host_bindings () {
          }' "${WORK_DIR}/${name}_undefined_raw.txt" \
         | sort -u | comm -12 - "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/${name}_refs.txt"
     if [ ! -s "${WORK_DIR}/${name}_refs.txt" ]; then
-        gate6_fail "${name}: its object references nothing in the system runtime - the symbol half would pass vacuously"
+        fail "${name}: its object references nothing in the system runtime - the symbol half would pass vacuously"
         return
     fi
     # What the linked binary imports. ELF: a versioned .dynsym entry (a reference bound
@@ -570,7 +558,7 @@ check_host_bindings () {
     # Mach-O: an undefined symbol, which nm -m shows with the dylib it comes from.
     if [ "${PLATFORM}" = Darwin ]; then
         if ! nm -m "${probe}" > "${WORK_DIR}/${name}_symbols.txt" 2>/dev/null; then
-            gate6_fail "${name}: nm could not read the linked probe; the symbol half was not evaluated"
+            fail "${name}: nm could not read the linked probe; the symbol half was not evaluated"
             return
         fi
         awk '/\(undefined\)/ {
@@ -578,7 +566,7 @@ check_host_bindings () {
              }' "${WORK_DIR}/${name}_symbols.txt" | sort -u > "${WORK_DIR}/${name}_imported.txt"
     else
         if ! readelf --dyn-syms -W "${probe}" > "${WORK_DIR}/${name}_dynsym.txt" 2>/dev/null; then
-            gate6_fail "${name}: readelf could not read the linked probe; the symbol half was not evaluated"
+            fail "${name}: readelf could not read the linked probe; the symbol half was not evaluated"
             return
         fi
         awk '$1 ~ /^[0-9]+:$/ && $8 ~ /@/ { n = $8; sub(/@.*/, "", n); print n }' "${WORK_DIR}/${name}_dynsym.txt" \
@@ -593,7 +581,7 @@ check_host_bindings () {
         echo "PASS (${name}: all ${refs} references into the system runtime are imported from it)"
     else
         head -20 "${WORK_DIR}/${name}_bound_inside.txt" | sed 's/^/    /'
-        gate6_fail "${name}: ${inside} of its ${refs} references into the system runtime were bound inside the executable - to libchdb.a"
+        fail "${name}: ${inside} of its ${refs} references into the system runtime were bound inside the executable - to libchdb.a"
     fi
 }
 
@@ -606,7 +594,7 @@ if [ "${PLATFORM}" = Linux ]; then
     # chdb-rust's `static` feature on Linux.
     rust_link_flags=(-l static=chdb -l dylib=stdc++)
 else
-    echo "== Gate 6 (report only on macOS): a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
+    echo "== Gate 6: a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
     HOST_CC=${HOST_CC:-clang}
     HOST_CXX=${HOST_CXX:-clang++}
     host_cflags=(-mmacosx-version-min="${DEPLOYMENT_TARGET}")
@@ -654,26 +642,26 @@ if wait "${unwind_build}"; then
             *) echo "PASS (host_unwind_probe: stack is not executable)" ;;
         esac
     fi
-    if gate6_run host_unwind_probe; then
+    if run_probe host_unwind_probe; then
         echo "PASS (host_unwind_probe: behaviour)"
     else
-        gate6_fail "host_unwind_probe: the host unwinder could not walk the consumer's stack"
+        fail "host_unwind_probe: the host unwinder could not walk the consumer's stack"
     fi
 else
     sed 's/^/    /' "${WORK_DIR}/host_unwind_link.log" | tail -40
-    gate6_fail "could not build host_unwind_probe with ${HOST_CC}"
+    fail "could not build host_unwind_probe with ${HOST_CC}"
 fi
 
 if wait "${cxx_build}"; then
     check_host_bindings "${WORK_DIR}/host_cxx_probe.o" "${WORK_DIR}/host_cxx_probe"
-    if gate6_run host_cxx_probe; then
+    if run_probe host_cxx_probe; then
         echo "PASS (host_cxx_probe: behaviour)"
     else
-        gate6_fail "host_cxx_probe: the consumer's own C++ exceptions broke"
+        fail "host_cxx_probe: the consumer's own C++ exceptions broke"
     fi
 else
     sed 's/^/    /' "${WORK_DIR}/host_cxx_link.log" | tail -40
-    gate6_fail "could not build host_cxx_probe with ${HOST_CXX}"
+    fail "could not build host_cxx_probe with ${HOST_CXX}"
 fi
 
 # Its references come from std's rlibs rather than one object, so it only has the
@@ -681,22 +669,19 @@ fi
 # PATH, so there a missing rustc is a failure rather than a skip.
 if [ -n "${rust_build}" ]; then
     if wait "${rust_build}"; then
-        if gate6_run rust_unwind_probe; then
+        if run_probe rust_unwind_probe; then
             echo "PASS (rust_unwind_probe: behaviour)"
         else
-            gate6_fail "rust_unwind_probe: a Rust backtrace or panic broke"
+            fail "rust_unwind_probe: a Rust backtrace or panic broke"
         fi
     else
         sed 's/^/    /' "${WORK_DIR}/rust_link.log" | tail -40
-        gate6_fail "could not build rust_unwind_probe with ${RUSTC}"
+        fail "could not build rust_unwind_probe with ${RUSTC}"
     fi
 elif [ "${PLATFORM}" = Linux ] && [ -n "${CI:-}" ]; then
     fail "rust_unwind_probe: rustc is not on PATH"
 else
     echo "SKIP (rust_unwind_probe: rustc is not on PATH)"
-fi
-if [ "${reported}" -ne 0 ]; then
-    echo "  ${reported} gate 6 finding(s) reported on macOS; not failing the build"
 fi
 echo
 
