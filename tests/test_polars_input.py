@@ -114,7 +114,9 @@ class TestPolarsWithoutPyCapsuleExport(unittest.TestCase):
         try:
             for name in ("frame", "lazy", "series"):
                 with self.subTest(obj=name):
-                    with self.assertRaisesRegex(ImportError, r"polars>=1\.3\.0, found "):
+                    # The ImportError reaches Python as such on most platforms; on some it crosses
+                    # the abi3 stub boundary as a RuntimeError, which chdb.query raises as ChdbError.
+                    with self.assertRaisesRegex((ImportError, chdb.ChdbError), r"polars>=1\.3\.0, found "):
                         chdb.query(f"SELECT count() FROM Python({name})")
             # Only polars objects are affected by the check.
             self.assertEqual(csv(chdb.query("SELECT sum(a) FROM Python(plain)")), "6")
