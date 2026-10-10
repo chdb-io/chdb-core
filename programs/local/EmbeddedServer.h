@@ -56,6 +56,7 @@ private:
     void tryInitPath();
     void setupUsers();
     void cleanup();
+    void logMergeTreeStateAtShutdown() const;
     void processConfig();
     void setupSystemLogs();
     void applyCmdOptions(ContextMutablePtr context);

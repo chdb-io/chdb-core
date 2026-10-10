@@ -178,6 +178,8 @@ jobs:
             python -m pip install --upgrade pip
             # pyarrow<25: see the pin comment in "Test wheel on all Python versions"
             python -m pip install setuptools tox pandas "pyarrow<25" twine psutil deltalake wheel jupyter nbconvert "fastjsonschema<2.22"
+            if [ "$version" = "3.9" ]; then polars_spec="polars==1.10.0"; else polars_spec="polars"; fi
+            python -m pip install "$polars_spec"
             pyenv shell --unset
           done
       - name: Upgrade Rust toolchain

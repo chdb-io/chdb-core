@@ -103,6 +103,33 @@ namespace ErrorCodes
 }
 
 
+/// chDB: defaults written into the definition of a new MergeTree table unless the CREATE query or
+/// <merge_tree> config sets them, so tables created by older versions keep the ClickHouse defaults
+/// when reopened.
+///  - auto_statistics_types = '': building statistics on merge and loading them on every part open
+///    costs more than they return in a process that may live for seconds.
+///  - default_compression_codec = 'LZ4': otherwise merged parts above 100 MiB switch to ZSTD(3),
+///    whose decompression makes queries on 2-4 vCPU machines markedly slower.
+static void applyChDBTableDefaults(ASTStorage & storage_def, const MergeTreeSettings & config_settings, MergeTreeSettings & storage_settings)
+{
+    static constexpr std::pair<std::string_view, std::string_view> defaults[] = {
+        {"auto_statistics_types", ""},
+        {"default_compression_codec", "LZ4"},
+    };
+
+    auto & changes = storage_def.settings->changes;
+    const auto config_changes = config_settings.changes();
+    for (const auto & [name, value] : defaults)
+    {
+        const auto is_set = [&](const SettingChange & change) { return change.name == name; };
+        if (std::any_of(changes.begin(), changes.end(), is_set) || std::any_of(config_changes.begin(), config_changes.end(), is_set))
+            continue;
+
+        changes.push_back(SettingChange{name, String{value}});
+        storage_settings.set(name, String{value});
+    }
+}
+
 /** Get the list of column names.
   * It can be specified in the tuple: (Clicks, Cost),
   * or as one column: Clicks.
@@ -961,6 +988,9 @@ static StoragePtr create(const StorageFactory::Arguments & args)
         storage_settings->loadFromQuery(
             *args.storage_def, args.getLocalContext(), isLoadingFromExistingMetadata(args.mode),
             args.table_id.database_name == DatabaseCatalog::SYSTEM_DATABASE);
+
+        if (args.mode == LoadingStrictnessLevel::CREATE && args.table_id.database_name != DatabaseCatalog::SYSTEM_DATABASE)
+            applyChDBTableDefaults(*args.storage_def, initial_storage_settings, *storage_settings);
 
         /// What this query changes from the settings the server has in effect, which already include the
         /// `merge_tree` config section and `compatibility`: those are not changes made by the query. A
