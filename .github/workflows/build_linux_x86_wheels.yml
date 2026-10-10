@@ -1,6 +1,8 @@
 name: Build & Test Linux x86_64
 
 on:
+  schedule:
+    - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       TAG_NAME:
@@ -224,6 +226,9 @@ jobs:
           bump-my-version replace --new-version $TAG_NAME
           echo "Version files updated to $TAG_NAME"
           pyenv shell --unset
+      - name: Set version for main wheel
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 .github/scripts/set-main-wheel-version.py
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
