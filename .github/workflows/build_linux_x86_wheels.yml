@@ -549,6 +549,18 @@ jobs:
             pyenv shell --unset
           done
         continue-on-error: false
+      # Run once, outside the Python/pandas matrix above: this is a release-artifact
+      # smoke, not an API compatibility matrix.  It uses the repaired manylinux
+      # wheel already in dist/ and a self-contained local Iceberg REST fixture.
+      - name: Test native wheel with Iceberg DataLakeCatalog
+        run: |
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+          pyenv shell 3.12
+          python -m pip install 'pyiceberg[sql-sqlite]'
+          python tests/integration/native_iceberg_catalog_smoke.py
+          pyenv shell --unset
+        continue-on-error: false
       - name: Run benchmarks on Python 3.14 (pandas 2.x and 3.x)
         if: env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
