@@ -6,6 +6,7 @@ from decimal import Decimal
 from urllib.parse import parse_qsl
 from chdb import _chdb
 from chdb._exceptions import ChdbError
+from chdb.polars_io import to_polars, _require_polars
 from chdb.progress_display import (
     get_notebook_display as _get_notebook_display,
     is_notebook as _is_notebook,
@@ -30,10 +31,12 @@ def _require_pyarrow(feature):
 
 
 _arrow_format = set({"arrowtable"})
+_polars_format = set({"polars"})
 _df_format = set({"dataframe", "datastore"})
 _process_result_format_funs = {
     "arrowtable": lambda x: to_arrowTable(x),
     "datastore": lambda x: to_datastore(x),
+    "polars": lambda x: to_polars(x),
 }
 
 
@@ -702,6 +705,7 @@ class Connection:
                 - "Arrow" - Apache Arrow format (bytes)
                 - "Dataframe" - Pandas DataFrame (requires pandas)
                 - "Arrowtable" - PyArrow Table (requires pyarrow)
+                - "Polars" - Polars DataFrame (requires polars)
 
         Returns:
             Query results in the specified format. Type depends on format:
@@ -710,6 +714,7 @@ class Connection:
             - Arrow format returns bytes
             - dataframe format returns pandas.DataFrame
             - arrowtable format returns pyarrow.Table
+            - polars format returns polars.DataFrame
 
         Raises:
             ChdbError: If query execution fails
@@ -745,6 +750,9 @@ class Connection:
         result_func = _process_result_format_funs.get(lower_output_format, lambda x: x)
         if lower_output_format in _arrow_format:
             _require_pyarrow(f'output format "{format}"')
+            format = "Arrow"
+        elif lower_output_format in _polars_format:
+            _require_polars(f'output format "{format}"')
             format = "Arrow"
 
         progress_callback = self._setup_auto_progress_callback()
@@ -808,6 +816,7 @@ class Connection:
                 - "Arrow" - Apache Arrow format (enables record_batch() method)
                 - "dataframe" - Pandas DataFrame chunks
                 - "arrowtable" - PyArrow Table chunks
+                - "polars" - Polars DataFrame chunks
 
         Returns:
             StreamingResult: A streaming iterator for query results that supports:
@@ -857,6 +866,9 @@ class Connection:
             # Fail fast: otherwise the missing-pyarrow ImportError would only
             # surface on the first fetch(), wrapped into a RuntimeError.
             _require_pyarrow(f'output format "{format}"')
+            format = "Arrow"
+        elif lower_output_format in _polars_format:
+            _require_polars(f'output format "{format}"')
             format = "Arrow"
         if lower_output_format == "datastore":
             format = "DataFrame"
