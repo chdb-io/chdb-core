@@ -3,20 +3,28 @@
 # Release gates for the static library.
 #
 # libchdb.so gates its exported surface at link time. libchdb.a is handed to a linker we do
-# not control, so the gate has to be baked into the objects
-# (cmake/bundled_runtime_visibility.cmake). These checks verify that it was.
+# not control, so the gate has to be baked into the archive itself. The bundled runtime is
+# compiled hidden (cmake/bundled_runtime_visibility.cmake), but a hidden definition in an
+# archive member still satisfies the consumer's own references in a static link
+# (chdb-io/chdb-rust#53). So on Linux the archive is also prelinked into one object that
+# keeps only the C API global (prelink_static_lib.sh), and on macOS the runtime's symbols
+# are renamed (rename_runtime_symbols_macos.py). These checks verify that it was done.
 #
 #   Gate 1  nothing in the probe can bind the bundled runtime to the system runtime
-#   Gate 2  the bundled runtime objects export nothing at all
+#   Gate 2  macOS: the bundled runtime objects export nothing at all, and nothing in the
+#                  archive carries a name the system C++ runtime or unwinder exports
+#           Linux: the archive defines nothing global outside the C API contract
 #   Gate 3a the two checked-in export allow-lists describe the same C API contract
 #   Gate 3b every symbol in that contract is still reachable from libchdb.a
 #   Gate 4  the linked probe connects and runs a query
 #   Gate 5  the archive does not override libc's posix_spawn
+#   Gate 6  a consumer's own runtime references still bind to the host runtime, and C, C++
+#           and Rust consumers can unwind, throw and panic after chDB has run
 #
-# Gates 1 to 4 are the same on both platforms; only the tools and the condition that
+# Gates 1, 3, 4 and 6 are the same on both platforms; only the tools and the condition that
 # exposes the hazard differ. Gate 5 has nothing to find on macOS - base/glibc-compatibility
-# is a Linux-only target - but its behavioural half is a real check there too, and it is
-# the half that keeps working if the archive is ever assembled a different way.
+# is a Linux-only target - but its behavioural half is a real check there too, and it is the
+# half that keeps working if the archive is ever assembled a different way.
 #
 #   Mach-O  weak definitions that stay external land in the export trie and dyld may bind
 #           them to the system libc++/libc++abi. Exposed by a deployment target of 12.0 or
@@ -186,64 +194,163 @@ fi
 echo "PASS"
 echo
 
-# --- Gate 2: no-link archive check ------------------------------------------------------
-# Only the bundled runtime objects are in scope. ClickHouse's own weak/template symbols are
-# a different problem and would swamp the signal.
-echo "== Gate 2: bundled runtime objects export nothing =="
-if ! ar t "${LIBCHDB_A}" > "${WORK_DIR}/all_members.txt"; then
-    fail "could not list the archive members"
-else
-    grep_optional -E '^lib(cxx|cxxabi|unwind)__' "${WORK_DIR}/all_members.txt" \
-        > "${WORK_DIR}/runtime_members.txt"
-    runtime_member_count=$(wc -l < "${WORK_DIR}/runtime_members.txt" | tr -d ' ')
-    if [ "${runtime_member_count}" -eq 0 ]; then
-        fail "no libcxx__/libcxxabi__/libunwind__ members among the $(wc -l < "${WORK_DIR}/all_members.txt" | tr -d ' ') archive members - has the naming in create_static_libchdb.py changed?"
-    else
-        mkdir -p "${WORK_DIR}/objs"
-        (cd "${WORK_DIR}/objs" && xargs ar x "${LIBCHDB_A}" < "${WORK_DIR}/runtime_members.txt")
-        extracted=$(find "${WORK_DIR}/objs" -name '*.o' | wc -l | tr -d ' ')
-        if [ "${extracted}" -ne "${runtime_member_count}" ]; then
-            fail "extracted ${extracted} of ${runtime_member_count} runtime members"
-        fi
+sort -u "${WORK_DIR}/contract.txt" > "${WORK_DIR}/contract_sorted.txt"
 
-        # Two sets come out of the same dump. runtime_exports is what is still visible from
-        # outside the object, which is what this gate asserts is empty. runtime_defined is
-        # every definition regardless of visibility, which gate 1 uses to scope itself to
-        # the bundled runtime.
-        if [ "${PLATFORM}" = Darwin ]; then
-            # Only the -m listing spells out "private external"; -g alone shows hidden
+# --- Gate 2: no-link archive check ------------------------------------------------------
+if [ "${PLATFORM}" = Darwin ]; then
+    # Only the bundled runtime objects are in scope. ClickHouse's own weak/template symbols
+    # are a different problem and would swamp the signal.
+    echo "== Gate 2: bundled runtime objects export nothing =="
+    if ! ar t "${LIBCHDB_A}" > "${WORK_DIR}/all_members.txt"; then
+        fail "could not list the archive members"
+    else
+        grep_optional -E '^lib(cxx|cxxabi|unwind)__' "${WORK_DIR}/all_members.txt" \
+            > "${WORK_DIR}/runtime_members.txt"
+        runtime_member_count=$(wc -l < "${WORK_DIR}/runtime_members.txt" | tr -d ' ')
+        if [ "${runtime_member_count}" -eq 0 ]; then
+            fail "no libcxx__/libcxxabi__/libunwind__ members among the $(wc -l < "${WORK_DIR}/all_members.txt" | tr -d ' ') archive members - has the naming in create_static_libchdb.py changed?"
+        else
+            mkdir -p "${WORK_DIR}/objs"
+            (cd "${WORK_DIR}/objs" && xargs ar x "${LIBCHDB_A}" < "${WORK_DIR}/runtime_members.txt")
+            extracted=$(find "${WORK_DIR}/objs" -name '*.o' | wc -l | tr -d ' ')
+            if [ "${extracted}" -ne "${runtime_member_count}" ]; then
+                fail "extracted ${extracted} of ${runtime_member_count} runtime members"
+            fi
+
+            # What is still visible from outside the object, which this gate asserts is
+            # empty. Only the -m listing spells out "private external"; -g alone shows hidden
             # symbols too and would report a hardened archive as unprotected.
             find "${WORK_DIR}/objs" -name '*.o' -print0 \
                 | xargs -0 nm -m -g --defined-only > "${WORK_DIR}/nm.txt"
             awk '!/private external/ && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
                 | sort -u > "${WORK_DIR}/runtime_exports.txt"
-            awk '$NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/nm.txt" \
-                | sort -u > "${WORK_DIR}/runtime_defined.txt"
-        else
-            find "${WORK_DIR}/objs" -name '*.o' -print0 \
-                | xargs -0 -n 50 readelf -sW > "${WORK_DIR}/readelf.txt"
-            elf_visible_defined < "${WORK_DIR}/readelf.txt" | sort -u > "${WORK_DIR}/runtime_exports.txt"
-            awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") {
-                     n = $8; sub(/@.*/, "", n); if (n != "") print n
-                 }' "${WORK_DIR}/readelf.txt" | sort -u > "${WORK_DIR}/runtime_defined.txt"
-        fi
 
-        # Asserted at zero, not merely "disjoint from this host's system runtime". These
-        # three targets are built to have no externally visible definitions at all, and a
-        # symbol that is simply absent from the running OS version would otherwise slip
-        # through. Measured 0 across 58 archive members on macOS and 83 objects on Linux.
-        visible=$(wc -l < "${WORK_DIR}/runtime_exports.txt" | tr -d ' ')
-        comm -12 "${WORK_DIR}/runtime_exports.txt" "${WORK_DIR}/system_exports.txt" \
-            > "${WORK_DIR}/overlap.txt"
-        overlap=$(wc -l < "${WORK_DIR}/overlap.txt" | tr -d ' ')
-        echo "  runtime objects: ${runtime_member_count}, externally visible definitions: ${visible}"
-        if [ "${visible}" -eq 0 ]; then
+            # Asserted at zero, not merely "disjoint from this host's system runtime". These
+            # three targets are built to have no externally visible definitions at all, and a
+            # symbol that is simply absent from the running OS version would otherwise slip
+            # through. Measured 0 across 58 archive members.
+            visible=$(wc -l < "${WORK_DIR}/runtime_exports.txt" | tr -d ' ')
+            comm -12 "${WORK_DIR}/runtime_exports.txt" "${WORK_DIR}/system_exports.txt" \
+                > "${WORK_DIR}/overlap.txt"
+            overlap=$(wc -l < "${WORK_DIR}/overlap.txt" | tr -d ' ')
+            echo "  runtime objects: ${runtime_member_count}, externally visible definitions: ${visible}"
+            if [ "${visible}" -eq 0 ]; then
+                echo "PASS"
+            else
+                echo "  first 20 (${overlap} of ${visible} are also defined by the system runtime):"
+                if [ "${overlap}" -gt 0 ]; then
+                    head -20 "${WORK_DIR}/overlap.txt"
+                else
+                    head -20 "${WORK_DIR}/runtime_exports.txt"
+                fi | sed 's/^/    /'
+                fail "${visible} bundled runtime symbols are still externally visible"
+            fi
+        fi
+    fi
+
+    # Hidden is not enough here either: a private-external definition in an archive member
+    # still satisfies the consumer's own references in a static link (chdb-io/chdb-rust#53).
+    # Only a name the consumer never asks for is safe, so rename_runtime_symbols_macos.py
+    # renames the runtime's symbols, and anything else that collides, from the SDK's stubs.
+    # Checked here against this machine's own dylibs, across the whole archive and at every
+    # visibility - `nm -g` lists private externs too.
+    echo "== Gate 2: nothing in the archive carries a name the system C++ runtime exports =="
+    if ! nm -m -g --defined-only "${LIBCHDB_A}" > "${WORK_DIR}/archive_nm.txt" 2>/dev/null; then
+        fail "nm could not read the archive; the name check was not evaluated"
+    elif [ ! -s "${WORK_DIR}/archive_nm.txt" ]; then
+        fail "nm read no definitions out of the archive - the name check would pass vacuously"
+    else
+        awk '/ external / && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/archive_nm.txt" \
+            | sort -u > "${WORK_DIR}/archive_defined.txt"
+        comm -12 "${WORK_DIR}/archive_defined.txt" "${WORK_DIR}/system_exports.txt" \
+            > "${WORK_DIR}/archive_runtime_names.txt"
+        runtime_names=$(wc -l < "${WORK_DIR}/archive_runtime_names.txt" | tr -d ' ')
+        echo "  definitions: $(wc -l < "${WORK_DIR}/archive_defined.txt" | tr -d ' '), carrying a system runtime name: ${runtime_names}"
+        if [ "${runtime_names}" -eq 0 ]; then
             echo "PASS"
         else
-            echo "  first 20 (${overlap} of ${visible} are also defined by the system runtime):"
-            { [ "${overlap}" -gt 0 ] && cat "${WORK_DIR}/overlap.txt" || cat "${WORK_DIR}/runtime_exports.txt"; } \
-                | head -20 | sed 's/^/    /'
-            fail "${visible} bundled runtime symbols are still externally visible"
+            head -20 "${WORK_DIR}/archive_runtime_names.txt" | sed 's/^/    /'
+            fail "${runtime_names} archive definitions carry a name the system C++ runtime or unwinder exports - was the archive renamed by rename_runtime_symbols_macos.py?"
+        fi
+    fi
+else
+    # Hidden visibility is not enough on ELF: a hidden definition in an archive member still
+    # satisfies a reference from any other object in the consumer's static link, which is
+    # how Rust's std ended up calling the bundled libunwind (chdb-io/chdb-rust#53).
+    # prelink_static_lib.sh resolves chDB's own references inside one object and localizes
+    # everything else, so the contract must be the archive's entire global surface. Checked
+    # at every visibility and including COMMON symbols, and against the contract rather than
+    # this host's system runtime: whatever else stays global, a consumer can bind to.
+    echo "== Gate 2: the archive defines nothing global outside the C API contract =="
+    if ! readelf -sW "${LIBCHDB_A}" > "${WORK_DIR}/archive_readelf.txt" 2> "${WORK_DIR}/archive_readelf.err"; then
+        sed 's/^/    /' "${WORK_DIR}/archive_readelf.err" | tail -5
+        fail "readelf could not read the archive's symbol tables"
+    elif ! grep -q '^Symbol table' "${WORK_DIR}/archive_readelf.txt"; then
+        fail "readelf printed no symbol table for the archive - gate 2 would pass vacuously"
+    else
+        awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK" || $5 == "UNIQUE") {
+                 n = $8; sub(/@.*/, "", n); if (n != "") print n
+             }' "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/archive_globals.txt"
+        # The contract's own symbols must stay linkable from a consumer's shared object too.
+        awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") && $6 == "DEFAULT" {
+                 n = $8; sub(/@.*/, "", n); if (n != "") print n
+             }' "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/archive_default_globals.txt"
+        comm -23 "${WORK_DIR}/archive_globals.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/extra_globals.txt"
+        comm -13 "${WORK_DIR}/archive_default_globals.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/missing_globals.txt"
+        comm -12 "${WORK_DIR}/extra_globals.txt" "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/overlap.txt"
+        extra=$(wc -l < "${WORK_DIR}/extra_globals.txt" | tr -d ' ')
+        missing=$(wc -l < "${WORK_DIR}/missing_globals.txt" | tr -d ' ')
+        overlap=$(wc -l < "${WORK_DIR}/overlap.txt" | tr -d ' ')
+
+        # A COMMON symbol at any binding is still allocated by the consumer's linker, and a
+        # local one breaks the link outright (`ld.lld -r` leaves OpenSSL's hidden
+        # OPENSSL_ia32cap_P common; prelink_static_lib.sh uses `ld.bfd -r -d` to allocate it).
+        commons=$(awk '$1 ~ /^[0-9]+:$/ && $7 == "COM"' "${WORK_DIR}/archive_readelf.txt" | wc -l | tr -d ' ')
+
+        # The reverse direction: the bundled runtime must be complete, so nothing in the archive
+        # may need the system's C++ runtime or unwinder. If a runtime member went missing,
+        # chDB's own references would silently bind to libstdc++/libgcc_s instead.
+        awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $5 != "LOCAL" { n = $8; sub(/@.*/, "", n); if (n != "") print n }' \
+            "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/archive_undefined.txt"
+        comm -12 "${WORK_DIR}/archive_undefined.txt" "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/needs_system_runtime.txt"
+        needs_runtime=$(wc -l < "${WORK_DIR}/needs_system_runtime.txt" | tr -d ' ')
+
+        # A COMDAT group whose signature was localized is still matched by name in the
+        # consumer's link, so it could be discarded in favour of the host's same-named group.
+        # prelink_static_lib.sh dissolves them all.
+        if ! readelf -gW "${LIBCHDB_A}" > "${WORK_DIR}/archive_groups.txt" 2>&1; then
+            fail "readelf could not list the archive's section groups"
+        fi
+        groups=$(grep_optional -c 'group section \[' "${WORK_DIR}/archive_groups.txt")
+
+        echo "  global definitions: $(wc -l < "${WORK_DIR}/archive_globals.txt" | tr -d ' '), outside the contract: ${extra} (${overlap} also defined by the system runtime), contract symbols missing: ${missing}"
+        echo "  section groups: ${groups}, COMMON symbols: ${commons}, undefined references: $(wc -l < "${WORK_DIR}/archive_undefined.txt" | tr -d ' ') (${needs_runtime} into the system C++ runtime)"
+        if [ "${extra}" -ne 0 ]; then
+            echo "  first 20:"
+            if [ "${overlap}" -gt 0 ]; then
+                head -20 "${WORK_DIR}/overlap.txt"
+            else
+                head -20 "${WORK_DIR}/extra_globals.txt"
+            fi | sed 's/^/    /'
+            fail "${extra} symbols outside the C API contract are still global - was the archive prelinked by prelink_static_lib.sh?"
+        fi
+        if [ "${missing}" -ne 0 ]; then
+            head -20 "${WORK_DIR}/missing_globals.txt" | sed 's/^/    /'
+            fail "${missing} contract symbols are not default-visibility global definitions in the archive"
+        fi
+        if [ "${groups}" -ne 0 ]; then
+            fail "${groups} section groups survived prelinking"
+        fi
+        if [ "${commons}" -ne 0 ]; then
+            fail "${commons} COMMON symbols survived prelinking"
+        fi
+        if [ "${needs_runtime}" -ne 0 ]; then
+            head -20 "${WORK_DIR}/needs_system_runtime.txt" | sed 's/^/    /'
+            fail "the archive needs ${needs_runtime} symbols from the system C++ runtime"
+        fi
+        if [ "${extra}" -eq 0 ] && [ "${missing}" -eq 0 ] && [ "${groups}" -eq 0 ] \
+                && [ "${commons}" -eq 0 ] && [ "${needs_runtime}" -eq 0 ]; then
+            echo "PASS"
         fi
     fi
 fi
@@ -271,7 +378,10 @@ if [ "${PLATFORM}" = Darwin ]; then
 else
     # -rdynamic is the point, not an accident: it is what puts default-visibility archive
     # symbols into .dynsym, which is what gate 1 then asserts is free of runtime symbols.
-    platform_flags=(-rdynamic -lpthread -ldl -lm -lrt -Wl,--allow-multiple-definition)
+    # No --allow-multiple-definition: a consumer does not pass it, and it would hide a clash
+    # between the probe and the archive. The prelinked archive cannot carry a duplicate
+    # definition anyway - `ld -r` rejects one.
+    platform_flags=(-rdynamic -lpthread -ldl -lm -lrt)
 fi
 
 PROBE="${WORK_DIR}/chdb_static_probe"
@@ -306,23 +416,24 @@ probe_visible_symbols () {
 }
 
 echo "== Gate 1: no bundled runtime symbol is visible from the linked probe =="
-if [ ! -s "${WORK_DIR}/runtime_defined.txt" ]; then
-    fail "gate 2 produced no runtime symbol set, so gate 1 has nothing to scope itself to"
+# Scoped to what the system runtime itself exports: a linked consumer must not re-export any
+# of it. The bundled runtime no longer has those names - the Linux archive keeps only the
+# C API global, and on macOS the runtime, and ClickHouse's default-visible replaceable
+# operator new/delete with it, are renamed.
+SCOPE="${WORK_DIR}/system_exports.txt"
+SCOPE_NAME="system runtime exports"
+if [ ! -s "${SCOPE}" ]; then
+    fail "no ${SCOPE_NAME} to scope gate 1 to"
 elif ! probe_visible_symbols "${PROBE}" > "${WORK_DIR}/probe_visible_unsorted.txt"; then
     fail "could not read the probe's symbol table; gate 1 was not evaluated"
 else
     sort -u "${WORK_DIR}/probe_visible_unsorted.txt" > "${WORK_DIR}/probe_visible.txt"
     probe_visible=$(wc -l < "${WORK_DIR}/probe_visible.txt" | tr -d ' ')
-    runtime_defined=$(wc -l < "${WORK_DIR}/runtime_defined.txt" | tr -d ' ')
-    comm -12 "${WORK_DIR}/runtime_defined.txt" "${WORK_DIR}/probe_visible.txt" \
-        > "${WORK_DIR}/leaked.txt"
+    scope_size=$(wc -l < "${SCOPE}" | tr -d ' ')
+    comm -12 "${SCOPE}" "${WORK_DIR}/probe_visible.txt" > "${WORK_DIR}/leaked.txt"
     leaked=$(wc -l < "${WORK_DIR}/leaked.txt" | tr -d ' ')
 
-    # Scoped to symbols the bundled runtime actually defines. Intersecting the probe's whole
-    # visible set with the system runtime instead would flag the replaceable global operator
-    # new/delete, which clickhouse_new_delete provides at default visibility on purpose and
-    # which is outside these three targets; gate 2 is what covers the runtime's own copies.
-    echo "  runtime definitions: ${runtime_defined}, visible from the probe: ${probe_visible}, leaked: ${leaked}"
+    echo "  ${SCOPE_NAME}: ${scope_size}, visible from the probe: ${probe_visible}, leaked: ${leaked}"
     if [ "${probe_visible}" -eq 0 ]; then
         # A linked binary always exposes something. Zero means the extraction produced
         # nothing, so the intersection below would be empty whatever the archive contains.
@@ -407,6 +518,170 @@ if (cd "${WORK_DIR}" && clang posix_spawn_probe.c -o posix_spawn_probe \
 else
     sed 's/^/    /' "${WORK_DIR}/spawn_link.log" | tail -40
     fail "could not link the posix_spawn probe against the archive"
+fi
+echo
+
+# --- Gate 6: a consumer's own runtime stays the host's ----------------------------------
+# chdb-io/chdb-rust#53. Every probe above uses nothing but the C API, so none of them could
+# notice that a consumer's OWN references to the unwinder and the C++ ABI were being bound
+# to the copies bundled in libchdb.a. These probes use the host runtime themselves, are
+# built with the host toolchain, and are linked the way a consumer links: no -rdynamic, no
+# --allow-multiple-definition.
+#
+# Two halves again. The symbol half takes every reference the probe's own object makes into
+# the system runtime and requires the linked binary to import it from the system library
+# rather than bind it inside the executable. That catches a split binding even where the mix
+# happens not to crash - on macOS x86_64 the two copies of LLVM libunwind happened to agree,
+# while on arm64 the bundled one returned still-signed return addresses. The behavioural half
+# runs the probes: an unwinder walk, C++ throw/catch, and the Rust backtrace and panic of the
+# issue.
+#
+check_host_bindings () {
+    local object=$1 probe=$2 name
+    name=$(basename "${probe}")
+    if ! nm -u "${object}" > "${WORK_DIR}/${name}_undefined_raw.txt" 2>/dev/null; then
+        fail "${name}: nm could not read ${object}; the symbol half was not evaluated"
+        return
+    fi
+    awk -v prefix="${SYM_PREFIX}" 'NF {
+             n = $NF; sub(/@.*/, "", n)
+             if (prefix != "" && substr(n, 1, 1) == prefix) n = substr(n, 2)
+             print n
+         }' "${WORK_DIR}/${name}_undefined_raw.txt" \
+        | sort -u | comm -12 - "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/${name}_refs.txt"
+    if [ ! -s "${WORK_DIR}/${name}_refs.txt" ]; then
+        fail "${name}: its object references nothing in the system runtime - the symbol half would pass vacuously"
+        return
+    fi
+    # What the linked binary imports. ELF: a versioned .dynsym entry (a reference bound
+    # inside the executable has none; a COPY-relocated one still carries its version).
+    # Mach-O: an undefined symbol, which nm -m shows with the dylib it comes from.
+    if [ "${PLATFORM}" = Darwin ]; then
+        if ! nm -m "${probe}" > "${WORK_DIR}/${name}_symbols.txt" 2>/dev/null; then
+            fail "${name}: nm could not read the linked probe; the symbol half was not evaluated"
+            return
+        fi
+        awk '/\(undefined\)/ {
+                 for (i = 1; i < NF; i++) if ($i == "external") { n = $(i + 1); sub(/^_/, "", n); print n; break }
+             }' "${WORK_DIR}/${name}_symbols.txt" | sort -u > "${WORK_DIR}/${name}_imported.txt"
+    else
+        if ! readelf --dyn-syms -W "${probe}" > "${WORK_DIR}/${name}_dynsym.txt" 2>/dev/null; then
+            fail "${name}: readelf could not read the linked probe; the symbol half was not evaluated"
+            return
+        fi
+        awk '$1 ~ /^[0-9]+:$/ && $8 ~ /@/ { n = $8; sub(/@.*/, "", n); print n }' "${WORK_DIR}/${name}_dynsym.txt" \
+            | sort -u > "${WORK_DIR}/${name}_imported.txt"
+    fi
+    comm -23 "${WORK_DIR}/${name}_refs.txt" "${WORK_DIR}/${name}_imported.txt" \
+        > "${WORK_DIR}/${name}_bound_inside.txt"
+    local refs inside
+    refs=$(wc -l < "${WORK_DIR}/${name}_refs.txt" | tr -d ' ')
+    inside=$(wc -l < "${WORK_DIR}/${name}_bound_inside.txt" | tr -d ' ')
+    if [ "${inside}" -eq 0 ]; then
+        echo "PASS (${name}: all ${refs} references into the system runtime are imported from it)"
+    else
+        head -20 "${WORK_DIR}/${name}_bound_inside.txt" | sed 's/^/    /'
+        fail "${name}: ${inside} of its ${refs} references into the system runtime were bound inside the executable - to libchdb.a"
+    fi
+}
+
+if [ "${PLATFORM}" = Linux ]; then
+    echo "== Gate 6: a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
+    HOST_CC=${HOST_CC:-gcc}
+    HOST_CXX=${HOST_CXX:-g++}
+    host_cflags=()
+    consumer_flags=(-L. -lchdb -lpthread -ldl -lm -lrt)
+    # chdb-rust's `static` feature on Linux.
+    rust_link_flags=(-l static=chdb -l dylib=stdc++)
+else
+    echo "== Gate 6: a consumer's own runtime references stay the host's (chdb-io/chdb-rust#53) =="
+    HOST_CC=${HOST_CC:-clang}
+    HOST_CXX=${HOST_CXX:-clang++}
+    host_cflags=(-mmacosx-version-min="${DEPLOYMENT_TARGET}")
+    consumer_flags=(-L. -lchdb "${platform_flags[@]}")
+    # chdb-rust's `static` feature on macOS.
+    rust_link_flags=(-l static=chdb -l dylib=c++ -l dylib=iconv -l framework=CoreFoundation -l framework=Security)
+fi
+cp "${MY_DIR}/static-probe/host_unwind_probe.c" "${MY_DIR}/static-probe/host_cxx_probe.cpp" \
+    "${MY_DIR}/static-probe/rust_unwind_probe.rs" "${WORK_DIR}/"
+# The C++ probe goes through chdb.hpp, which ships next to chdb.h in the static tarball.
+cp "$(dirname "${CHDB_H}")/chdb.hpp" "${WORK_DIR}/"
+# GitHub's macOS images install Rust without always putting it on a step's PATH.
+RUSTC=$(command -v rustc 2>/dev/null || true)
+if [ -z "${RUSTC}" ] && [ -x "${HOME}/.cargo/bin/rustc" ]; then
+    RUSTC=${HOME}/.cargo/bin/rustc
+fi
+
+# Built concurrently: with Ubuntu 24.04's GNU ld every link of this archive takes minutes
+# on aarch64, where binutils walks its whole stub table for every input section.
+(cd "${WORK_DIR}" && { "${HOST_CC}" ${host_cflags[@]+"${host_cflags[@]}"} -I. -c host_unwind_probe.c -o host_unwind_probe.o \
+        && "${HOST_CC}" host_unwind_probe.o -o host_unwind_probe "${consumer_flags[@]}"; } \
+    > "${WORK_DIR}/host_unwind_link.log" 2>&1) &
+unwind_build=$!
+(cd "${WORK_DIR}" && { "${HOST_CXX}" ${host_cflags[@]+"${host_cflags[@]}"} -std=c++20 -I. -c host_cxx_probe.cpp -o host_cxx_probe.o \
+        && "${HOST_CXX}" host_cxx_probe.o -o host_cxx_probe "${consumer_flags[@]}"; } \
+    > "${WORK_DIR}/host_cxx_link.log" 2>&1) &
+cxx_build=$!
+rust_build=
+if [ -n "${RUSTC}" ]; then
+    (cd "${WORK_DIR}" && "${RUSTC}" --edition=2021 -C debuginfo=1 rust_unwind_probe.rs -o rust_unwind_probe \
+            -L native=. "${rust_link_flags[@]}" \
+        > "${WORK_DIR}/rust_link.log" 2>&1) &
+    rust_build=$!
+fi
+
+if wait "${unwind_build}"; then
+    check_host_bindings "${WORK_DIR}/host_unwind_probe.o" "${WORK_DIR}/host_unwind_probe"
+    if [ "${PLATFORM}" = Linux ]; then
+        # The archive used to give every GNU ld consumer an executable stack: dozens of its
+        # assembly members carry no .note.GNU-stack. prelink_static_lib.sh passes -z noexecstack.
+        stack_flags=$(readelf -lW "${WORK_DIR}/host_unwind_probe" | awk '$1 == "GNU_STACK" { print $7 }')
+        case "${stack_flags}" in
+            "") fail "host_unwind_probe: no GNU_STACK program header found" ;;
+            *E*) fail "host_unwind_probe: linking libchdb.a made the consumer's stack executable (${stack_flags})" ;;
+            *) echo "PASS (host_unwind_probe: stack is not executable)" ;;
+        esac
+    fi
+    if run_probe host_unwind_probe; then
+        echo "PASS (host_unwind_probe: behaviour)"
+    else
+        fail "host_unwind_probe: the host unwinder could not walk the consumer's stack"
+    fi
+else
+    sed 's/^/    /' "${WORK_DIR}/host_unwind_link.log" | tail -40
+    fail "could not build host_unwind_probe with ${HOST_CC}"
+fi
+
+if wait "${cxx_build}"; then
+    check_host_bindings "${WORK_DIR}/host_cxx_probe.o" "${WORK_DIR}/host_cxx_probe"
+    if run_probe host_cxx_probe; then
+        echo "PASS (host_cxx_probe: behaviour)"
+    else
+        fail "host_cxx_probe: the consumer's own C++ exceptions broke"
+    fi
+else
+    sed 's/^/    /' "${WORK_DIR}/host_cxx_link.log" | tail -40
+    fail "could not build host_cxx_probe with ${HOST_CXX}"
+fi
+
+# Its references come from std's rlibs rather than one object, so it only has the
+# behavioural half - which is the issue's reproducer itself. Both Linux CI jobs put rustc on
+# PATH, so there a missing rustc is a failure rather than a skip.
+if [ -n "${rust_build}" ]; then
+    if wait "${rust_build}"; then
+        if run_probe rust_unwind_probe; then
+            echo "PASS (rust_unwind_probe: behaviour)"
+        else
+            fail "rust_unwind_probe: a Rust backtrace or panic broke"
+        fi
+    else
+        sed 's/^/    /' "${WORK_DIR}/rust_link.log" | tail -40
+        fail "could not build rust_unwind_probe with ${RUSTC}"
+    fi
+elif [ "${PLATFORM}" = Linux ] && [ -n "${CI:-}" ]; then
+    fail "rust_unwind_probe: rustc is not on PATH"
+else
+    echo "SKIP (rust_unwind_probe: rustc is not on PATH)"
 fi
 echo
 

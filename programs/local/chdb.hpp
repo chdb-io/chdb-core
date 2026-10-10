@@ -12,8 +12,6 @@
 namespace CHDB
 {
 
-extern chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
-
 /**
  * These codes provide detailed error classification for better error handling
  * and debugging. Each error code corresponds to a specific failure scenario.
@@ -270,7 +268,7 @@ public:
         {
             argv.push_back(const_cast<char *>(arg.data()));
         }
-        chdb_connection * conn_ptr = connect_chdb_with_exception(static_cast<int>(argv.size()), argv.data());
+        chdb_connection * conn_ptr = chdb_connect(static_cast<int>(argv.size()), argv.data());
         if (!conn_ptr)
         {
             throw ChdbError(ChdbErrorCode::ConnectionFailed, "Failed to create database connection");
