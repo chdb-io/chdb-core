@@ -27,6 +27,32 @@ try:
 except ImportError:
     pl = None
 
+
+def _polars_reads_iterable_streams():
+    """Whether polars reads an object that is both iterable and an Arrow stream as a stream.
+
+    polars 1.10 checks for a sequence first and turns such an object, like a StreamingResult,
+    into a single row; later releases read the stream."""
+    if pl is None:
+        return False
+
+    class Probe:
+        table = pa.table({"n": [1, 2]})
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            return self.table.__arrow_c_stream__(requested_schema)
+
+        def __iter__(self):
+            return iter(self.table.to_batches())
+
+    try:
+        return pl.DataFrame(Probe()).height == 2
+    except Exception:
+        return False
+
+
+POLARS_READS_ITERABLE_STREAMS = _polars_reads_iterable_streams()
+
 try:
     import duckdb
 except ImportError:
@@ -165,6 +191,7 @@ class TestArrowCStreamOutput(unittest.TestCase):
             conn.close()
 
     @unittest.skipIf(pl is None, "polars not installed")
+    @unittest.skipUnless(POLARS_READS_ITERABLE_STREAMS, "this polars reads an iterable Arrow stream as a row sequence")
     def test_streaming_result_to_polars(self):
         conn = chdb.connect(":memory:")
         try:
