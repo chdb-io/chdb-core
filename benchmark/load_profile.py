@@ -76,8 +76,12 @@ EVENTS = [
 
 
 def events_expr(column="ProfileEvents"):
+    # Not mapFilter: chdb-core-lite does not build the higher-order map functions. Filtering
+    # the key and value arrays and zipping them back gives the same map.
     names = ", ".join(f"'{e}'" for e in EVENTS)
-    return f"mapFilter((k, v) -> k IN ({names}), {column})"
+    keys = f"mapKeys({column})"
+    return (f"mapFromArrays(arrayFilter(k -> k IN ({names}), {keys}), "
+            f"arrayFilter((v, k) -> k IN ({names}), mapValues({column}), {keys}))")
 
 
 def query_json(conn, sql):
