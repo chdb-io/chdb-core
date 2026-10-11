@@ -133,8 +133,17 @@ DESELECT_FIXED_XFAILS="\
  --deselect tests/test_exploratory_batch11_advanced_indexing.py::TestAdvancedStringOperations::test_str_normalize \
  --deselect tests/test_exploratory_batch16_index_copy_edge.py::TestUnicodeAndSpecialCharacters::test_unicode_string_values"
 
+# polars 2.0 returns a Series from pl.from_arrow() on an object that only exports
+# __arrow_c_stream__ (polars 1.x returned a DataFrame; pl.DataFrame() still does), so
+# this upstream test, which calls pl.from_arrow(ds), fails on any polars 2.x. It used
+# to skip because no polars was installed. Deselect it until the upstream chdb tag
+# builds the frame with pl.DataFrame().
+DESELECT_POLARS2="\
+ --deselect datastore/tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore \
+ --deselect tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore"
+
 set +e
-${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS}
+${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2}
 TEST_EXIT_CODE=$?
 set -e
 

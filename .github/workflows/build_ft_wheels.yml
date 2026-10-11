@@ -134,6 +134,9 @@ jobs:
           python -m pip install bump-my-version
           TAG_NAME=${GITHUB_REF#refs/tags/v}
           bump-my-version replace --new-version $TAG_NAME
+      - name: Set version for main wheel
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 .github/scripts/set-main-wheel-version.py
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -260,4 +263,3 @@ jobs:
       #   env:
       #     TWINE_USERNAME: __token__
       #     TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-

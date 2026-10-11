@@ -38,6 +38,9 @@ jobs:
       - name: The PyPI publication rules hold
         run: .github/scripts/pypi-upload-wanted-test.sh
 
+      - name: Main wheel versions follow PEP 440
+        run: python3 .github/scripts/set-main-wheel-version-test.py
+
       - name: Install flake8
         run: python -m pip install flake8
 
