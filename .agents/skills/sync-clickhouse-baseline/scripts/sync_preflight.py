@@ -41,7 +41,10 @@ NO_OP_PREFIXES = (
 
 NO_OP_EXACT = {"programs/keeper/dashboard.html"}
 
-UPSTREAM_ADD_EXCLUDED_PREFIXES = (
+# Upstream trees chDB does not build. Upstream changes under them are never
+# imported, whether the file is new or one chDB still carries: the copies left
+# here are stale, and importing into them only produced conflicts.
+DROPPED_TREE_PREFIXES = (
     ".claude/",
     ".cursor/",
     ".github/",
@@ -51,6 +54,16 @@ UPSTREAM_ADD_EXCLUDED_PREFIXES = (
     "tests/",
     "utils/",
 )
+UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES
+
+# Files at the same path in both trees where chDB keeps its own version, so an
+# upstream edit to them is not a change for chDB to take.
+CHDB_OWNED_FILES = {
+    ".gitignore",
+    "CONTRIBUTING.md",
+    "README.md",
+    "pyproject.toml",
+}
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -100,6 +113,10 @@ def scoped_candidate(status: str, paths: list[str], base_paths: set[str]) -> tup
     code = status[0]
     old_path = paths[0]
     new_path = paths[-1]
+    if old_path in CHDB_OWNED_FILES or new_path in CHDB_OWNED_FILES:
+        return False, "chDB keeps its own version"
+    if code in {"M", "T", "D"} and old_path.startswith(DROPPED_TREE_PREFIXES):
+        return False, "changed in a tree chDB drops"
     if code in {"M", "T"}:
         retained = new_path in base_paths
         return retained, "modified and retained" if retained else "modified but absent from chDB base"

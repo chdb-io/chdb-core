@@ -1,0 +1,196 @@
+name: Daily ClickHouse sync
+
+# Brings ClickHouse master into main once a day. It picks the newest master
+# commit upstream CI passed, applies the diff since UPSTREAM_COMMIT to the paths
+# chDB keeps, and opens a pull request:
+#
+#   clean, checks pass   the pull request merges itself once CI is green
+#   clean, checks fail   the pull request waits for a person
+#   conflicts            Claude Code resolves them on a separate job that holds no
+#                        push credentials; the pull request waits for a person
+#
+# While a sync pull request is open the run does nothing, so a review is never
+# overwritten; the next sync after it merges covers the days in between.
+# See .github/nightly/README.md for setup and for running a step by hand.
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Upstream commit to sync to (default: the newest master commit that passed MasterCI)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Stop before pushing or opening a pull request'
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-clickhouse-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SYNC_BRANCH: sync/clickhouse-master
+  SYNC_WORK: ${{ github.workspace }}/../clickhouse-sync
+
+jobs:
+  sync:
+    # Scheduled runs stay off until DAILY_SYNC_ENABLED is set: the first sync,
+    # to a release branch point, is a manual dispatch with an explicit target.
+    if: github.event_name == 'workflow_dispatch' || vars.DAILY_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      status: ${{ steps.apply.outputs.status }}
+      target: ${{ steps.target.outputs.target }}
+      reason: ${{ steps.target.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Report a stalled sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/nightly/daily_sync.py stall --max-age-hours 72
+
+      - name: Wait while a sync pull request is open
+        id: open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$SYNC_BRANCH" --state open --json number --jq length)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" != 0 ]; then
+            echo "::notice::A sync pull request is still open; nothing to do until it merges or closes."
+          fi
+
+      - name: Fetch ClickHouse
+        if: steps.open.outputs.count == '0'
+        run: python3 .github/nightly/daily_sync.py fetch --work "$SYNC_WORK" --target "${{ inputs.target }}"
+
+      - name: Choose the upstream commit
+        id: target
+        if: steps.open.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/nightly/daily_sync.py target --work "$SYNC_WORK" --override "${{ inputs.target }}"
+
+      - name: Apply the upstream diff
+        id: apply
+        if: steps.target.outputs.up_to_date == 'false'
+        env:
+          SYNC_TARGET_REASON: ${{ steps.target.outputs.reason }}
+        run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "${{ steps.target.outputs.target }}"
+
+      - name: Check the sync
+        id: checks
+        if: steps.apply.outputs.status == 'clean'
+        run: python3 .github/nightly/checks.py all --work "$SYNC_WORK"
+
+      - name: Commit, push and open the pull request
+        if: steps.apply.outputs.status == 'clean' && !inputs.dry_run
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+          AUTO_MERGE: ${{ steps.checks.outputs.result == 'pass' }}
+        run: .github/nightly/open_pr.sh
+
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.apply.outcome != 'skipped'
+        with:
+          name: sync-${{ github.run_id }}
+          path: .sync/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  resolve:
+    needs: sync
+    if: needs.sync.outputs.status == 'conflicts'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # No secret that can push lives here: the job reads, edits the work tree and
+    # hands a patch to the next job.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Apply the upstream diff again
+        env:
+          TARGET: ${{ needs.sync.outputs.target }}
+          SYNC_TARGET_REASON: ${{ needs.sync.outputs.reason }}
+        run: |
+          python3 .github/nightly/daily_sync.py fetch --work "$SYNC_WORK" --target "$TARGET"
+          python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "$TARGET"
+
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code
+
+      - name: Resolve the conflicts
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ vars.SYNC_CLAUDE_MODEL || 'claude-opus-5-5' }}
+        run: |
+          prompt=$(sed "s|@SYNC_WORK@|$SYNC_WORK|g" .github/nightly/resolve_prompt.md)
+          claude -p "$prompt" \
+            --model "$MODEL" \
+            --max-turns 100 \
+            --permission-mode dontAsk \
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git diff *),Bash(git status *),Bash(git log *),Bash(python3 .github/nightly/checks.py *)" \
+            --output-format json > "$RUNNER_TEMP/claude.json"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("result","")[-4000:])' "$RUNNER_TEMP/claude.json"
+
+      - name: Check the resolution
+        run: |
+          python3 .github/nightly/daily_sync.py finalize --work "$SYNC_WORK"
+          python3 .github/nightly/checks.py all --work "$SYNC_WORK"
+          git diff --cached --binary HEAD > .sync/resolution.patch
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: sync-resolution-${{ github.run_id }}
+          path: .sync/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  publish:
+    needs: [sync, resolve]
+    if: needs.resolve.result == 'success' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sync-resolution-${{ github.run_id }}
+          path: .sync
+
+      - name: Stage the resolved sync
+        run: |
+          echo "/.sync/" >> "$(git rev-parse --git-path info/exclude)"
+          git apply --index --binary .sync/resolution.patch
+
+      - name: Commit, push and open the pull request
+        env:
+          SYNC_PAT: ${{ secrets.SYNC_PAT }}
+          AUTO_MERGE: 'false'
+        run: .github/nightly/open_pr.sh
