@@ -22,12 +22,22 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths-ignore:
       - '**/*.md'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
 
 concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
@@ -43,7 +53,8 @@ jobs:
   ft_linux_x86_64:
     name: FT wheels (Linux x86_64)
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
-    if: ${{ !github.event.pull_request.draft }}
+    # Not on the daily ClickHouse sync's pull requests; main's push build covers them.
+    if: ${{ !github.event.pull_request.draft && github.head_ref != 'sync/clickhouse-master' }}
     timeout-minutes: 600
     steps:
       # First step in the job: a cutoff recorded later is skipped when an

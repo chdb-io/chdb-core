@@ -27,6 +27,11 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -40,6 +45,11 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
 
 
 concurrency:
@@ -55,7 +65,10 @@ jobs:
   build_universal_wheel:
     name: Build & Test Universal Wheel (Linux arm64)
     runs-on: [self-hosted, linux, arm64, ubuntu-latest]
-    if: ${{ !github.event.pull_request.draft }}
+    # Skip draft pull requests; releases that are not version tags (the rolling
+    # `nightly` pre-release); and the daily ClickHouse sync's pull requests, which
+    # gate on Linux x86_64 alone while main's push build covers the rest.
+    if: ${{ !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
     steps:
       - name: Record the crash-diagnostics cutoff
         if: always()
@@ -238,7 +251,7 @@ jobs:
           pyenv shell --unset
       - name: Set version for main wheel
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: python3 .github/scripts/set-main-wheel-version.py
+        run: python3 .github/scripts/set-main-wheel-version.py ${{ github.event_name == 'schedule' && '--nightly' || '' }}
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
@@ -558,6 +571,7 @@ jobs:
                   exit $EXIT_CODE
                 fi
               else
+                export CHDB_JUNIT_DIR="$GITHUB_WORKSPACE/junit/py${version}-${PANDAS_CONSTRAINT//[!0-9A-Za-z.]/_}"
                 make test
               fi
 
@@ -920,6 +934,13 @@ jobs:
           gh release upload ${{ github.ref_name }} linux-aarch64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-linux-aarch64
+          path: junit/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
           name: chdb-artifacts-linux-aarch64
@@ -928,6 +949,15 @@ jobs:
             ./linux-aarch64-libchdb.tar.gz
             ./linux-aarch64-libchdb-static.tar.gz
             ./linux-aarch64-debuginfo.tar.xz
+          overwrite: true
+      # The nightly release only needs the wheel; the artifact above also carries
+      # the libraries and gigabytes of debug symbols.
+      - name: Upload the wheel for the nightly release
+        if: github.event_name == 'schedule'
+        uses: actions/upload-artifact@v7
+        with:
+          name: chdb-wheel-linux-aarch64
+          path: ./dist/chdb_core-*.whl
           overwrite: true
       # A release goes to PyPI, a candidate does not, and a release opts out by
       # saying [no-pypi] in its notes. The script owns that policy and logs
