@@ -27,6 +27,13 @@
 #   2. `llvm-objcopy --keep-global-symbols=<C API contract>` turns every other definition
 #      into a local symbol, which a consumer's linker can no longer bind anything to.
 #
+# What is left undefined is what chDB imports, and a weak reference among it is an optional
+# hook: ZSTD_trace_*, the OpenSSL 1.0 functions aws-c-cal probes for, RocksDB's test hooks.
+# chDB calls one only if the final link defines it, so a consumer that happens to - or links
+# its own OpenSSL 1.0 - would have chDB call into its code. The same objcopy run gives those a
+# .chdb suffix, which nothing defines. Weak references the C library exports are meant for it
+# and keep their names (__rseq_offset; c_library_exports.sh).
+#
 # The result is shipped as a one-member archive, so consumers keep linking with -lchdb.
 #
 # Tool choices, each forced by something in the archive:
@@ -140,8 +147,16 @@ python3 "${MY_DIR}/check_export_contract.py" > "${WORK_DIR}/keep.txt"
     --whole-archive "${ARCHIVE}" --no-whole-archive \
     -o "${WORK_DIR}/chdb_prelinked.o"
 
-"${PRELINK_OBJCOPY}" --keep-global-symbols="${WORK_DIR}/keep.txt" --remove-section=.llvm_addrsig \
-    "${WORK_DIR}/chdb_prelinked.o" "${WORK_DIR}/object.o"
+# The optional hooks, see above.
+nm -u "${WORK_DIR}/chdb_prelinked.o" > "${WORK_DIR}/undefined.txt"
+[ -s "${WORK_DIR}/undefined.txt" ] || { echo "Error: nm read no undefined symbols out of the prelinked object"; exit 1; }
+bash "${MY_DIR}/c_library_exports.sh" > "${WORK_DIR}/c_library.txt"
+awk '$1 == "w" || $1 == "v" { print $2 }' "${WORK_DIR}/undefined.txt" | sort -u \
+    | comm -23 - "${WORK_DIR}/c_library.txt" | awk '{ print $1, $1 ".chdb" }' > "${WORK_DIR}/hooks.txt"
+echo "  optional hooks: $(cut -d ' ' -f 1 "${WORK_DIR}/hooks.txt" | tr '\n' ' ')"
+
+"${PRELINK_OBJCOPY}" --keep-global-symbols="${WORK_DIR}/keep.txt" --redefine-syms="${WORK_DIR}/hooks.txt" \
+    --remove-section=.llvm_addrsig "${WORK_DIR}/chdb_prelinked.o" "${WORK_DIR}/object.o"
 rm -f "${WORK_DIR}/chdb_prelinked.o"
 
 # Where the object's data starts inside the archive. gold - only gold - slows down
@@ -185,4 +200,4 @@ if [ $((offset % 8)) -ne 0 ]; then
 fi
 mv -f "${WORK_DIR}/libchdb.a" "${ARCHIVE}"
 
-echo "Prelinked: member ${member} at offset ${offset}, $(du -h "${ARCHIVE}" | cut -f1), keep list of $(wc -l < "${WORK_DIR}/keep.txt" | tr -d ' ') symbols"
+echo "Prelinked: member ${member} at offset ${offset}, $(du -h "${ARCHIVE}" | cut -f1), keep list of $(wc -l < "${WORK_DIR}/keep.txt" | tr -d ' ') symbols, $(wc -l < "${WORK_DIR}/hooks.txt" | tr -d ' ') optional hooks renamed"

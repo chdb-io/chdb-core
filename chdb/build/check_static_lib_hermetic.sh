@@ -13,7 +13,8 @@
 #   Gate 1  nothing in the probe can bind the bundled runtime to the system runtime
 #   Gate 2  macOS: the bundled runtime objects export nothing at all, and nothing in the
 #                  archive carries a name the system C++ runtime or unwinder exports
-#           Linux: the archive defines nothing global outside the C API contract
+#           Linux: the archive defines nothing global outside the C API contract, and no
+#                  weak reference outside the C library keeps its name
 #   Gate 3a the two checked-in export allow-lists describe the same C API contract
 #   Gate 3b every symbol in that contract is still reachable from libchdb.a
 #   Gate 4  the linked probe connects and runs a query
@@ -315,6 +316,19 @@ else
         comm -12 "${WORK_DIR}/archive_undefined.txt" "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/needs_system_runtime.txt"
         needs_runtime=$(wc -l < "${WORK_DIR}/needs_system_runtime.txt" | tr -d ' ')
 
+        # A weak reference nothing in the archive defines is an optional hook, which a consumer
+        # could define for chDB (ZSTD_trace_*). prelink_static_lib.sh renames those, so a weak
+        # reference that kept its name must be one into the C library.
+        awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $5 == "WEAK" { n = $8; sub(/@.*/, "", n); if (n != "" && n !~ /\.chdb$/) print n }' \
+            "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/weak_named.txt"
+        if bash "${MY_DIR}/c_library_exports.sh" > "${WORK_DIR}/c_library_exports.txt"; then
+            comm -23 "${WORK_DIR}/weak_named.txt" "${WORK_DIR}/c_library_exports.txt" > "${WORK_DIR}/hooks.txt"
+            hooks=$(wc -l < "${WORK_DIR}/hooks.txt" | tr -d ' ')
+        else
+            fail "could not list the C library's exports; the weak reference check was not evaluated"
+            hooks=unchecked
+        fi
+
         # A COMDAT group whose signature was localized is still matched by name in the
         # consumer's link, so it could be discarded in favour of the host's same-named group.
         # prelink_static_lib.sh dissolves them all.
@@ -325,6 +339,7 @@ else
 
         echo "  global definitions: $(wc -l < "${WORK_DIR}/archive_globals.txt" | tr -d ' '), outside the contract: ${extra} (${overlap} also defined by the system runtime), contract symbols missing: ${missing}"
         echo "  section groups: ${groups}, COMMON symbols: ${commons}, undefined references: $(wc -l < "${WORK_DIR}/archive_undefined.txt" | tr -d ' ') (${needs_runtime} into the system C++ runtime)"
+        echo "  weak references under their own name: $(wc -l < "${WORK_DIR}/weak_named.txt" | tr -d ' ') (${hooks} outside the C library)"
         if [ "${extra}" -ne 0 ]; then
             echo "  first 20:"
             if [ "${overlap}" -gt 0 ]; then
@@ -348,8 +363,12 @@ else
             head -20 "${WORK_DIR}/needs_system_runtime.txt" | sed 's/^/    /'
             fail "the archive needs ${needs_runtime} symbols from the system C++ runtime"
         fi
+        if [ "${hooks}" != 0 ] && [ "${hooks}" != unchecked ]; then
+            head -20 "${WORK_DIR}/hooks.txt" | sed 's/^/    /'
+            fail "${hooks} weak references outside the C library kept their name - was the archive prelinked by prelink_static_lib.sh?"
+        fi
         if [ "${extra}" -eq 0 ] && [ "${missing}" -eq 0 ] && [ "${groups}" -eq 0 ] \
-                && [ "${commons}" -eq 0 ] && [ "${needs_runtime}" -eq 0 ]; then
+                && [ "${commons}" -eq 0 ] && [ "${needs_runtime}" -eq 0 ] && [ "${hooks}" = 0 ]; then
             echo "PASS"
         fi
     fi
