@@ -1,0 +1,95 @@
+name: Publish nightly build
+
+# The four wheel workflows build main every night (their `schedule`). This runs
+# when each of them finishes; once all four runs for that commit are done it
+# uploads the wheels to the rolling `nightly` pre-release, keeps 30 days of them,
+# and has chDB turn the night's results into the dashboard on Cloudflare Pages.
+# See .github/nightly/README.md.
+
+on:
+  workflow_run:
+    workflows:
+      - Build & Test Linux x86_64
+      - Build & Test Linux arm64
+      - Build & Test macOS arm64
+      - Build & Test macOS x86_64
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: 'main commit whose scheduled builds to publish (default: the newest)'
+        required: false
+        default: ''
+
+# Four completions per night; one publication at a time, each idempotent.
+concurrency:
+  group: nightly-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # the nightly release and its tag
+  actions: read     # the build runs and their artifacts
+
+jobs:
+  publish:
+    if: >-
+      vars.NIGHTLY_PUBLISH_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Publish the wheels
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+        run: >-
+          python3 .github/nightly/publish.py
+          --head-sha "${{ github.event.workflow_run.head_sha || inputs.head_sha }}"
+          --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
+
+      # The report runs on the nightly wheel it just published when that wheel
+      # installs; otherwise on the latest release, and the dashboard says which.
+      - name: Install chDB
+        if: steps.publish.outputs.ready == 'true'
+        run: |
+          wheel=$(ls "$RUNNER_TEMP"/nightly/wheels/linux-x86_64/chdb_core-*.whl 2>/dev/null | head -1 || true)
+          if [ -n "$wheel" ] && python3 -m pip install --quiet "$wheel"; then
+            echo "CHDB_ENGINE=nightly" >> "$GITHUB_ENV"
+          else
+            python3 -m pip install --quiet chdb-core
+            echo "CHDB_ENGINE=release" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build the dashboard data
+        if: steps.publish.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python3 .github/nightly/report.py --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
+
+      - name: Deploy the dashboard
+        if: steps.publish.outputs.ready == 'true' && vars.CF_PAGES_PROJECT != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
+          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
+        run: npx --yes wrangler@latest pages deploy "$RUNNER_TEMP/site" --project-name "$PROJECT" --branch main
+
+      - uses: actions/upload-artifact@v7
+        if: steps.publish.outputs.ready == 'true'
+        with:
+          name: nightly-site-${{ github.run_id }}
+          path: ${{ runner.temp }}/site

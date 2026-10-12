@@ -40,6 +40,19 @@ class MainWheelVersionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot be negative"):
             MODULE.main_version("v26.9.0", -1, "abcdef")
 
+    def test_nightly_has_no_local_version(self):
+        self.assertEqual(MODULE.nightly_version("v26.9.0", 12, (26, 9)), "26.9.0.post1.dev12")
+
+    def test_nightly_names_a_newer_engine_line(self):
+        self.assertEqual(MODULE.nightly_version("v26.9.0", 40, (26, 11)), "26.11.0.dev40")
+
+    def test_nightly_after_rc(self):
+        self.assertEqual(MODULE.nightly_version("v26.9.2-rc.2", 3, (26, 9)), "26.9.2rc2.post1.dev3")
+
+    def test_engine_line(self):
+        self.assertEqual(MODULE.engine_line('#define CHDB_VERSION "26.11.0-dev"\n'), (26, 11))
+        self.assertIsNone(MODULE.engine_line("no version here"))
+
     def test_replace_once_preserves_missing_final_newline(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "pyproject.toml"
