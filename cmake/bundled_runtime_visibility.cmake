@@ -14,7 +14,7 @@
 #           libc++/libc++abi instead of the bundled copy. As on ELF, hidden does not stop a
 #           static link from binding the consumer's own references to the bundled runtime
 #           (chdb-io/chdb-rust#53), so the macOS archive also renames its symbols
-#           (chdb/build/rename_runtime_symbols_macos.py).
+#           (chdb/build/rename_static_lib_symbols_macos.py).
 #   ELF     default-visibility definitions land in `.dynsym` and become interposable. A
 #           plain executable link does not expose them; `-rdynamic`, or repackaging the
 #           archive into a shared object, does. Hidden is not the whole answer here: a

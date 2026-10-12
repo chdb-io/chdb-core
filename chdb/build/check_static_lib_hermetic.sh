@@ -7,12 +7,12 @@
 # compiled hidden (cmake/bundled_runtime_visibility.cmake), but a hidden definition in an
 # archive member still satisfies the consumer's own references in a static link
 # (chdb-io/chdb-rust#53). So on Linux the archive is also prelinked into one object that
-# keeps only the C API global (prelink_static_lib.sh), and on macOS the runtime's symbols
-# are renamed (rename_runtime_symbols_macos.py). These checks verify that it was done.
+# keeps only the C API global (prelink_static_lib.sh), and on macOS every other symbol is
+# renamed (rename_static_lib_symbols_macos.py). These checks verify that it was done.
 #
 #   Gate 1  nothing in the probe can bind the bundled runtime to the system runtime
-#   Gate 2  macOS: the bundled runtime objects export nothing at all, and nothing in the
-#                  archive carries a name the system C++ runtime or unwinder exports
+#   Gate 2  macOS: the bundled runtime objects export nothing at all, and the archive
+#                  defines nothing under its own name outside the C API contract
 #           Linux: the archive defines nothing global outside the C API contract, and no
 #                  weak reference outside the C library keeps its name
 #   Gate 3a the two checked-in export allow-lists describe the same C API contract
@@ -251,27 +251,43 @@ if [ "${PLATFORM}" = Darwin ]; then
 
     # Hidden is not enough here either: a private-external definition in an archive member
     # still satisfies the consumer's own references in a static link (chdb-io/chdb-rust#53).
-    # Only a name the consumer never asks for is safe, so rename_runtime_symbols_macos.py
-    # renames the runtime's symbols, and anything else that collides, from the SDK's stubs.
-    # Checked here against this machine's own dylibs, across the whole archive and at every
-    # visibility - `nm -g` lists private externs too.
-    echo "== Gate 2: nothing in the archive carries a name the system C++ runtime exports =="
+    # Only a name the consumer never asks for is safe, so rename_static_lib_symbols_macos.py
+    # gives every definition outside the C API a .chdb suffix: the bundled runtime's, and
+    # those of zstd, OpenSSL and everything else the archive bundles. Checked against the
+    # contract rather than this machine's dylibs, across the whole archive and at every
+    # visibility - `nm -g` lists private externs too: whatever else keeps its name, a
+    # consumer can bind to.
+    echo "== Gate 2: the archive defines nothing under its own name outside the C API contract =="
     if ! nm -m -g --defined-only "${LIBCHDB_A}" > "${WORK_DIR}/archive_nm.txt" 2>/dev/null; then
         fail "nm could not read the archive; the name check was not evaluated"
     elif [ ! -s "${WORK_DIR}/archive_nm.txt" ]; then
         fail "nm read no definitions out of the archive - the name check would pass vacuously"
     else
-        awk '/ external / && $NF ~ /^_/ { print substr($NF, 2) }' "${WORK_DIR}/archive_nm.txt" \
+        awk '/ external / { n = $NF; sub(/^_/, "", n); print n }' "${WORK_DIR}/archive_nm.txt" \
             | sort -u > "${WORK_DIR}/archive_defined.txt"
-        comm -12 "${WORK_DIR}/archive_defined.txt" "${WORK_DIR}/system_exports.txt" \
-            > "${WORK_DIR}/archive_runtime_names.txt"
-        runtime_names=$(wc -l < "${WORK_DIR}/archive_runtime_names.txt" | tr -d ' ')
-        echo "  definitions: $(wc -l < "${WORK_DIR}/archive_defined.txt" | tr -d ' '), carrying a system runtime name: ${runtime_names}"
-        if [ "${runtime_names}" -eq 0 ]; then
+        grep_optional -v '\.chdb$' "${WORK_DIR}/archive_defined.txt" > "${WORK_DIR}/archive_named.txt"
+        comm -23 "${WORK_DIR}/archive_named.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/extra_names.txt"
+        comm -13 "${WORK_DIR}/archive_named.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/missing_names.txt"
+        comm -12 "${WORK_DIR}/extra_names.txt" "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/overlap.txt"
+        extra=$(wc -l < "${WORK_DIR}/extra_names.txt" | tr -d ' ')
+        missing=$(wc -l < "${WORK_DIR}/missing_names.txt" | tr -d ' ')
+        overlap=$(wc -l < "${WORK_DIR}/overlap.txt" | tr -d ' ')
+        echo "  definitions: $(wc -l < "${WORK_DIR}/archive_defined.txt" | tr -d ' '), under their own name outside the contract: ${extra} (${overlap} also exported by the system runtime), contract symbols missing: ${missing}"
+        if [ "${extra}" -ne 0 ]; then
+            echo "  first 20:"
+            if [ "${overlap}" -gt 0 ]; then
+                head -20 "${WORK_DIR}/overlap.txt"
+            else
+                head -20 "${WORK_DIR}/extra_names.txt"
+            fi | sed 's/^/    /'
+            fail "${extra} definitions outside the C API contract kept their name - was the archive renamed by rename_static_lib_symbols_macos.py?"
+        fi
+        if [ "${missing}" -ne 0 ]; then
+            head -20 "${WORK_DIR}/missing_names.txt" | sed 's/^/    /'
+            fail "${missing} contract symbols are not defined under their own name in the archive"
+        fi
+        if [ "${extra}" -eq 0 ] && [ "${missing}" -eq 0 ]; then
             echo "PASS"
-        else
-            head -20 "${WORK_DIR}/archive_runtime_names.txt" | sed 's/^/    /'
-            fail "${runtime_names} archive definitions carry a name the system C++ runtime or unwinder exports - was the archive renamed by rename_runtime_symbols_macos.py?"
         fi
     fi
 else
@@ -437,8 +453,8 @@ probe_visible_symbols () {
 echo "== Gate 1: no bundled runtime symbol is visible from the linked probe =="
 # Scoped to what the system runtime itself exports: a linked consumer must not re-export any
 # of it. The bundled runtime no longer has those names - the Linux archive keeps only the
-# C API global, and on macOS the runtime, and ClickHouse's default-visible replaceable
-# operator new/delete with it, are renamed.
+# C API global, and on macOS everything else, ClickHouse's default-visible replaceable
+# operator new/delete included, is renamed.
 SCOPE="${WORK_DIR}/system_exports.txt"
 SCOPE_NAME="system runtime exports"
 if [ ! -s "${SCOPE}" ]; then

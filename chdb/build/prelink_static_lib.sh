@@ -62,7 +62,7 @@
 #                     .llvm_addrsig: ld -r concatenates those tables without remapping their
 #                     symbol indices.
 #
-# Linux only. ld64 cannot do the same; rename_runtime_symbols_macos.py explains why and
+# Linux only. ld64 cannot do the same; rename_static_lib_symbols_macos.py explains why and
 # what macOS does instead.
 #
 # Usage: prelink_static_lib.sh <path/to/libchdb.a>    (rewritten in place)
