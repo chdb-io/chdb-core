@@ -43,9 +43,8 @@ on:
 
 
 concurrency:
-  # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
-  # starving later runs. Never cancel main or release runs.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep daily builds independent from main pushes while replacing stale PR runs.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
