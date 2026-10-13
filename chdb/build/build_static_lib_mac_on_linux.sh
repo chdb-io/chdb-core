@@ -219,6 +219,13 @@ else
     ${STRIP} -S libchdb_minimal.a
 fi
 
+# Rename every symbol outside the C API so a consumer's own references can no longer bind
+# to them (chdb-io/chdb-rust#53) - macOS's counterpart of the Linux prelink step. After
+# minimisation, which reads the link map in the original names, and before the copy that
+# ships. Gate 2 on the macOS runner checks that only the C API kept its names.
+python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
+    --objcopy llvm-objcopy-21 --nm llvm-nm-21
+
 # Copy final library to project root
 echo "Copying libchdb_minimal.a to project root as libchdb.a..."
 cp ${MY_DIR}/libchdb_minimal.a ${PROJ_DIR}/libchdb.a

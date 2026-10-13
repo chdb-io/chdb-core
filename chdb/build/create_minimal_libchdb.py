@@ -69,8 +69,22 @@ def extract_objects_from_archive(archive_path, required_objects, temp_dir):
         print(f"❌ Failed to read archive: {result.stderr}")
         return []
 
-    available_objects = set(obj.strip() for obj in result.stdout.split('\n') if obj.strip())
+    archive_order = [obj.strip() for obj in result.stdout.split('\n') if obj.strip()]
+    available_objects = set(archive_order)
     print(f"   Total object files in archive: {len(available_objects)} files")
+
+    # Keep the full archive's member order, which follows the libchdb link line. On Linux the
+    # minimised archive is prelinked into one object (prelink_static_lib.sh), where member
+    # order becomes static-constructor order for every consumer; a set's iteration order would
+    # change it from build to build.
+    def in_archive_order(names):
+        names = set(names)
+        ordered = []
+        for obj in archive_order:
+            if obj in names:
+                ordered.append(obj)
+                names.discard(obj)
+        return ordered + sorted(names)
 
     # Check if temp directory already exists and contains files
     if os.path.exists(temp_dir) and os.listdir(temp_dir):
@@ -78,7 +92,7 @@ def extract_objects_from_archive(archive_path, required_objects, temp_dir):
         # Count all .o files in temp directory
         existing_files = [f for f in os.listdir(temp_dir) if f.endswith('.o')]
         print(f"   Found already extracted object files: {len(existing_files)} files")
-        return existing_files
+        return in_archive_order(existing_files)
 
     # Find object files that need to be extracted
     objects_to_extract = required_objects.intersection(available_objects)
@@ -163,7 +177,7 @@ def extract_objects_from_archive(archive_path, required_objects, temp_dir):
     try:
         # Extract object files in batches to avoid command line argument length limits
         batch_size = 500  # Process 100 files per batch
-        objects_list = list(objects_to_extract)
+        objects_list = in_archive_order(objects_to_extract)
 
         for i in range(0, len(objects_list), batch_size):
             batch = objects_list[i:i + batch_size]

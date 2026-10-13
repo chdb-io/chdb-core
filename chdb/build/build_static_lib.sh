@@ -147,6 +147,20 @@ else
     fi
 fi
 
+# Make sure a consumer's own references can no longer bind to anything the archive bundles
+# besides the C API: the libc++/libc++abi/libunwind of chdb-io/chdb-rust#53, zstd, OpenSSL and
+# the rest. Linux merges the archive into one object that keeps only the C API global; ld64
+# cannot do the same (see rename_static_lib_symbols_macos.py), so on macOS every other symbol
+# is renamed instead.
+# After minimisation, which needs the per-member layout and the original names, and before
+# the Go test and the gates, which must see the archive as shipped.
+if [ "$(uname)" == "Linux" ]; then
+    bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
+else
+    python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
+        --objcopy llvm-objcopy --nm llvm-nm
+fi
+
 
 # Test with Go example
 bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_minimal.a
