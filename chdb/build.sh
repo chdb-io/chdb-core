@@ -35,6 +35,12 @@ if [ "${CHDB_SKIP_PYTHON}" == "1" ] && [ "${CHDB_LITE}" == "1" ]; then
     exit 1
 fi
 
+# The lite configuration is fixed by CMakeLists.txt's CHDB_LITE block and takes no NLP flags.
+if [ "${CHDB_ENABLE_NLP}" == "1" ] && [ "${CHDB_LITE}" == "1" ]; then
+    echo "Error: CHDB_ENABLE_NLP=1 is not supported with CHDB_LITE=1"
+    exit 1
+fi
+
 # Check the Python the module build needs before spending the libchdb.so build on it.
 if [ "${CHDB_SKIP_PYTHON}" == "1" ]; then
     echo "CHDB_SKIP_PYTHON=1: building libchdb.so only"
@@ -218,7 +224,7 @@ else
     -DENABLE_AWS_S3=1 -DENABLE_HIVE=0 -DENABLE_AVRO=1 \
     -DENABLE_CLICKHOUSE_OBFUSCATOR=0 -DENABLE_CLICKHOUSE_ODBC_BRIDGE=0 -DENABLE_CLICKHOUSE_STATIC_FILES_DISK_UPLOADER=0 \
     -DENABLE_KAFKA=1 -DENABLE_LIBPQXX=1 -DENABLE_NATS=0 -DENABLE_AMQPCPP=0 -DENABLE_NURAFT=0 \
-    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 -DENABLE_NLP=0 \
+    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 ${NLP} \
     -DENABLE_LDAP=0 \
     -DENABLE_CLIENT_AI=1 \
     ${MYSQL} \

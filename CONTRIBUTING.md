@@ -163,6 +163,16 @@ CHDB_SKIP_PYTHON=1 bash chdb/build.sh
 
 This stops after `libchdb.so`, strips it and copies it to the project root.
 
+The NLP functions are off by default. `CHDB_ENABLE_NLP=1` turns them on in `chdb/build.sh` and
+the static-library scripts, together with libstemmer, which `stem()` and `system.stemmers` need
+and which `ENABLE_NLP` alone does not build:
+
+```
+CHDB_ENABLE_NLP=1 bash chdb/build.sh
+```
+
+It passes `-DENABLE_NLP=1 -DWITH_LIBSTEMMER=1`; a build configured by hand needs both flags too.
+
 To actually use the library, build the wheel:
 
 ```
