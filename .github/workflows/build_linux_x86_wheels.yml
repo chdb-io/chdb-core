@@ -50,6 +50,12 @@ concurrency:
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
+  # Scheduled (nightly) runs build and test the Python wheel only. They skip the
+  # static library, chdb-core-lite, debug symbols, the libchdb/ADBC/Go checks
+  # and the checks of other packages, and test each Python version against one
+  # pandas line (3.14 against both). Pushes, pull requests and releases run
+  # everything as before.
+  WHEEL_ONLY: ${{ github.event_name == 'schedule' }}
 
 jobs:
   build_universal_wheel:
@@ -83,6 +89,7 @@ jobs:
           fi
           echo "GitHub CLI installed successfully"
       - name: Scan SQLite vulnerabilities with grype
+        if: env.WHEEL_ONLY != 'true'
         run: |
           # Install grype and required tools
           mkdir -p $HOME/.local/bin
@@ -302,7 +309,7 @@ jobs:
           bash -x ./chdb/test_smoke.sh
         continue-on-error: false
       - name: Run chdb/build/build_static_lib.sh
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 600
         run: |
           export CC=/usr/bin/clang
@@ -315,6 +322,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Scan chdb libraries with grype
+        if: env.WHEEL_ONLY != 'true'
         run: |
           echo "Scanning chdb libraries for vulnerabilities..."
 
@@ -347,6 +355,7 @@ jobs:
           fi
         continue-on-error: false
       - name: Run libchdb stub in examples dir
+        if: env.WHEEL_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary.
           ulimit -c unlimited
@@ -370,6 +379,7 @@ jobs:
       # here rather than after the wheel tests so an unrelated failure there
       # does not withhold the result.
       - name: ADBC validation suites
+        if: env.WHEEL_ONLY != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -418,6 +428,7 @@ jobs:
           "$VENV/bin/python" -m tests.generate_documentation \
             --output "$RUNNER_TEMP/adbc-docs"
       - uses: actions/upload-artifact@v7
+        if: env.WHEEL_ONLY != 'true'
         with:
           name: adbc-capability-matrix
           path: ${{ runner.temp }}/adbc-docs/chdb.md
@@ -499,6 +510,10 @@ jobs:
             # pandas 3.x requires Python >=3.11
             if [[ "$version" == "3.9" || "$version" == "3.10" ]]; then
               PANDAS_CONSTRAINTS=("pandas<3.0")
+            elif [[ "$WHEEL_ONLY" == "true" && "$version" != "3.14" ]]; then
+              # Nightly: every Python still runs, since each loads its own
+              # pybind11 shim from the wheel; pandas 2.x is covered on 3.14.
+              PANDAS_CONSTRAINTS=("pandas>=3.0")
             else
               PANDAS_CONSTRAINTS=("pandas<3.0" "pandas>=3.0")
             fi
@@ -566,7 +581,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Run benchmarks on Python 3.14 (pandas 2.x and 3.x)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary, so the core limit set
           # beside kern.corefile / core_pattern never reaches here.
@@ -600,7 +615,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Test chdb DataStore tests against upstream chdb (latest tag)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -614,7 +629,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Run notebook tests
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary, so the core limit set
           # beside kern.corefile / core_pattern never reaches here.
@@ -628,6 +643,7 @@ jobs:
         continue-on-error: false
       # Verify+package debug must run before the lite build (overwrites _chdb.abi3.so).
       - name: Verify debug symbols are usable
+        if: env.WHEEL_ONLY != 'true'
         run: |
           ADDR2LINE=$(command -v llvm-addr2line-19 || command -v llvm-addr2line || command -v addr2line)
           verify() {
@@ -655,6 +671,7 @@ jobs:
           verify libchdb.so chdb_adbc_init libchdb.so.debug
           verify libchdb.so AdbcDriverInit libchdb.so.debug
       - name: Package debug symbols
+        if: env.WHEEL_ONLY != 'true'
         run: |
           ls *.debug
           # xz instead of gzip: the x86_64 debuginfo exceeds GitHub's 2 GiB
@@ -671,7 +688,7 @@ jobs:
       # only _chdb.abi3.so is produced (lite is Python-only).
       # -----------------------------------------------------------------------
       - name: Build chdb-core-lite (_chdb.abi3.so only, skips libchdb.so)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         timeout-minutes: 600
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -685,7 +702,7 @@ jobs:
           CHDB_LITE=1 bash ./chdb/build.sh
         continue-on-error: false
       - name: Build chdb-core-lite wheel
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -695,7 +712,7 @@ jobs:
           CHDB_LITE=1 make wheel
         continue-on-error: false
       - name: Audit chdb-core-lite wheel
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -720,7 +737,7 @@ jobs:
           # echo "OK: $(basename $WHEEL) is $SIZE bytes (${MIB} MiB), under 50 MiB"
         # continue-on-error: false
       - name: Test chdb-core-lite wheel on Python 3.9 and 3.14
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && env.WHEEL_ONLY != 'true' }}
         run: |
           ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -747,7 +764,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Test chdb-core-lite DataStore tests against upstream chdb (latest tag)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -892,7 +909,7 @@ jobs:
           chmod 0644 chdb.h chdb.hpp
           tar -czvf linux-x86_64-libchdb.tar.gz libchdb.so chdb.h chdb.hpp
       - name: Package libchdb.a
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         run: |
           cp programs/local/chdb.h chdb.h
           cp programs/local/chdb.hpp chdb.hpp
