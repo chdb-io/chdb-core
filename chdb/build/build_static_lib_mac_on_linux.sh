@@ -7,6 +7,10 @@ build_type=${2:-RelWithDebInfo}
 MY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 . ${MY_DIR}/../vars.sh cross-compile
 
+# The archive keeps a function only if ForceFunctionReferences.cpp references it; fail before
+# the build rather than ship an archive without the functions the file is missing.
+python3 ${MY_DIR}/generate_force_references.py --check
+
 # Validate architecture
 if [[ "$TARGET_ARCH" != "x86_64" && "$TARGET_ARCH" != "arm64" ]]; then
     echo "Error: Invalid architecture. Use 'x86_64' or 'arm64'"

@@ -10,6 +10,10 @@ MY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 BUILD_DIR=${PROJ_DIR}/buildlib
 
+# The archive keeps a function only if ForceFunctionReferences.cpp references it; fail before
+# the build rather than ship an archive without the functions the file is missing.
+python3 ${MY_DIR}/generate_force_references.py --check
+
 HDFS="-DENABLE_HDFS=1 -DENABLE_GSASL_LIBRARY=1 -DENABLE_KRB5=1"
 MYSQL="-DENABLE_MYSQL=1"
 RUST_FEATURES="-DENABLE_RUST=0"

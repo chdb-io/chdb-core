@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"unsafe"
 )
 
@@ -339,6 +340,39 @@ func main() {
 		}
 		fmt.Printf("   Execution time: %.3f seconds\n", result.GetElapsed())
 		result.Destroy()
+	}
+
+	// Functions the archive keeps only because ForceFunctionReferences.cpp references their
+	// registration. A dropped one fails as UNKNOWN_FUNCTION, so each is compared with its value.
+	registrationChecks := []struct{ query, expected string }{
+		{"SELECT hasPhrase('the quick brown fox jumps', 'quick brown')", "1"},
+		{"SELECT base64Encode('chdb')", "Y2hkYg=="},
+		{"SELECT sqidDecode(sqidEncode(1, 2, 3))", "[1,2,3]"},
+		{"SELECT isPrime(17)", "1"},
+		{"SELECT arraySort(x -> naturalSortKey(x), ['a10', 'a2'])", "['a2','a10']"},
+		{"SELECT length(toString(generateUUIDv7()))", "36"},
+	}
+	// ICU, which these need, is enabled in the Linux static build only.
+	if runtime.GOOS == "linux" {
+		registrationChecks = append(registrationChecks,
+			struct{ query, expected string }{"SELECT lowerUTF8('ÄÖÜ')", "äöü"},
+			struct{ query, expected string }{"SELECT caseFoldUTF8('Straße')", "strasse"},
+		)
+	}
+	fmt.Println("\nFunctions kept by ForceFunctionReferences.cpp:")
+	for _, check := range registrationChecks {
+		result, err := conn.Query(check.query, "TSVRaw")
+		if err != nil {
+			fmt.Printf("   ❌ %s: %v\n", check.query, err)
+			os.Exit(1)
+		}
+		output := strings.TrimSuffix(result.GetString(), "\n")
+		result.Destroy()
+		if output != check.expected {
+			fmt.Printf("   ❌ %s returned %q, expected %q\n", check.query, output, check.expected)
+			os.Exit(1)
+		}
+		fmt.Printf("   ✓ %s = %s\n", check.query, output)
 	}
 
 	// Stop the engine while the Go runtime is still intact. Without this, chDB's

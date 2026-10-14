@@ -30,6 +30,11 @@ jobs:
       - name: CHDB_VERSION follows the ClickHouse line
         run: .github/scripts/check-abi-version.sh
 
+      # The static library keeps a SQL function only if ForceFunctionReferences.cpp references its
+      # registration, and nothing else fails when one is missing: the function is just absent.
+      - name: ForceFunctionReferences.cpp matches src/Functions
+        run: python3 chdb/build/generate_force_references.py --check
+
       # Which releases reach PyPI is decided in a step that runs on tags only,
       # so nothing else here ever executes those rules. Without this they first
       # run during the release they are wrong about, and a wrong decision spends
