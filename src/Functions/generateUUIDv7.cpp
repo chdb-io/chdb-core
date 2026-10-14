@@ -75,6 +75,8 @@ public:
     }
 };
 
+}
+
 REGISTER_FUNCTION(GenerateUUIDv7)
 {
     /// generateUUIDv7 documentation
@@ -119,6 +121,5 @@ SELECT generateUUIDv7(1), generateUUIDv7(1);
     FunctionDocumentation documentation = {description, syntax, arguments, {}, returned_value, examples, introduced_in, category};
 
     factory.registerFunction<FunctionGenerateUUIDv7>(documentation);
-}
 }
 }

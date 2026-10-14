@@ -28,6 +28,98 @@ fi
 
 BUILD_DIR=${PROJ_DIR}/buildlib
 
+# CHDB_SKIP_PYTHON=1 stops after libchdb.so (stripped and copied to the project root) and
+# needs no particular Python, for hosts that embed only the C library.
+if [ "${CHDB_SKIP_PYTHON}" == "1" ] && [ "${CHDB_LITE}" == "1" ]; then
+    echo "Error: CHDB_SKIP_PYTHON=1 builds only libchdb.so, which CHDB_LITE=1 does not build"
+    exit 1
+fi
+
+# The lite configuration is fixed by CMakeLists.txt's CHDB_LITE block and takes no NLP flags.
+if [ "${CHDB_ENABLE_NLP}" == "1" ] && [ "${CHDB_LITE}" == "1" ]; then
+    echo "Error: CHDB_ENABLE_NLP=1 is not supported with CHDB_LITE=1"
+    exit 1
+fi
+
+# Check the Python the module build needs before spending the libchdb.so build on it.
+if [ "${CHDB_SKIP_PYTHON}" == "1" ]; then
+    echo "CHDB_SKIP_PYTHON=1: building libchdb.so only"
+elif [ "${CHDB_FREE_THREADING}" == "1" ]; then
+    # Resolve the Python interpreter once: prefer python3, fall back to python.
+    # Some Linux distros (Debian/Ubuntu without python-is-python3) ship only `python3`.
+    PYTHON_BIN=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
+    if [ -z "${PYTHON_BIN}" ]; then
+        echo "Error: CHDB_FREE_THREADING=1 but neither 'python3' nor 'python' is on PATH"
+        exit 1
+    fi
+    py_version=$("${PYTHON_BIN}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    is_ft=$("${PYTHON_BIN}" -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
+    if [ "$is_ft" != "1" ]; then
+        echo "Error: CHDB_FREE_THREADING=1 but current Python (${PYTHON_BIN}) is not a free-threading build"
+        exit 1
+    fi
+    echo "Using free-threading Python ${py_version} at ${PYTHON_BIN}"
+    FREE_THREADING_CMAKE="-DCHDB_FREE_THREADING=1"
+else
+    py_version="3.9"
+    current_py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
+    if [ "$current_py_version" != "$py_version" ]; then
+        echo "Error: Current Python version is $current_py_version, but required version is $py_version"
+        echo "Please switch to Python $py_version using: pyenv shell $py_version"
+        echo "or set CHDB_SKIP_PYTHON=1 to build only libchdb.so"
+        exit 1
+    fi
+    echo "Using Python version: $current_py_version"
+    FREE_THREADING_CMAKE=""
+fi
+
+# Extract the debug symbols of a built library next to it, then strip it.
+strip_library() {
+    local lib=$1
+    if [ ${build_type} == "Debug" ]; then
+        echo -e "\nDebug build, skip strip and debug symbol extraction of ${lib}"
+        return
+    fi
+    if [ ${build_type} == "RelWithDebInfo" ] && [ "${CHDB_LITE}" != "1" ]; then
+        echo -e "\nExtracting debug symbols of ${lib} before strip..."
+        if [ "$(uname)" == "Darwin" ]; then
+            dsymutil ${lib} -o ${lib}.dSYM
+            du -sh ${lib}.dSYM
+            ${STRIP} -S -x ${lib}
+        else
+            OBJCOPY=$(which llvm-objcopy-19 2>/dev/null || which llvm-objcopy 2>/dev/null || which objcopy 2>/dev/null)
+            if [ -z "${OBJCOPY}" ]; then
+                echo "ERROR: objcopy not found, cannot extract debug symbols"
+                exit 1
+            fi
+            ${OBJCOPY} --only-keep-debug ${lib} ${lib}.debug
+            ls -lh ${lib}.debug
+            ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${lib}
+            ${OBJCOPY} --add-gnu-debuglink=${lib}.debug ${lib}
+        fi
+    else
+        echo -e "\n${build_type} build, strip ${lib} without debug symbol extraction"
+        if [ "$(uname)" == "Darwin" ]; then
+            ${STRIP} -S -x ${lib}
+        else
+            ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${lib}
+        fi
+    fi
+}
+
+# Copy the debug symbols strip_library extracted from a library to the project root.
+copy_debug_symbols() {
+    local lib=$1
+    local name=$2
+    if [ ${build_type} == "RelWithDebInfo" ] && [ "${CHDB_LITE}" != "1" ]; then
+        if [ "$(uname)" == "Darwin" ]; then
+            cp -a ${lib}.dSYM ${PROJ_DIR}/${name}.dSYM
+        else
+            cp -a ${lib}.debug ${PROJ_DIR}/${name}.debug
+        fi
+    fi
+}
+
 HDFS="-DENABLE_HDFS=1 -DENABLE_GSASL_LIBRARY=1 -DENABLE_KRB5=1"
 MYSQL="-DENABLE_MYSQL=1"
 RUST_FEATURES="-DENABLE_RUST=0"
@@ -132,7 +224,7 @@ else
     -DENABLE_AWS_S3=1 -DENABLE_HIVE=0 -DENABLE_AVRO=1 \
     -DENABLE_CLICKHOUSE_OBFUSCATOR=0 -DENABLE_CLICKHOUSE_ODBC_BRIDGE=0 -DENABLE_CLICKHOUSE_STATIC_FILES_DISK_UPLOADER=0 \
     -DENABLE_KAFKA=1 -DENABLE_LIBPQXX=1 -DENABLE_NATS=0 -DENABLE_AMQPCPP=0 -DENABLE_NURAFT=0 \
-    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 -DENABLE_NLP=0 \
+    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 ${NLP} \
     -DENABLE_LDAP=0 \
     -DENABLE_CLIENT_AI=1 \
     ${MYSQL} \
@@ -233,34 +325,19 @@ if [ "${CHDB_LITE}" != "1" ]; then
     ls -lh ${LIBCHDB}
 fi
 
-# build chdb python module
-if [ "${CHDB_FREE_THREADING}" == "1" ]; then
-    # Resolve the Python interpreter once: prefer python3, fall back to python.
-    # Some Linux distros (Debian/Ubuntu without python-is-python3) ship only `python3`.
-    PYTHON_BIN=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
-    if [ -z "${PYTHON_BIN}" ]; then
-        echo "Error: CHDB_FREE_THREADING=1 but neither 'python3' nor 'python' is on PATH"
-        exit 1
-    fi
-    py_version=$("${PYTHON_BIN}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    is_ft=$("${PYTHON_BIN}" -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
-    if [ "$is_ft" != "1" ]; then
-        echo "Error: CHDB_FREE_THREADING=1 but current Python (${PYTHON_BIN}) is not a free-threading build"
-        exit 1
-    fi
-    echo "Using free-threading Python ${py_version} at ${PYTHON_BIN}"
-    FREE_THREADING_CMAKE="-DCHDB_FREE_THREADING=1"
-else
-    py_version="3.9"
-    current_py_version=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
-    if [ "$current_py_version" != "$py_version" ]; then
-        echo "Error: Current Python version is $current_py_version, but required version is $py_version"
-        echo "Please switch to Python $py_version using: pyenv shell $py_version"
-        exit 1
-    fi
-    echo "Using Python version: $current_py_version"
-    FREE_THREADING_CMAKE=""
+if [ "${CHDB_SKIP_PYTHON}" == "1" ]; then
+    strip_library ${LIBCHDB}
+    cp -a ${LIBCHDB} ${PROJ_DIR}/${LIBCHDB_SO}
+    copy_debug_symbols ${LIBCHDB} ${LIBCHDB_SO}
+    echo -e "\nLIBCHDB: ${PROJ_DIR}/${LIBCHDB_SO}"
+    ls -lh ${PROJ_DIR}/${LIBCHDB_SO}
+    echo -e "\nquery_stable in LIBCHDB:"
+    ${NM} ${PROJ_DIR}/${LIBCHDB_SO} | grep query_stable || true
+    ccache -s || true
+    exit 0
 fi
+
+# build chdb python module
 if [ "${CHDB_FREE_THREADING}" == "1" ]; then
     cmake ${CMAKE_ARGS} ${FREE_THREADING_CMAKE} -DENABLE_PYTHON=1 ${PROJ_DIR}
 else
@@ -326,48 +403,8 @@ LIBCHDB_DIR=${BUILD_DIR}/
 PYCHDB=${LIBCHDB_DIR}/${CHDB_PY_MODULE}
 LIBCHDB=${LIBCHDB_DIR}/${LIBCHDB_SO}
 
-if [ ${build_type} == "Debug" ]; then
-    echo -e "\nDebug build, skip strip and debug symbol extraction"
-elif [ ${build_type} == "RelWithDebInfo" ] && [ "${CHDB_LITE}" != "1" ]; then
-    echo -e "\nExtracting debug symbols before strip..."
-    if [ "$(uname)" == "Darwin" ]; then
-        dsymutil ${PYCHDB} -o ${PYCHDB}.dSYM
-        dsymutil ${LIBCHDB} -o ${LIBCHDB}.dSYM
-        echo "Debug symbols extracted:"
-        du -sh ${PYCHDB}.dSYM ${LIBCHDB}.dSYM
-    else
-        OBJCOPY=$(which llvm-objcopy-19 2>/dev/null || which llvm-objcopy 2>/dev/null || which objcopy 2>/dev/null)
-        if [ -n "${OBJCOPY}" ]; then
-            ${OBJCOPY} --only-keep-debug ${PYCHDB} ${PYCHDB}.debug
-            ${OBJCOPY} --only-keep-debug ${LIBCHDB} ${LIBCHDB}.debug
-            echo "Debug symbols extracted:"
-            ls -lh ${PYCHDB}.debug ${LIBCHDB}.debug
-        else
-            echo "ERROR: objcopy not found, cannot extract debug symbols"
-            exit 1
-        fi
-    fi
-
-    echo -e "\nStrip the binary:"
-    if [ "$(uname)" == "Darwin" ]; then
-        ${STRIP} -S -x ${PYCHDB}
-        ${STRIP} -S -x ${LIBCHDB}
-    else
-        ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${PYCHDB}
-        ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${LIBCHDB}
-        ${OBJCOPY} --add-gnu-debuglink=${PYCHDB}.debug ${PYCHDB}
-        ${OBJCOPY} --add-gnu-debuglink=${LIBCHDB}.debug ${LIBCHDB}
-    fi
-else
-    echo -e "\n${build_type} build, strip without debug symbol extraction"
-    if [ "$(uname)" == "Darwin" ]; then
-        ${STRIP} -S -x ${PYCHDB}
-        [ "${CHDB_LITE}" != "1" ] && ${STRIP} -S -x ${LIBCHDB}
-    else
-        ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${PYCHDB}
-        [ "${CHDB_LITE}" != "1" ] && ${STRIP} --strip-unneeded --remove-section=.comment --remove-section=.note ${LIBCHDB}
-    fi
-fi
+strip_library ${PYCHDB}
+[ "${CHDB_LITE}" != "1" ] && strip_library ${LIBCHDB}
 
 echo -e "\nPYCHDB: ${PYCHDB}"
 ls -lh ${PYCHDB}
@@ -389,15 +426,8 @@ rm -f ${CHDB_DIR}/*.so
 cp -a ${PYCHDB} ${CHDB_DIR}/${CHDB_PY_MODULE}
 [ "${CHDB_LITE}" != "1" ] && cp -a ${LIBCHDB} ${PROJ_DIR}/${LIBCHDB_SO}
 
-if [ ${build_type} == "RelWithDebInfo" ] && [ "${CHDB_LITE}" != "1" ]; then
-    if [ "$(uname)" == "Darwin" ]; then
-        cp -a ${PYCHDB}.dSYM ${PROJ_DIR}/${CHDB_PY_MODULE}.dSYM
-        cp -a ${LIBCHDB}.dSYM ${PROJ_DIR}/${LIBCHDB_SO}.dSYM
-    else
-        cp -a ${PYCHDB}.debug ${PROJ_DIR}/${CHDB_PY_MODULE}.debug
-        cp -a ${LIBCHDB}.debug ${PROJ_DIR}/${LIBCHDB_SO}.debug
-    fi
-fi
+copy_debug_symbols ${PYCHDB} ${CHDB_PY_MODULE}
+copy_debug_symbols ${LIBCHDB} ${LIBCHDB_SO}
 
 echo -e "\nSymbols:"
 echo -e "\nPyInit in PYCHDB: ${PYCHDB}"

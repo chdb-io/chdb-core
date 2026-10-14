@@ -155,6 +155,24 @@ make buildlib
 
 This includes compiling clickhouse itself, which can take upwards of tens of minutes, depending on your processor. The library can be found in `buildlib/libchdb.so`. A patched version of the library meant to be imported by python is written under the `chdb` directory; for example in Linux that'll be `chdb/_chdb.abi3.so`.
 
+To build only the C library, without the Python module and without needing Python 3.9:
+
+```
+CHDB_SKIP_PYTHON=1 bash chdb/build.sh
+```
+
+This stops after `libchdb.so`, strips it and copies it to the project root.
+
+The NLP functions are off by default. `CHDB_ENABLE_NLP=1` turns them on in `chdb/build.sh` and
+the static-library scripts, together with libstemmer, which `stem()` and `system.stemmers` need
+and which `ENABLE_NLP` alone does not build:
+
+```
+CHDB_ENABLE_NLP=1 bash chdb/build.sh
+```
+
+It passes `-DENABLE_NLP=1 -DWITH_LIBSTEMMER=1`; a build configured by hand needs both flags too.
+
 To actually use the library, build the wheel:
 
 ```

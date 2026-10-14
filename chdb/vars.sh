@@ -62,6 +62,16 @@ if [ -n "${CHDB_VERSION}" ] && [ -f "${CHDB_HEADER}" ]; then
         "${CHDB_HEADER}" > "${CHDB_HEADER_TMP}" && mv "${CHDB_HEADER_TMP}" "${CHDB_HEADER}"
 fi
 
+# NLP functions for the full and static builds, off unless CHDB_ENABLE_NLP=1. stem() and
+# system.stemmers need libstemmer, which ENABLE_NLP does not enable: WITH_LIBSTEMMER follows
+# ENABLE_LIBRARIES, and these builds turn that off. Both flags are passed either way, so
+# switching an existing build directory back takes them out of the CMake cache too.
+if [ "${CHDB_ENABLE_NLP}" == "1" ]; then
+    NLP="-DENABLE_NLP=1 -DWITH_LIBSTEMMER=1"
+else
+    NLP="-DENABLE_NLP=0 -DWITH_LIBSTEMMER=0"
+fi
+
 if [ "$1" == "cross-compile" ]; then
     return
 fi
