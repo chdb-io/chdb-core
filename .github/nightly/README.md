@@ -85,17 +85,20 @@ branches are never merged back into `main`.
 ## Nightly builds
 
 There is no separate nightly build: the nightly is main's build of each merged
-ClickHouse sync pull request, which the four wheel workflows run on that push as on
-any other, full test suite included. A `Nightly gate` job in each tells that push
-apart, by the merge's commit message or, failing that, the pull request GitHub
-associates with the commit. A merged sync's push also gets a concurrency group of
-its own, so a later push to main cannot replace its pending build. No sync merged,
-no nightly: none while a sync pull request waits for review.
+ClickHouse sync pull request, which the four wheel workflows run on that push. A
+`Nightly gate` job in each tells that push apart, by the merge's commit message or,
+failing that, the pull request GitHub associates with the commit. That build makes
+and tests the Python wheel only (`WHEEL_ONLY`): every Python version, each against
+one pandas line (3.14 against both), but no static library, chdb-core-lite, debug
+symbols, libchdb/ADBC/Go checks or other packages' tests, which the sync pull
+request's own CI ran on Linux x86_64. A merged sync's push also gets a concurrency
+group of its own, so a later push to main cannot replace its pending build. No sync
+merged, no nightly: none while a sync pull request waits for review.
 
-On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer
-ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `+` part so the
-name survives as a release asset. `N` is the commit's time as yymmddhhmm in UTC,
-e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
+On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main`
+is on a newer ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `+`
+part so the name survives as a release asset. `N` is the commit's time as yymmddhhmm
+in UTC, e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
 pre-release itself (`upload_wheel.sh`), creating the release the first time.
 `nightly_publish.yml` waits until all four runs for the commit are done, then:
 

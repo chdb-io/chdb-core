@@ -58,12 +58,6 @@ concurrency:
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
-  # Scheduled (nightly) runs build and test the Python wheel only. They skip the
-  # static library, chdb-core-lite, debug symbols, the libchdb/ADBC/Go checks
-  # and the checks of other packages, and test each Python version against one
-  # pandas line (3.14 against both). Pushes, pull requests and releases run
-  # everything as before.
-  WHEEL_ONLY: ${{ github.event_name == 'schedule' }}
 
 jobs:
   # Main's build of a merged ClickHouse sync pull request is the nightly: its wheel
@@ -102,6 +96,13 @@ jobs:
     # gate on Linux x86_64 alone while main's push build covers the rest.
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
     timeout-minutes: 600
+    # The nightly, main's build of a merged sync, builds and tests the Python wheel
+    # only: it skips the static library, chdb-core-lite, debug symbols, the
+    # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
+    # version against one pandas line (3.14 against both). The sync pull request's own
+    # CI ran all of it on Linux x86_64. Everything else builds as before.
+    env:
+      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
     steps:
       - name: Install Python build dependencies
         run: |
@@ -267,6 +268,8 @@ jobs:
     needs: build_universal_wheel_on_linux
     if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 600
+    env:
+      WHEEL_ONLY: ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' }}
     steps:
       # First step in the job: a cutoff recorded later is skipped when an
       # earlier step fails, and the collector then falls back to reporting

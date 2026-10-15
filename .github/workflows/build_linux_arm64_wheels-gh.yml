@@ -59,12 +59,6 @@ concurrency:
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
-  # Scheduled (nightly) runs build and test the Python wheel only. They skip the
-  # static library, chdb-core-lite, debug symbols, the libchdb/ADBC/Go checks
-  # and the checks of other packages, and test each Python version against one
-  # pandas line (3.14 against both). Pushes, pull requests and releases run
-  # everything as before.
-  WHEEL_ONLY: ${{ github.event_name == 'schedule' }}
 
 jobs:
   # Main's build of a merged ClickHouse sync pull request is the nightly: its wheel
@@ -100,6 +94,13 @@ jobs:
     # `nightly` pre-release); and the daily ClickHouse sync's pull requests, which
     # gate on Linux x86_64 alone while main's push build covers the rest.
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
+    # The nightly, main's build of a merged sync, builds and tests the Python wheel
+    # only: it skips the static library, chdb-core-lite, debug symbols, the
+    # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
+    # version against one pandas line (3.14 against both). The sync pull request's own
+    # CI ran all of it on Linux x86_64. Everything else builds as before.
+    env:
+      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
     steps:
       - name: Record the crash-diagnostics cutoff
         if: always()
