@@ -122,15 +122,11 @@ jobs:
           fi
           which wasm-ld || echo "wasm-ld not found in PATH"
           ccache -s
-      - name: Update git
-        run: |
-          sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
-          git --version
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Verify Git version (install only if needed)
+        run: bash .github/scripts/ensure-ci-git.sh
       - name: Update submodules
         # Authenticated clones; see the script header.
         env:
