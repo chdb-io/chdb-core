@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""Publish a nightly build: wheels to the rolling `nightly` release, plus a pip index.
+"""Finish a nightly build: the rolling `nightly` release and its pip index.
 
-The four wheel workflows build main on a schedule. This runs after each of them
+The four wheel workflows build main on a schedule and upload their wheel to the
+`nightly` pre-release themselves (upload_wheel.sh). This runs after each of them
 finishes, waits until all four runs for the same main commit are done, and then:
 
-- uploads their chdb_core wheels to the `nightly` pre-release,
-- deletes wheels older than --keep-days,
-- writes a PEP 503 index (simple/) into --site,
-- writes --work/night.json for report.py, and sets the `ready` output.
+- moves the `nightly` tag to that commit and deletes wheels older than --keep-days,
+- writes a PEP 503 index (simple/) of the wheels left into --site,
+- downloads the runs' test results, writes --work/night.json for report.py, and
+  sets the `ready` output.
 
-The release is created once. Afterwards only its assets, its notes and the
-`nightly` tag move, so no `release: published` event starts the release builds.
+No wheel is downloaded: names, sizes and sha256 digests come from the release API.
+Only the release's assets, notes and tag move, so no `release: published` event
+starts the release builds.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import html
 import json
 import os
@@ -26,13 +27,12 @@ import sys
 from pathlib import Path
 
 TAG = "nightly"
-MANIFEST = "manifest.json"
-# Platform -> (workflow file, wheel artifact). Order is the dashboard's order.
+# Platform -> wheel workflow. Order is the dashboard's order.
 PLATFORMS = {
-    "linux-x86_64": ("build_linux_x86_wheels.yml", "chdb-wheel-linux-x86_64"),
-    "linux-aarch64": ("build_linux_arm64_wheels-gh.yml", "chdb-wheel-linux-aarch64"),
-    "macos-arm64": ("build_macos_arm64_wheels.yml", "chdb-wheel-macos-arm64"),
-    "macos-x86_64": ("build_macos_x86_wheels.yml", "chdb-wheel-macos-x86_64"),
+    "linux-x86_64": "build_linux_x86_wheels.yml",
+    "linux-aarch64": "build_linux_arm64_wheels-gh.yml",
+    "macos-arm64": "build_macos_arm64_wheels.yml",
+    "macos-x86_64": "build_macos_x86_wheels.yml",
 }
 PROJECT = "chdb-core"
 
@@ -52,6 +52,10 @@ def set_output(**values) -> None:
                 fh.write(f"{key}={value}\n")
 
 
+def parse_time(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def latest_run(repo: str, workflow: str, head_sha: str | None) -> dict | None:
     query = f"repos/{repo}/actions/workflows/{workflow}/runs?event=schedule&per_page=10"
     if head_sha:
@@ -60,46 +64,68 @@ def latest_run(repo: str, workflow: str, head_sha: str | None) -> dict | None:
     return runs[0] if runs else None
 
 
+def release_assets(repo: str, release_id: str) -> list[dict]:
+    out = gh("api", "--paginate", f"repos/{repo}/releases/{release_id}/assets?per_page=100",
+             "--jq", ".[] | {name, size, digest, updated_at}")
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def is_wheel(name: str) -> bool:
+    return name.startswith("chdb_core-") and name.endswith(".whl")
+
+
 def wheel_version(name: str) -> str:
     return name.split("-")[1]
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def wheel_platform(name: str) -> str:
+    tag = name[: -len(".whl")].split("-")[-1]
+    system = "macos" if tag.startswith("macosx") else "linux"
+    arch = "aarch64" if "aarch64" in tag else "arm64" if "arm64" in tag else "x86_64"
+    return f"{system}-{arch}"
+
+
+def sha256_of(asset: dict) -> str:
+    digest = asset.get("digest") or ""
+    return digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
+
+
+def dev_number(committed_at: str) -> str:
+    """The dev number set-main-wheel-version.py --nightly gives a commit."""
+    return parse_time(committed_at).astimezone(dt.timezone.utc).strftime("%y%m%d%H%M")
+
+
+def night_wheels(assets: list[dict], dev: str) -> list[dict]:
+    """The wheels built from the night's commit: their version ends in .dev<dev>."""
+    return [
+        {"platform": wheel_platform(a["name"]), "name": a["name"], "size": a["size"], "sha256": sha256_of(a)}
+        for a in assets
+        if is_wheel(a["name"]) and wheel_version(a["name"]).endswith(f".dev{dev}")
+    ]
+
+
+def stale(assets: list[dict], keep_days: int, now: dt.datetime) -> list[str]:
+    """Wheels last uploaded more than keep_days ago."""
+    cutoff = now - dt.timedelta(days=keep_days)
+    return sorted(a["name"] for a in assets if a["name"].endswith(".whl") and parse_time(a["updated_at"]) < cutoff)
 
 
 def minutes_between(start: str, end: str) -> float:
-    parse = lambda s: dt.datetime.fromisoformat(s.replace("Z", "+00:00"))  # noqa: E731
-    return round((parse(end) - parse(start)).total_seconds() / 60, 1)
+    return round((parse_time(end) - parse_time(start)).total_seconds() / 60, 1)
 
 
-def prune(manifest: dict, keep_days: int, today: dt.date) -> tuple[dict, list[str]]:
-    """Drop nights older than keep_days; return the manifest and wheel names to delete."""
-    cutoff = (today - dt.timedelta(days=keep_days)).isoformat()
-    kept, dropped = [], []
-    for night in manifest.get("nights", []):
-        if night["date"] >= cutoff:
-            kept.append(night)
-        else:
-            dropped += [w["name"] for w in night.get("wheels", [])]
-    kept.sort(key=lambda n: (n["date"], n["head_sha"]), reverse=True)
-    still_used = {w["name"] for n in kept for w in n.get("wheels", [])}
-    return {"nights": kept}, sorted(set(dropped) - still_used)
-
-
-def pep503_pages(repo: str, manifest: dict) -> dict[str, str]:
-    """Return {relative path: html} for a PEP 503 simple index of the kept wheels."""
+def pep503_pages(repo: str, assets: list[dict]) -> dict[str, str]:
+    """Return {relative path: html} for a PEP 503 simple index of the release's wheels."""
     links = []
-    for night in manifest["nights"]:
-        for wheel in night.get("wheels", []):
-            url = f"https://github.com/{repo}/releases/download/{TAG}/{wheel['name']}#sha256={wheel['sha256']}"
-            links.append(
-                f'    <a href="{html.escape(url)}" data-requires-python="&gt;=3.9">{html.escape(wheel["name"])}</a><br>'
-            )
+    for asset in sorted(assets, key=lambda a: a["name"], reverse=True):
+        if not is_wheel(asset["name"]):
+            continue
+        url = f"https://github.com/{repo}/releases/download/{TAG}/{asset['name']}"
+        if sha256_of(asset):
+            url += f"#sha256={sha256_of(asset)}"
+        links.append(
+            f'    <a href="{html.escape(url)}" data-requires-python="&gt;=3.9">{html.escape(asset["name"])}</a><br>'
+        )
     project = (
         "<!DOCTYPE html>\n<html>\n  <head><title>Links for chdb-core</title></head>\n  <body>\n"
         "    <h1>Links for chdb-core</h1>\n" + "\n".join(links) + "\n  </body>\n</html>\n"
@@ -111,8 +137,7 @@ def pep503_pages(repo: str, manifest: dict) -> dict[str, str]:
     return {"simple/index.html": root, f"simple/{PROJECT}/index.html": project}
 
 
-def release_notes(repo: str, manifest: dict, site: str, keep_days: int) -> str:
-    newest = manifest["nights"][0] if manifest["nights"] else None
+def release_notes(night: dict, site: str, keep_days: int) -> str:
     lines = [
         "Rolling nightly builds of chdb-core from `main`, one per day. Not for production.",
         "",
@@ -126,21 +151,10 @@ def release_notes(repo: str, manifest: dict, site: str, keep_days: int) -> str:
             f"Status, history and logs: {site}",
             "",
         ]
-    if newest:
-        lines.append(f"Newest: `{newest['version']}`, built from {newest['head_sha'][:12]} on {newest['date']}.")
+    if night["wheels"]:
+        lines.append(f"Newest: `{night['version']}`, built from {night['head_sha'][:12]} on {night['date']}.")
     lines.append(f"Wheels are deleted after {keep_days} days.")
     return "\n".join(lines) + "\n"
-
-
-def ensure_release(repo: str, head_sha: str, work: Path) -> bool:
-    """Create the release on first use; return True if it already existed."""
-    if gh("release", "view", TAG, "--repo", repo, "--json", "tagName", check=False):
-        return True
-    notes = work / "notes.md"
-    notes.write_text("Rolling nightly builds of chdb-core from `main`.\n")
-    gh("release", "create", TAG, "--repo", repo, "--prerelease", "--latest=false",
-       "--title", "Nightly builds", "--notes-file", str(notes), "--target", head_sha)
-    return False
 
 
 def main(argv=None) -> int:
@@ -159,36 +173,34 @@ def main(argv=None) -> int:
 
     head_sha = args.head_sha
     if not head_sha:
-        newest = latest_run(repo, PLATFORMS["linux-x86_64"][0], None)
+        newest = latest_run(repo, PLATFORMS["linux-x86_64"], None)
         if not newest:
             print("No scheduled build has run yet")
             set_output(ready="false")
             return 0
         head_sha = newest["head_sha"]
-    runs = {platform: latest_run(repo, workflow, head_sha) for platform, (workflow, _) in PLATFORMS.items()}
+    runs = {platform: latest_run(repo, workflow, head_sha) for platform, workflow in PLATFORMS.items()}
     pending = [p for p, r in runs.items() if r is None or r["status"] != "completed"]
     if pending:
         print(f"Waiting for {', '.join(pending)} to finish on {head_sha[:12]}")
         set_output(ready="false")
         return 0
 
-    wheels = []
-    for platform, (_, artifact) in PLATFORMS.items():
-        run = runs[platform]
-        out = work / "wheels" / platform
-        gh("run", "download", str(run["id"]), "--repo", repo, "--name", artifact, "--dir", str(out), check=False)
+    for platform, run in runs.items():
         gh("run", "download", str(run["id"]), "--repo", repo, "--name", f"junit-{platform}",
            "--dir", str(work / "junit" / platform), check=False)
-        for file in sorted(out.glob("chdb_core-*.whl")):
-            wheels.append({"platform": platform, "name": file.name, "size": file.stat().st_size,
-                           "sha256": sha256(file), "path": str(file)})
 
-    date = min(r["created_at"] for r in runs.values())[:10]
+    # A platform whose build or tests failed uploaded no wheel; with all four
+    # failing on the first night there is no release yet.
+    release_id = gh("api", f"repos/{repo}/releases/tags/{TAG}", "--jq", ".id", check=False).strip()
+    assets = release_assets(repo, release_id) if release_id else []
+    committed_at = gh("api", f"repos/{repo}/commits/{head_sha}", "--jq", ".commit.committer.date").strip()
+    wheels = night_wheels(assets, dev_number(committed_at))
     night = {
-        "date": date,
+        "date": min(r["created_at"] for r in runs.values())[:10],
         "head_sha": head_sha,
         "version": wheel_version(wheels[0]["name"]) if wheels else "",
-        "wheels": [{k: w[k] for k in ("platform", "name", "size", "sha256")} for w in wheels],
+        "wheels": wheels,
         "runs": {
             platform: {
                 "id": run["id"],
@@ -200,36 +212,23 @@ def main(argv=None) -> int:
         },
     }
 
-    existed = ensure_release(repo, head_sha, work)
-    if existed:
+    deleted = []
+    if release_id:
         gh("api", "-X", "PATCH", f"repos/{repo}/git/refs/tags/{TAG}", "-f", f"sha={head_sha}", "-F", "force=true")
-    if wheels:
-        gh("release", "upload", TAG, "--repo", repo, "--clobber", *[w["path"] for w in wheels])
+        deleted = stale(assets, args.keep_days, dt.datetime.now(dt.timezone.utc))
+        for name in deleted:
+            gh("release", "delete-asset", TAG, name, "--repo", repo, "--yes", check=False)
+        notes = work / "notes.md"
+        notes.write_text(release_notes(night, site_url, args.keep_days))
+        gh("release", "edit", TAG, "--repo", repo, "--notes-file", str(notes))
 
-    gh("release", "download", TAG, "--repo", repo, "--pattern", MANIFEST, "--dir", str(work), "--clobber", check=False)
-    manifest_file = work / MANIFEST
-    manifest = json.loads(manifest_file.read_text()) if manifest_file.exists() else {"nights": []}
-    manifest["nights"] = [n for n in manifest.get("nights", []) if n["head_sha"] != head_sha]
-    if wheels:
-        manifest["nights"].append({k: night[k] for k in ("date", "head_sha", "version", "wheels")})
-    manifest, stale = prune(manifest, args.keep_days, dt.datetime.now(dt.timezone.utc).date())
-    assets = json.loads(gh("release", "view", TAG, "--repo", repo, "--json", "assets", "--jq", "[.assets[].name]") or "[]")
-    referenced = {w["name"] for n in manifest["nights"] for w in n["wheels"]}
-    stale = sorted(set(stale) | {a for a in assets if a.endswith(".whl") and a not in referenced})
-    for name in stale:
-        gh("release", "delete-asset", TAG, name, "--repo", repo, "--yes", check=False)
-    manifest_file.write_text(json.dumps(manifest, indent=2) + "\n")
-    gh("release", "upload", TAG, "--repo", repo, "--clobber", str(manifest_file))
-    notes = work / "notes.md"
-    notes.write_text(release_notes(repo, manifest, site_url, args.keep_days))
-    gh("release", "edit", TAG, "--repo", repo, "--notes-file", str(notes))
-
-    for rel, text in pep503_pages(repo, manifest).items():
+    for rel, text in pep503_pages(repo, [a for a in assets if a["name"] not in deleted]).items():
         page = site / rel
         page.parent.mkdir(parents=True, exist_ok=True)
         page.write_text(text)
     (work / "night.json").write_text(json.dumps(night, indent=2) + "\n")
-    print(f"Published {len(wheels)} wheels for {head_sha[:12]}; deleted {len(stale)} old assets")
+    print(f"Night of {night['date']} ({head_sha[:12]}): {len(wheels)} of {len(PLATFORMS)} wheels on the "
+          f"release; deleted {len(deleted)} old ones")
     set_output(ready="true")
     return 0
 

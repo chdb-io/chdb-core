@@ -4,15 +4,13 @@
 publish.py leaves --work/night.json and the JUnit files of each platform. This
 script adds the sync state, then lets chDB:
 
-- write the night's rows as Parquet (to Cloudflare R2 through the s3() table
-  function when R2_* is set, otherwise to --work/store),
-- keep the tail of every failed job's log next to them,
-- compute the history, the failing tests and the flaky tests with SQL over every
-  night stored so far.
+- write the night's rows as Parquet, one file per table, and the tail of every
+  failed job's log into --work/store, which the workflow uploads to Vercel Blob,
+- compute the history, the failing tests and the flaky tests with SQL over the
+  night and the nights before it, which chDB reads straight from the Blob store's
+  public URLs with url() (from --work/store when BLOB_BASE_URL is unset).
 
-The results go to --site/data/*.json, beside the static dashboard. The chDB that
-runs this is the nightly wheel itself when it installs, so a broken nightly shows
-up here first.
+The results go to --site/data/*.json, beside the static dashboard.
 """
 
 from __future__ import annotations
@@ -43,7 +41,9 @@ RUNS_SCHEMA = (
 TESTS_SCHEMA = (
     "date Date, head_sha String, platform String, suite String, test String, status String, time_s Float64"
 )
-JSON_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0"
+RUNS_DAYS, TESTS_DAYS = 90, 30
+# A night without a file (no build, or no Blob store yet) reads as empty.
+QUERY_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, engine_url_skip_empty_files = 1"
 
 
 def gh(*args) -> str:
@@ -115,36 +115,31 @@ def failed_log_tail(repo: str, run_id: int) -> str:
 
 
 class Store:
-    """Where the nightly rows live: R2 through s3(), or a local directory."""
+    """The nightly rows: one Parquet file per table and night, named by its date.
 
-    def __init__(self, work: Path):
-        endpoint = os.environ.get("R2_ENDPOINT", "").rstrip("/")
-        bucket = os.environ.get("R2_BUCKET", "")
-        self.key = os.environ.get("R2_ACCESS_KEY_ID", "")
-        self.secret = os.environ.get("R2_SECRET_ACCESS_KEY", "")
-        self.remote = bool(endpoint and bucket and self.key and self.secret)
-        self.base = f"{endpoint}/{bucket}" if self.remote else str(work / "store")
+    The night itself goes to --work/store, which the workflow uploads to the
+    public Vercel Blob store at BLOB_BASE_URL; earlier nights are read back from
+    there. Without BLOB_BASE_URL every night is read from --work/store.
+    """
 
-    def table(self, rel: str, fmt: str = "Parquet", structure: str = "", compression: str = "") -> str:
-        url = f"{self.base}/{rel}"
-        if self.remote:
-            args = [lit(url), lit(self.key), lit(self.secret), lit(fmt)]
-            func = "s3"
-        else:
-            args = [lit(url), lit(fmt)]
-            func = "file"
-        if structure:
-            args.append(lit(structure))
-        if compression:
-            args.append(lit(compression))
-        return f"{func}({', '.join(args)})"
+    def __init__(self, work: Path, date: str):
+        self.local = work / "store"
+        self.remote = os.environ.get("BLOB_BASE_URL", "").rstrip("/")
+        self.date = dt.date.fromisoformat(date)
 
-    def truncate(self) -> str:
-        return "s3_truncate_on_insert = 1" if self.remote else "engine_file_truncate_on_insert = 1"
+    def path(self, rel: str) -> Path:
+        path = self.local / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
-    def prepare(self, rel: str) -> None:
+    def nights(self, table: str, schema: str, days: int) -> str:
+        """A FROM clause over the table's night and the `days` nights before it."""
         if not self.remote:
-            Path(self.base, rel).parent.mkdir(parents=True, exist_ok=True)
+            return f"file({lit(str(self.local / table / '*.parquet'))}, 'Parquet', {lit(schema)})"
+        dates = ",".join((self.date - dt.timedelta(days=d)).isoformat() for d in range(1, days + 1))
+        earlier = f"url({lit(f'{self.remote}/{table}/{{{dates}}}.parquet')}, 'Parquet', {lit(schema)})"
+        night = f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
+        return f"(SELECT * FROM {earlier} UNION ALL SELECT * FROM {night})"
 
 
 def query(chdb, sql: str) -> list[dict]:
@@ -165,15 +160,15 @@ def main(argv=None) -> int:
     parser.add_argument("--site", required=True)
     args = parser.parse_args(argv)
 
-    import chdb  # the nightly wheel, or the latest release when it fails to install
+    import chdb  # the latest chdb-core release
 
     repo = os.environ["GITHUB_REPOSITORY"]
     work, site = Path(args.work), Path(args.site)
     night = json.loads((work / "night.json").read_text())
     date, sha = night["date"], night["head_sha"]
     sync = sync_state(repo, sha)
-    engine = {"kind": os.environ.get("CHDB_ENGINE", "unknown"), "version": getattr(chdb, "__version__", "")}
-    store = Store(work)
+    engine = getattr(chdb, "__version__", "")
+    store = Store(work, date)
     data = site / "data"
     data.mkdir(parents=True, exist_ok=True)
 
@@ -198,7 +193,7 @@ def main(argv=None) -> int:
             "url": run.get("url", ""),
             "upstream_commit": sync["upstream_commit"],
             "upstream_lag": sync["upstream_lag"],
-            "engine": engine["kind"],
+            "engine": engine,
         })
         if run.get("conclusion") == "failure":
             tail = failed_log_tail(repo, run["id"])
@@ -208,19 +203,17 @@ def main(argv=None) -> int:
     runs_file, tests_file = work / "runs.jsonl", work / "tests.jsonl"
     write_jsonl(runs_file, runs)
     write_jsonl(tests_file, tests)
-    # Plain date directories: `date=...` would turn into a Hive partition column.
-    part = f"{date}/{sha}.parquet"
-    store.prepare(f"runs/{part}")
+    # Named by date alone: a `date=...` directory would read as a Hive partition column.
     chdb.query(
-        f"INSERT INTO FUNCTION {store.table(f'runs/{part}')} "
-        f"SELECT * FROM file({lit(str(runs_file))}, 'JSONEachRow', {lit(RUNS_SCHEMA)}) SETTINGS {store.truncate()}"
+        f"INSERT INTO FUNCTION file({lit(str(store.path(f'runs/{date}.parquet')))}, 'Parquet') "
+        f"SELECT * FROM file({lit(str(runs_file))}, 'JSONEachRow', {lit(RUNS_SCHEMA)}) "
+        "SETTINGS engine_file_truncate_on_insert = 1"
     )
     if tests:
-        store.prepare(f"tests/{part}")
         chdb.query(
-            f"INSERT INTO FUNCTION {store.table(f'tests/{part}')} "
+            f"INSERT INTO FUNCTION file({lit(str(store.path(f'tests/{date}.parquet')))}, 'Parquet') "
             f"SELECT * FROM file({lit(str(tests_file))}, 'JSONEachRow', {lit(TESTS_SCHEMA)}) "
-            f"SETTINGS {store.truncate()}"
+            "SETTINGS engine_file_truncate_on_insert = 1"
         )
 
     log_links = {}
@@ -230,14 +223,14 @@ def main(argv=None) -> int:
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_text(tail)
         log_links[platform] = f"logs/{name}"
-        rel = f"logs/{date}/{platform}.txt.gz"
-        store.prepare(rel)
         chdb.query(
-            f"INSERT INTO FUNCTION {store.table(rel, 'LineAsString', 'line String', 'gzip')} "
-            f"SELECT line FROM file({lit(str(local))}, 'LineAsString', 'line String') SETTINGS {store.truncate()}"
+            f"INSERT INTO FUNCTION file({lit(str(store.path(f'logs/{date}/{platform}.txt.gz')))}, "
+            "'LineAsString', 'line String', 'gzip') "
+            f"SELECT line FROM file({lit(str(local))}, 'LineAsString', 'line String') "
+            "SETTINGS engine_file_truncate_on_insert = 1"
         )
 
-    all_runs = store.table("runs/*/*.parquet")
+    all_runs = store.nights("runs", RUNS_SCHEMA, RUNS_DAYS)
     history = query(chdb, f"""
         SELECT toString(date) AS date, platform, conclusion, round(duration_min, 1) AS duration_min,
                round(wheel_bytes / 1048576, 1) AS wheel_mb, tests_total, tests_failed, upstream_lag,
@@ -246,11 +239,11 @@ def main(argv=None) -> int:
         WHERE date >= today() - 90
         ORDER BY date DESC, platform
         LIMIT 1 BY date, platform
-        {JSON_SETTINGS}, prefer_column_name_to_alias = 1""")
+        {QUERY_SETTINGS}, prefer_column_name_to_alias = 1""")
 
     failing, flaky = [], []
     if tests:
-        all_tests = store.table("tests/*/*.parquet")
+        all_tests = store.nights("tests", TESTS_SCHEMA, TESTS_DAYS)
         failing = query(chdb, f"""
             WITH recent AS (
                 SELECT DISTINCT platform, test FROM {all_tests}
@@ -262,7 +255,7 @@ def main(argv=None) -> int:
             GROUP BY platform, test
             ORDER BY new DESC, platform, test
             LIMIT 200
-            {JSON_SETTINGS}""")
+            {QUERY_SETTINGS}""")
         flaky = query(chdb, f"""
             SELECT test, platform, count() AS runs, countIf(status IN ('failure', 'error')) AS failures,
                    toString(maxIf(date, status IN ('failure', 'error'))) AS last_failure
@@ -272,12 +265,12 @@ def main(argv=None) -> int:
             HAVING failures > 0 AND failures < runs
             ORDER BY failures DESC, last_failure DESC
             LIMIT 50
-            {JSON_SETTINGS}""")
+            {QUERY_SETTINGS}""")
 
     site_url = os.environ.get("NIGHTLY_SITE_URL", "").rstrip("/")
     latest = {
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "engine": engine,
+        "engine": {"version": engine},
         "night": {"date": date, "head_sha": sha, "version": night["version"],
                   "commit_url": f"https://github.com/{repo}/commit/{sha}"},
         "platforms": [
@@ -299,7 +292,7 @@ def main(argv=None) -> int:
         if file.is_file():
             shutil.copy(file, site / file.name)
     print(f"Dashboard data for {date} ({sha[:12]}): {len(history)} history rows, "
-          f"{len(failing)} failing and {len(flaky)} flaky tests; storage: {'R2' if store.remote else 'local'}")
+          f"{len(failing)} failing and {len(flaky)} flaky tests; storage: {'Vercel Blob' if store.remote else 'local'}")
     return 0
 
 

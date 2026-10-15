@@ -950,15 +950,13 @@ jobs:
             ./linux-aarch64-libchdb-static.tar.gz
             ./linux-aarch64-debuginfo.tar.xz
           overwrite: true
-      # The nightly release only needs the wheel; the artifact above also carries
-      # the libraries and gigabytes of debug symbols.
-      - name: Upload the wheel for the nightly release
-        if: github.event_name == 'schedule'
-        uses: actions/upload-artifact@v7
-        with:
-          name: chdb-wheel-linux-aarch64
-          path: ./dist/chdb_core-*.whl
-          overwrite: true
+      # Scheduled builds feed the nightly release directly; nightly_publish.yml
+      # finishes it once all four platforms are done.
+      - name: Upload the wheel to the nightly release
+        if: github.event_name == 'schedule' && vars.NIGHTLY_PUBLISH_ENABLED == 'true'
+        run: .github/nightly/upload_wheel.sh dist/chdb_core-*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       # A release goes to PyPI, a candidate does not, and a release opts out by
       # saying [no-pypi] in its notes. The script owns that policy and logs
       # which way it went; see it for why the quota makes the opt-out worth

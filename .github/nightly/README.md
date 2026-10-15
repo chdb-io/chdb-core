@@ -5,7 +5,7 @@ Two workflows keep `main` close to ClickHouse master and publish what it builds.
 | Workflow | When | What it does |
 |---|---|---|
 | `daily_sync.yml` | 02:17 UTC, or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT` and opens a pull request |
-| `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC) | Publishes the wheels to the `nightly` pre-release and updates the dashboard |
+| `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
 
 Both stay off until their repository variable is set (below).
 
@@ -82,20 +82,24 @@ The four wheel workflows build `main` on a schedule. Their scheduled runs versio
 the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer ClickHouse line than its
 newest tag, `X.Y.0.devN`, with no local `+` part so the name survives as a release
 asset. `N` is the commit's time as yymmddhhmm in UTC, e.g.
-`26.10.0.dev2610151617`. `nightly_publish.yml` waits until all four runs for the commit are done, then:
+`26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly` pre-release
+itself (`upload_wheel.sh`), creating the release on the first night.
+`nightly_publish.yml` waits until all four runs for the commit are done, then:
 
-- uploads the `chdb_core` wheels to the `nightly` pre-release and deletes those older
-  than 30 days. The release is created once; afterwards only its assets, notes and
-  tag move, so no `release: published` event starts the release builds, and the
-  release workflows skip any tag that is not `v*` anyway;
-- writes a PEP 503 index, so
+- moves the `nightly` tag to the commit and deletes wheels older than 30 days. The
+  release is created once; afterwards only its assets, notes and tag move, so no
+  `release: published` event starts the release builds, and the release workflows
+  skip any tag that is not `v*` anyway;
+- writes a PEP 503 index from the release's asset list, whose names and sha256
+  digests are all it needs (no wheel is downloaded), so
   `pip install --pre --extra-index-url <site>/simple chdb-core` installs the newest
   nightly;
-- runs `report.py` on the nightly wheel itself (the latest release if it does not
-  install): chDB writes the night's runs, test results and failure log tails to
-  Parquet in Cloudflare R2 through `s3()`, and computes the history, failing and
-  flaky tests with SQL over every night stored;
-- deploys `dashboard/` and the data to Cloudflare Pages.
+- runs `report.py` on the latest chdb-core release: chDB writes the night's runs,
+  test results and failure log tails as files named by the date, which the workflow
+  uploads to a public Vercel Blob store, and computes the history, failing and
+  flaky tests with SQL over that night and the ones before it, read straight from
+  the store's URLs with `url()`;
+- deploys `dashboard/`, its data and the pip index to Vercel.
 
 ## Setup
 
@@ -107,19 +111,22 @@ asset. `N` is the commit's time as yymmddhhmm in UTC, e.g.
 | `SYNC_CLAUDE_MODEL` | variable | daily sync | Optional; defaults to `claude-opus-5-5` |
 | `NIGHTLY_PUBLISH_ENABLED` | variable | nightly | `true` to publish |
 | `NIGHTLY_SITE_URL` | variable | nightly | Public URL of the dashboard, e.g. `https://nightly.chdb.io` |
-| `R2_ENDPOINT` | variable | nightly | `https://<account id>.r2.cloudflarestorage.com` |
-| `R2_BUCKET` | variable | nightly | Bucket for the Parquet history and logs |
-| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | secret | nightly | R2 API token with read/write on the bucket |
-| `CF_ACCOUNT_ID` | variable | nightly | Cloudflare account id |
-| `CF_PAGES_PROJECT` | variable | nightly | Pages project name; deployment is skipped when unset |
-| `CLOUDFLARE_API_TOKEN` | secret | nightly | Token with Pages edit permission |
+| `GH_TOKEN` | secret | nightly | The token the wheel workflows already upload release assets with |
+| `VERCEL_TOKEN` | secret | nightly | Vercel access token for the team that owns the project |
+| `VERCEL_ORG_ID` | variable | nightly | That team's id |
+| `VERCEL_PROJECT_ID` | variable | nightly | The dashboard's project; deployment is skipped when unset |
+| `BLOB_BASE_URL` | variable | nightly | Base URL of the public Blob store, `https://<store id>.public.blob.vercel-storage.com` |
+| `BLOB_READ_WRITE_TOKEN` | secret | nightly | The Blob store's read-write token |
 
 On the repository: allow auto-merge, and make the Linux x86_64 build a required
-check on `main` so auto-merge waits for it. In Cloudflare: create the R2 bucket
-(with a lifecycle rule deleting `logs/` after 90 days) and the Pages project, and
-bind a `chdb.io` subdomain to the project.
+check on `main` so auto-merge waits for it. In Vercel: create the project with
+`vercel project create <name>` (no Git connection, no build: the workflow deploys
+a finished directory), make sure Deployment Protection leaves its production
+domain public (pip and readers fetch it without a Vercel login), add a `chdb.io`
+subdomain to it (a CNAME in chdb.io's DNS) or keep its `*.vercel.app` domain, and
+create a public Blob store.
 
-Without the R2 settings the report still runs, with the history limited to the
+Without `BLOB_BASE_URL` the report still runs, with the history limited to the
 night itself.
 
 ## Files
@@ -131,7 +138,8 @@ night itself.
 | `open_pr.sh` | commit, push and open the sync pull request |
 | `resolve_prompt.md` | the prompt the conflict job gives Claude Code |
 | `embedded-mirror-allowlist.txt` | `LocalServer` calls `EmbeddedServer` deliberately skips |
-| `publish.py` | nightly release, retention and pip index |
+| `upload_wheel.sh` | a scheduled build's wheel to the nightly release |
+| `publish.py` | nightly release tag, retention and pip index |
 | `report.py` | dashboard data, computed by chDB |
 | `dashboard/` | the static dashboard |
 | `test_nightly.py` | offline tests, run by Pull-CI |

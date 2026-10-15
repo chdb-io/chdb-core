@@ -6,8 +6,10 @@ from __future__ import annotations
 import collections
 import datetime as dt
 import importlib.util
+import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -130,26 +132,33 @@ class Scanners(unittest.TestCase):
 
 
 class Publishing(unittest.TestCase):
-    def wheel(self, name):
-        return {"platform": "linux-x86_64", "name": name, "size": 1, "sha256": "f" * 64}
+    linux = "chdb_core-26.10.0.dev2610151617-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    mac = "chdb_core-26.10.0.dev2610151617-cp39-abi3-macosx_11_0_arm64.whl"
+    old = "chdb_core-26.10.0.dev2609010930-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl"
 
-    def test_prune(self):
-        manifest = {"nights": [
-            {"date": "2026-09-01", "head_sha": A, "version": "1", "wheels": [self.wheel("old.whl")]},
-            {"date": "2026-10-10", "head_sha": B, "version": "2", "wheels": [self.wheel("new.whl")]},
-        ]}
-        kept, stale = publish.prune(manifest, 30, dt.date(2026, 10, 12))
-        self.assertEqual([n["head_sha"] for n in kept["nights"]], [B])
-        self.assertEqual(stale, ["old.whl"])
+    def asset(self, name, updated_at="2026-10-15T20:00:00Z"):
+        return {"name": name, "size": 7, "digest": "sha256:" + "f" * 64, "updated_at": updated_at}
+
+    def test_night_wheels(self):
+        self.assertEqual(publish.dev_number("2026-10-15T16:17:59Z"), "2610151617")
+        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset("notes.txt")]
+        wheels = publish.night_wheels(assets, "2610151617")
+        self.assertEqual([w["platform"] for w in wheels], ["linux-x86_64", "macos-arm64"])
+        self.assertEqual(wheels[0]["sha256"], "f" * 64)
+        self.assertEqual(publish.wheel_platform(self.old), "linux-aarch64")
+        self.assertEqual(publish.wheel_version(self.linux), "26.10.0.dev2610151617")
+
+    def test_stale(self):
+        assets = [self.asset(self.linux), self.asset(self.old, "2026-09-01T10:00:00Z")]
+        now = dt.datetime(2026, 10, 15, 21, tzinfo=dt.timezone.utc)
+        self.assertEqual(publish.stale(assets, 30, now), [self.old])
 
     def test_pep503(self):
-        name = "chdb_core-26.10.0.dev2610151617-cp39-abi3-manylinux2014_x86_64.whl"
-        pages = publish.pep503_pages("chdb-io/chdb-core", {"nights": [
-            {"date": "2026-10-10", "head_sha": B, "version": "x", "wheels": [self.wheel(name)]}]})
+        pages = publish.pep503_pages("chdb-io/chdb-core", [self.asset(self.linux), self.asset("notes.txt")])
         project = pages["simple/chdb-core/index.html"]
-        self.assertIn(f"https://github.com/chdb-io/chdb-core/releases/download/nightly/{name}#sha256=", project)
+        self.assertIn(f"https://github.com/chdb-io/chdb-core/releases/download/nightly/{self.linux}#sha256=", project)
+        self.assertNotIn("notes.txt", project)
         self.assertIn('href="chdb-core/"', pages["simple/index.html"])
-        self.assertEqual(publish.wheel_version(name), "26.10.0.dev2610151617")
 
 
 class Reporting(unittest.TestCase):
@@ -169,12 +178,16 @@ class Reporting(unittest.TestCase):
         self.assertEqual(rows[1]["test"], "test_a.T.test_bad")
         self.assertEqual(rows[0]["suite"], "py3.9-pandas_3.0")
 
-    def test_store_tables(self):
+    def test_store_nights(self):
         self.assertEqual(report.lit("it's"), "'it\\'s'")
-        with tempfile.TemporaryDirectory() as tmp:
-            local = report.Store(Path(tmp))
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"BLOB_BASE_URL": ""}):
+            local = report.Store(Path(tmp), "2026-10-15")
             self.assertFalse(local.remote)
-            self.assertTrue(local.table("runs/x.parquet").startswith("file('"))
+            self.assertTrue(local.nights("runs", "x UInt8", 3).startswith(f"file('{tmp}/store/runs/*.parquet'"))
+        with unittest.mock.patch.dict(os.environ, {"BLOB_BASE_URL": "https://b.example/"}):
+            remote = report.Store(Path("/w"), "2026-10-15").nights("runs", "x UInt8", 2)
+        self.assertIn("url('https://b.example/runs/{2026-10-14,2026-10-13}.parquet', 'Parquet', 'x UInt8')", remote)
+        self.assertIn("file('/w/store/runs/2026-10-15.parquet'", remote)
 
 
 if __name__ == "__main__":

@@ -310,8 +310,7 @@ function renderFooter() {
   const footer = document.getElementById("footer");
   if (!latest) return;
   const engine = latest.engine || {};
-  footer.replaceChildren(`Data computed with chDB ${engine.version || ""} (${engine.kind === "nightly"
-    ? "the nightly wheel itself" : "the latest release; the nightly wheel did not install"}). Generated ${latest.generated_at}.`);
+  footer.replaceChildren(`Data computed with chDB ${engine.version || ""}. Generated ${latest.generated_at}.`);
   document.getElementById("updated").textContent = `Updated ${latest.generated_at.replace("T", " ").replace("Z", " UTC")}.`;
 }
 

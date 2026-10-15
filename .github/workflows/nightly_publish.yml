@@ -1,9 +1,10 @@
 name: Publish nightly build
 
-# The four wheel workflows build main every night (their `schedule`). This runs
-# when each of them finishes; once all four runs for that commit are done it
-# uploads the wheels to the rolling `nightly` pre-release, keeps 30 days of them,
-# and has chDB turn the night's results into the dashboard on Cloudflare Pages.
+# The four wheel workflows build main every night (their `schedule`) and upload
+# their wheel to the rolling `nightly` pre-release. This runs when each of them
+# finishes; once all four runs for that commit are done it moves the release to
+# that commit, keeps 30 days of wheels, and has chDB turn the night's results into
+# the dashboard, which goes to Vercel with its data in Vercel Blob.
 # See .github/nightly/README.md.
 
 on:
@@ -46,7 +47,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Publish the wheels
+      - name: Finish the nightly release
         id: publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,37 +57,44 @@ jobs:
           --head-sha "${{ github.event.workflow_run.head_sha || inputs.head_sha }}"
           --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
 
-      # The report runs on the nightly wheel it just published when that wheel
-      # installs; otherwise on the latest release, and the dashboard says which.
+      # The latest release from PyPI: the nightly wheels stay on the release.
       - name: Install chDB
         if: steps.publish.outputs.ready == 'true'
-        run: |
-          wheel=$(ls "$RUNNER_TEMP"/nightly/wheels/linux-x86_64/chdb_core-*.whl 2>/dev/null | head -1 || true)
-          if [ -n "$wheel" ] && python3 -m pip install --quiet "$wheel"; then
-            echo "CHDB_ENGINE=nightly" >> "$GITHUB_ENV"
-          else
-            python3 -m pip install --quiet chdb-core
-            echo "CHDB_ENGINE=release" >> "$GITHUB_ENV"
-          fi
+        run: python3 -m pip install --quiet chdb-core
 
       - name: Build the dashboard data
         if: steps.publish.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
-          R2_ENDPOINT: ${{ vars.R2_ENDPOINT }}
-          R2_BUCKET: ${{ vars.R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          BLOB_BASE_URL: ${{ vars.BLOB_BASE_URL }}
         run: python3 .github/nightly/report.py --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
 
-      - name: Deploy the dashboard
-        if: steps.publish.outputs.ready == 'true' && vars.CF_PAGES_PROJECT != ''
+      - name: Install the Vercel CLI
+        if: steps.publish.outputs.ready == 'true' && (vars.BLOB_BASE_URL != '' || vars.VERCEL_PROJECT_ID != '')
+        run: npm install --global vercel@64
+
+      # The night's Parquet files and log tails; report.py reads earlier nights
+      # back from the store's public URLs.
+      - name: Store the night in Vercel Blob
+        if: steps.publish.outputs.ready == 'true' && vars.BLOB_BASE_URL != ''
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CF_ACCOUNT_ID }}
-          PROJECT: ${{ vars.CF_PAGES_PROJECT }}
-        run: npx --yes wrangler@latest pages deploy "$RUNNER_TEMP/site" --project-name "$PROJECT" --branch main
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        working-directory: ${{ runner.temp }}/nightly/store
+        run: |
+          for path in $(find . -type f | sed 's|^\./||' | sort); do
+            vercel blob put "$path" --pathname "$path" --access public --allow-overwrite \
+              --rw-token "$BLOB_READ_WRITE_TOKEN" --token "$VERCEL_TOKEN" --non-interactive
+          done
+
+      - name: Deploy the dashboard to Vercel
+        if: steps.publish.outputs.ready == 'true' && vars.VERCEL_PROJECT_ID != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: vercel deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN" --non-interactive
 
       - uses: actions/upload-artifact@v7
         if: steps.publish.outputs.ready == 'true'
