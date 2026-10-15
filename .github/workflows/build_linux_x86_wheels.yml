@@ -97,7 +97,7 @@ jobs:
     # only: it skips the static library, chdb-core-lite, debug symbols, the
     # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
     # version against one pandas line (3.14 against both). The sync pull request's own
-    # CI ran all of it on Linux x86_64. Everything else builds as before.
+    # CI ran all of it on every platform. Everything else builds as before.
     env:
       WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
     steps:

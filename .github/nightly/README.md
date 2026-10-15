@@ -42,8 +42,8 @@ Both stay off until their repository variable is set (below).
    `SYNC_PAT`. Its description gives the build and test result, the conflicts and
    what the AI did, the files changed beyond the upstream diff, and the checks. A
    person approves and merges it.
-7. The sync pull request's CI is Linux x86_64 alone; the other platforms, the
-   free-threaded wheels and wasm build on `main` after it merges.
+7. The sync pull request gets the CI any pull request gets: the four wheel
+   platforms, the free-threaded wheels and wasm.
 
 While a sync pull request is open, the daily run does nothing, so a review is never
 overwritten, and no nightly comes out either; the next sync after it merges covers
@@ -91,7 +91,7 @@ failing that, the pull request GitHub associates with the commit. That build mak
 and tests the Python wheel only (`WHEEL_ONLY`): every Python version, each against
 one pandas line (3.14 against both), but no static library, chdb-core-lite, debug
 symbols, libchdb/ADBC/Go checks or other packages' tests, which the sync pull
-request's own CI ran on Linux x86_64. A merged sync's push also gets a concurrency
+request's own CI ran on every platform. A merged sync's push also gets a concurrency
 group of its own, so a later push to main cannot replace its pending build. No sync
 merged, no nightly: none while a sync pull request waits for review.
 

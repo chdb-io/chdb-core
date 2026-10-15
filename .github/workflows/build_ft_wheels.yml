@@ -53,8 +53,7 @@ jobs:
   ft_linux_x86_64:
     name: FT wheels (Linux x86_64)
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
-    # Not on the daily ClickHouse sync's pull requests; main's push build covers them.
-    if: ${{ !github.event.pull_request.draft && github.head_ref != 'sync/clickhouse-master' }}
+    if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 600
     steps:
       # First step in the job: a cutoff recorded later is skipped when an
