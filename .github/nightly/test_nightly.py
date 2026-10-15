@@ -121,6 +121,7 @@ class Messages(unittest.TestCase):
         "base": A, "target": B, "target_reason": "newest master commit that passed MasterCI",
         "upstream_prs": [1, 2, 3], "applied_files": ["src/a.cpp"], "skipped": {"x": 4},
         "conflicts": [{"path": "src/a.cpp", "upstream_prs": [2]}], "upstream_files_edited": ["src/c.cpp"],
+        "protected_files_edited": ["UPSTREAM_COMMIT"],
         "submodules": [{"path": "contrib/lib", "action": "bumped", "upstream_old": A, "upstream_new": B}],
         "chdb_version": {"from": "26.9.0", "to": "26.10.0-dev"},
     }
@@ -138,6 +139,7 @@ class Messages(unittest.TestCase):
         self.assertIn("Target: newest master commit that passed MasterCI.", body)
         self.assertIn("**Upstream files the resolution also changed**", body)
         self.assertIn("`src/c.cpp`", body)
+        self.assertIn("**CI, skill or version files the resolution changed**", body)
 
 
 class Delta(unittest.TestCase):
