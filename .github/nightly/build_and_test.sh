@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build chdb-core and run its Python tests on Python 3.9, as the Linux x86_64
+# Build chdb-core and run its Python tests on Python 3.14, as the Linux x86_64
 # wheel workflow does, so the daily sync can check itself before it opens a pull
-# request. Run it from anywhere in the checkout: the first run builds everything,
-# later runs rebuild what changed. Each step's full log goes to .sync/build/; a
-# failing step prints the end of its log. The last line is PASS or FAIL, and
-# .sync/build.json records the result, and the state it was for, for the pull
-# request.
+# request; chdb/build.sh itself builds with Python 3.9, as it requires. Run it from
+# anywhere in the checkout: the first run builds everything, later runs rebuild
+# what changed. Each step's full log goes to .sync/build/; a failing step prints the
+# end of its log. The last line is PASS or FAIL, and .sync/build.json records the
+# result, and the state it was for, for the pull request.
 
 set -uo pipefail
 
@@ -20,6 +20,8 @@ if [ -f "$HOME/.cargo/env" ]; then
   . "$HOME/.cargo/env"
 fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
+# The pybind11 shims for the two installed versions only; the default wants all six.
+export CHDB_PYBIND11_PYTHON_VERSIONS="3.9 3.14"
 # vars.sh writes CHDB_VERSION into chdb.h; hand it the value the sync left there,
 # or the build would rewrite the header.
 CHDB_VERSION=$(sed -n 's/^#define CHDB_VERSION "\(.*\)"$/\1/p' programs/local/chdb.h)
@@ -59,7 +61,8 @@ step build bash ./chdb/build.sh
 step smoke bash ./chdb/test_smoke.sh
 rm -rf dist
 step wheel make wheel
-step install sh -c 'python -m pip install --force-reinstall dist/*.whl "pandas<3.0" adbc-driver-manager==1.8.0'
+pyenv shell 3.14
+step install sh -c 'python -m pip install --force-reinstall dist/*.whl "pandas>=3.0" adbc-driver-manager==1.8.0'
 step test make test
 record pass
 echo "PASS"

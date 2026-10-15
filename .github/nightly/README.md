@@ -24,7 +24,7 @@ Both stay off until their repository variable is set (below).
    `README.md`, `CONTRIBUTING.md`, `.gitignore` and `pyproject.toml`. Submodule
    pointers move when chDB pins the same commit upstream did, and are held when chDB
    pins its own. `CHDB_VERSION` follows the upstream line as `X.Y.0-dev`.
-3. Build chDB and run its Python tests on Python 3.9 (`build_and_test.sh`), on the
+3. Build chDB and run its Python tests on Python 3.14 (`build_and_test.sh`), on the
    self-hosted x64 pool, the way the Linux x86_64 wheel workflow does.
 4. When the diff conflicts, or the build or the tests fail, Claude Code takes over
    on the same machine (`claude -p`, effort max, following
@@ -143,7 +143,7 @@ night itself.
 | File | Purpose |
 |---|---|
 | `daily_sync.py` | fetch, target, apply, stage, commit |
-| `build_and_test.sh` | build chDB and run the Python tests on Python 3.9 |
+| `build_and_test.sh` | build chDB and run the Python tests on Python 3.14 |
 | `checks.py` | the checks Git does not do |
 | `open_pr.sh` | commit, push and open the sync pull request |
 | `resolve_prompt.md` | the prompt the sync gives Claude Code |

@@ -575,7 +575,7 @@ def pr_body(summary: dict) -> str:
     ]
     build = summary.get("build")
     if build:
-        out += ["", "## Build and tests (Linux x86_64, Python 3.9)", ""]
+        out += ["", "## Build and tests (Linux x86_64, Python 3.14)", ""]
         if build["result"] == "pass":
             out.append("Built and passed the Python tests.")
         else:

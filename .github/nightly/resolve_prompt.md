@@ -6,7 +6,7 @@ already failed once; it says where.
 
 Follow `.agents/skills/resolve-sync-conflicts/SKILL.md`. In short: resolve every
 conflict, then run `bash .github/nightly/build_and_test.sh`, which builds chDB,
-installs the wheel and runs the Python tests on Python 3.9 and ends with PASS or
+installs the wheel and runs the Python tests on Python 3.14 and ends with PASS or
 FAIL. Fix what the sync broke and run it again, until it passes or you can make no
 further progress. Then write `.sync/resolution.md` for the pull request.
 

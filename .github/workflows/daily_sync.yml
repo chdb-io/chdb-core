@@ -2,7 +2,7 @@ name: Daily ClickHouse sync
 
 # Brings ClickHouse master into main once every weekday. It picks the newest master
 # commit upstream CI passed, applies the diff since UPSTREAM_COMMIT to the paths
-# chDB keeps, builds chDB and runs its Python tests on Python 3.9. When the diff
+# chDB keeps, builds chDB and runs its Python tests on Python 3.14. When the diff
 # conflicts, or the build or the tests fail, Claude Code takes over on the same
 # build machine: it resolves the conflicts, fixes what the sync broke until the
 # build and the tests pass, and writes down what it did. The result becomes a pull
@@ -98,7 +98,8 @@ jobs:
           SYNC_TARGET_REASON: ${{ steps.target.outputs.reason }}
         run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "${{ steps.target.outputs.target }}"
 
-      # The build environment of build_linux_x86_wheels.yml, with Python 3.9 alone.
+      # The build environment of build_linux_x86_wheels.yml, with Python 3.9 to build
+      # (chdb/build.sh requires it) and 3.14 to test.
       - name: Install the toolchain
         if: steps.apply.outcome == 'success'
         run: |
@@ -121,7 +122,7 @@ jobs:
           rustup default nightly-2026-03-22
           rustup component add rust-src
 
-      - name: Install Python 3.9
+      - name: Install Python 3.9 and 3.14
         if: steps.apply.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -135,10 +136,14 @@ jobs:
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv install 3.9:latest
-          pyenv global 3.9
-          python -m pip install --upgrade pip
-          python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel jupyter nbconvert \
-            "fastjsonschema<2.22" "polars==1.10.0"
+          pyenv install 3.14:latest
+          pyenv global 3.9 3.14
+          for version in 3.9 3.14; do
+            if [ "$version" = 3.9 ]; then polars=polars==1.10.0; else polars=polars; fi
+            PYENV_VERSION=$version python -m pip install --upgrade pip
+            PYENV_VERSION=$version python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel \
+              jupyter nbconvert "fastjsonschema<2.22" "$polars"
+          done
 
       - name: ccache
         if: steps.apply.outcome == 'success'
