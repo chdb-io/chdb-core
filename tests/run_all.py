@@ -109,6 +109,13 @@ class _RecordingResult(unittest.TextTestResult):
         super().addUnexpectedSuccess(test)
         self._record(test, "failure", "unexpected success")
 
+    def addSubTest(self, test, subtest, err):
+        # A failing subtest fails its test, which then never reaches addSuccess.
+        super().addSubTest(test, subtest, err)
+        if err is not None:
+            status = "failure" if issubclass(err[0], test.failureException) else "error"
+            self._record(test, status, f"{subtest}\n{self._exc_info_to_string(err, test)}")
+
 
 def _write_junit(name, result, load_errors):
     suite = ET.Element("testsuite", name=name)
