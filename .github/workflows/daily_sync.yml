@@ -73,6 +73,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Every later git request to github.com carries the job's read-only token, as
+      # update-submodules.sh sends it: anonymous ones get rate-limited on the pool's
+      # shared egress IP. That covers the ClickHouse fetch, the blobs Git fetches from
+      # it on demand later (apply, Claude Code, checks.py), pyenv and the submodules.
+      - name: Authenticate git to github.com
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          credentials=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$credentials"
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader"
+            echo "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic $credentials"
+          } >> "$GITHUB_ENV"
+
       - name: Wait while a sync pull request is open
         id: open
         env:
@@ -137,15 +153,9 @@ jobs:
 
       - name: Install Python 3.9 and 3.14
         if: steps.apply.outcome == 'success'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           rm -rf "$HOME/.pyenv"
-          # Authenticated: anonymous clones get rate-limited on the pool's shared egress IP.
-          GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
-            git clone --depth 1 https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
+          git clone --depth 1 https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
           pyenv install 3.9:latest
@@ -168,13 +178,9 @@ jobs:
           max-size: 5G
           save: false
 
-      # build_and_test.sh checks the submodules out first; the token, read-only, only
-      # authenticates those clones on the pool's shared egress IP.
       - name: Build and test
         id: build
         if: steps.apply.outputs.status == 'clean'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if bash .github/nightly/build_and_test.sh; then
             echo "result=pass" >> "$GITHUB_OUTPUT"
@@ -191,7 +197,6 @@ jobs:
         if: steps.apply.outputs.status == 'conflicts' || steps.build.outputs.result == 'fail'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
           MODEL: ${{ vars.SYNC_CLAUDE_MODEL || 'claude-opus-5-5' }}
           # A full build takes about an hour; let a single command run for up to three.
           BASH_DEFAULT_TIMEOUT_MS: '10800000'
