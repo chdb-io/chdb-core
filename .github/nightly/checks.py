@@ -17,28 +17,22 @@ to pass or fail; the report goes into the pull request's description.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / ".sync"
 GENERATOR = ROOT / "chdb/build/generate_force_references.py"
-FORCE_REFS = ROOT / "programs/local/ForceFunctionReferences.cpp"
 LOCAL_SERVER = "programs/local/LocalServer.cpp"
 EMBEDDED_SERVER = ROOT / "programs/local/EmbeddedServer.cpp"
 MIRROR_ALLOWLIST = Path(__file__).with_name("embedded-mirror-allowlist.txt")
-CHDB_OWNED = {".gitignore", "CONTRIBUTING.md", "README.md", "pyproject.toml"}
 
 MARKER = re.compile(r"^(<{7}|>{7})(?: |$)", re.M)
-REGISTER = re.compile(r"REGISTER_FUNCTION\s*\(\s*(\w+)\s*\)")
-REFERENCE = re.compile(r"&(?:::)?registerFunction(\w+)\s*,")
 # Calls in LocalServer that EmbeddedServer has had to mirror in past upgrades.
 MIRRORED_CALLS = [
     re.compile(r"\b(register\w+)\s*\("),
@@ -125,8 +119,6 @@ def compare_file(up_old: str, up_new: str, chdb_old: str, chdb_new: str) -> tupl
 def check_delta(work: Path, summary: dict):
     errors = []
     for path in summary["applied_files"]:
-        if path in CHDB_OWNED:
-            continue
         up_old = upstream_show(work, summary["base"], path)
         up_new = upstream_show(work, summary["target"], path)
         chdb_old = head_show(path)
@@ -148,50 +140,13 @@ def check_delta(work: Path, summary: dict):
 # ---------------------------------------------------------------------- force-refs
 
 
-def load_generator():
-    spec = importlib.util.spec_from_file_location("generate_force_references", GENERATOR)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-def registrations(functions_dir: Path) -> set[str]:
-    names = set()
-    for file in functions_dir.rglob("*.cpp"):
-        names.update(REGISTER.findall(file.read_text(errors="replace")))
-    return names
-
-
 def check_force_refs(_work=None, _summary=None):
-    generator = load_generator()
-    functions = ROOT / "src/Functions"
-    wanted_now = set(generator.extract_register_functions(str(functions)))
-    registered_now = registrations(functions)
-    referenced = set(REFERENCE.findall(FORCE_REFS.read_text()))
-
-    with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / "head.tar"
-        archive.write_bytes(run(["git", "archive", "HEAD", "src/Functions"], binary=True))
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp)
-        wanted_before = set(generator.extract_register_functions(str(Path(tmp) / "src/Functions")))
-    referenced_before = set(REFERENCE.findall(head_show(str(FORCE_REFS.relative_to(ROOT))) or ""))
-
-    errors = [
-        f"ForceFunctionReferences.cpp references `registerFunction{name}`, which no longer exists: "
-        "the static library will not link"
-        for name in sorted(referenced - registered_now)
-    ]
-    newly_missing = sorted((wanted_now - referenced) - (wanted_before - referenced_before))
-    warnings = []
-    if newly_missing:
-        warnings.append(
-            "new REGISTER_FUNCTION not referenced from ForceFunctionReferences.cpp, so the static "
-            "library drops them: " + ", ".join(f"`{n}`" for n in newly_missing)
-            + " (regenerate with chdb/build/generate_force_references.py)"
-        )
-    return errors, warnings
+    """ForceFunctionReferences.cpp against the REGISTER_FUNCTION sites, as the static library's build checks it."""
+    proc = subprocess.run([sys.executable, str(GENERATOR), "--check"], cwd=ROOT,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode == 0:
+        return [], []
+    return [" ".join((proc.stderr or proc.stdout).split())], []
 
 
 # ------------------------------------------------------------------------ embedded
