@@ -11,16 +11,19 @@ are left with conflict markers (zdiff3 style: ours, base, theirs). "Ours" is chD
 main; "theirs" is upstream; the base section is the upstream file before the diff.
 The job is to get from there to a sync that builds and passes the Python tests.
 
-## Inputs
+## Finding what you need
 
-- `.sync/summary.json`: the upstream range (`base`, `target`), the files that
-  conflicted (`conflicts`), `submodules` and `applied_files`.
-- The upstream side of each conflicted file: `.sync/upstream/base/<path>` and
-  `.sync/upstream/target/<path>`, the file at `base` and at `target`.
-- For anything else upstream, the ClickHouse repository the sync fetched, as a
-  monthly upgrade has the release tags in its own: for example
-  `git --git-dir="$SYNC_WORK/clickhouse.git" log <base>..<target> -- <path>`. It
-  holds the history; contents it lacks are fetched from GitHub when asked for.
+As in a monthly upgrade, look it up with Git:
+
+- The range: `git show HEAD:UPSTREAM_COMMIT` is the ClickHouse commit `main` was
+  synced to (`base`); `UPSTREAM_COMMIT` in the work tree is the one this sync goes
+  to (`target`).
+- The conflicts: `git diff --name-only --diff-filter=U` and `git status --short`.
+- Upstream: the ClickHouse repository the sync fetched stands in for the release
+  tags a monthly upgrade has in its own. For example
+  `git --git-dir="$SYNC_WORK/clickhouse.git" show <base>:<path>`, the same with
+  `<target>`, `diff <base> <target> -- <path>` and `log <base>..<target> -- <path>`.
+  It holds the history; contents it lacks are fetched from GitHub when asked for.
 - What syncs have broken before:
   `.agents/skills/sync-clickhouse-baseline/references/guide.md`, kept for the
   person-led upgrade. Its import rules, risky modules, the embedded, client and

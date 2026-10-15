@@ -28,8 +28,10 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -73,8 +75,8 @@ def run(cmd, *, cwd=ROOT, check=True, stdin=None, binary=False, env=None):
     return proc
 
 
-def git(*args, check=True, stdin=None) -> str:
-    return run(["git", *args], check=check, stdin=stdin).stdout
+def git(*args, check=True, stdin=None, env=None) -> str:
+    return run(["git", *args], check=check, stdin=stdin, env=env).stdout
 
 
 def upstream_dir(work: Path) -> Path:
@@ -374,24 +376,6 @@ def merged_prs(work: Path, base: str, target: str) -> list[int]:
     return [int(n) for n in re.findall(r"^Merge pull request #(\d+)", out, re.M)]
 
 
-def write_conflict_context(work: Path, base: str, target: str, path: str) -> None:
-    """Give the resolver the upstream side as plain files.
-
-    .sync/upstream/base/<path> and .sync/upstream/target/<path> hold the upstream
-    file before and after this range: what a monthly upgrade reads with
-    `git show <tag>:<path>`, the tags being in its repository.
-    """
-    for label, rev in (("base", base), ("target", target)):
-        proc = subprocess.run(
-            ["git", f"--git-dir={upstream_dir(work)}", "show", f"{rev}:{path}"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
-        if proc.returncode == 0:
-            out = STATE / "upstream" / label / path
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(proc.stdout)
-
-
 def ensure_clean() -> None:
     dirty = [
         line
@@ -440,8 +424,6 @@ def cmd_apply(args) -> int:
         if proc.returncode != 0 and not conflicts:
             raise SyncError(f"git apply failed without leaving conflicts:\n{proc.stderr.strip()}")
 
-    for path in conflicts:
-        write_conflict_context(work, base, target, path)
     submodules = apply_gitlinks(gitlinks, ours_gitlinks, preflight)
     version = follow_upstream_line()
     UPSTREAM_FILE.write_text(target + "\n")
@@ -481,10 +463,10 @@ def worktree_hash() -> str:
     return hashlib.sha256(diff).hexdigest()
 
 
-def gitlinks() -> dict[str, str]:
+def gitlinks(env=None) -> dict[str, str]:
     """Submodule path -> the commit the index pins it to."""
     pins = {}
-    for line in git("ls-files", "-s").splitlines():
+    for line in git("ls-files", "-s", env=env).splitlines():
         meta, path = line.split("\t", 1)
         mode, sha = meta.split()[:2]
         if mode == "160000":
@@ -492,19 +474,19 @@ def gitlinks() -> dict[str, str]:
     return pins
 
 
-def stage_worktree() -> str:
-    """Stage every tracked change and return the index's tree.
+def stage_worktree(env=None) -> str:
+    """Stage every tracked change and return the index's tree; env may name another index.
 
     `git add -u` would also stage whatever each submodule has checked out, or its
     removal when it is not checked out at all; the pointers stay what apply set.
     """
-    pins = gitlinks()
-    git("add", "-u")
-    staged_pins = gitlinks()
+    pins = gitlinks(env)
+    git("add", "-u", env=env)
+    staged_pins = gitlinks(env)
     for path, sha in pins.items():
         if staged_pins.get(path) != sha:
-            git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
-    return git("write-tree").strip()
+            git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}", env=env)
+    return git("write-tree", env=env).strip()
 
 
 def changed_paths(old: str, new: str) -> list[str]:
@@ -512,9 +494,19 @@ def changed_paths(old: str, new: str) -> list[str]:
 
 
 def cmd_snapshot(args) -> int:
-    """Record the sync as the script applied it, conflict markers and all, before anything builds or edits it."""
+    """Record the sync as the script applied it, conflict markers and all, before anything builds or edits it.
+
+    It stages into a copy of the index, so the conflicted files stay unmerged for
+    `git diff --name-only --diff-filter=U` to list, as in a monthly upgrade.
+    """
     summary = load_summary()
-    summary["apply_tree"] = stage_worktree()
+    index = Path(git("rev-parse", "--git-path", "index").strip())
+    if not index.is_absolute():
+        index = ROOT / index
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "index"
+        shutil.copy(index, copy)
+        summary["apply_tree"] = stage_worktree({**os.environ, "GIT_INDEX_FILE": str(copy)})
     save_summary(summary)
     print(f"The applied sync is tree {summary['apply_tree'][:12]}")
     return 0

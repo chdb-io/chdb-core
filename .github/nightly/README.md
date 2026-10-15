@@ -64,7 +64,7 @@ right after 07:00 UTC, it has most of a day.
 git switch -c finish-sync origin/main
 python3 .github/nightly/daily_sync.py fetch --work /tmp/ch-sync --target <sha>
 python3 .github/nightly/daily_sync.py apply --work /tmp/ch-sync --target <sha>
-# resolve the conflicts listed in .sync/summary.json, then until it passes:
+# resolve the conflicts (git diff --name-only --diff-filter=U), then until it passes:
 bash .github/nightly/build_and_test.sh
 python3 .github/nightly/checks.py all --work /tmp/ch-sync
 python3 .github/nightly/daily_sync.py stage

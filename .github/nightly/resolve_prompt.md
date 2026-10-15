@@ -1,6 +1,6 @@
 You are finishing today's ClickHouse master sync in this chdb-core checkout, on a
-build machine. The upstream diff from `UPSTREAM_COMMIT` to the target is already
-applied: `.sync/summary.json` has the range and the files that conflicted. If
+build machine. The upstream diff is already applied, the way a monthly upgrade
+applies it: the conflicted files are left unmerged, with their markers. If
 `.sync/build.json` exists, the build or the tests already failed once; it says
 where.
 
