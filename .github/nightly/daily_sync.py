@@ -386,7 +386,9 @@ def copy_blobs(work: Path, shas) -> None:
 def ensure_clean() -> None:
     dirty = [
         line
-        for line in git("status", "--porcelain", "--untracked-files=no").splitlines()
+        # A reused runner leaves submodules checked out at older pins; the sync only
+        # sets the pointers.
+        for line in git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all").splitlines()
         if line.strip()
     ]
     if dirty:
