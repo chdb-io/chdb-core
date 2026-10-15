@@ -265,7 +265,9 @@ jobs:
     name: Test on macOS arm64
     runs-on: macos-14-xlarge
     needs: build_universal_wheel_on_linux
-    if: ${{ !github.event.pull_request.draft }}
+    # An explicit status check: the implicit success() would also look at the
+    # nightly gate, which other events skip, and skip this job with it.
+    if: ${{ !cancelled() && needs.build_universal_wheel_on_linux.result == 'success' && !github.event.pull_request.draft }}
     timeout-minutes: 600
     env:
       WHEEL_ONLY: ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' }}
