@@ -84,7 +84,9 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
         working-directory: ${{ runner.temp }}/nightly/store
+        # An empty token would leave the CLI waiting for an interactive login.
         run: |
+          : "${VERCEL_TOKEN:?the VERCEL_TOKEN secret is not set}" "${BLOB_READ_WRITE_TOKEN:?the BLOB_READ_WRITE_TOKEN secret is not set}"
           for path in $(find . -type f | sed 's|^\./||' | sort); do
             vercel blob put "$path" --pathname "$path" --access public --allow-overwrite \
               --rw-token "$BLOB_READ_WRITE_TOKEN" --token "$VERCEL_TOKEN" --non-interactive
@@ -96,7 +98,9 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-        run: vercel deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN" --non-interactive
+        run: |
+          : "${VERCEL_TOKEN:?the VERCEL_TOKEN secret is not set}"
+          vercel deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN" --non-interactive
 
       - uses: actions/upload-artifact@v7
         if: steps.publish.outputs.ready == 'true'
