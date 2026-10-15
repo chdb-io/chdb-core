@@ -2,8 +2,8 @@
 # Commit the staged sync, push it to $SYNC_BRANCH and open the pull request.
 #
 # Runs with the personal access token in SYNC_PAT: a pull request opened with the
-# workflow's own GITHUB_TOKEN would not start any CI. AUTO_MERGE=true asks GitHub
-# to merge once the required checks pass.
+# workflow's own GITHUB_TOKEN would not start any CI. A person approves and
+# merges it.
 set -euo pipefail
 
 : "${SYNC_PAT:?the SYNC_PAT secret is not set}"
@@ -26,8 +26,3 @@ git push --force --quiet \
 url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$SYNC_BRANCH" \
   --title "$(cat .sync/pr_title.txt)" --body-file .sync/pr_body.md)
 echo "::notice::Opened $url"
-
-if [ "${AUTO_MERGE:-false}" = true ]; then
-  gh pr merge "$url" --repo "$GITHUB_REPOSITORY" --auto --squash ||
-    echo "::warning::Auto-merge is not available; the pull request waits for a person."
-fi

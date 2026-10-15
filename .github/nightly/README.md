@@ -28,19 +28,18 @@ Both stay off until their repository variable is set (below).
    their `contrib/*-cmake` file lists.
 4. Commit everything in one commit (the sync is never landed in parts: a file held
    back would silently lose that day's upstream change), push
-   `sync/clickhouse-master` and open the pull request with `SYNC_PAT`.
-   - Clean and every check passes: auto-merge once the required checks are green.
-   - Conflicts: a separate job runs Claude Code headless with
+   `sync/clickhouse-master` and open the pull request with `SYNC_PAT`. A person
+   approves and merges it; the checks' findings are in its description.
+   - Conflicts: first a separate job runs Claude Code headless with
      `.agents/skills/resolve-sync-conflicts`, holding no push credential. Its
      resolution must pass `finalize` (no markers, no upstream file edited outside
-     the conflict set) and the checks; the pull request then waits for a person.
+     the conflict set) before the pull request is opened.
 5. The sync pull request's CI is Linux x86_64 alone; the other platforms, the
    free-threaded wheels and wasm build on `main` after it merges.
 
 While a sync pull request is open, the daily run does nothing, so a review is never
-overwritten; the next sync after it merges covers the days in between. When no sync
-has landed for three working days (72 hours of Monday to Friday, UTC), the run opens
-an issue titled "Daily ClickHouse sync has stalled" and closes it once one lands.
+overwritten, and the nightly builds wait too; the next sync after it merges covers
+the days in between.
 
 ### The first sync
 
@@ -122,13 +121,12 @@ pre-release itself (`upload_wheel.sh`), creating the release on the first night.
 | `BLOB_BASE_URL` | variable | nightly | Base URL of the public Blob store, `https://<store id>.public.blob.vercel-storage.com` |
 | `BLOB_READ_WRITE_TOKEN` | secret | nightly | The Blob store's read-write token |
 
-On the repository: allow auto-merge, and make the Linux x86_64 build a required
-check on `main` so auto-merge waits for it. In Vercel: create the project with
-`vercel project create <name>` (no Git connection, no build: the workflow deploys
-a finished directory), make sure Deployment Protection leaves its production
-domain public (pip and readers fetch it without a Vercel login), add a `chdb.io`
-subdomain to it (a CNAME in chdb.io's DNS) or keep its `*.vercel.app` domain, and
-create a public Blob store.
+In Vercel, in the dashboard or with the CLI: create the project with no Git
+connection and no build, since the workflow deploys a finished directory (drop
+any page on vercel.com/drop, or run `vercel project create <name>`); make sure
+Deployment Protection leaves its production domain public (pip and readers fetch
+it without a Vercel login); add a `chdb.io` subdomain to it (a CNAME in chdb.io's
+DNS) or keep its `*.vercel.app` domain; and create a public Blob store.
 
 Without `BLOB_BASE_URL` the report still runs, with the history limited to the
 night itself.
@@ -137,7 +135,7 @@ night itself.
 
 | File | Purpose |
 |---|---|
-| `daily_sync.py` | fetch, target, apply, finalize, commit, stall |
+| `daily_sync.py` | fetch, target, apply, finalize, commit |
 | `checks.py` | the checks Git does not do |
 | `open_pr.sh` | commit, push and open the sync pull request |
 | `resolve_prompt.md` | the prompt the conflict job gives Claude Code |

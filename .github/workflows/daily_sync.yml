@@ -2,15 +2,13 @@ name: Daily ClickHouse sync
 
 # Brings ClickHouse master into main once every weekday. It picks the newest master
 # commit upstream CI passed, applies the diff since UPSTREAM_COMMIT to the paths
-# chDB keeps, and opens a pull request:
-#
-#   clean, checks pass   the pull request merges itself once CI is green
-#   clean, checks fail   the pull request waits for a person
-#   conflicts            Claude Code resolves them on a separate job that holds no
-#                        push credentials; the pull request waits for a person
+# chDB keeps, and opens a pull request that a person approves and merges.
+# Conflicts are first resolved by Claude Code on a separate job that holds no
+# push credentials; the checks' findings go into the pull request's description.
 #
 # While a sync pull request is open the run does nothing, so a review is never
-# overwritten; the next sync after it merges covers the days in between.
+# overwritten, and the nightly builds wait too; the next sync after it merges
+# covers the days in between.
 # See .github/nightly/README.md for setup and for running a step by hand.
 
 on:
@@ -47,7 +45,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      issues: write
       pull-requests: read   # the open sync pull request the run waits for
     outputs:
       status: ${{ steps.apply.outputs.status }}
@@ -58,11 +55,6 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-
-      - name: Report a stalled sync
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 .github/nightly/daily_sync.py stall --max-weekday-hours 72
 
       - name: Wait while a sync pull request is open
         id: open
@@ -102,7 +94,6 @@ jobs:
         if: steps.apply.outputs.status == 'clean' && !inputs.dry_run
         env:
           SYNC_PAT: ${{ secrets.SYNC_PAT }}
-          AUTO_MERGE: ${{ steps.checks.outputs.result == 'pass' }}
         run: .github/nightly/open_pr.sh
 
       - uses: actions/upload-artifact@v7
@@ -193,5 +184,4 @@ jobs:
       - name: Commit, push and open the pull request
         env:
           SYNC_PAT: ${{ secrets.SYNC_PAT }}
-          AUTO_MERGE: 'false'
         run: .github/nightly/open_pr.sh

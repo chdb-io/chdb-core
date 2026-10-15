@@ -11,7 +11,7 @@ pin does not have. Each of those has broken a past upgrade.
   python3 .github/nightly/checks.py markers             conflict markers in staged files
 
 `all` writes .sync/checks.json and .sync/checks.md and sets the `result` output
-to pass or fail. Errors block auto-merge; warnings go to the reviewer.
+to pass or fail; the report goes into the pull request's description.
 """
 
 from __future__ import annotations
