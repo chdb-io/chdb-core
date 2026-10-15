@@ -9,7 +9,10 @@ to past sync failures it points to, resolve every conflict, and fix what
 `python3 .github/nightly/checks.py all` reports. Then run
 `bash .github/nightly/build_and_test.sh`, which builds chDB, installs the wheel and
 runs the Python tests on Python 3.14 and ends with PASS or FAIL. Fix what the sync
-broke and run it again, until it passes or you can make no further progress. Then
-write `.sync/resolution.md` for the pull request.
+broke and run it again, until it passes or you can make no further progress.
+
+Write `.sync/resolution.md` for the pull request once the conflicts are resolved,
+and bring it up to date after every build and test run: the workflow stops you at
+05:30 UTC, and the pull request then opens with what it says.
 
 Do not commit or push: the workflow stages your changes and opens the pull request.

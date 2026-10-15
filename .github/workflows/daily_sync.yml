@@ -48,7 +48,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.DAILY_SYNC_ENABLED == 'true'
     # It builds chDB, so it runs where the sync pull request's own CI does.
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
-    timeout-minutes: 1200
+    # Claude Code stops by 05:30 UTC, so a run ends within a day of its start.
+    timeout-minutes: 1440
     permissions:
       contents: read
       pull-requests: read   # the open sync pull request the run waits for
@@ -189,8 +190,12 @@ jobs:
           BASH_MAX_TIMEOUT_MS: '10800000'
         run: |
           npm install --global @anthropic-ai/claude-code@2
+          # Stop by 05:30 UTC: the runners restart around 06:00 UTC, and the steps
+          # below have to stage what was done and hand it to the pull request.
+          budget=$(( ($(date -ud 'tomorrow 05:30' +%s) - $(date -u +%s)) % 86400 ))
           status=0
-          claude -p "$(cat .github/nightly/resolve_prompt.md)" \
+          timeout --kill-after=2m "$(( budget > 600 ? budget : 600 ))" \
+            claude -p "$(cat .github/nightly/resolve_prompt.md)" \
             --model "$MODEL" \
             --effort max \
             --max-turns 500 \
@@ -199,7 +204,9 @@ jobs:
             --output-format json > "$RUNNER_TEMP/claude.json" || status=$?
           python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("result","")[-4000:])' \
             "$RUNNER_TEMP/claude.json" || true
-          if [ "$status" != 0 ]; then
+          if [ "$status" = 124 ]; then
+            echo "::warning::Claude Code stopped at the 05:30 UTC deadline; the pull request shows where the sync stands."
+          elif [ "$status" != 0 ]; then
             echo "::warning::Claude Code exited with status $status; the pull request shows where the sync stands."
           fi
           echo "Claude Code" > .sync/changed_by

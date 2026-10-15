@@ -35,7 +35,10 @@ As in a monthly upgrade, look it up with Git:
 
 ## Procedure
 
-1. Read the guide above, then resolve every conflict, following the rules below.
+1. Read the guide above, then resolve every conflict, following the rules below,
+   and write `.sync/resolution.md` (see Output). Bring it up to date after each step
+   below: the daily workflow stops Claude Code at 05:30 UTC, and the pull request
+   opens with what the file says then.
 2. Run the checks that cost seconds, and fix what they report that is real:
    - `python3 .github/nightly/checks.py all` scripts the guide's cheapest audits:
      chDB lines a merge dropped and upstream lines that never arrived,
@@ -53,7 +56,7 @@ As in a monthly upgrade, look it up with Git:
    fix what the sync broke, and run it again. Repeat until it prints PASS, or until
    you can make no further progress. On a crash, get a stack from a debugger before
    changing code.
-5. Write `.sync/resolution.md`.
+5. Finish `.sync/resolution.md`.
 
 ## Rules
 
