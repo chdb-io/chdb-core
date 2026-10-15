@@ -90,15 +90,17 @@ branches are never merged back into `main`.
 ## Nightly builds
 
 There is no separate nightly build: the nightly is main's build of each merged
-ClickHouse sync pull request, which the four wheel workflows run on that push. A
-`Nightly gate` job in each tells that push apart, by the merge's commit message or,
-failing that, the pull request GitHub associates with the commit. That build makes
+ClickHouse sync pull request, which the four wheel workflows run on that push. The
+`Nightly gate` (`nightly_gate.yml`) tells that push apart: however the pull request
+was merged, the push carries a commit titled `Sync ClickHouse master up to ...`, as
+the sync's first commit is. That build makes
 and tests the Python wheel only (`WHEEL_ONLY`): every Python version, each against
 one pandas line (3.14 against both), but no static library, chdb-core-lite, debug
 symbols, libchdb/ADBC/Go checks or other packages' tests, which the sync pull
 request's own CI ran on every platform; for the same reason the free-threaded
 wheels and wasm skip that push. A merged sync's push also gets a concurrency group
-of its own, so a later push to main cannot replace its pending build. No sync
+of its own in each, so a later push to main cannot replace its pending build, and
+its no-op runs do not cancel or replace main's. No sync
 merged, no nightly: none while a sync pull request waits for review.
 
 On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main`
@@ -106,7 +108,8 @@ is on a newer ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `
 part so the name survives as a release asset. `N` is the commit's time as yymmddhhmm
 in UTC, e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
 pre-release itself (`upload_wheel.sh`), creating the release the first time.
-`nightly_publish.yml` waits until all four runs for the commit are done, then:
+`nightly_publish.yml` waits until all four runs for the commit are done and, unless a
+newer night is already out (a rerun of an older night's job), then:
 
 - moves the `nightly` tag to the commit and keeps the wheels of the newest 20
   nights, a night being one commit. The release is created once; afterwards only
