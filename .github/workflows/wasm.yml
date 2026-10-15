@@ -61,11 +61,39 @@ env:
   NODE_VERSION: '24'         # Memory64 (-sMEMORY64) needs V8 from Node >= 23
 
 jobs:
+  # Main's build of a merged ClickHouse sync pull request is the nightly, which makes
+  # the four platforms' Python wheels alone; the sync pull request's own CI already
+  # ran this workflow, so it sits the nightly out.
+  nightly_gate:
+    name: Nightly gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      nightly: ${{ steps.check.outputs.nightly }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          # A squash or merge commit names the sync; a rebase merge's last commit may not.
+          case "$MESSAGE" in
+            "Sync ClickHouse master up to "* | *"/sync/clickhouse-master"*) merged=1 ;;
+            *) merged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+                 --jq '[.[] | select(.head.ref == "sync/clickhouse-master" and .merged_at != null)] | length' || echo 0) ;;
+          esac
+          echo "nightly=$([ "${merged:-0}" != 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   build-and-test:
     # Skip draft PRs — the 2h build/test cycle only runs once the PR is marked
     # ready (`ready_for_review` is in the trigger types, so that transition
-    # starts a run). Pushes to main, tags and manual dispatch are unaffected.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # starts a run) — and the nightly, main's build of a merged ClickHouse sync.
+    # Other pushes to main, tags and manual dispatch are unaffected.
+    needs: nightly_gate
+    if: ${{ !cancelled() && needs.nightly_gate.outputs.nightly != 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     # Self-hosted Linux x86_64 runner (same pool as the native wheel builds). The
     # .wasm artifact is host-independent, so one platform is enough. No
     # free-disk-space step: that is for ephemeral GitHub-hosted images and would

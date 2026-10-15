@@ -91,8 +91,9 @@ failing that, the pull request GitHub associates with the commit. That build mak
 and tests the Python wheel only (`WHEEL_ONLY`): every Python version, each against
 one pandas line (3.14 against both), but no static library, chdb-core-lite, debug
 symbols, libchdb/ADBC/Go checks or other packages' tests, which the sync pull
-request's own CI ran on every platform. A merged sync's push also gets a concurrency
-group of its own, so a later push to main cannot replace its pending build. No sync
+request's own CI ran on every platform; for the same reason the free-threaded
+wheels and wasm skip that push. A merged sync's push also gets a concurrency group
+of its own, so a later push to main cannot replace its pending build. No sync
 merged, no nightly: none while a sync pull request waits for review.
 
 On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main`
