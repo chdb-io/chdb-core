@@ -39,7 +39,8 @@ pushd ${PROJ_DIR} > /dev/null
 if [ -z "${CHDB_VERSION:-}" ]; then
     CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null) || CHDB_VERSION=""
     if [ -z "${CHDB_VERSION}" ] || [ "${CHDB_VERSION}" = "None" ]; then
-        CHDB_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+        # Version tags only, as above: `nightly` moves along main.
+        CHDB_VERSION=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')
     fi
     if [ -z "${CHDB_VERSION}" ]; then
         CHDB_VERSION="0.0.0"
