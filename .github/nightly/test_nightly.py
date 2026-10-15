@@ -149,7 +149,6 @@ class Messages(unittest.TestCase):
         self.assertIn("| `src/a.cpp` | [#2](https://github.com/ClickHouse/ClickHouse/pull/2) |", body)
         self.assertIn("Target: newest master commit that passed MasterCI.", body)
         self.assertIn("**Files changed beyond the conflicts**", body)
-        self.assertIn("Merge with **Squash and merge**", body)
         self.assertIn("`programs/local/EmbeddedServer.cpp`", body)
         self.assertIn("**Failed at test.**", body)
         self.assertIn("the result is for an earlier state", body)

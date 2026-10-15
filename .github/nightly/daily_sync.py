@@ -662,7 +662,6 @@ def pr_body(summary: dict) -> str:
             f"1. `{commit_title(summary)}`: the upstream diff as the script applied it{markers}.",
             f"2. `{changes_title(summary)}`: everything changed on top of it, by {by}. Review this one "
             "for what was decided rather than imported.",
-            "", "Merge with **Squash and merge**: the first commit alone may not build.",
         ]
     if summary.get("extra_files"):
         out += ["", "**Files changed beyond the conflicts** (in the second commit; check each): "
