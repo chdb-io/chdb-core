@@ -120,7 +120,7 @@ class Messages(unittest.TestCase):
     summary = {
         "base": A, "target": B, "target_reason": "newest master commit that passed MasterCI",
         "upstream_prs": [1, 2, 3], "applied_files": ["src/a.cpp"], "skipped": {"x": 4},
-        "conflicts": [{"path": "src/a.cpp", "upstream_prs": [2]}],
+        "conflicts": [{"path": "src/a.cpp"}],
         "changed_files": ["src/a.cpp", "programs/local/EmbeddedServer.cpp"],
         "extra_files": ["programs/local/EmbeddedServer.cpp"], "markers_left": [], "changed_by": "Claude Code",
         "build": {"result": "fail", "step": "test", "tail": "FAILED test_x", "current": False},
@@ -146,7 +146,7 @@ class Messages(unittest.TestCase):
 
     def test_pr_body(self):
         body = sync.pr_body(self.summary)
-        self.assertIn("| `src/a.cpp` | [#2](https://github.com/ClickHouse/ClickHouse/pull/2) |", body)
+        self.assertIn("## Conflicts\n\n- `src/a.cpp`", body)
         self.assertIn("Target: newest master commit that passed MasterCI.", body)
         self.assertIn("**Files changed beyond the conflicts**", body)
         self.assertIn("`programs/local/EmbeddedServer.cpp`", body)

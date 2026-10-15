@@ -369,20 +369,17 @@ def follow_upstream_line() -> dict | None:
     return {"from": declared.group(0).split('"')[1], "to": new}
 
 
-def merged_prs(work: Path, base: str, target: str, path: str | None = None) -> list[int]:
-    args = ["log", "--first-parent", "--format=%s", f"{base}..{target}"]
-    if path:
-        args += ["--", path]
-    out = ugit(work, *args, check=False) or ""
+def merged_prs(work: Path, base: str, target: str) -> list[int]:
+    out = ugit(work, "log", "--first-parent", "--format=%s", f"{base}..{target}", check=False) or ""
     return [int(n) for n in re.findall(r"^Merge pull request #(\d+)", out, re.M)]
 
 
 def write_conflict_context(work: Path, base: str, target: str, path: str) -> None:
-    """Give the resolver the upstream side as plain files, so it needs no Git access.
+    """Give the resolver the upstream side as plain files.
 
     .sync/upstream/base/<path> and .sync/upstream/target/<path> hold the upstream
-    file before and after this range; .sync/upstream/log/<path>.txt lists the
-    upstream merges that touched it.
+    file before and after this range: what a monthly upgrade reads with
+    `git show <tag>:<path>`, the tags being in its repository.
     """
     for label, rev in (("base", base), ("target", target)):
         proc = subprocess.run(
@@ -393,10 +390,6 @@ def write_conflict_context(work: Path, base: str, target: str, path: str) -> Non
             out = STATE / "upstream" / label / path
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(proc.stdout)
-    log = ugit(work, "log", "--first-parent", "--format=%h %s", f"{base}..{target}", "--", path, check=False)
-    out = STATE / "upstream" / "log" / f"{path}.txt"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(log or "")
 
 
 def ensure_clean() -> None:
@@ -462,7 +455,7 @@ def cmd_apply(args) -> int:
         "upstream_changes": len(changes),
         "applied_files": files,
         "skipped": dict(skipped.most_common()),
-        "conflicts": [{"path": p, "upstream_prs": merged_prs(work, base, target, p)} for p in conflicts],
+        "conflicts": [{"path": p} for p in conflicts],
         "submodules": submodules,
         "chdb_version": version,
         "created_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -648,10 +641,7 @@ def pr_body(summary: dict) -> str:
             out += ["", "<details><summary>End of the failing output</summary>", "", "```",
                     build["tail"].rstrip(), "```", "", "</details>"]
     if summary["conflicts"]:
-        out += ["", "## Conflicts", "", "| File | Upstream pull requests |", "|---|---|"]
-        for conflict in summary["conflicts"]:
-            prs = ", ".join(pr_link(n) for n in conflict["upstream_prs"][:8]) or "-"
-            out.append(f"| `{conflict['path']}` | {prs} |")
+        out += ["", "## Conflicts", ""] + [f"- `{conflict['path']}`" for conflict in summary["conflicts"]]
     if summary.get("markers_left"):
         out += ["", "**Conflict markers are still in:** " + ", ".join(f"`{p}`" for p in summary["markers_left"])]
     if summary.get("changed_files"):

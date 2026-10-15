@@ -13,11 +13,14 @@ The job is to get from there to a sync that builds and passes the Python tests.
 
 ## Inputs
 
-- `.sync/summary.json`: `base`, `target`, `conflicts` (each with the upstream pull
-  requests that touched the file in this range), `submodules`, `applied_files`.
-- The upstream side of each conflicted file as plain files:
-  `.sync/upstream/base/<path>` and `.sync/upstream/target/<path>` (before and after
-  the range) and `.sync/upstream/log/<path>.txt` (the upstream merges that touched it).
+- `.sync/summary.json`: the upstream range (`base`, `target`), the files that
+  conflicted (`conflicts`), `submodules` and `applied_files`.
+- The upstream side of each conflicted file: `.sync/upstream/base/<path>` and
+  `.sync/upstream/target/<path>`, the file at `base` and at `target`.
+- For anything else upstream, the ClickHouse repository the sync fetched, as a
+  monthly upgrade has the release tags in its own: for example
+  `git --git-dir="$SYNC_WORK/clickhouse.git" log <base>..<target> -- <path>`. It
+  holds the history; contents it lacks are fetched from GitHub when asked for.
 - What syncs have broken before:
   `.agents/skills/sync-clickhouse-baseline/references/guide.md`, kept for the
   person-led upgrade. Its import rules, risky modules, the embedded, client and
