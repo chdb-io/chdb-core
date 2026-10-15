@@ -37,7 +37,7 @@ PLATFORMS = {
     "macos-x86_64": "build_macos_x86_wheels.yml",
 }
 PROJECT = "chdb-core"
-SYNC_BRANCH = "sync/clickhouse-master"
+SYNC_TITLE = "Sync ClickHouse master up to "
 
 
 def gh(*args, check=True) -> str:
@@ -120,13 +120,17 @@ def stale(assets: list[dict], keep: int) -> list[str]:
 
 
 def is_sync_merge(repo: str, sha: str) -> bool:
-    """Whether the commit merged the ClickHouse sync's pull request; the wheel workflows' gate asks the same."""
-    message = gh("api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.message", check=False)
-    if message.startswith("Sync ClickHouse master up to ") or f"/{SYNC_BRANCH}" in message:
-        return True
-    pulls = gh("api", f"repos/{repo}/commits/{sha}/pulls", "--jq",
-               f'[.[] | select(.head.ref == "{SYNC_BRANCH}" and .merged_at != null)] | length', check=False)
-    return pulls.strip() not in ("", "0")
+    """Whether the commit merged a ClickHouse sync, as the wheel workflows' Nightly gate decides.
+
+    The gate looks for a commit titled like the sync's first in the push. The push is
+    not known here, so: the commit itself (a squash merge), or a commit of the pull
+    request it merged (a merge commit or a rebase).
+    """
+    first_lines = '.commit.message | split("\\n")[0]'
+    titles = gh("api", f"repos/{repo}/commits/{sha}", "--jq", first_lines).splitlines()
+    for number in gh("api", f"repos/{repo}/commits/{sha}/pulls", "--jq", ".[] | select(.merged_at) | .number").split():
+        titles += gh("api", "--paginate", f"repos/{repo}/pulls/{number}/commits", "--jq", f".[] | {first_lines}").splitlines()
+    return any(title.startswith(SYNC_TITLE) for title in titles)
 
 
 def minutes_between(start: str, end: str) -> float:
@@ -216,8 +220,8 @@ def main(argv=None) -> int:
     # A platform whose build or tests failed uploaded no wheel; with all four
     # failing on the first night there is no release yet.
     release_id = gh("api", f"repos/{repo}/releases/tags/{TAG}", "--jq", ".id", check=False).strip()
-    assets = release_assets(repo, release_id) if release_id else []
     committed_at = gh("api", f"repos/{repo}/commits/{head_sha}", "--jq", ".commit.committer.date").strip()
+    assets = release_assets(repo, release_id) if release_id else []
     wheels = night_wheels(assets, dev_number(committed_at))
     night = {
         "date": min(r["created_at"] for r in runs.values())[:10],

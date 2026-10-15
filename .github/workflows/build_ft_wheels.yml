@@ -52,25 +52,7 @@ jobs:
   nightly_gate:
     name: Nightly gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      nightly: ${{ steps.check.outputs.nightly }}
-    steps:
-      - id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MESSAGE: ${{ github.event.head_commit.message }}
-        run: |
-          # A squash or merge commit names the sync; a rebase merge's last commit may not.
-          case "$MESSAGE" in
-            "Sync ClickHouse master up to "* | *"/sync/clickhouse-master"*) merged=1 ;;
-            *) merged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
-                 --jq '[.[] | select(.head.ref == "sync/clickhouse-master" and .merged_at != null)] | length' || echo 0) ;;
-          esac
-          echo "nightly=$([ "${merged:-0}" != 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+    uses: ./.github/workflows/nightly_gate.yml
 
   # ───────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — native build, audit, and test
