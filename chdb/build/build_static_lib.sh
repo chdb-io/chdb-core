@@ -10,6 +10,10 @@ MY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 BUILD_DIR=${PROJ_DIR}/buildlib
 
+# The archive keeps a function only if ForceFunctionReferences.cpp references it; fail before
+# the build rather than ship an archive without the functions the file is missing.
+python3 ${MY_DIR}/generate_force_references.py --check
+
 HDFS="-DENABLE_HDFS=1 -DENABLE_GSASL_LIBRARY=1 -DENABLE_KRB5=1"
 MYSQL="-DENABLE_MYSQL=1"
 RUST_FEATURES="-DENABLE_RUST=0"
@@ -49,7 +53,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} -DENABLE_THINLTO=0 -DENABLE_TESTS=0
     -DENABLE_AWS_S3=1 -DENABLE_HIVE=0 -DENABLE_AVRO=1 \
     -DENABLE_CLICKHOUSE_OBFUSCATOR=0 -DENABLE_CLICKHOUSE_ODBC_BRIDGE=0 -DENABLE_CLICKHOUSE_STATIC_FILES_DISK_UPLOADER=0 \
     -DENABLE_KAFKA=1 -DENABLE_LIBPQXX=1 -DENABLE_NATS=0 -DENABLE_AMQPCPP=0 -DENABLE_NURAFT=0 \
-    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 -DENABLE_NLP=0 \
+    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 ${NLP} \
     -DENABLE_LDAP=0 \
     -DENABLE_CLIENT_AI=1 \
     ${MYSQL} \
@@ -145,6 +149,20 @@ else
     else
         ${STRIP} --strip-debug --remove-section=.comment --remove-section=.note libchdb_minimal.a
     fi
+fi
+
+# Make sure a consumer's own references can no longer bind to anything the archive bundles
+# besides the C API: the libc++/libc++abi/libunwind of chdb-io/chdb-rust#53, zstd, OpenSSL and
+# the rest. Linux merges the archive into one object that keeps only the C API global; ld64
+# cannot do the same (see rename_static_lib_symbols_macos.py), so on macOS every other symbol
+# is renamed instead.
+# After minimisation, which needs the per-member layout and the original names, and before
+# the Go test and the gates, which must see the archive as shipped.
+if [ "$(uname)" == "Linux" ]; then
+    bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
+else
+    python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
+        --objcopy llvm-objcopy --nm llvm-nm
 fi
 
 

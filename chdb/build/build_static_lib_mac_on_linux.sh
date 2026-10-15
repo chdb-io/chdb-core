@@ -7,6 +7,10 @@ build_type=${2:-RelWithDebInfo}
 MY_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 . ${MY_DIR}/../vars.sh cross-compile
 
+# The archive keeps a function only if ForceFunctionReferences.cpp references it; fail before
+# the build rather than ship an archive without the functions the file is missing.
+python3 ${MY_DIR}/generate_force_references.py --check
+
 # Validate architecture
 if [[ "$TARGET_ARCH" != "x86_64" && "$TARGET_ARCH" != "arm64" ]]; then
     echo "Error: Invalid architecture. Use 'x86_64' or 'arm64'"
@@ -114,7 +118,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     -DENABLE_AWS_S3=1 -DENABLE_HIVE=0 -DENABLE_AVRO=1 \
     -DENABLE_CLICKHOUSE_OBFUSCATOR=0 -DENABLE_CLICKHOUSE_ODBC_BRIDGE=0 -DENABLE_CLICKHOUSE_STATIC_FILES_DISK_UPLOADER=0 \
     -DENABLE_KAFKA=1 -DENABLE_LIBPQXX=1 -DENABLE_NATS=0 -DENABLE_AMQPCPP=0 -DENABLE_NURAFT=0 \
-    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 -DENABLE_NLP=0 \
+    -DENABLE_CASSANDRA=0 -DENABLE_ODBC=0 ${NLP} \
     -DENABLE_LDAP=0 \
     -DENABLE_CLIENT_AI=1 \
     ${MYSQL} \
@@ -218,6 +222,13 @@ else
     echo -e "\nStrip the libchdb_minimal.a:"
     ${STRIP} -S libchdb_minimal.a
 fi
+
+# Rename every symbol outside the C API so a consumer's own references can no longer bind
+# to them (chdb-io/chdb-rust#53) - macOS's counterpart of the Linux prelink step. After
+# minimisation, which reads the link map in the original names, and before the copy that
+# ships. Gate 2 on the macOS runner checks that only the C API kept its names.
+python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
+    --objcopy llvm-objcopy-21 --nm llvm-nm-21
 
 # Copy final library to project root
 echo "Copying libchdb_minimal.a to project root as libchdb.a..."
