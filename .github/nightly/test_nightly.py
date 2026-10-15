@@ -120,8 +120,9 @@ class Messages(unittest.TestCase):
     summary = {
         "base": A, "target": B, "target_reason": "newest master commit that passed MasterCI",
         "upstream_prs": [1, 2, 3], "applied_files": ["src/a.cpp"], "skipped": {"x": 4},
-        "conflicts": [{"path": "src/a.cpp", "upstream_prs": [2]}], "upstream_files_edited": ["src/c.cpp"],
-        "protected_files_edited": ["UPSTREAM_COMMIT"],
+        "conflicts": [{"path": "src/a.cpp", "upstream_prs": [2]}],
+        "extra_files": ["programs/local/EmbeddedServer.cpp"], "markers_left": [],
+        "build": {"result": "fail", "step": "test", "tail": "FAILED test_x", "current": False},
         "submodules": [{"path": "contrib/lib", "action": "bumped", "upstream_old": A, "upstream_new": B}],
         "chdb_version": {"from": "26.9.0", "to": "26.10.0-dev"},
     }
@@ -137,9 +138,12 @@ class Messages(unittest.TestCase):
         body = sync.pr_body(self.summary)
         self.assertIn("| `src/a.cpp` | [#2](https://github.com/ClickHouse/ClickHouse/pull/2) |", body)
         self.assertIn("Target: newest master commit that passed MasterCI.", body)
-        self.assertIn("**Upstream files the resolution also changed**", body)
-        self.assertIn("`src/c.cpp`", body)
-        self.assertIn("**CI, skill or version files the resolution changed**", body)
+        self.assertIn("**Files changed beyond the upstream diff**", body)
+        self.assertIn("`programs/local/EmbeddedServer.cpp`", body)
+        self.assertIn("**Failed at test.**", body)
+        self.assertIn("the result is for an earlier state", body)
+        self.assertIn("FAILED test_x", body)
+        self.assertNotIn("Conflict markers are still in", body)
 
 
 class Delta(unittest.TestCase):

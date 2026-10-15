@@ -1,15 +1,13 @@
-You are resolving the merge conflicts left by the daily ClickHouse master sync in
-this chdb-core checkout.
+You are finishing today's ClickHouse master sync in this chdb-core checkout, on a
+build machine. The upstream diff from `UPSTREAM_COMMIT` to the target is already
+applied: `.sync/summary.json` has the range, the conflicts and the upstream pull
+requests behind each file. If `.sync/build.json` exists, the build or the tests
+already failed once; it says where.
 
-Follow `.agents/skills/resolve-sync-conflicts/SKILL.md` exactly; it is the whole
-procedure. The conflict list, the upstream range and the upstream pull requests
-that touched each file are in `.sync/summary.json`. For every conflicted file,
-the upstream version before and after this range is in
-`.sync/upstream/base/<path>` and `.sync/upstream/target/<path>`, and the upstream
-merges that touched it are listed in `.sync/upstream/log/<path>.txt`.
+Follow `.agents/skills/resolve-sync-conflicts/SKILL.md`. In short: resolve every
+conflict, then run `bash .github/nightly/build_and_test.sh`, which builds chDB,
+installs the wheel and runs the Python tests on Python 3.9 and ends with PASS or
+FAIL. Fix what the sync broke and run it again, until it passes or you can make no
+further progress. Then write `.sync/resolution.md` for the pull request.
 
-When every conflict is resolved, run
-`python3 .github/nightly/checks.py markers` and
-`python3 .github/nightly/checks.py delta --work @SYNC_WORK@`,
-fix anything they report, and write `.sync/resolution.md` as the skill describes.
-Do not stage or commit; the workflow does that.
+Do not commit or push: the workflow stages your changes and opens the pull request.

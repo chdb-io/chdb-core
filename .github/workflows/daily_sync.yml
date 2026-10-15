@@ -2,9 +2,13 @@ name: Daily ClickHouse sync
 
 # Brings ClickHouse master into main once every weekday. It picks the newest master
 # commit upstream CI passed, applies the diff since UPSTREAM_COMMIT to the paths
-# chDB keeps, and opens a pull request that a person approves and merges.
-# Conflicts are first resolved by Claude Code on a separate job that holds no
-# push credentials; the checks' findings go into the pull request's description.
+# chDB keeps, builds chDB and runs its Python tests on Python 3.9. When the diff
+# conflicts, or the build or the tests fail, Claude Code takes over on the same
+# build machine: it resolves the conflicts, fixes what the sync broke until the
+# build and the tests pass, and writes down what it did. The result becomes a pull
+# request that a person approves and merges. A separate job opens it, so the
+# build machine, where Claude Code runs shell commands, never holds the token that
+# can push.
 #
 # While a sync pull request is open the run does nothing, so a review is never
 # overwritten, and the nightly builds wait too; the next sync after it merges
@@ -13,7 +17,9 @@ name: Daily ClickHouse sync
 
 on:
   schedule:
-    - cron: '17 2 * * 1-5'   # weekdays
+    # 06:17 in Beijing, Monday to Friday. The self-hosted runners restart for package
+    # updates around 06:00 UTC, so a long run has to start well before.
+    - cron: '17 22 * * 0-4'
   workflow_dispatch:
     inputs:
       target:
@@ -40,16 +46,24 @@ jobs:
   sync:
     # Scheduled runs stay off until DAILY_SYNC_ENABLED is set; a dispatch always runs.
     if: github.event_name == 'workflow_dispatch' || vars.DAILY_SYNC_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # It builds chDB, so it runs where the sync pull request's own CI does.
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
+    timeout-minutes: 1200
     permissions:
       contents: read
       pull-requests: read   # the open sync pull request the run waits for
     outputs:
-      status: ${{ steps.apply.outputs.status }}
-      target: ${{ steps.target.outputs.target }}
-      reason: ${{ steps.target.outputs.reason }}
+      ready: ${{ steps.stage.outputs.ready }}
     steps:
+      - name: Install GitHub CLI
+        run: |
+          command -v gh >/dev/null && exit 0
+          cd "$RUNNER_TEMP"
+          wget -q https://github.com/cli/cli/releases/download/v2.82.1/gh_2.82.1_linux_amd64.tar.gz -O gh.tar.gz
+          tar -xf gh.tar.gz
+          sudo cp gh_*/bin/gh /usr/local/bin/
+          gh --version
+
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -84,16 +98,114 @@ jobs:
           SYNC_TARGET_REASON: ${{ steps.target.outputs.reason }}
         run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "${{ steps.target.outputs.target }}"
 
-      - name: Check the sync
-        id: checks
+      # The build environment of build_linux_x86_wheels.yml, with Python 3.9 alone.
+      - name: Install the toolchain
+        if: steps.apply.outcome == 'success'
+        run: |
+          cd "$RUNNER_TEMP"
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y make build-essential libssl-dev zlib1g-dev \
+            libbz2-dev libreadline-dev wget curl llvm libncursesw5-dev xz-utils tk-dev libxml2-dev \
+            libxmlsec1-dev libffi-dev liblzma-dev libsqlite3-dev golang-go liblz4-dev
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y cmake ccache ninja-build yasm gawk lld-21
+          sudo ln -sf /usr/bin/clang-21 /usr/bin/clang
+          sudo ln -sf /usr/bin/clang++-21 /usr/bin/clang++
+          wget -q https://github.com/NixOS/patchelf/releases/download/0.18.0/patchelf-0.18.0-x86_64.tar.gz -O patchelf.tar.gz
+          mkdir -p patchelf
+          tar -xf patchelf.tar.gz -C patchelf
+          sudo cp patchelf/bin/patchelf /usr/bin/
+          rustup toolchain install nightly-2026-03-22
+          rustup default nightly-2026-03-22
+          rustup component add rust-src
+
+      - name: Install Python 3.9
+        if: steps.apply.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf "$HOME/.pyenv"
+          # Authenticated: anonymous clones get rate-limited on the pool's shared egress IP.
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')" \
+            git clone --depth 1 https://github.com/pyenv/pyenv.git "$HOME/.pyenv"
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init -)"
+          pyenv install 3.9:latest
+          pyenv global 3.9
+          python -m pip install --upgrade pip
+          python -m pip install setuptools tox pandas pyarrow twine psutil deltalake wheel jupyter nbconvert \
+            "fastjsonschema<2.22" "polars==1.10.0"
+
+      - name: ccache
+        if: steps.apply.outcome == 'success'
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: ubuntu-22.04-x86_64
+          max-size: 5G
+          append-timestamp: true
+
+      # After the apply, so submodules the sync bumps or adds come at their new pins.
+      - name: Update submodules
+        if: steps.apply.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/update-submodules.sh
+
+      - name: Build and test
+        id: build
         if: steps.apply.outputs.status == 'clean'
+        run: |
+          if bash .github/nightly/build_and_test.sh; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v7
+        if: steps.apply.outputs.status == 'conflicts' || steps.build.outputs.result == 'fail'
+        with:
+          node-version: 22
+
+      - name: Finish the sync with Claude Code
+        if: steps.apply.outputs.status == 'conflicts' || steps.build.outputs.result == 'fail'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ vars.SYNC_CLAUDE_MODEL || 'claude-opus-5-5' }}
+          # A full build takes about an hour; let a single command run for up to three.
+          BASH_DEFAULT_TIMEOUT_MS: '10800000'
+          BASH_MAX_TIMEOUT_MS: '10800000'
+        run: |
+          npm install --global @anthropic-ai/claude-code@2
+          status=0
+          claude -p "$(cat .github/nightly/resolve_prompt.md)" \
+            --model "$MODEL" \
+            --effort max \
+            --max-turns 500 \
+            --permission-mode dontAsk \
+            --allowedTools "Bash,Read,Edit,Write,Grep,Glob,TodoWrite" \
+            --output-format json > "$RUNNER_TEMP/claude.json" || status=$?
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("result","")[-4000:])' \
+            "$RUNNER_TEMP/claude.json" || true
+          if [ "$status" != 0 ]; then
+            echo "::warning::Claude Code exited with status $status; the pull request shows where the sync stands."
+          fi
+
+      # A report for the reviewer; nothing here stops the pull request.
+      - name: Check the sync
+        if: steps.apply.outcome == 'success'
         run: python3 .github/nightly/checks.py all --work "$SYNC_WORK"
 
-      - name: Commit, push and open the pull request
-        if: steps.apply.outputs.status == 'clean' && !inputs.dry_run
-        env:
-          SYNC_PAT: ${{ secrets.SYNC_PAT }}
-        run: .github/nightly/open_pr.sh
+      - name: Stage the sync
+        id: stage
+        if: steps.apply.outcome == 'success'
+        run: |
+          python3 .github/nightly/daily_sync.py stage
+          git diff --cached --binary HEAD > .sync/sync.patch
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         if: always() && steps.apply.outcome != 'skipped'
@@ -102,64 +214,11 @@ jobs:
           path: .sync/
           include-hidden-files: true
           if-no-files-found: ignore
-
-  resolve:
-    needs: sync
-    if: needs.sync.outputs.status == 'conflicts'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    # No secret that can push lives here: the job reads, edits the work tree and
-    # hands a patch to the next job.
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-          persist-credentials: false
-
-      - name: Apply the upstream diff again
-        env:
-          TARGET: ${{ needs.sync.outputs.target }}
-          SYNC_TARGET_REASON: ${{ needs.sync.outputs.reason }}
-        run: |
-          python3 .github/nightly/daily_sync.py fetch --work "$SYNC_WORK" --target "$TARGET"
-          python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "$TARGET"
-
-      - name: Install Claude Code
-        run: npm install --global @anthropic-ai/claude-code
-
-      - name: Resolve the conflicts
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          MODEL: ${{ vars.SYNC_CLAUDE_MODEL || 'claude-opus-5-5' }}
-        run: |
-          prompt=$(sed "s|@SYNC_WORK@|$SYNC_WORK|g" .github/nightly/resolve_prompt.md)
-          claude -p "$prompt" \
-            --model "$MODEL" \
-            --max-turns 100 \
-            --permission-mode dontAsk \
-            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git diff *),Bash(git status *),Bash(git log *),Bash(python3 .github/nightly/checks.py *)" \
-            --output-format json > "$RUNNER_TEMP/claude.json"
-          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("result","")[-4000:])' "$RUNNER_TEMP/claude.json"
-
-      - name: Check the resolution
-        run: |
-          python3 .github/nightly/daily_sync.py finalize --work "$SYNC_WORK"
-          python3 .github/nightly/checks.py all --work "$SYNC_WORK"
-          git diff --cached --binary HEAD > .sync/resolution.patch
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: sync-resolution-${{ github.run_id }}
-          path: .sync/
-          include-hidden-files: true
-          if-no-files-found: ignore
+          retention-days: 14
 
   publish:
-    needs: [sync, resolve]
-    if: needs.resolve.result == 'success' && !inputs.dry_run
+    needs: sync
+    if: needs.sync.outputs.ready == 'true' && !inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -172,13 +231,13 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: sync-resolution-${{ github.run_id }}
+          name: sync-${{ github.run_id }}
           path: .sync
 
-      - name: Stage the resolved sync
+      - name: Stage the sync
         run: |
           echo "/.sync/" >> "$(git rev-parse --git-path info/exclude)"
-          git apply --index --binary .sync/resolution.patch
+          git apply --index --binary .sync/sync.patch
 
       - name: Commit, push and open the pull request
         env:

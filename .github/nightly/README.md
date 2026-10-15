@@ -4,7 +4,7 @@ Two workflows keep `main` close to ClickHouse master and publish what it builds.
 
 | Workflow | When | What it does |
 |---|---|---|
-| `daily_sync.yml` | 02:17 UTC, Monday to Friday, or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT` and opens a pull request |
+| `daily_sync.yml` | 22:17 UTC, Sunday to Thursday (06:17 in Beijing, Monday to Friday), or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT`, builds and tests it, and opens a pull request |
 | `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC, Monday to Friday) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
 
 Both stay off until their repository variable is set (below).
@@ -24,20 +24,25 @@ Both stay off until their repository variable is set (below).
    `README.md`, `CONTRIBUTING.md`, `.gitignore` and `pyproject.toml`. Submodule
    pointers move when chDB pins the same commit upstream did, and are held when chDB
    pins its own. `CHDB_VERSION` follows the upstream line as `X.Y.0-dev`.
-3. Run `checks.py`: conflict markers, chDB changes lost or upstream changes missing
-   in a clean merge, `ForceFunctionReferences.cpp` against `REGISTER_FUNCTION`, new
-   `LocalServer` initialisation `EmbeddedServer` lacks, and submodule bumps against
-   their `contrib/*-cmake` file lists.
-4. Commit everything in one commit (the sync is never landed in parts: a file held
-   back would silently lose that day's upstream change), push
-   `sync/clickhouse-master` and open the pull request with `SYNC_PAT`. A person
-   approves and merges it; the checks' findings are in its description.
-   - Conflicts: first a separate job runs Claude Code headless with
-     `.agents/skills/resolve-sync-conflicts`, holding no push credential. Its
-     resolution must leave no conflict markers (`finalize` checks). The pull request
-     lists for the reviewer any upstream file it changed outside the conflicts, and
-     any CI, skill or version file it changed.
-5. The sync pull request's CI is Linux x86_64 alone; the other platforms, the
+3. Build chDB and run its Python tests on Python 3.9 (`build_and_test.sh`), on the
+   self-hosted x64 pool, the way the Linux x86_64 wheel workflow does.
+4. When the diff conflicts, or the build or the tests fail, Claude Code takes over
+   on the same machine (`claude -p`, effort max, following
+   `.agents/skills/resolve-sync-conflicts`): it resolves the conflicts, fixes what
+   the sync broke and reruns `build_and_test.sh` until it passes or it can make no
+   further progress, and writes down what it did. It never holds `SYNC_PAT`.
+5. `checks.py` reports what a build and tests do not show: chDB changes lost or
+   upstream changes missing, `ForceFunctionReferences.cpp` against
+   `REGISTER_FUNCTION`, `LocalServer` initialisation `EmbeddedServer` lacks, and
+   submodule bumps against their `contrib/*-cmake` file lists. Nothing here stops
+   the pull request.
+6. A separate job on a GitHub-hosted runner commits everything in one commit (the
+   sync is never landed in parts: a file held back would silently lose that day's
+   upstream change), pushes `sync/clickhouse-master` and opens the pull request with
+   `SYNC_PAT`. Its description gives the build and test result, the conflicts and
+   what the AI did, the files changed beyond the upstream diff, and the checks. A
+   person approves and merges it.
+7. The sync pull request's CI is Linux x86_64 alone; the other platforms, the
    free-threaded wheels and wasm build on `main` after it merges.
 
 While a sync pull request is open, the daily run does nothing, so a review is never
@@ -49,7 +54,9 @@ the days in between.
 `UPSTREAM_COMMIT` starts at v26.9.2.8-stable, so the first sync carries a whole
 line upgrade. Expect it to conflict like one and review it as one (see the
 `sync-clickhouse-baseline` skill). Start it by hand, with `dry_run` first if you
-like, or set `DAILY_SYNC_ENABLED=true` and let the next weekday's run start it.
+like, or set `DAILY_SYNC_ENABLED=true` and let the next weekday's run start it. A
+long first run may not finish before the runners' 06:00 UTC restart; started by hand
+right after 07:00 UTC, it has most of a day.
 
 ### Finishing a blocked sync by hand
 
@@ -57,9 +64,10 @@ like, or set `DAILY_SYNC_ENABLED=true` and let the next weekday's run start it.
 git switch -c finish-sync origin/main
 python3 .github/nightly/daily_sync.py fetch --work /tmp/ch-sync --target <sha>
 python3 .github/nightly/daily_sync.py apply --work /tmp/ch-sync --target <sha>
-# resolve the conflicts listed in .sync/summary.json, then:
-python3 .github/nightly/daily_sync.py finalize --work /tmp/ch-sync
+# resolve the conflicts listed in .sync/summary.json, then until it passes:
+bash .github/nightly/build_and_test.sh
 python3 .github/nightly/checks.py all --work /tmp/ch-sync
+python3 .github/nightly/daily_sync.py stage
 python3 .github/nightly/daily_sync.py commit
 ```
 
@@ -134,10 +142,11 @@ night itself.
 
 | File | Purpose |
 |---|---|
-| `daily_sync.py` | fetch, target, apply, finalize, commit |
+| `daily_sync.py` | fetch, target, apply, stage, commit |
+| `build_and_test.sh` | build chDB and run the Python tests on Python 3.9 |
 | `checks.py` | the checks Git does not do |
 | `open_pr.sh` | commit, push and open the sync pull request |
-| `resolve_prompt.md` | the prompt the conflict job gives Claude Code |
+| `resolve_prompt.md` | the prompt the sync gives Claude Code |
 | `embedded-mirror-allowlist.txt` | `LocalServer` calls `EmbeddedServer` deliberately skips |
 | `upload_wheel.sh` | a scheduled build's wheel to the nightly release |
 | `publish.py` | nightly release tag, retention and pip index |
