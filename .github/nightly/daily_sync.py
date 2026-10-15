@@ -9,8 +9,9 @@ Each one also works by hand from a clean checkout of main:
   target    choose the upstream commit to sync to
   apply     apply the upstream diff UPSTREAM_COMMIT..TARGET to the paths chDB
             keeps, and leave any conflict in the work tree
-  stage     stage the finished sync (conflicts resolved, build fixed) and record
-            what the pull request should point out
+  snapshot  record the sync as applied, before anything builds or edits it
+  stage     stage the finished sync (conflicts resolved, build fixed), record what
+            the pull request should point out, and write its two commits as patches
   commit    commit the staged sync and write the pull request text
 
 Nothing here pushes; the workflow does that. Per-run files go to .sync/, which
@@ -498,33 +499,63 @@ def gitlinks() -> dict[str, str]:
     return pins
 
 
-def cmd_stage(args) -> int:
-    """Stage the sync as it stands and note what the reviewer should look at. Never fails a sync."""
-    summary = load_summary()
-    build_file = STATE / "build.json"
-    if build_file.exists():
-        build = json.loads(build_file.read_text())
-        build["current"] = build.get("tree") == worktree_hash()
-        summary["build"] = build
-    # `git add -u` would also stage whatever each submodule has checked out, or its
-    # removal when it is not checked out at all; the pointers stay what apply set.
+def stage_worktree() -> str:
+    """Stage every tracked change and return the index's tree.
+
+    `git add -u` would also stage whatever each submodule has checked out, or its
+    removal when it is not checked out at all; the pointers stay what apply set.
+    """
     pins = gitlinks()
     git("add", "-u")
     staged_pins = gitlinks()
     for path, sha in pins.items():
         if staged_pins.get(path) != sha:
             git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
-    staged = [p for p in git("diff", "--cached", "--name-only", "-z", "HEAD").split("\0") if p]
-    expected = set(summary["applied_files"]) | {c["path"] for c in summary["conflicts"]}
-    expected |= {sub["path"] for sub in summary["submodules"]}
-    expected |= {UPSTREAM_FILE.name, str(CHDB_HEADER.relative_to(ROOT))}
-    summary["extra_files"] = [p for p in staged if p not in expected]
+    return git("write-tree").strip()
+
+
+def changed_paths(old: str, new: str) -> list[str]:
+    return [p for p in git("diff", "--name-only", "-z", old, new).split("\0") if p]
+
+
+def cmd_snapshot(args) -> int:
+    """Record the sync as the script applied it, conflict markers and all, before anything builds or edits it."""
+    summary = load_summary()
+    summary["apply_tree"] = stage_worktree()
+    save_summary(summary)
+    print(f"The applied sync is tree {summary['apply_tree'][:12]}")
+    return 0
+
+
+def cmd_stage(args) -> int:
+    """Stage the sync as it stands and note what the reviewer should look at. Never fails a sync.
+
+    Writes two patches for the pull request's two commits: the upstream diff as the
+    script applied it (.sync/pr-upstream.diff), and everything changed on top of that,
+    by Claude Code or a person (.sync/pr-changes.diff).
+    """
+    summary = load_summary()
+    build_file = STATE / "build.json"
+    if build_file.exists():
+        build = json.loads(build_file.read_text())
+        build["current"] = build.get("tree") == worktree_hash()
+        summary["build"] = build
+    marker = STATE / "changed_by"
+    summary["changed_by"] = marker.read_text().strip() if marker.exists() else ""
+    final = stage_worktree()
+    applied = summary.get("apply_tree") or final
+    conflicts = {c["path"] for c in summary["conflicts"]}
+    summary["changed_files"] = changed_paths(applied, final)
+    summary["extra_files"] = [p for p in summary["changed_files"] if p not in conflicts]
     summary["markers_left"] = [
-        c["path"] for c in summary["conflicts"]
-        if (ROOT / c["path"]).is_file() and CONFLICT_MARKER.search((ROOT / c["path"]).read_text(errors="replace"))
+        path for path in sorted(conflicts)
+        if (ROOT / path).is_file() and CONFLICT_MARKER.search((ROOT / path).read_text(errors="replace"))
     ]
     save_summary(summary)
-    print(f"{len(staged)} files staged; {len(summary['extra_files'])} changed beyond the upstream diff")
+    (STATE / "pr-upstream.diff").write_bytes(run(["git", "diff", "--binary", "HEAD", applied], binary=True).stdout)
+    (STATE / "pr-changes.diff").write_bytes(run(["git", "diff", "--binary", applied, final], binary=True).stdout)
+    print(f"{len(summary['changed_files'])} files changed on top of the applied sync, "
+          f"{len(summary['extra_files'])} of them beyond the conflicts")
     if summary["markers_left"]:
         print("::warning::Conflict markers left in: " + ", ".join(summary["markers_left"]))
     return 0
@@ -541,20 +572,51 @@ def commit_title(summary: dict) -> str:
     return f"Sync ClickHouse master up to {summary['target'][:11]}"
 
 
-def commit_message(summary: dict) -> str:
+def commit_message(summary: dict, part: str = "all") -> str:
+    """The sync commit. Part "upstream" is the first of two: the diff as applied, before any fix."""
     lines = [
         commit_title(summary),
         "",
         f"Upstream: {UPSTREAM_REPO} {summary['base'][:11]}..{summary['target'][:11]}, "
         f"{len(summary['upstream_prs'])} merged pull requests.",
     ]
-    if summary["conflicts"]:
+    if summary["conflicts"] and part == "upstream":
+        lines.append(f"Conflicts: {len(summary['conflicts'])}, left with their markers; the next commit resolves them.")
+    elif summary["conflicts"]:
         lines.append(f"Conflicts resolved: {len(summary['conflicts'])}.")
     actions = collections.Counter(s["action"].split(":")[0] for s in summary["submodules"])
     if actions:
         lines.append("Submodules: " + ", ".join(f"{n} {a}" for a, n in sorted(actions.items())) + ".")
     if summary.get("chdb_version"):
         lines.append(f"CHDB_VERSION follows the new line: {summary['chdb_version']['to']}.")
+    return "\n".join(lines) + "\n"
+
+
+def files(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def changes_title(summary: dict) -> str:
+    conflicts, extra = bool(summary["conflicts"]), bool(summary.get("extra_files"))
+    if conflicts and extra:
+        title = "Resolve the sync's conflicts and fix the build and tests"
+    elif conflicts:
+        title = "Resolve the sync's conflicts"
+    else:
+        title = "Fix the build and tests after the sync"
+    return f"{title} ({summary['changed_by']})" if summary.get("changed_by") else title
+
+
+def changes_message(summary: dict) -> str:
+    """The second commit: everything changed on top of the applied upstream diff."""
+    by = summary.get("changed_by") or "hand"
+    extra = summary.get("extra_files", [])
+    lines = [changes_title(summary), "", f"Changes on top of the upstream diff, made by {by}:"]
+    if summary["conflicts"]:
+        lines.append(f"- {files(len(summary['conflicts']), 'conflicted file')} resolved;")
+    if extra:
+        lines.append(f"- {files(len(extra), 'other file')} changed to make the build and the tests pass.")
+    lines += ["", "The pull request describes each change."]
     return "\n".join(lines) + "\n"
 
 
@@ -592,8 +654,18 @@ def pr_body(summary: dict) -> str:
             out.append(f"| `{conflict['path']}` | {prs} |")
     if summary.get("markers_left"):
         out += ["", "**Conflict markers are still in:** " + ", ".join(f"`{p}`" for p in summary["markers_left"])]
+    if summary.get("changed_files"):
+        markers = "; the conflicted files still carry their conflict markers" if summary["conflicts"] else ""
+        by = summary.get("changed_by") or "hand"
+        out += [
+            "", "## Commits", "",
+            f"1. `{commit_title(summary)}`: the upstream diff as the script applied it{markers}.",
+            f"2. `{changes_title(summary)}`: everything changed on top of it, by {by}. Review this one "
+            "for what was decided rather than imported.",
+            "", "Merge with **Squash and merge**: the first commit alone may not build.",
+        ]
     if summary.get("extra_files"):
-        out += ["", "**Files changed beyond the upstream diff** (the AI's resolution and fixes; check each): "
+        out += ["", "**Files changed beyond the conflicts** (in the second commit; check each): "
                 + ", ".join(f"`{p}`" for p in summary["extra_files"])]
     notes = STATE / "resolution.md"
     if notes.exists():
@@ -623,8 +695,9 @@ def cmd_commit(args) -> int:
     email = os.environ.get("SYNC_GIT_EMAIL") or "chdb-sync@users.noreply.github.com"
     if not git("diff", "--cached", "--name-only").strip():
         raise SyncError("nothing is staged")
+    message = changes_message(summary) if args.part == "changes" else commit_message(summary, args.part)
     run(["git", "-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "--quiet", "-F", "-"],
-        stdin=commit_message(summary))
+        stdin=message)
     (STATE / "pr_title.txt").write_text(commit_title(summary) + "\n")
     (STATE / "pr_body.md").write_text(pr_body(summary))
     print(git("log", "-1", "--format=%H %s").strip())
@@ -653,10 +726,15 @@ def main(argv=None) -> int:
     p.add_argument("--target", required=True)
     p.set_defaults(func=cmd_apply)
 
+    p = sub.add_parser("snapshot")
+    p.set_defaults(func=cmd_snapshot)
+
     p = sub.add_parser("stage")
     p.set_defaults(func=cmd_stage)
 
     p = sub.add_parser("commit")
+    p.add_argument("--part", choices=["all", "upstream", "changes"], default="all",
+                   help="all: one commit; upstream, then changes: the pull request's two commits")
     p.set_defaults(func=cmd_commit)
 
     args = parser.parse_args(argv)

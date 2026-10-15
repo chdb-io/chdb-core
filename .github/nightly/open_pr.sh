@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Commit the staged sync, push it to $SYNC_BRANCH and open the pull request.
+# Commit the sync that .sync/pr-*.diff hold (daily_sync.py stage writes them),
+# push it to $SYNC_BRANCH and open the pull request.
 #
 # Runs with the personal access token in SYNC_PAT: a pull request opened with the
 # workflow's own GITHUB_TOKEN would not start any CI. A person approves and
@@ -15,7 +16,16 @@ login=${account% *}
 id=${account#* }
 export SYNC_GIT_NAME="$login"
 export SYNC_GIT_EMAIL="${id}+${login}@users.noreply.github.com"
-python3 .github/nightly/daily_sync.py commit
+
+# Two commits: the upstream diff as the script applied it, then whatever was
+# changed on top of it (conflicts resolved, build fixed), so a reviewer can tell
+# what was imported from what was decided.
+git apply --index --binary .sync/pr-upstream.diff
+python3 .github/nightly/daily_sync.py commit --part upstream
+if [ -s .sync/pr-changes.diff ]; then
+  git apply --index --binary .sync/pr-changes.diff
+  python3 .github/nightly/daily_sync.py commit --part changes
+fi
 
 # The workflow only gets here when no sync pull request is open, so nobody's
 # review is on the branch and it can be replaced. It is deleted first: pushed

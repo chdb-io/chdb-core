@@ -98,6 +98,11 @@ jobs:
           SYNC_TARGET_REASON: ${{ steps.target.outputs.reason }}
         run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "${{ steps.target.outputs.target }}"
 
+      # The pull request's first commit: the diff as applied, conflict markers and all.
+      - name: Record the applied sync
+        if: steps.apply.outcome == 'success'
+        run: python3 .github/nightly/daily_sync.py snapshot
+
       # The build environment of build_linux_x86_wheels.yml, with Python 3.9 to build
       # (chdb/build.sh requires it) and 3.14 to test.
       - name: Install the toolchain
@@ -198,6 +203,7 @@ jobs:
           if [ "$status" != 0 ]; then
             echo "::warning::Claude Code exited with status $status; the pull request shows where the sync stands."
           fi
+          echo "Claude Code" > .sync/changed_by
 
       # A report for the reviewer; nothing here stops the pull request.
       - name: Check the sync
@@ -209,7 +215,6 @@ jobs:
         if: steps.apply.outcome == 'success'
         run: |
           python3 .github/nightly/daily_sync.py stage
-          git diff --cached --binary HEAD > .sync/sync.patch
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
@@ -239,12 +244,9 @@ jobs:
           name: sync-${{ github.run_id }}
           path: .sync
 
-      - name: Stage the sync
-        run: |
-          echo "/.sync/" >> "$(git rev-parse --git-path info/exclude)"
-          git apply --index --binary .sync/sync.patch
-
       - name: Commit, push and open the pull request
         env:
           SYNC_PAT: ${{ secrets.SYNC_PAT }}
-        run: .github/nightly/open_pr.sh
+        run: |
+          echo "/.sync/" >> "$(git rev-parse --git-path info/exclude)"
+          .github/nightly/open_pr.sh

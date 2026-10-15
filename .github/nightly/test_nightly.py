@@ -121,7 +121,8 @@ class Messages(unittest.TestCase):
         "base": A, "target": B, "target_reason": "newest master commit that passed MasterCI",
         "upstream_prs": [1, 2, 3], "applied_files": ["src/a.cpp"], "skipped": {"x": 4},
         "conflicts": [{"path": "src/a.cpp", "upstream_prs": [2]}],
-        "extra_files": ["programs/local/EmbeddedServer.cpp"], "markers_left": [],
+        "changed_files": ["src/a.cpp", "programs/local/EmbeddedServer.cpp"],
+        "extra_files": ["programs/local/EmbeddedServer.cpp"], "markers_left": [], "changed_by": "Claude Code",
         "build": {"result": "fail", "step": "test", "tail": "FAILED test_x", "current": False},
         "submodules": [{"path": "contrib/lib", "action": "bumped", "upstream_old": A, "upstream_new": B}],
         "chdb_version": {"from": "26.9.0", "to": "26.10.0-dev"},
@@ -134,11 +135,21 @@ class Messages(unittest.TestCase):
         self.assertIn("Submodules: 1 bumped.", message)
         self.assertIn("26.10.0-dev", message)
 
+    def test_two_commits(self):
+        self.assertIn("left with their markers", sync.commit_message(self.summary, "upstream"))
+        self.assertIn("Conflicts resolved: 1.", sync.commit_message(self.summary))
+        message = sync.changes_message(self.summary)
+        self.assertTrue(message.startswith(
+            "Resolve the sync's conflicts and fix the build and tests (Claude Code)\n\n"))
+        self.assertIn("- 1 conflicted file resolved;", message)
+        self.assertIn("- 1 other file changed", message)
+
     def test_pr_body(self):
         body = sync.pr_body(self.summary)
         self.assertIn("| `src/a.cpp` | [#2](https://github.com/ClickHouse/ClickHouse/pull/2) |", body)
         self.assertIn("Target: newest master commit that passed MasterCI.", body)
-        self.assertIn("**Files changed beyond the upstream diff**", body)
+        self.assertIn("**Files changed beyond the conflicts**", body)
+        self.assertIn("Merge with **Squash and merge**", body)
         self.assertIn("`programs/local/EmbeddedServer.cpp`", body)
         self.assertIn("**Failed at test.**", body)
         self.assertIn("the result is for an earlier state", body)
