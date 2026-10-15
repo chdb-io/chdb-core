@@ -51,7 +51,9 @@ on:
       - '.github/workflows/nightly_publish.yml'
 
 concurrency:
-  group: wasm-${{ github.ref }}
+  # A merged ClickHouse sync, which builds nothing here, gets a group of its own
+  # rather than cancel main's run.
+  group: wasm-${{ github.ref }}${{ contains(toJSON(github.event.commits.*.message), '"Sync ClickHouse master up to ') && format('-{0}', github.sha) || '' }}
   # Cancel superseded build/test runs on branches & PRs, but never cancel a tag
   # run mid-publish.
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}

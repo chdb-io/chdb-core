@@ -41,8 +41,10 @@ on:
 
 concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
-  # starving later runs. Never cancel main or release runs.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # starving later runs. Never cancel main or release runs. A merged ClickHouse sync,
+  # which builds nothing here, gets a group of its own rather than replace main's
+  # pending run.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ contains(toJSON(github.event.commits.*.message), '"Sync ClickHouse master up to ') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
