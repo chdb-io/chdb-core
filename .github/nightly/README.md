@@ -20,8 +20,9 @@ Both stay off until their repository variable is set (below).
    `git apply --3way`. The path rules live in
    `.agents/skills/sync-clickhouse-baseline/scripts/sync_preflight.py`: files chDB
    deleted stay deleted; upstream trees chDB drops (`tests/`, `docs/`, `ci/`,
-   `utils/`, `docker/`, `.github/` ...) are never imported; chDB keeps its own
-   `README.md`, `CONTRIBUTING.md`, `.gitignore` and `pyproject.toml`. Submodule
+   `docker/`, `.github/` ...) are never imported, and of `utils/` only the files
+   chDB carries; chDB keeps its own `README.md`, `CONTRIBUTING.md`, `.gitignore` and
+   `pyproject.toml`. Submodule
    pointers move when chDB pins the same commit upstream did, and are held when chDB
    pins its own. `CHDB_VERSION` follows the upstream line as `X.Y.0-dev`.
 3. Build chDB and run its Python tests on Python 3.14 (`build_and_test.sh`), on the

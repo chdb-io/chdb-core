@@ -52,9 +52,11 @@ DROPPED_TREE_PREFIXES = (
     "docker/",
     "docs/",
     "tests/",
-    "utils/",
 )
-UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES
+# utils/ is not dropped: chDB builds utils/CMakeLists.txt, and the build runs
+# utils/list-licenses/list-licenses.sh, so the files chDB carries there follow
+# upstream. New ones are still not imported.
+UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES + ("utils/",)
 
 # Files at the same path in both trees where chDB keeps its own version, so an
 # upstream edit to them is not a change for chDB to take.
