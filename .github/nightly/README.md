@@ -22,7 +22,8 @@ Both stay off until their repository variable is set (below).
    deleted stay deleted; upstream trees chDB drops (`tests/`, `docs/`, `ci/`,
    `docker/`, `.github/` ...) are never imported, and of `utils/` only the files
    chDB carries; chDB keeps its own `README.md`, `CONTRIBUTING.md`, `.gitignore` and
-   `pyproject.toml`. Submodule
+   `pyproject.toml`. A file upstream deleted after chDB changed it is left as a
+   modify/delete conflict. Submodule
    pointers move when chDB pins the same commit upstream did, and are held when chDB
    pins its own. `CHDB_VERSION` follows the upstream line as `X.Y.0-dev`.
 3. Build chDB and run its Python tests on Python 3.14 (`build_and_test.sh`), on the
@@ -72,8 +73,7 @@ python3 .github/nightly/daily_sync.py stage
 python3 .github/nightly/daily_sync.py commit
 ```
 
-`fetch` adds the ClickHouse clone to this repository's object alternates; run it in
-a throwaway clone rather than a worktree of your everyday checkout.
+`apply` copies the upstream blobs it merges from into this repository's object store.
 
 ## Monthly release
 

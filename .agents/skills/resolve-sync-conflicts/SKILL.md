@@ -69,8 +69,9 @@ As in a monthly upgrade, look it up with Git:
    resurrect the removed upstream code. Adapt the chDB change to the new upstream
    design when the adaptation is clear. Otherwise take the upstream version, add
    `// chdb: TODO(sync) <what is lost>` at the spot, and say so in the notes.
-4. **Modify/delete** (upstream deleted a file chDB changed): keep it deleted unless
-   chDB code still includes or calls it; explain the choice.
+4. **Modify/delete** (upstream deleted a file chDB changed; `git status` shows `UD`
+   and the work tree holds chDB's version): keep it deleted (`git rm`) unless chDB
+   code still includes or calls it; explain the choice.
 5. **Fix build and test failures where chDB meets upstream**: in chDB's own files
    (those upstream does not have, such as `programs/local/EmbeddedServer.cpp`) or in
    the conflicted files. Change another upstream file only when there is no other
