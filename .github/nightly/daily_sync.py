@@ -225,6 +225,33 @@ def pick_green(work: Path) -> tuple[str, str]:
     return head, f"no master commit passed MasterCI in {GREEN_WINDOW_HOURS} hours; using master HEAD"
 
 
+def parse_branch_points(ls_remote: str) -> dict[str, str]:
+    """`v*.1.1-new` tag -> the master commit it names, from `git ls-remote` output."""
+    points: dict[str, str] = {}
+    for line in ls_remote.splitlines():
+        sha, _, ref = line.partition("\t")
+        tag = ref.rsplit("/", 1)[-1]
+        if tag.endswith("^{}"):
+            points[tag[: -len("^{}")]] = sha  # an annotated tag, peeled to its commit
+        elif tag:
+            points.setdefault(tag, sha)
+    return points
+
+
+def next_branch_point(work: Path, base: str, target: str) -> tuple[str, str] | None:
+    """The oldest release branch point past base that target reaches, if any.
+
+    Upstream forks release branch X.Y off master at the commit it tags
+    v(X.Y+1).1.1-new. The monthly release is cut from the main commit synced to
+    exactly that point, so the daily sync stops there on its way past.
+    """
+    out = ugit(work, "ls-remote", "--tags", "origin", "refs/tags/v*.1.1-new*")
+    for tag, sha in sorted(parse_branch_points(out).items(), key=lambda point: version_key(point[0])):
+        if has_commit(work, sha) and is_ancestor(work, sha, target) and not is_ancestor(work, sha, base):
+            return tag, sha
+    return None
+
+
 def cmd_target(args) -> int:
     work = Path(args.work)
     base = read_upstream_commit()
@@ -233,6 +260,10 @@ def cmd_target(args) -> int:
         reason = "requested by the person who started the run"
     else:
         target, reason = pick_green(work)
+        point = next_branch_point(work, base, target)
+        if point:
+            tag, target = point
+            reason = f"the release branch point tagged {tag}, which the monthly release is cut from"
 
     on_master = is_ancestor(work, base, UPSTREAM_MASTER)
     if target == base or (on_master and is_ancestor(work, target, base)):

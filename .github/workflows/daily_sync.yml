@@ -38,8 +38,7 @@ env:
 
 jobs:
   sync:
-    # Scheduled runs stay off until DAILY_SYNC_ENABLED is set: the first sync,
-    # to a release branch point, is a manual dispatch with an explicit target.
+    # Scheduled runs stay off until DAILY_SYNC_ENABLED is set; a dispatch always runs.
     if: github.event_name == 'workflow_dispatch' || vars.DAILY_SYNC_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90

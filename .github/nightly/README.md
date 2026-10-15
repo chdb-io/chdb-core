@@ -13,7 +13,9 @@ Both stay off until their repository variable is set (below).
 
 1. Pick the target: the newest ClickHouse master commit whose `MasterCI` status is
    success, usually a few hours behind HEAD. With no green commit in 24 hours it
-   takes HEAD and lets chDB's CI decide.
+   takes HEAD and lets chDB's CI decide. On its way past a release branch point,
+   the master commit tagged `v(X.Y+1).1.1-new` where upstream forks line X.Y, it
+   stops there, so `main` has a commit synced to exactly that point.
 2. Apply `git diff UPSTREAM_COMMIT..target` to the paths chDB keeps, with
    `git apply --3way`. The path rules live in
    `.agents/skills/sync-clickhouse-baseline/scripts/sync_preflight.py`: files chDB
@@ -43,15 +45,10 @@ the days in between.
 
 ### The first sync
 
-`UPSTREAM_COMMIT` starts at v26.9.2.8-stable. The first sync goes to a release
-branch point, so that release can be cut from it:
-
-1. Find the branch point of line X.Y: the commit tagged `v(X.Y+1).1.1-new` on
-   master, e.g. the 26.10 branch point is tagged `v26.11.1.1-new`.
-2. Run the workflow by hand with that commit as `target`. Expect it to conflict
-   like a normal line upgrade; review it as one (see the
-   `sync-clickhouse-baseline` skill).
-3. After it merges, set `DAILY_SYNC_ENABLED=true`.
+`UPSTREAM_COMMIT` starts at v26.9.2.8-stable, so the first sync carries a whole
+line upgrade. Expect it to conflict like one and review it as one (see the
+`sync-clickhouse-baseline` skill). Start it by hand, with `dry_run` first if you
+like, or set `DAILY_SYNC_ENABLED=true` and let the next weekday's run start it.
 
 ### Finishing a blocked sync by hand
 
@@ -71,9 +68,10 @@ a throwaway clone rather than a worktree of your everyday checkout.
 ## Monthly release
 
 Not automated here. A person cuts the release branch from the `main` commit whose
-`UPSTREAM_COMMIT` is the line's branch point, applies the line's patches up to its
-first stable tag with the `sync-clickhouse-baseline` process, and tags `vX.Y.0` on
-that branch. Release branches are never merged back into `main`.
+`UPSTREAM_COMMIT` is the line's branch point (the daily sync always stops there),
+applies the line's patches up to its first stable tag with the
+`sync-clickhouse-baseline` process, and tags `vX.Y.0` on that branch. Release
+branches are never merged back into `main`.
 
 ## Nightly builds
 

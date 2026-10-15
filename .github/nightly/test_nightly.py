@@ -7,6 +7,7 @@ import collections
 import datetime as dt
 import importlib.util
 import os
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -63,10 +64,56 @@ class ParseAndClassify(unittest.TestCase):
         self.assertEqual(skipped["chDB keeps its own version"], 1)
         self.assertEqual(skipped["changed in a tree chDB drops"], 1)
 
+    def test_parse_branch_points(self):
+        out = (f"{A}\trefs/tags/v26.10.1.1-new\n{B}\trefs/tags/v26.10.1.1-new^{{}}\n"
+               f"{ZERO}\trefs/tags/v26.11.1.1-new\n")
+        self.assertEqual(sync.parse_branch_points(out), {"v26.10.1.1-new": B, "v26.11.1.1-new": ZERO})
+
     def test_conflict_marker(self):
         self.assertTrue(sync.CONFLICT_MARKER.search("a\n<<<<<<< ours\nb\n"))
         self.assertTrue(sync.CONFLICT_MARKER.search("a\n|||||||\n"))
         self.assertFalse(sync.CONFLICT_MARKER.search("a <<<<<<< b\n"))
+
+
+class BranchPoints(unittest.TestCase):
+    def test_sync_stops_at_the_next_branch_point(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            up, work = Path(tmp, "up"), Path(tmp, "work")
+            up.mkdir()
+            work.mkdir()
+
+            def git(*args, cwd=up):
+                ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+                done = subprocess.run(["git", *ident, *args], cwd=cwd, check=True, capture_output=True, text=True)
+                return done.stdout.strip()
+
+            def commit(message):
+                git("commit", "-q", "--allow-empty", "-m", message)
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q", "-b", "master")
+            git("config", "uploadpack.allowAnySHA1InWant", "true")
+            commit("26.9 branch point")
+            git("tag", "-a", "-m", "branch point", "v26.10.1.1-new")
+            git("checkout", "-q", "-b", "26.9")
+            release = commit("v26.9.2.8-stable")
+            git("checkout", "-q", "master")
+            before = commit("26.10 work")
+            point = commit("26.10 branch point")
+            git("tag", "-a", "-m", "branch point", "v26.11.1.1-new")
+            after = commit("26.11 work")
+
+            bare = sync.upstream_dir(work)
+            git("init", "-q", "--bare", str(bare), cwd=work)
+            git(f"--git-dir={bare}", "remote", "add", "origin", up.as_uri(), cwd=work)
+            git(f"--git-dir={bare}", "fetch", "-q", "--no-tags", "--shallow-exclude=v26.10.1.1-new", "origin",
+                f"+refs/heads/master:{sync.UPSTREAM_MASTER}", release, cwd=work)
+
+            stop = ("v26.11.1.1-new", point)
+            self.assertEqual(sync.next_branch_point(work, release, after), stop)
+            self.assertEqual(sync.next_branch_point(work, before, after), stop)
+            self.assertIsNone(sync.next_branch_point(work, point, after))
+            self.assertIsNone(sync.next_branch_point(work, release, before))
 
 
 class Messages(unittest.TestCase):
