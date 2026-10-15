@@ -6,9 +6,12 @@ script adds the sync state, then lets chDB:
 
 - write the night's rows as Parquet, one file per table, and the tail of every
   failed job's log into --work/store, which the workflow uploads to Vercel Blob,
-- compute the history, the failing tests and the flaky tests with SQL over the
-  night and the nights before it, which chDB reads straight from the Blob store's
-  public URLs with url() (from --work/store when BLOB_BASE_URL is unset).
+- compute the history with SQL over the night and the nights before it, which
+  chDB reads straight from the Blob store's public URLs with url() (from
+  --work/store when BLOB_BASE_URL is unset), and the night's failing tests.
+
+The test results of every night are stored too, for later analysis; the
+dashboard reads only the night's.
 
 The results go to --site/data/*.json, beside the static dashboard.
 """
@@ -29,19 +32,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DASHBOARD = HERE / "dashboard"
 UPSTREAM_REPO = "ClickHouse/ClickHouse"
-SYNC_BRANCH = "sync/clickhouse-master"
 PLATFORMS = ["linux-x86_64", "linux-aarch64", "macos-arm64", "macos-x86_64"]
 LOG_TAIL_LINES = 300
 
 RUNS_SCHEMA = (
     "date Date, head_sha String, version String, platform String, conclusion String, "
     "duration_min Float64, wheel_bytes UInt64, tests_total UInt32, tests_failed UInt32, "
-    "url String, upstream_commit String, upstream_lag Int64, engine String"
+    "url String, upstream_commit String, engine String"
 )
 TESTS_SCHEMA = (
     "date Date, head_sha String, platform String, suite String, test String, status String, time_s Float64"
 )
-RUNS_DAYS, TESTS_DAYS = 90, 30
+RUNS_DAYS = 90
 # A night without a file (no build, or no Blob store yet) reads as empty.
 QUERY_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, engine_url_skip_empty_files = 1"
 
@@ -61,17 +63,12 @@ def lit(value: str) -> str:
 def sync_state(repo: str, head_sha: str) -> dict:
     encoded = gh("api", f"repos/{repo}/contents/UPSTREAM_COMMIT?ref={head_sha}", "--jq", ".content").strip()
     upstream = base64.b64decode(encoded).decode().split()[0] if encoded else ""
-    lag = gh("api", f"repos/{UPSTREAM_REPO}/compare/{upstream}...master", "--jq", ".ahead_by").strip() if upstream else ""
     last = gh("api", f"repos/{repo}/actions/workflows/daily_sync.yml/runs?per_page=1",
               "--jq", ".workflow_runs[0] | {conclusion, url: .html_url, created_at}").strip()
-    prs = gh("pr", "list", "--repo", repo, "--head", SYNC_BRANCH, "--state", "open",
-             "--json", "number,url,createdAt,title").strip()
-    open_pr = (json.loads(prs) or [None])[0] if prs else None
     return {
         "upstream_commit": upstream,
-        "upstream_lag": int(lag) if lag.isdigit() else -1,
+        "upstream_url": f"https://github.com/{UPSTREAM_REPO}/commit/{upstream}" if upstream else "",
         "last_run": json.loads(last) if last and last != "null" else None,
-        "open_pr": open_pr,
     }
 
 
@@ -131,6 +128,10 @@ class Store:
         path = self.local / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def night(self, table: str, schema: str) -> str:
+        """The table's rows for the night alone."""
+        return f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
 
     def nights(self, table: str, schema: str, days: int) -> str:
         """A FROM clause over the table's night and the `days` nights before it."""
@@ -192,7 +193,6 @@ def main(argv=None) -> int:
             "tests_failed": sum(t["status"] in ("failure", "error") for t in mine),
             "url": run.get("url", ""),
             "upstream_commit": sync["upstream_commit"],
-            "upstream_lag": sync["upstream_lag"],
             "engine": engine,
         })
         if run.get("conclusion") == "failure":
@@ -233,7 +233,7 @@ def main(argv=None) -> int:
     all_runs = store.nights("runs", RUNS_SCHEMA, RUNS_DAYS)
     history = query(chdb, f"""
         SELECT toString(date) AS date, platform, conclusion, round(duration_min, 1) AS duration_min,
-               round(wheel_bytes / 1048576, 1) AS wheel_mb, tests_total, tests_failed, upstream_lag,
+               round(wheel_bytes / 1048576, 1) AS wheel_mb, tests_total, tests_failed,
                version, head_sha, url
         FROM {all_runs}
         WHERE date >= today() - 90
@@ -241,30 +241,14 @@ def main(argv=None) -> int:
         LIMIT 1 BY date, platform
         {QUERY_SETTINGS}, prefer_column_name_to_alias = 1""")
 
-    failing, flaky = [], []
+    failing = []
     if tests:
-        all_tests = store.nights("tests", TESTS_SCHEMA, TESTS_DAYS)
         failing = query(chdb, f"""
-            WITH recent AS (
-                SELECT DISTINCT platform, test FROM {all_tests}
-                WHERE date < toDate({lit(date)}) AND date >= toDate({lit(date)}) - 7
-                  AND status IN ('failure', 'error'))
-            SELECT platform, test, (platform, test) NOT IN (SELECT platform, test FROM recent) AS new
-            FROM {all_tests}
-            WHERE head_sha = {lit(sha)} AND status IN ('failure', 'error')
-            GROUP BY platform, test
-            ORDER BY new DESC, platform, test
+            SELECT DISTINCT platform, test
+            FROM {store.night("tests", TESTS_SCHEMA)}
+            WHERE status IN ('failure', 'error')
+            ORDER BY platform, test
             LIMIT 200
-            {QUERY_SETTINGS}""")
-        flaky = query(chdb, f"""
-            SELECT test, platform, count() AS runs, countIf(status IN ('failure', 'error')) AS failures,
-                   toString(maxIf(date, status IN ('failure', 'error'))) AS last_failure
-            FROM {all_tests}
-            WHERE date >= today() - 30 AND status != 'skipped'
-            GROUP BY test, platform
-            HAVING failures > 0 AND failures < runs
-            ORDER BY failures DESC, last_failure DESC
-            LIMIT 50
             {QUERY_SETTINGS}""")
 
     site_url = os.environ.get("NIGHTLY_SITE_URL", "").rstrip("/")
@@ -287,12 +271,11 @@ def main(argv=None) -> int:
     }
     (data / "latest.json").write_text(json.dumps(latest, indent=2) + "\n")
     (data / "history.json").write_text(json.dumps({"rows": history}) + "\n")
-    (data / "flaky.json").write_text(json.dumps({"rows": flaky}) + "\n")
     for file in DASHBOARD.iterdir():
         if file.is_file():
             shutil.copy(file, site / file.name)
     print(f"Dashboard data for {date} ({sha[:12]}): {len(history)} history rows, "
-          f"{len(failing)} failing and {len(flaky)} flaky tests; storage: {'Vercel Blob' if store.remote else 'local'}")
+          f"{len(failing)} failing tests; storage: {'Vercel Blob' if store.remote else 'local'}")
     return 0
 
 

@@ -12,7 +12,7 @@
     <header class="page-header">
       <div>
         <h1>chDB nightly builds</h1>
-        <p class="subtitle">chdb-core <code>main</code>, built every night with the newest ClickHouse master it has synced. <span id="updated"></span></p>
+        <p class="subtitle">chdb-core <code>main</code>, built after each ClickHouse master sync it merges. <span id="updated"></span></p>
       </div>
       <button id="theme" class="theme-toggle" type="button" aria-label="Switch color theme">Theme: system</button>
     </header>
@@ -47,12 +47,6 @@
     <section class="card">
       <h2>Failing tests in the newest night</h2>
       <div id="failing"></div>
-    </section>
-
-    <section class="card">
-      <h2>Flaky tests, last 30 days</h2>
-      <p class="caption">Tests that both passed and failed on the same platform</p>
-      <div id="flaky"></div>
     </section>
 
     <section class="card">

@@ -113,9 +113,9 @@ pre-release itself (`upload_wheel.sh`), creating the release the first time.
   nightly;
 - runs `report.py` on the latest chdb-core release: chDB writes the night's runs,
   test results and failure log tails as files named by the date, which the workflow
-  uploads to a public Vercel Blob store, and computes the history, failing and
-  flaky tests with SQL over that night and the ones before it, read straight from
-  the store's URLs with `url()`;
+  uploads to a public Vercel Blob store; it computes the history with SQL over that
+  night and the ones before it, read straight from the store's URLs with `url()`,
+  and lists the night's failing tests;
 - deploys `dashboard/`, its data and the pip index to Vercel.
 
 ## Setup

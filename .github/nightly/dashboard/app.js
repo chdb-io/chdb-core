@@ -17,7 +17,7 @@ const STATUS = {
 const NOT_RUN = { cls: "none", icon: "–", label: "Not run" };
 const SVG = "http://www.w3.org/2000/svg";
 
-const state = { days: 30, latest: null, history: [], flaky: [] };
+const state = { days: 30, latest: null, history: [] };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -77,23 +77,20 @@ function renderTiles() {
   const failedNames = latest.platforms.filter((p) => p.conclusion !== "success")
     .map((p) => (PLATFORMS.find((x) => x.id === p.platform) || { label: p.platform }).label);
   const sync = latest.sync || {};
-  const syncSub = [];
-  if (sync.upstream_commit) syncSub.push(`Synced to ${sync.upstream_commit.slice(0, 12)}. `);
-  if (sync.open_pr) {
-    syncSub.push(el("a", { href: sync.open_pr.url }, `Sync pull request #${sync.open_pr.number}`),
-      ` waiting since ${sync.open_pr.createdAt.slice(0, 10)}.`);
-  } else if (sync.last_run && sync.last_run.conclusion === "failure") {
-    syncSub.push(el("a", { href: sync.last_run.url }, "The last sync run failed."));
-  }
+  const synced = sync.upstream_commit
+    ? el("a", { href: sync.upstream_url }, el("code", {}, sync.upstream_commit.slice(0, 12)))
+    : "Unknown";
+  const syncSub = sync.last_run && sync.last_run.conclusion === "failure"
+    ? [el("a", { href: sync.last_run.url }, "The last sync run failed.")]
+    : ["The commit this nightly is synced to"];
   const failing = latest.failing_tests || [];
-  const newCount = failing.filter((t) => t.new).length;
   root.replaceChildren(
     tile("Newest nightly", night.version || "–",
       `${night.date} · `, el("a", { href: night.commit_url }, night.head_sha.slice(0, 12))),
     tile("Platforms passing", `${passed.length} of ${latest.platforms.length}`,
       failedNames.length ? `Not passing: ${failedNames.join(", ")}` : "All platforms passed"),
-    tile("Behind ClickHouse master", sync.upstream_lag >= 0 ? `${fmt(sync.upstream_lag)} commits` : "Unknown", ...syncSub),
-    tile("Failing tests", fmt(failing.length), failing.length ? `${newCount} new this week` : "None in the newest night"),
+    tile("ClickHouse master", synced, ...syncSub),
+    tile("Failing tests", fmt(failing.length), failing.length ? "In the newest night" : "None in the newest night"),
   );
 }
 
@@ -108,11 +105,10 @@ function renderStatus() {
   }
   const dates = [...new Set(rows.map((r) => r.date))].sort().reverse();
   const head = el("tr", {}, el("th", {}, "Night"), el("th", {}, "Version"),
-    PLATFORMS.map((p) => el("th", {}, p.label)), el("th", {}, "Failed tests"), el("th", {}, "Behind upstream"));
+    PLATFORMS.map((p) => el("th", {}, p.label)), el("th", {}, "Failed tests"));
   const body = dates.map((date) => {
     const night = rows.filter((r) => r.date === date);
     const failed = night.reduce((sum, r) => sum + (r.tests_failed || 0), 0);
-    const lag = Math.max(...night.map((r) => r.upstream_lag));
     return el("tr", {},
       el("td", {}, date),
       el("td", {}, el("code", {}, night[0].version || "–")),
@@ -120,8 +116,7 @@ function renderStatus() {
         const r = night.find((x) => x.platform === p.id);
         return el("td", {}, statusBadge(r ? r.conclusion : "", r ? r.url : ""));
       }),
-      el("td", {}, fmt(failed)),
-      el("td", {}, lag >= 0 ? `${fmt(lag)} commits` : "–"));
+      el("td", {}, fmt(failed)));
   });
   root.replaceChildren(el("table", {}, el("thead", {}, head), el("tbody", {}, body)));
 }
@@ -275,17 +270,8 @@ function renderTests() {
     ? testTable(failing, [
       { title: "Test", cls: "test", value: (r) => r.test },
       { title: "Platform", value: (r) => platformLabel(r.platform) },
-      { title: "Since", value: (r) => (r.new ? "New this night" : "Failing earlier this week") },
     ])
     : el("p", { class: "empty" }, "No failing tests."));
-  document.getElementById("flaky").replaceChildren(state.flaky.length
-    ? testTable(state.flaky, [
-      { title: "Test", cls: "test", value: (r) => r.test },
-      { title: "Platform", value: (r) => platformLabel(r.platform) },
-      { title: "Failures", value: (r) => `${fmt(r.failures)} of ${fmt(r.runs)} runs` },
-      { title: "Last failure", value: (r) => r.last_failure },
-    ])
-    : el("p", { class: "empty" }, "No flaky tests in the last 30 days."));
 }
 
 function renderInstall() {
@@ -349,10 +335,9 @@ async function main() {
     });
   }
   const load = (name) => fetch(`data/${name}.json`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const [latest, history, flaky] = await Promise.all(["latest", "history", "flaky"].map(load));
+  const [latest, history] = await Promise.all(["latest", "history"].map(load));
   state.latest = latest;
   state.history = (history && history.rows) || [];
-  state.flaky = (flaky && flaky.rows) || [];
   render();
   let timer;
   window.addEventListener("resize", () => {
