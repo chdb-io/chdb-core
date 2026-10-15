@@ -328,12 +328,24 @@ class Reporting(unittest.TestCase):
             "</testsuite>"
         )
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "py3.9-pandas_3.0.xml").write_text(xml)
+            # As the wheel workflows lay them out: CHDB_JUNIT_DIR per Python and pandas.
+            (Path(tmp) / "py3.9-pandas_3.0").mkdir()
+            (Path(tmp) / "py3.9-pandas_3.0" / "main-shard-1.xml").write_text(xml)
             rows = report.junit_rows(Path(tmp), "linux-x86_64", {"date": "2026-10-12", "head_sha": B})
         statuses = collections.Counter(r["status"] for r in rows)
         self.assertEqual(statuses, {"passed": 1, "failure": 1, "skipped": 1})
         self.assertEqual(rows[1]["test"], "test_a.T.test_bad")
-        self.assertEqual(rows[0]["suite"], "py3.9-pandas_3.0")
+        self.assertEqual(rows[0]["suite"], "py3.9-pandas_3.0/main-shard-1")
+
+    def test_failed_log_tail_ends_at_the_first_error(self):
+        log = "\n".join([f"line {i}" for i in range(1000)] + ["##[error]Process completed with exit code 1."]
+                        + [f"cleanup {i}" for i in range(2000)])
+        answers = {"jobs": '[{"id": 7, "name": "build"}]', "logs": log}
+        with unittest.mock.patch.object(report, "gh", lambda *args: answers["jobs" if "/runs/" in args[1] else "logs"]):
+            tail = report.failed_log_tail("o/r", 1).splitlines()
+        self.assertEqual(tail[-1], "##[error]Process completed with exit code 1.")
+        self.assertEqual(len(tail), report.LOG_TAIL_LINES + 1)  # the header, then the lines
+        self.assertNotIn("cleanup 0", tail)
 
     def test_store_nights(self):
         self.assertEqual(report.lit("it's"), "'it\\'s'")

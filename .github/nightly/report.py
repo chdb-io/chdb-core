@@ -44,8 +44,9 @@ TESTS_SCHEMA = (
     "date Date, head_sha String, platform String, suite String, test String, status String, time_s Float64"
 )
 RUNS_DAYS = 90
-# A night without a file (no build, or no Blob store yet) reads as empty.
-QUERY_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, engine_url_skip_empty_files = 1"
+# A night without a file (no build, or no Blob store yet) reads as empty: url() skips
+# a glob's URLs that answer 404 (http_skip_not_found_url_for_globs, on by default).
+QUERY_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0"
 
 
 def gh(*args) -> str:
@@ -89,7 +90,8 @@ def junit_rows(junit_dir: Path, platform: str, night: dict) -> list[dict]:
                 "date": night["date"],
                 "head_sha": night["head_sha"],
                 "platform": platform,
-                "suite": file.stem,
+                # The Python and pandas versions (the directory) and the test shard.
+                "suite": file.relative_to(junit_dir).with_suffix("").as_posix(),
                 "test": f"{case.get('classname', '')}.{case.get('name', '')}".strip("."),
                 "status": status,
                 "time_s": float(case.get("time") or 0),
@@ -102,9 +104,11 @@ def failed_log_tail(repo: str, run_id: int) -> str:
               "--jq", '[.jobs[] | select(.conclusion == "failure") | {id, name}]').strip()
     parts = []
     for job in json.loads(jobs or "[]"):
-        log = gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")
-        tail = "\n".join(log.splitlines()[-LOG_TAIL_LINES:])
-        parts.append(f"==> {job['name']} (last {LOG_TAIL_LINES} lines)\n{tail}\n")
+        lines = gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs").splitlines()
+        # Up to the first error: what follows is the always-run steps and the cleanup.
+        end = next((i + 1 for i, line in enumerate(lines) if "##[error]" in line), len(lines))
+        tail = "\n".join(lines[max(0, end - LOG_TAIL_LINES):end])
+        parts.append(f"==> {job['name']} ({LOG_TAIL_LINES} lines up to the first error)\n{tail}\n")
     return "\n".join(parts)
 
 
