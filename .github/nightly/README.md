@@ -38,9 +38,11 @@ Both stay off until their repository variable is set (below).
    `REGISTER_FUNCTION`, `LocalServer` initialisation `EmbeddedServer` lacks, and
    submodule bumps against their `contrib/*-cmake` file lists. Nothing here stops
    the pull request.
-6. A separate job on a GitHub-hosted runner commits everything in one commit (the
-   sync is never landed in parts: a file held back would silently lose that day's
-   upstream change), pushes `sync/clickhouse-master` and opens the pull request with
+6. A separate job on a GitHub-hosted runner commits the sync onto the `main` commit
+   it started from, in two commits: the upstream diff as applied, conflict markers
+   and all, then everything changed on top of it. The sync is never landed in parts:
+   a file held back would silently lose that day's upstream change. It pushes
+   `sync/clickhouse-master` and opens the pull request with
    `SYNC_PAT`. Its description gives the build and test result, the conflicts and
    what the AI did, the files changed beyond the upstream diff, and the checks. A
    person approves and merges it.

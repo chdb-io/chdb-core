@@ -458,6 +458,7 @@ def cmd_apply(args) -> int:
     summary = {
         "base": base,
         "target": target,
+        "chdb_base": git("rev-parse", "HEAD").strip(),
         "target_reason": os.environ.get("SYNC_TARGET_REASON", ""),
         "upstream_prs": merged_prs(work, base, target),
         "upstream_changes": len(changes),
@@ -567,12 +568,14 @@ def cmd_stage(args) -> int:
         if (ROOT / path).is_file() and CONFLICT_MARKER.search((ROOT / path).read_text(errors="replace"))
     ]
     save_summary(summary)
-    (STATE / "pr-upstream.diff").write_bytes(run(["git", "diff", "--binary", "HEAD", applied], binary=True).stdout)
+    base = summary.get("chdb_base", "HEAD")
+    (STATE / "pr-upstream.diff").write_bytes(run(["git", "diff", "--binary", base, applied], binary=True).stdout)
     (STATE / "pr-changes.diff").write_bytes(run(["git", "diff", "--binary", applied, final], binary=True).stdout)
     (STATE / "commit-upstream.txt").write_text(commit_message(summary, "upstream"))
     (STATE / "commit-changes.txt").write_text(changes_message(summary))
     (STATE / "pr_title.txt").write_text(commit_title(summary) + "\n")
     (STATE / "pr_body.md").write_text(pr_body(summary))
+    set_output(base=base)
     print(f"{len(summary['changed_files'])} files changed on top of the applied sync, "
           f"{len(summary['extra_files'])} of them beyond the conflicts")
     if summary["markers_left"]:

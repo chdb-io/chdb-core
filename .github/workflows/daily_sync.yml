@@ -54,6 +54,7 @@ jobs:
       pull-requests: read   # the open sync pull request the run waits for
     outputs:
       ready: ${{ steps.stage.outputs.ready }}
+      base: ${{ steps.stage.outputs.base }}
     steps:
       - name: Install GitHub CLI
         run: |
@@ -232,9 +233,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The main commit the sync started from: the patches are diffs against it, and
+      # main may have moved during the hours the sync ran. The pull request then
+      # merges like any other.
       - uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ needs.sync.outputs.base }}
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
