@@ -578,7 +578,9 @@ jobs:
                   exit $EXIT_CODE
                 fi
               else
-                export CHDB_JUNIT_DIR="$GITHUB_WORKSPACE/junit/py${version}-${PANDAS_CONSTRAINT//[!0-9A-Za-z.]/_}"
+                if [ "$WHEEL_ONLY" = true ]; then  # the nightly: per-test results for its dashboard
+                  export CHDB_JUNIT_DIR="$GITHUB_WORKSPACE/junit/py${version}-${PANDAS_CONSTRAINT//[!0-9A-Za-z.]/_}"
+                fi
                 make test
               fi
 
@@ -955,9 +957,10 @@ jobs:
           gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-      # For the nightly dashboard; it must not keep the release uploads below from running.
+      # The nightly's test results, for its dashboard, also when the tests failed; a
+      # failed upload must not keep the nightly wheel upload below from running.
       - name: Upload test results
-        if: always()
+        if: always() && needs.nightly_gate.outputs.nightly == 'true'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
