@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload a scheduled build's wheel to the rolling `nightly` pre-release, creating
+# Upload a merged sync's wheel to the rolling `nightly` pre-release, creating
 # the release the first time. publish.py moves its tag, prunes it and writes the
 # pip index once all four platforms are done.
 #

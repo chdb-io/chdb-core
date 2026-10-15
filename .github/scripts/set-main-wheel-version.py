@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Give non-release wheels a PEP 440 version newer than their base tag.
 
---nightly is for the scheduled builds the nightly release publishes: no local
-version (a `+` in a wheel name does not survive as a GitHub release asset name),
-and once main has moved on to a newer ClickHouse line than its newest tag, the
-version names that line, so pip sorts the nightly above every release of an
-older one. Its dev number is HEAD's committer time as yymmddhhmm in UTC: it
-shows the day, the same commit always gets the same version, and a later
-commit a larger one.
+--nightly is for the builds the nightly release publishes, main's builds of
+merged ClickHouse syncs: no local version (a `+` in a wheel name does not survive
+as a GitHub release asset name), and once main has moved on to a newer ClickHouse
+line than its newest tag, the version names that line, so pip sorts the nightly
+above every release of an older one. Its dev number is HEAD's committer time as
+yymmddhhmm in UTC: it shows the day, the same commit always gets the same
+version, and a later commit a larger one.
 """
 
 from __future__ import annotations

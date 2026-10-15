@@ -11,7 +11,7 @@ name: Daily ClickHouse sync
 # can push.
 #
 # While a sync pull request is open the run does nothing, so a review is never
-# overwritten, and the nightly builds wait too; the next sync after it merges
+# overwritten, and no nightly comes out either; the next sync after it merges
 # covers the days in between.
 # See .github/nightly/README.md for setup and for running a step by hand.
 

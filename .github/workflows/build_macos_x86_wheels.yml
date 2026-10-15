@@ -1,8 +1,6 @@
 name: Build & Test macOS x86_64
 
 on:
-  schedule:
-    - cron: '0 16 * * 1-5'   # weekdays
   workflow_dispatch:
     inputs:
       TAG_NAME:
@@ -52,8 +50,9 @@ on:
       - '.github/workflows/nightly_publish.yml'
 
 concurrency:
-  # Keep daily builds independent from main pushes while replacing stale PR runs.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Replace stale pull request runs. On main a newer push replaces a pending run, but
+  # a merged ClickHouse sync gets a group of its own: its build is the nightly.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ (startsWith(github.event.head_commit.message, 'Sync ClickHouse master up to') || contains(github.event.head_commit.message, '/sync/clickhouse-master')) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -61,38 +60,41 @@ env:
   EFFECTIVE_DEBUG_MODE: 'false'
 
 jobs:
-  # A scheduled (nightly) run builds only while no ClickHouse sync pull request is
-  # open; the daily sync waits for that pull request the same way.
+  # Main's build of a merged ClickHouse sync pull request is the nightly: its wheel
+  # gets a nightly version and goes to the nightly release.
   nightly_gate:
     name: Nightly gate
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: read
     outputs:
-      build: ${{ steps.check.outputs.build }}
+      nightly: ${{ steps.check.outputs.nightly }}
     steps:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head sync/clickhouse-master --state open --json number --jq length)
-          if [ "$open" = 0 ]; then
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::A ClickHouse sync pull request is open; the nightly build waits until it merges."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          fi
+          # A squash or merge commit names the sync; a rebase merge's last commit may not.
+          case "$MESSAGE" in
+            "Sync ClickHouse master up to "* | *"/sync/clickhouse-master"*) merged=1 ;;
+            *) merged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+                 --jq '[.[] | select(.head.ref == "sync/clickhouse-master" and .merged_at != null)] | length' || echo 0) ;;
+          esac
+          echo "nightly=$([ "${merged:-0}" != 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   build_universal_wheel_on_linux:
     name: Build on Linux (cross-compile for macOS x86_64)
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
     needs: nightly_gate
+    outputs:
+      nightly: ${{ needs.nightly_gate.outputs.nightly }}
     # Skip draft pull requests; releases that are not version tags (the rolling
     # `nightly` pre-release); and the daily ClickHouse sync's pull requests, which
     # gate on Linux x86_64 alone while main's push build covers the rest.
-    # Scheduled runs build only when the nightly gate says so.
-    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.nightly_gate.outputs.build == 'true') && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
     timeout-minutes: 600
     steps:
       - name: Install Python build dependencies
@@ -365,7 +367,7 @@ jobs:
           pyenv shell --unset
       - name: Set version for main wheel
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: python3 .github/scripts/set-main-wheel-version.py ${{ github.event_name == 'schedule' && '--nightly' || '' }}
+        run: python3 .github/scripts/set-main-wheel-version.py ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && '--nightly' || '' }}
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -954,10 +956,10 @@ jobs:
             ./macos-x86_64-libchdb-static.tar.gz
             ./macos-x86_64-debuginfo.tar.gz
           overwrite: true
-      # Scheduled builds feed the nightly release directly; nightly_publish.yml
-      # finishes it once all four platforms are done.
+      # The build of a merged sync feeds the nightly release directly;
+      # nightly_publish.yml finishes it once all four platforms are done.
       - name: Upload the wheel to the nightly release
-        if: github.event_name == 'schedule' && vars.NIGHTLY_PUBLISH_ENABLED == 'true'
+        if: needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && vars.NIGHTLY_PUBLISH_ENABLED == 'true'
         run: .github/nightly/upload_wheel.sh dist/chdb_core-*.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

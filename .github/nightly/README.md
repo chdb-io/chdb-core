@@ -5,7 +5,7 @@ Two workflows keep `main` close to ClickHouse master and publish what it builds.
 | Workflow | When | What it does |
 |---|---|---|
 | `daily_sync.yml` | 22:17 UTC, Sunday to Thursday (06:17 in Beijing, Monday to Friday), or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT`, builds and tests it, and opens a pull request |
-| `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC, Monday to Friday) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
+| `nightly_publish.yml` | After main's build of each merged sync pull request | Finishes the `nightly` pre-release that build uploads its wheels to, and updates the dashboard |
 
 Both stay off until their repository variable is set (below).
 
@@ -46,7 +46,7 @@ Both stay off until their repository variable is set (below).
    free-threaded wheels and wasm build on `main` after it merges.
 
 While a sync pull request is open, the daily run does nothing, so a review is never
-overwritten, and the nightly builds wait too; the next sync after it merges covers
+overwritten, and no nightly comes out either; the next sync after it merges covers
 the days in between.
 
 ### The first sync
@@ -84,16 +84,19 @@ branches are never merged back into `main`.
 
 ## Nightly builds
 
-The four wheel workflows build `main` at 16:00 UTC, Monday to Friday. While a
-ClickHouse sync pull request is open, a `Nightly gate` job in each holds the build
-back, the way the daily sync waits for that pull request, and nothing is published
-for the night.
+There is no separate nightly build: the nightly is main's build of each merged
+ClickHouse sync pull request, which the four wheel workflows run on that push as on
+any other, full test suite included. A `Nightly gate` job in each tells that push
+apart, by the merge's commit message or, failing that, the pull request GitHub
+associates with the commit. A merged sync's push also gets a concurrency group of
+its own, so a later push to main cannot replace its pending build. No sync merged,
+no nightly: none while a sync pull request waits for review.
 
-Scheduled runs version the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer
+On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer
 ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `+` part so the
 name survives as a release asset. `N` is the commit's time as yymmddhhmm in UTC,
 e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
-pre-release itself (`upload_wheel.sh`), creating the release on the first night.
+pre-release itself (`upload_wheel.sh`), creating the release the first time.
 `nightly_publish.yml` waits until all four runs for the commit are done, then:
 
 - moves the `nightly` tag to the commit and keeps the wheels of the newest 20
@@ -117,7 +120,7 @@ pre-release itself (`upload_wheel.sh`), creating the release on the first night.
 |---|---|---|---|
 | `SYNC_PAT` | secret | daily sync | Fine-grained personal access token for this repository: Contents and Pull requests read/write. A pull request opened with `GITHUB_TOKEN` would start no CI. Its owner cannot approve the sync pull requests. |
 | `ANTHROPIC_API_KEY` | secret | daily sync | Claude API key for conflict resolution |
-| `DAILY_SYNC_ENABLED` | variable | daily sync | `true` to run on schedule |
+| `DAILY_SYNC_ENABLED` | variable | daily sync | `true` to run on its schedule |
 | `SYNC_CLAUDE_MODEL` | variable | daily sync | Optional; defaults to `claude-opus-5-5` |
 | `NIGHTLY_PUBLISH_ENABLED` | variable | nightly | `true` to publish |
 | `NIGHTLY_SITE_URL` | variable | nightly | Public URL of the dashboard, e.g. `https://nightly.chdb.io` |
@@ -148,7 +151,7 @@ night itself.
 | `open_pr.sh` | commit, push and open the sync pull request |
 | `resolve_prompt.md` | the prompt the sync gives Claude Code |
 | `embedded-mirror-allowlist.txt` | `LocalServer` calls `EmbeddedServer` deliberately skips |
-| `upload_wheel.sh` | a scheduled build's wheel to the nightly release |
+| `upload_wheel.sh` | a merged sync's wheel to the nightly release |
 | `publish.py` | nightly release tag, retention and pip index |
 | `report.py` | dashboard data, computed by chDB |
 | `dashboard/` | the static dashboard |

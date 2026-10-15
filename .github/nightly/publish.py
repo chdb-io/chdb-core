@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Finish a nightly build: the rolling `nightly` release and its pip index.
 
-The four wheel workflows build main on a schedule and upload their wheel to the
-`nightly` pre-release themselves (upload_wheel.sh). This runs after each of them
-finishes, waits until all four runs for the same main commit are done, and then:
+The nightly is main's build of a merged ClickHouse sync pull request: the four
+wheel workflows build that push and upload their wheel to the `nightly` pre-release
+themselves (upload_wheel.sh). This runs after each of them finishes; for a sync's
+merge it waits until all four runs for the commit are done, and then:
 
 - moves the `nightly` tag to that commit and keeps the wheels of the newest --keep
   nights, a night being one commit,
@@ -12,10 +13,8 @@ finishes, waits until all four runs for the same main commit are done, and then:
   sets the `ready` output.
 
 No wheel is downloaded: names, sizes and sha256 digests come from the release API.
-Nothing is published for a commit whose scheduled builds the nightly gate held
-back because a ClickHouse sync pull request was open.
 Only the release's assets, notes and tag move, so no `release: published` event
-starts the release builds.
+starts the release builds. A push that merges no sync publishes nothing.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ PLATFORMS = {
     "macos-x86_64": "build_macos_x86_wheels.yml",
 }
 PROJECT = "chdb-core"
-GATE = "Nightly gate"  # the job in each wheel workflow that can hold its build back
+SYNC_BRANCH = "sync/clickhouse-master"
 
 
 def gh(*args, check=True) -> str:
@@ -61,7 +60,7 @@ def parse_time(value: str) -> dt.datetime:
 
 
 def latest_run(repo: str, workflow: str, head_sha: str | None) -> dict | None:
-    query = f"repos/{repo}/actions/workflows/{workflow}/runs?event=schedule&per_page=10"
+    query = f"repos/{repo}/actions/workflows/{workflow}/runs?event=push&branch=main&per_page=10"
     if head_sha:
         query += f"&head_sha={head_sha}"
     runs = json.loads(gh("api", query, "--jq", ".workflow_runs") or "[]")
@@ -120,10 +119,14 @@ def stale(assets: list[dict], keep: int) -> list[str]:
     return sorted(a["name"] for a in assets if is_wheel(a["name"]) and dev_of(a["name"]) in old)
 
 
-def built(repo: str, run: dict) -> bool:
-    """False when the run's nightly gate held its build back."""
-    jobs = gh("api", f"repos/{repo}/actions/runs/{run['id']}/jobs", "--jq", "[.jobs[] | {name, conclusion}]")
-    return any(job["conclusion"] != "skipped" for job in json.loads(jobs or "[]") if job["name"] != GATE)
+def is_sync_merge(repo: str, sha: str) -> bool:
+    """Whether the commit merged the ClickHouse sync's pull request; the wheel workflows' gate asks the same."""
+    message = gh("api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.message", check=False)
+    if message.startswith("Sync ClickHouse master up to ") or f"/{SYNC_BRANCH}" in message:
+        return True
+    pulls = gh("api", f"repos/{repo}/commits/{sha}/pulls", "--jq",
+               f'[.[] | select(.head.ref == "{SYNC_BRANCH}" and .merged_at != null)] | length', check=False)
+    return pulls.strip() not in ("", "0")
 
 
 def minutes_between(start: str, end: str) -> float:
@@ -175,7 +178,7 @@ def release_notes(night: dict, site: str, keep: int) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--head-sha", default="", help="main commit whose scheduled builds to publish")
+    parser.add_argument("--head-sha", default="", help="merged sync commit on main whose builds to publish")
     parser.add_argument("--work", required=True)
     parser.add_argument("--site", required=True)
     parser.add_argument("--keep", type=int, default=20, help="nights whose wheels to keep")
@@ -191,18 +194,18 @@ def main(argv=None) -> int:
     if not head_sha:
         newest = latest_run(repo, PLATFORMS["linux-x86_64"], None)
         if not newest:
-            print("No scheduled build has run yet")
+            print("No build of main has run yet")
             set_output(ready="false")
             return 0
         head_sha = newest["head_sha"]
+    if not is_sync_merge(repo, head_sha):
+        print(f"{head_sha[:12]} merges no ClickHouse sync; nothing to publish")
+        set_output(ready="false")
+        return 0
     runs = {platform: latest_run(repo, workflow, head_sha) for platform, workflow in PLATFORMS.items()}
     pending = [p for p, r in runs.items() if r is None or r["status"] != "completed"]
     if pending:
         print(f"Waiting for {', '.join(pending)} to finish on {head_sha[:12]}")
-        set_output(ready="false")
-        return 0
-    if not any(built(repo, run) for run in runs.values()):
-        print(f"No nightly for {head_sha[:12]}: a sync pull request was open, so the builds waited")
         set_output(ready="false")
         return 0
 
