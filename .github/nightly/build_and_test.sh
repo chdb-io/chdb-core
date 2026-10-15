@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Build chdb-core and run its Python tests on Python 3.14, as the Linux x86_64
-# wheel workflow does, so the daily sync can check itself before it opens a pull
-# request; chdb/build.sh itself builds with Python 3.9, as it requires. Run it from
-# anywhere in the checkout: the first run builds everything, later runs rebuild
-# what changed. Each step's full log goes to .sync/build/; a failing step prints the
-# end of its log. The last line is PASS or FAIL, and .sync/build.json records the
-# result, and the state it was for, for the pull request.
+# Check out the submodules, build chdb-core and run its Python tests on Python 3.14,
+# as the Linux x86_64 wheel workflow does, so the daily sync can check itself before
+# it opens a pull request; chdb/build.sh itself builds with Python 3.9, as it
+# requires. Run it from anywhere in the checkout: the first run builds everything,
+# later runs rebuild what changed. Each step's full log goes to .sync/build/; a
+# failing step prints the end of its log. The last line is PASS or FAIL, and
+# .sync/build.json records the result, and the state it was for, for the pull
+# request.
 
 set -uo pipefail
 
@@ -57,6 +58,9 @@ step() {  # step NAME COMMAND...
   fi
 }
 
+# Submodules at the pins the index records, so a bump the sync made, or a conflict
+# left in .gitmodules, shows up here rather than as a confusing build error.
+step submodules .github/scripts/update-submodules.sh
 step build bash ./chdb/build.sh
 step smoke bash ./chdb/test_smoke.sh
 rm -rf dist

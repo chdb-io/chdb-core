@@ -158,16 +158,13 @@ jobs:
           max-size: 5G
           append-timestamp: true
 
-      # After the apply, so submodules the sync bumps or adds come at their new pins.
-      - name: Update submodules
-        if: steps.apply.outcome == 'success'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: .github/scripts/update-submodules.sh
-
+      # build_and_test.sh checks the submodules out first; the token, read-only, only
+      # authenticates those clones on the pool's shared egress IP.
       - name: Build and test
         id: build
         if: steps.apply.outputs.status == 'clean'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if bash .github/nightly/build_and_test.sh; then
             echo "result=pass" >> "$GITHUB_OUTPUT"
@@ -184,6 +181,7 @@ jobs:
         if: steps.apply.outputs.status == 'conflicts' || steps.build.outputs.result == 'fail'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           MODEL: ${{ vars.SYNC_CLAUDE_MODEL || 'claude-opus-5-5' }}
           # A full build takes about an hour; let a single command run for up to three.
           BASH_DEFAULT_TIMEOUT_MS: '10800000'
