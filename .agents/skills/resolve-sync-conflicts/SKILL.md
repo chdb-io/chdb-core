@@ -24,8 +24,9 @@ main; "theirs" is upstream; the base section is the upstream file before the dif
 
 1. **Edit only the conflicted files.** A chDB-owned file (one that does not exist
    upstream, e.g. `programs/local/EmbeddedServer.cpp`) may change only when a
-   conflicted upstream change requires it; list every such file in the notes. Never
-   edit another upstream file: `finalize` rejects it.
+   conflicted upstream change requires it; list every such file in the notes. Do not
+   edit another upstream file. If one truly has to change with a conflict, say why
+   in the notes; the pull request also lists every such file for the reviewer.
 2. **Resolve by intent, hunk by hunk.** Read what each side changed and why. Keep
    both: the chDB change and the upstream change. Never take a whole side for a file.
 3. **chDB changes must survive.** Code under `CHDB_LITE`, `CHDB_WASM_*`, `OS_WASM`,

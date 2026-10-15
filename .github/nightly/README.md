@@ -34,8 +34,9 @@ Both stay off until their repository variable is set (below).
    approves and merges it; the checks' findings are in its description.
    - Conflicts: first a separate job runs Claude Code headless with
      `.agents/skills/resolve-sync-conflicts`, holding no push credential. Its
-     resolution must pass `finalize` (no markers, no upstream file edited outside
-     the conflict set) before the pull request is opened.
+     resolution must pass `finalize` (no markers left, no CI, skill or version file
+     edited) before the pull request is opened, which lists any upstream file the
+     resolution changed outside the conflicts for the reviewer.
 5. The sync pull request's CI is Linux x86_64 alone; the other platforms, the
    free-threaded wheels and wasm build on `main` after it merges.
 

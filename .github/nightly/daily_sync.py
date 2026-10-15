@@ -499,16 +499,15 @@ def cmd_finalize(args) -> int:
     for path in conflicted:
         git("add", "-A", "--", path)
 
-    # Anything else that changed must be chDB's own file: an upstream file
-    # edited outside the conflict set is a change a person has to make.
+    # Anything else that changed is a chDB file adapted along with a conflict or,
+    # rarely, an upstream file the sync had applied cleanly; the pull request
+    # lists both for the reviewer.
     changed = [p for p in git("diff", "--name-only", "-z").split("\0") if p]
     changed += [p for p in git("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
     # Submodule pointers live in the index only; their directories are not checked out.
     gitlinks = {s["path"] for s in summary["submodules"]}
     outside = [p for p in changed if not p.startswith(".sync/") and p not in gitlinks]
     upstream_files = [p for p in outside if upstream_has(work, summary["target"], p)]
-    if upstream_files:
-        raise SyncError("upstream files changed outside the conflict set: " + ", ".join(upstream_files))
     protected = [p for p in outside if p.startswith(PROTECTED_PREFIXES) or p in PROTECTED_FILES]
     if protected:
         raise SyncError("the resolution may not change CI, skills or version files: " + ", ".join(protected))
@@ -517,9 +516,12 @@ def cmd_finalize(args) -> int:
     still = [p for p in git("diff", "--name-only", "-z", "--diff-filter=U").split("\0") if p]
     if still:
         raise SyncError("unmerged paths remain: " + ", ".join(still))
-    summary["chdb_files_adapted"] = outside
+    summary["chdb_files_adapted"] = [p for p in outside if p not in upstream_files]
+    summary["upstream_files_edited"] = upstream_files
     save_summary(summary)
-    print(f"{len(conflicted)} conflicts resolved; {len(outside)} chDB files adapted")
+    print(f"{len(conflicted)} conflicts resolved; {len(outside) - len(upstream_files)} chDB files adapted")
+    if upstream_files:
+        print("::warning::Upstream files changed outside the conflict set: " + ", ".join(upstream_files))
     return 0
 
 
@@ -574,6 +576,10 @@ def pr_body(summary: dict) -> str:
         if summary.get("chdb_files_adapted"):
             out += ["", "chDB files adapted along with the conflicts: "
                     + ", ".join(f"`{p}`" for p in summary["chdb_files_adapted"])]
+        if summary.get("upstream_files_edited"):
+            out += ["", "**Upstream files the resolution also changed**, outside the conflicts, where the sync "
+                    "had applied upstream's version cleanly; check these edits: "
+                    + ", ".join(f"`{p}`" for p in summary["upstream_files_edited"])]
         notes = STATE / "resolution.md"
         if notes.exists():
             out += ["", "## Resolution notes (AI)", "", notes.read_text().strip()]
