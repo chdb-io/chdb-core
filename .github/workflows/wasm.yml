@@ -52,8 +52,8 @@ on:
 
 concurrency:
   # A merged ClickHouse sync, which builds nothing here, gets a group of its own
-  # rather than cancel main's run.
-  group: wasm-${{ github.ref }}${{ contains(toJSON(github.event.commits.*.message), '"Sync ClickHouse master up to ') && format('-{0}', github.sha) || '' }}
+  # rather than cancel main's run; its merge commit's message names the sync branch.
+  group: wasm-${{ github.ref }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   # Cancel superseded build/test runs on branches & PRs, but never cancel a tag
   # run mid-publish.
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -69,6 +69,9 @@ jobs:
   nightly_gate:
     name: Nightly gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
     uses: ./.github/workflows/nightly_gate.yml
 
   build-and-test:

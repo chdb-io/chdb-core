@@ -52,8 +52,10 @@ on:
 
 concurrency:
   # Replace stale pull request runs. On main a newer push replaces a pending run, but
-  # a merged ClickHouse sync gets a group of its own: its build is the nightly.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ contains(toJSON(github.event.commits.*.message), '"Sync ClickHouse master up to ') && format('-{0}', github.sha) || '' }}
+  # a merged ClickHouse sync gets a group of its own: its build is the nightly. The
+  # merge commit's message names the sync branch (a squash or rebase merge's does
+  # not, and that build shares main's group).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -66,6 +68,9 @@ jobs:
   nightly_gate:
     name: Nightly gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
     uses: ./.github/workflows/nightly_gate.yml
 
   build_universal_wheel:

@@ -67,7 +67,7 @@ right after 07:00 UTC, it has most of a day.
 ### Finishing a blocked sync by hand
 
 ```bash
-git switch -c finish-sync origin/main
+git switch -c sync/clickhouse-master origin/main
 python3 .github/nightly/daily_sync.py fetch --work /tmp/ch-sync --target <sha>
 python3 .github/nightly/daily_sync.py apply --work /tmp/ch-sync --target <sha>
 # resolve the conflicts (git diff --name-only --diff-filter=U), then until it passes:
@@ -75,7 +75,11 @@ bash .github/nightly/build_and_test.sh
 python3 .github/nightly/checks.py all --work /tmp/ch-sync
 python3 .github/nightly/daily_sync.py stage
 python3 .github/nightly/daily_sync.py commit
+git push origin sync/clickhouse-master   # then open the pull request from it
 ```
+
+Only a merge from `sync/clickhouse-master` in this repository makes a nightly, so push
+the finished sync there (no sync pull request is open when a sync is blocked).
 
 `apply` copies the upstream blobs it merges from into this repository's object store.
 
@@ -91,9 +95,11 @@ branches are never merged back into `main`.
 
 There is no separate nightly build: the nightly is main's build of each merged
 ClickHouse sync pull request, which the four wheel workflows run on that push. The
-`Nightly gate` (`nightly_gate.yml`) tells that push apart: however the pull request
-was merged, the push carries a commit titled `Sync ClickHouse master up to ...`, as
-the sync's first commit is. That build makes
+`Nightly gate` (`nightly_gate.yml`) tells that push apart: its commit is the merge of
+a pull request from this repository's `sync/clickhouse-master` branch, which only
+`daily_sync.yml` pushes. GitHub records that commit as the pull request's merge commit
+whichever way it was merged, so the gate asks for it rather than read commit
+messages. That build makes
 and tests the Python wheel only (`WHEEL_ONLY`): every Python version, each against
 one pandas line (3.14 against both), but no static library, chdb-core-lite, debug
 symbols, libchdb/ADBC/Go checks or other packages' tests, which the sync pull

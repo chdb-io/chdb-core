@@ -37,7 +37,7 @@ PLATFORMS = {
     "macos-x86_64": "build_macos_x86_wheels.yml",
 }
 PROJECT = "chdb-core"
-SYNC_TITLE = "Sync ClickHouse master up to "
+SYNC_BRANCH = "sync/clickhouse-master"
 
 
 def gh(*args, check=True) -> str:
@@ -120,17 +120,17 @@ def stale(assets: list[dict], keep: int) -> list[str]:
 
 
 def is_sync_merge(repo: str, sha: str) -> bool:
-    """Whether the commit merged a ClickHouse sync, as the wheel workflows' Nightly gate decides.
+    """Whether the commit merged the ClickHouse sync pull request, as the wheel workflows' Nightly gate decides.
 
-    The gate looks for a commit titled like the sync's first in the push. The push is
-    not known here, so: the commit itself (a squash merge), or a commit of the pull
-    request it merged (a merge commit or a rebase).
+    A sync pull request comes from this repository's sync branch; whichever way it
+    was merged, GitHub records the commit it put on main as its merge_commit_sha.
     """
-    first_lines = '.commit.message | split("\\n")[0]'
-    titles = gh("api", f"repos/{repo}/commits/{sha}", "--jq", first_lines).splitlines()
-    for number in gh("api", f"repos/{repo}/commits/{sha}/pulls", "--jq", ".[] | select(.merged_at) | .number").split():
-        titles += gh("api", "--paginate", f"repos/{repo}/pulls/{number}/commits", "--jq", f".[] | {first_lines}").splitlines()
-    return any(title.startswith(SYNC_TITLE) for title in titles)
+    pulls = json.loads(gh("api", f"repos/{repo}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100"))
+    return any(
+        pull.get("merged_at") and pull.get("merge_commit_sha") == sha and pull["head"]["ref"] == SYNC_BRANCH
+        and (pull["head"].get("repo") or {}).get("full_name") == repo
+        for pull in pulls
+    )
 
 
 def minutes_between(start: str, end: str) -> float:

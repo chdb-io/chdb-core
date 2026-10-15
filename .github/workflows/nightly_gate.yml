@@ -1,20 +1,20 @@
 name: Nightly gate
 
-# Whether a push to main merges a ClickHouse sync pull request, which makes main's
+# Whether a push to main merges the ClickHouse sync pull request, which makes main's
 # build of it the nightly. Called by the four wheel workflows, the free-threaded
-# wheels and wasm. However the pull request was merged (squash, merge commit or
-# rebase), the push carries a commit titled like the sync's first commit,
-# "Sync ClickHouse master up to <commit>"; publish.py asks the same of the commit
-# and its pull request.
+# wheels and wasm, whose calling job grants pull-requests: read.
+#
+# A sync pull request comes from this repository's sync/clickhouse-master branch,
+# which only daily_sync.yml pushes. However it is merged (merge commit, squash or
+# rebase), GitHub records the commit it put on main as the pull request's
+# merge_commit_sha when it merges, before the push event. publish.py asks the same.
 
 on:
   workflow_call:
     outputs:
       nightly:
-        description: "'true' when the push merges a ClickHouse sync"
+        description: "'true' when the push merges the ClickHouse sync pull request"
         value: ${{ jobs.check.outputs.nightly }}
-
-permissions: {}
 
 jobs:
   check:
@@ -24,6 +24,21 @@ jobs:
       nightly: ${{ steps.check.outputs.nightly }}
     steps:
       - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          count=$(jq '[.commits[]?.message | select(startswith("Sync ClickHouse master up to "))] | length' "$GITHUB_EVENT_PATH")
-          echo "nightly=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Not the head= filter: chdb-io owns both this repository and the one it forks,
+          # and GitHub resolves chdb-io:<branch> to the other one.
+          query="repos/$GITHUB_REPOSITORY/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100"
+          filter="[.[] | select(.merged_at != null and .merge_commit_sha == \"$GITHUB_SHA\"
+            and .head.ref == \"sync/clickhouse-master\" and .head.repo.full_name == \"$GITHUB_REPOSITORY\")] | length"
+          # gh prints an error body to stdout, so only a number counts as an answer.
+          for attempt in 1 2 3 4; do
+            if count=$(gh api "$query" --jq "$filter") && [[ "$count" =~ ^[0-9]+$ ]]; then
+              echo "nightly=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::GitHub did not say which pull request this push merged; building it as an ordinary push"
+          exit 1

@@ -295,6 +295,19 @@ class Publishing(unittest.TestCase):
     def asset(self, name, updated_at="2026-10-15T20:00:00Z"):
         return {"name": name, "size": 7, "digest": "sha256:" + "f" * 64, "updated_at": updated_at}
 
+    def test_is_sync_merge(self):
+        def pull(ref, sha, repo="chdb-io/chdb-core", merged=True):
+            return {"merged_at": "2026-10-16T08:00:00Z" if merged else None, "merge_commit_sha": sha,
+                    "head": {"ref": ref, "repo": {"full_name": repo} if repo else None}}
+        pulls = [pull("fix/x", A), pull("sync/clickhouse-master", B), pull("sync/clickhouse-master", ZERO, merged=False),
+                 pull("sync/clickhouse-master", "c" * 40, repo="someone/chdb-core"), pull("gone", "d" * 40, repo=None)]
+        with unittest.mock.patch.object(publish, "gh", return_value=publish.json.dumps(pulls)):
+            self.assertTrue(publish.is_sync_merge("chdb-io/chdb-core", B))
+            self.assertFalse(publish.is_sync_merge("chdb-io/chdb-core", A))         # another branch
+            self.assertFalse(publish.is_sync_merge("chdb-io/chdb-core", ZERO))      # closed, not merged
+            self.assertFalse(publish.is_sync_merge("chdb-io/chdb-core", "c" * 40))  # a fork's branch of that name
+            self.assertFalse(publish.is_sync_merge("chdb-io/chdb-core", "d" * 40))
+
     def test_night_wheels(self):
         self.assertEqual(publish.dev_number("2026-10-15T16:17:59Z"), "2610151617")
         assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset("notes.txt")]

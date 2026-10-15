@@ -43,8 +43,8 @@ concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
   # starving later runs. Never cancel main or release runs. A merged ClickHouse sync,
   # which builds nothing here, gets a group of its own rather than replace main's
-  # pending run.
-  group: ${{ github.workflow }}-${{ github.ref }}${{ contains(toJSON(github.event.commits.*.message), '"Sync ClickHouse master up to ') && format('-{0}', github.sha) || '' }}
+  # pending run; its merge commit's message names the sync branch.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -54,6 +54,9 @@ jobs:
   nightly_gate:
     name: Nightly gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
     uses: ./.github/workflows/nightly_gate.yml
 
   # ───────────────────────────────────────────────────────────────────────────
