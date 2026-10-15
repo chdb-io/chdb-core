@@ -515,9 +515,12 @@ def cmd_snapshot(args) -> int:
 def cmd_stage(args) -> int:
     """Stage the sync as it stands and note what the reviewer should look at. Never fails a sync.
 
-    Writes two patches for the pull request's two commits: the upstream diff as the
-    script applied it (.sync/pr-upstream.diff), and everything changed on top of that,
-    by Claude Code or a person (.sync/pr-changes.diff).
+    Writes what the pull request is made of, as data for the job that holds the
+    push token: two patches, the upstream diff as the script applied it
+    (.sync/pr-upstream.diff) and everything changed on top of that, by Claude Code
+    or a person (.sync/pr-changes.diff), their commit messages
+    (.sync/commit-upstream.txt, .sync/commit-changes.txt), and the pull request's
+    title and description (.sync/pr_title.txt, .sync/pr_body.md).
     """
     summary = load_summary()
     build_file = STATE / "build.json"
@@ -539,6 +542,10 @@ def cmd_stage(args) -> int:
     save_summary(summary)
     (STATE / "pr-upstream.diff").write_bytes(run(["git", "diff", "--binary", "HEAD", applied], binary=True).stdout)
     (STATE / "pr-changes.diff").write_bytes(run(["git", "diff", "--binary", applied, final], binary=True).stdout)
+    (STATE / "commit-upstream.txt").write_text(commit_message(summary, "upstream"))
+    (STATE / "commit-changes.txt").write_text(changes_message(summary))
+    (STATE / "pr_title.txt").write_text(commit_title(summary) + "\n")
+    (STATE / "pr_body.md").write_text(pr_body(summary))
     print(f"{len(summary['changed_files'])} files changed on top of the applied sync, "
           f"{len(summary['extra_files'])} of them beyond the conflicts")
     if summary["markers_left"]:
@@ -671,16 +678,10 @@ def pr_body(summary: dict) -> str:
 
 
 def cmd_commit(args) -> int:
-    summary = load_summary()
-    name = os.environ.get("SYNC_GIT_NAME") or "chdb sync"
-    email = os.environ.get("SYNC_GIT_EMAIL") or "chdb-sync@users.noreply.github.com"
+    """Commit what stage staged as one commit, for a sync finished by hand."""
     if not git("diff", "--cached", "--name-only").strip():
         raise SyncError("nothing is staged")
-    message = changes_message(summary) if args.part == "changes" else commit_message(summary, args.part)
-    run(["git", "-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "--quiet", "-F", "-"],
-        stdin=message)
-    (STATE / "pr_title.txt").write_text(commit_title(summary) + "\n")
-    (STATE / "pr_body.md").write_text(pr_body(summary))
+    run(["git", "commit", "--quiet", "-F", "-"], stdin=commit_message(load_summary()))
     print(git("log", "-1", "--format=%H %s").strip())
     return 0
 
@@ -714,8 +715,6 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_stage)
 
     p = sub.add_parser("commit")
-    p.add_argument("--part", choices=["all", "upstream", "changes"], default="all",
-                   help="all: one commit; upstream, then changes: the pull request's two commits")
     p.set_defaults(func=cmd_commit)
 
     args = parser.parse_args(argv)

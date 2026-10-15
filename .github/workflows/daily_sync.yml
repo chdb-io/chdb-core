@@ -244,9 +244,12 @@ jobs:
           name: sync-${{ github.run_id }}
           path: .sync
 
+      # main's copy of open_pr.sh, taken before the patches apply, so nothing they
+      # change runs while SYNC_PAT is in the environment.
       - name: Commit, push and open the pull request
         env:
           SYNC_PAT: ${{ secrets.SYNC_PAT }}
         run: |
           echo "/.sync/" >> "$(git rev-parse --git-path info/exclude)"
-          .github/nightly/open_pr.sh
+          cp .github/nightly/open_pr.sh "$RUNNER_TEMP/open_pr.sh"
+          "$RUNNER_TEMP/open_pr.sh"
