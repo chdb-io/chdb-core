@@ -86,21 +86,25 @@ jobs:
 
       - name: Fetch ClickHouse
         if: steps.open.outputs.count == '0'
-        run: python3 .github/nightly/daily_sync.py fetch --work "$SYNC_WORK" --target "${{ inputs.target }}"
+        env:
+          TARGET: ${{ inputs.target }}
+        run: python3 .github/nightly/daily_sync.py fetch --work "$SYNC_WORK" --target "$TARGET"
 
       - name: Choose the upstream commit
         id: target
         if: steps.open.outputs.count == '0'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/nightly/daily_sync.py target --work "$SYNC_WORK" --override "${{ inputs.target }}"
+          TARGET: ${{ inputs.target }}
+        run: python3 .github/nightly/daily_sync.py target --work "$SYNC_WORK" --override "$TARGET"
 
       - name: Apply the upstream diff
         id: apply
         if: steps.target.outputs.up_to_date == 'false'
         env:
           SYNC_TARGET_REASON: ${{ steps.target.outputs.reason }}
-        run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "${{ steps.target.outputs.target }}"
+          TARGET: ${{ steps.target.outputs.target }}
+        run: python3 .github/nightly/daily_sync.py apply --work "$SYNC_WORK" --target "$TARGET"
 
       # The pull request's first commit: the diff as applied, conflict markers and all.
       - name: Record the applied sync

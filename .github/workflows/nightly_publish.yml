@@ -55,9 +55,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
         run: >-
           python3 .github/nightly/publish.py
-          --head-sha "${{ github.event.workflow_run.head_sha || inputs.head_sha }}"
+          --head-sha "$HEAD_SHA"
           --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
 
       # The latest release from PyPI: the nightly wheels stay on the release.
