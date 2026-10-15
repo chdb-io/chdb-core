@@ -221,6 +221,13 @@ def main(argv=None) -> int:
     # failing on the first night there is no release yet.
     release_id = gh("api", f"repos/{repo}/releases/tags/{TAG}", "--jq", ".id", check=False).strip()
     committed_at = gh("api", f"repos/{repo}/commits/{head_sha}", "--jq", ".commit.committer.date").strip()
+    # A rerun of an older night's build finishes after a newer night is out; the
+    # release, its notes and the dashboard only move forward.
+    tagged = gh("api", f"repos/{repo}/commits/{TAG}", "--jq", ".commit.committer.date", check=False).strip()
+    if release_id and tagged and dev_number(tagged) > dev_number(committed_at):
+        print(f"{head_sha[:12]} is older than the published nightly; nothing to publish")
+        set_output(ready="false")
+        return 0
     assets = release_assets(repo, release_id) if release_id else []
     wheels = night_wheels(assets, dev_number(committed_at))
     night = {

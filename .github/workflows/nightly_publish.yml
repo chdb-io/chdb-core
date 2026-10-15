@@ -24,9 +24,11 @@ on:
         required: false
         default: ''
 
-# Four completions per push; one publication at a time, each idempotent.
+# Four completions per push, each publication idempotent. A commit's runs queue
+# behind each other and the last one publishes; keyed by commit, so a completion for
+# another commit cannot replace the night's pending run.
 concurrency:
-  group: nightly-publish
+  group: nightly-publish-${{ github.event.workflow_run.head_sha || inputs.head_sha || github.run_id }}
   cancel-in-progress: false
 
 permissions:
