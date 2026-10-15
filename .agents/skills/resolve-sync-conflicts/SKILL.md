@@ -18,15 +18,14 @@ The job is to get from there to a sync that builds and passes the Python tests.
 - The upstream side of each conflicted file as plain files:
   `.sync/upstream/base/<path>` and `.sync/upstream/target/<path>` (before and after
   the range) and `.sync/upstream/log/<path>.txt` (the upstream merges that touched it).
-- `.sync/build.json` and the full logs in `.sync/build/` once the build has run.
-- chDB's own history: `git log` and `git diff` in this checkout.
 - What syncs have broken before:
   `.agents/skills/sync-clickhouse-baseline/references/guide.md`, kept for the
   person-led upgrade. Its import rules, risky modules, the embedded, client and
   host-lifecycle reviews, the failure patterns, the test attribution notes, the five
   audits and the validation order apply here as they are, as far as one Linux
-  x86_64 machine reaches; the pull request's CI and main's builds cover the rest. Its review documents, approval stops and
-  commit layout do not: here nobody waits for approval, and the workflow commits.
+  x86_64 machine reaches; the pull request's CI covers the rest. Its review
+  documents, approval stops and commit layout do not: here nobody waits for
+  approval, and the workflow commits.
 
 ## Procedure
 
@@ -44,9 +43,10 @@ The job is to get from there to a sync that builds and passes the Python tests.
 3. Run `bash .github/nightly/build_and_test.sh`. The first run builds everything
    (about an hour); later runs rebuild what changed. To check one file quickly,
    build its object with `ninja -C buildlib <target>`.
-4. If it fails, find the cause in its output and the full log, fix what the sync
-   broke, and run it again. Repeat until it prints PASS, or until you can make no
-   further progress. On a crash, get a stack from a debugger before changing code.
+4. If it fails, find the cause in its output and the full logs in `.sync/build/`,
+   fix what the sync broke, and run it again. Repeat until it prints PASS, or until
+   you can make no further progress. On a crash, get a stack from a debugger before
+   changing code.
 5. Write `.sync/resolution.md`.
 
 ## Rules
