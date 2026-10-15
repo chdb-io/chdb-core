@@ -5,12 +5,15 @@
 version (a `+` in a wheel name does not survive as a GitHub release asset name),
 and once main has moved on to a newer ClickHouse line than its newest tag, the
 version names that line, so pip sorts the nightly above every release of an
-older one.
+older one. Its dev number is HEAD's committer time as yymmddhhmm in UTC: it
+shows the day, the same commit always gets the same version, and a later
+commit a larger one.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import re
 import subprocess
 from pathlib import Path
@@ -53,14 +56,18 @@ def engine_line(header: str) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
-def nightly_version(tag: str, distance: int, line: tuple[int, int] | None = None) -> str:
-    if distance < 0:
-        raise ValueError("commit distance cannot be negative")
+def dev_number(commit_time: int) -> int:
+    moment = datetime.datetime.fromtimestamp(commit_time, tz=datetime.timezone.utc)
+    return int(moment.strftime("%y%m%d%H%M"))
+
+
+def nightly_version(tag: str, commit_time: int, line: tuple[int, int] | None = None) -> str:
     base = normalize_tag(tag)
     major, minor = (int(part) for part in base.split(".")[:2])
+    dev = dev_number(commit_time)
     if line and line > (major, minor):
-        return f"{line[0]}.{line[1]}.0.dev{distance}"
-    return f"{base}.post1.dev{distance}"
+        return f"{line[0]}.{line[1]}.0.dev{dev}"
+    return f"{base}.post1.dev{dev}"
 
 
 def replace_once(path: Path, pattern: str, replacement: str) -> None:
@@ -77,12 +84,13 @@ def main() -> None:
     args = parser.parse_args()
 
     tag = run_git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
-    distance = int(run_git("rev-list", "--count", f"{tag}..HEAD"))
-    commit = run_git("rev-parse", "--short=12", "HEAD")
     if args.nightly:
         header = (REPO_ROOT / "programs" / "local" / "chdb.h").read_text()
-        version = nightly_version(tag, distance, engine_line(header))
+        commit_time = int(run_git("show", "-s", "--format=%ct", "HEAD"))
+        version = nightly_version(tag, commit_time, engine_line(header))
     else:
+        distance = int(run_git("rev-list", "--count", f"{tag}..HEAD"))
+        commit = run_git("rev-parse", "--short=12", "HEAD")
         version = main_version(tag, distance, commit)
 
     replace_once(

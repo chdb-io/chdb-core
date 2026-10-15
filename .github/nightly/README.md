@@ -81,7 +81,8 @@ that branch. Release branches are never merged back into `main`.
 The four wheel workflows build `main` on a schedule. Their scheduled runs version
 the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer ClickHouse line than its
 newest tag, `X.Y.0.devN`, with no local `+` part so the name survives as a release
-asset. `nightly_publish.yml` waits until all four runs for the commit are done, then:
+asset. `N` is the commit's time as yymmddhhmm in UTC, e.g.
+`26.10.0.dev2610151617`. `nightly_publish.yml` waits until all four runs for the commit are done, then:
 
 - uploads the `chdb_core` wheels to the `nightly` pre-release and deletes those older
   than 30 days. The release is created once; afterwards only its assets, notes and

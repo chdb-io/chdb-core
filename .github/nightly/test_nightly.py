@@ -143,13 +143,13 @@ class Publishing(unittest.TestCase):
         self.assertEqual(stale, ["old.whl"])
 
     def test_pep503(self):
-        name = "chdb_core-26.9.0.post1.dev3-cp39-abi3-manylinux2014_x86_64.whl"
+        name = "chdb_core-26.10.0.dev2610151617-cp39-abi3-manylinux2014_x86_64.whl"
         pages = publish.pep503_pages("chdb-io/chdb-core", {"nights": [
             {"date": "2026-10-10", "head_sha": B, "version": "x", "wheels": [self.wheel(name)]}]})
         project = pages["simple/chdb-core/index.html"]
         self.assertIn(f"https://github.com/chdb-io/chdb-core/releases/download/nightly/{name}#sha256=", project)
         self.assertIn('href="chdb-core/"', pages["simple/index.html"])
-        self.assertEqual(publish.wheel_version(name), "26.9.0.post1.dev3")
+        self.assertEqual(publish.wheel_version(name), "26.10.0.dev2610151617")
 
 
 class Reporting(unittest.TestCase):
