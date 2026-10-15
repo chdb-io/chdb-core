@@ -18,7 +18,10 @@ export SYNC_GIT_EMAIL="${id}+${login}@users.noreply.github.com"
 python3 .github/nightly/daily_sync.py commit
 
 # The workflow only gets here when no sync pull request is open, so nobody's
-# review is on the branch and it can be replaced.
+# review is on the branch and it can be replaced. It is deleted first: pushed
+# over an older sync, the push would also carry main's workflow changes since
+# then, which GitHub accepts only from a token with the Workflows permission.
+gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${SYNC_BRANCH}" >/dev/null 2>&1 || true
 git push --force --quiet \
   "https://x-access-token:${SYNC_PAT}@github.com/${GITHUB_REPOSITORY}.git" \
   "HEAD:refs/heads/${SYNC_BRANCH}"
