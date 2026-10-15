@@ -23,19 +23,24 @@ The job is to get from there to a sync that builds and passes the Python tests.
 - What syncs have broken before:
   `.agents/skills/sync-clickhouse-baseline/references/guide.md`, kept for the
   person-led upgrade. Its import rules, risky modules, the embedded, client and
-  host-lifecycle reviews, the failure patterns, the test attribution notes and the
-  five audits apply here as they are. Its review documents, approval stops and
+  host-lifecycle reviews, the failure patterns, the test attribution notes, the five
+  audits and the validation order apply here as they are, as far as one Linux
+  x86_64 machine reaches; the pull request's CI and main's builds cover the rest. Its review documents, approval stops and
   commit layout do not: here nobody waits for approval, and the workflow commits.
 
 ## Procedure
 
 1. Read the guide above, then resolve every conflict, following the rules below.
-2. Run `python3 .github/nightly/checks.py all`. It scripts the guide's cheapest
-   audits: chDB lines a merge dropped and upstream lines that never arrived,
-   `ForceFunctionReferences.cpp` against `REGISTER_FUNCTION` both ways, `LocalServer`
-   initialisation `EmbeddedServer` lacks, and submodule bumps against their
-   `contrib/*-cmake` file lists. Fix what it reports that is real; the pull request
-   shows its last report.
+2. Run the checks that cost seconds, and fix what they report that is real:
+   - `python3 .github/nightly/checks.py all` scripts the guide's cheapest audits:
+     chDB lines a merge dropped and upstream lines that never arrived,
+     `ForceFunctionReferences.cpp` against `REGISTER_FUNCTION` both ways,
+     `LocalServer` initialisation `EmbeddedServer` lacks, and submodule bumps
+     against their `contrib/*-cmake` file lists. The pull request shows its last
+     report.
+   - `.github/scripts/check-abi-version.sh` and
+     `python3 chdb/build/check_export_contract.py`, the first cheap checks of the
+     guide's validation order: the C API's version line and its export lists.
 3. Run `bash .github/nightly/build_and_test.sh`. The first run builds everything
    (about an hour); later runs rebuild what changed. To check one file quickly,
    build its object with `ninja -C buildlib <target>`.
