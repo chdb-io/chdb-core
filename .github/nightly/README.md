@@ -5,7 +5,7 @@ Two workflows keep `main` close to ClickHouse master and publish what it builds.
 | Workflow | When | What it does |
 |---|---|---|
 | `daily_sync.yml` | 02:17 UTC, or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT` and opens a pull request |
-| `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
+| `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC, Monday to Friday) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
 
 Both stay off until their repository variable is set (below).
 
@@ -78,18 +78,22 @@ that branch. Release branches are never merged back into `main`.
 
 ## Nightly builds
 
-The four wheel workflows build `main` on a schedule. Their scheduled runs version
-the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer ClickHouse line than its
-newest tag, `X.Y.0.devN`, with no local `+` part so the name survives as a release
-asset. `N` is the commit's time as yymmddhhmm in UTC, e.g.
-`26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly` pre-release
-itself (`upload_wheel.sh`), creating the release on the first night.
+The four wheel workflows build `main` at 16:00 UTC, Monday to Friday. While a
+ClickHouse sync pull request is open, a `Nightly gate` job in each holds the build
+back, the way the daily sync waits for that pull request, and nothing is published
+for the night.
+
+Scheduled runs version the wheel `X.Y.Z.post1.devN` or, once `main` is on a newer
+ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `+` part so the
+name survives as a release asset. `N` is the commit's time as yymmddhhmm in UTC,
+e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
+pre-release itself (`upload_wheel.sh`), creating the release on the first night.
 `nightly_publish.yml` waits until all four runs for the commit are done, then:
 
-- moves the `nightly` tag to the commit and deletes wheels older than 30 days. The
-  release is created once; afterwards only its assets, notes and tag move, so no
-  `release: published` event starts the release builds, and the release workflows
-  skip any tag that is not `v*` anyway;
+- moves the `nightly` tag to the commit and keeps the wheels of the newest 20
+  nights, a night being one commit. The release is created once; afterwards only
+  its assets, notes and tag move, so no `release: published` event starts the
+  release builds, and the release workflows skip any tag that is not `v*` anyway;
 - writes a PEP 503 index from the release's asset list, whose names and sha256
   digests are all it needs (no wheel is downloaded), so
   `pip install --pre --extra-index-url <site>/simple chdb-core` installs the newest

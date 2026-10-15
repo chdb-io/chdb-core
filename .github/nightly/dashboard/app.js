@@ -295,7 +295,7 @@ function renderInstall() {
   root.replaceChildren(
     el("p", { class: "caption" }, "Newest nightly (pre-release; not for production):"),
     el("pre", { class: "install" }, el("code", {}, `pip install --pre --extra-index-url ${index} chdb-core`)),
-    el("p", { class: "caption" }, "Pin one night with chdb-core==<version>. Wheels are kept for 30 days on the ",
+    el("p", { class: "caption" }, "Pin one night with chdb-core==<version>. The newest 20 nightly builds are kept on the ",
       el("a", { href: latest ? latest.install.release_url : "#" }, "nightly release"), "."),
   );
   const logs = (latest ? latest.platforms : []).filter((p) => p.log);

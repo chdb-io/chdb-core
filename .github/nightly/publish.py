@@ -5,12 +5,15 @@ The four wheel workflows build main on a schedule and upload their wheel to the
 `nightly` pre-release themselves (upload_wheel.sh). This runs after each of them
 finishes, waits until all four runs for the same main commit are done, and then:
 
-- moves the `nightly` tag to that commit and deletes wheels older than --keep-days,
+- moves the `nightly` tag to that commit and keeps the wheels of the newest --keep
+  nights, a night being one commit,
 - writes a PEP 503 index (simple/) of the wheels left into --site,
 - downloads the runs' test results, writes --work/night.json for report.py, and
   sets the `ready` output.
 
 No wheel is downloaded: names, sizes and sha256 digests come from the release API.
+Nothing is published for a commit whose scheduled builds the nightly gate held
+back because a ClickHouse sync pull request was open.
 Only the release's assets, notes and tag move, so no `release: published` event
 starts the release builds.
 """
@@ -35,6 +38,7 @@ PLATFORMS = {
     "macos-x86_64": "build_macos_x86_wheels.yml",
 }
 PROJECT = "chdb-core"
+GATE = "Nightly gate"  # the job in each wheel workflow that can hold its build back
 
 
 def gh(*args, check=True) -> str:
@@ -90,6 +94,11 @@ def sha256_of(asset: dict) -> str:
     return digest.split(":", 1)[1] if digest.startswith("sha256:") else ""
 
 
+def dev_of(name: str) -> int:
+    version = wheel_version(name)
+    return int(version.rsplit(".dev", 1)[1]) if ".dev" in version else 0
+
+
 def dev_number(committed_at: str) -> str:
     """The dev number set-main-wheel-version.py --nightly gives a commit."""
     return parse_time(committed_at).astimezone(dt.timezone.utc).strftime("%y%m%d%H%M")
@@ -104,10 +113,17 @@ def night_wheels(assets: list[dict], dev: str) -> list[dict]:
     ]
 
 
-def stale(assets: list[dict], keep_days: int, now: dt.datetime) -> list[str]:
-    """Wheels last uploaded more than keep_days ago."""
-    cutoff = now - dt.timedelta(days=keep_days)
-    return sorted(a["name"] for a in assets if a["name"].endswith(".whl") and parse_time(a["updated_at"]) < cutoff)
+def stale(assets: list[dict], keep: int) -> list[str]:
+    """Wheels of all but the newest `keep` nights; a night's wheels share its dev number."""
+    nights = sorted({dev_of(a["name"]) for a in assets if is_wheel(a["name"])}, reverse=True)
+    old = set(nights[keep:])
+    return sorted(a["name"] for a in assets if is_wheel(a["name"]) and dev_of(a["name"]) in old)
+
+
+def built(repo: str, run: dict) -> bool:
+    """False when the run's nightly gate held its build back."""
+    jobs = gh("api", f"repos/{repo}/actions/runs/{run['id']}/jobs", "--jq", "[.jobs[] | {name, conclusion}]")
+    return any(job["conclusion"] != "skipped" for job in json.loads(jobs or "[]") if job["name"] != GATE)
 
 
 def minutes_between(start: str, end: str) -> float:
@@ -137,7 +153,7 @@ def pep503_pages(repo: str, assets: list[dict]) -> dict[str, str]:
     return {"simple/index.html": root, f"simple/{PROJECT}/index.html": project}
 
 
-def release_notes(night: dict, site: str, keep_days: int) -> str:
+def release_notes(night: dict, site: str, keep: int) -> str:
     lines = [
         "Rolling nightly builds of chdb-core from `main`, one per day. Not for production.",
         "",
@@ -153,7 +169,7 @@ def release_notes(night: dict, site: str, keep_days: int) -> str:
         ]
     if night["wheels"]:
         lines.append(f"Newest: `{night['version']}`, built from {night['head_sha'][:12]} on {night['date']}.")
-    lines.append(f"Wheels are deleted after {keep_days} days.")
+    lines.append(f"The newest {keep} nightly builds are kept.")
     return "\n".join(lines) + "\n"
 
 
@@ -162,7 +178,7 @@ def main(argv=None) -> int:
     parser.add_argument("--head-sha", default="", help="main commit whose scheduled builds to publish")
     parser.add_argument("--work", required=True)
     parser.add_argument("--site", required=True)
-    parser.add_argument("--keep-days", type=int, default=30)
+    parser.add_argument("--keep", type=int, default=20, help="nights whose wheels to keep")
     args = parser.parse_args(argv)
 
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -183,6 +199,10 @@ def main(argv=None) -> int:
     pending = [p for p, r in runs.items() if r is None or r["status"] != "completed"]
     if pending:
         print(f"Waiting for {', '.join(pending)} to finish on {head_sha[:12]}")
+        set_output(ready="false")
+        return 0
+    if not any(built(repo, run) for run in runs.values()):
+        print(f"No nightly for {head_sha[:12]}: a sync pull request was open, so the builds waited")
         set_output(ready="false")
         return 0
 
@@ -215,11 +235,11 @@ def main(argv=None) -> int:
     deleted = []
     if release_id:
         gh("api", "-X", "PATCH", f"repos/{repo}/git/refs/tags/{TAG}", "-f", f"sha={head_sha}", "-F", "force=true")
-        deleted = stale(assets, args.keep_days, dt.datetime.now(dt.timezone.utc))
+        deleted = stale(assets, args.keep)
         for name in deleted:
             gh("release", "delete-asset", TAG, name, "--repo", repo, "--yes", check=False)
         notes = work / "notes.md"
-        notes.write_text(release_notes(night, site_url, args.keep_days))
+        notes.write_text(release_notes(night, site_url, args.keep))
         gh("release", "edit", TAG, "--repo", repo, "--notes-file", str(notes))
 
     for rel, text in pep503_pages(repo, [a for a in assets if a["name"] not in deleted]).items():

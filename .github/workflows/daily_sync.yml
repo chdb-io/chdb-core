@@ -48,6 +48,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      pull-requests: read   # the open sync pull request the run waits for
     outputs:
       status: ${{ steps.apply.outputs.status }}
       target: ${{ steps.target.outputs.target }}

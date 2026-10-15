@@ -2,7 +2,7 @@ name: Build & Test macOS arm64
 
 on:
   schedule:
-    - cron: '0 16 * * *'
+    - cron: '0 16 * * 1-5'   # weekdays
   workflow_dispatch:
     inputs:
       TAG_NAME:
@@ -61,13 +61,38 @@ env:
   EFFECTIVE_DEBUG_MODE: 'false'
 
 jobs:
+  # A scheduled (nightly) run builds only while no ClickHouse sync pull request is
+  # open; the daily sync waits for that pull request the same way.
+  nightly_gate:
+    name: Nightly gate
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head sync/clickhouse-master --state open --json number --jq length)
+          if [ "$open" = 0 ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::A ClickHouse sync pull request is open; the nightly build waits until it merges."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build_universal_wheel_on_linux:
     name: Build on Linux (cross-compile for macOS arm64)
     runs-on: [self-hosted, linux, arm64, ubuntu-latest]
+    needs: nightly_gate
     # Skip draft pull requests; releases that are not version tags (the rolling
     # `nightly` pre-release); and the daily ClickHouse sync's pull requests, which
     # gate on Linux x86_64 alone while main's push build covers the rest.
-    if: ${{ !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
+    # Scheduled runs build only when the nightly gate says so.
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.nightly_gate.outputs.build == 'true') && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) && github.head_ref != 'sync/clickhouse-master' }}
     timeout-minutes: 600
     steps:
       - name: Install Python build dependencies

@@ -149,9 +149,10 @@ class Publishing(unittest.TestCase):
         self.assertEqual(publish.wheel_version(self.linux), "26.10.0.dev2610151617")
 
     def test_stale(self):
-        assets = [self.asset(self.linux), self.asset(self.old, "2026-09-01T10:00:00Z")]
-        now = dt.datetime(2026, 10, 15, 21, tzinfo=dt.timezone.utc)
-        self.assertEqual(publish.stale(assets, 30, now), [self.old])
+        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset("notes.txt")]
+        self.assertEqual(publish.stale(assets, 1), [self.old])
+        self.assertEqual(publish.stale(assets, 2), [])
+        self.assertEqual(publish.dev_of(self.old), 2609010930)
 
     def test_pep503(self):
         pages = publish.pep503_pages("chdb-io/chdb-core", [self.asset(self.linux), self.asset("notes.txt")])

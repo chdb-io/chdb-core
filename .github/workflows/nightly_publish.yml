@@ -1,10 +1,11 @@
 name: Publish nightly build
 
-# The four wheel workflows build main every night (their `schedule`) and upload
-# their wheel to the rolling `nightly` pre-release. This runs when each of them
-# finishes; once all four runs for that commit are done it moves the release to
-# that commit, keeps 30 days of wheels, and has chDB turn the night's results into
-# the dashboard, which goes to Vercel with its data in Vercel Blob.
+# The four wheel workflows build main every weekday night (their `schedule`) and
+# upload their wheel to the rolling `nightly` pre-release, unless a ClickHouse sync
+# pull request is open. This runs when each of them finishes; once all four runs
+# for that commit are done it moves the release to that commit, keeps the newest
+# 20 nights of wheels, and has chDB turn the night's results into the dashboard,
+# which goes to Vercel with its data in Vercel Blob.
 # See .github/nightly/README.md.
 
 on:
@@ -28,8 +29,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write   # the nightly release and its tag
-  actions: read     # the build runs and their artifacts
+  contents: write       # the nightly release and its tag
+  actions: read         # the build runs, their jobs and artifacts
+  pull-requests: read   # the open sync pull request the dashboard shows
 
 jobs:
   publish:
