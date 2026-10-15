@@ -955,8 +955,10 @@ jobs:
           gh release upload ${{ github.ref_name }} linux-x86_64-debuginfo.tar.xz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # For the nightly dashboard; it must not keep the release uploads below from running.
       - name: Upload test results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: junit-linux-x86_64
