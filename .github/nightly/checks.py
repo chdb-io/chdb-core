@@ -346,7 +346,8 @@ def report(results: dict) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("check", choices=["all", *CHECKS])
-    parser.add_argument("--work", default="", help="work directory used by daily_sync.py fetch")
+    parser.add_argument("--work", default=os.environ.get("SYNC_WORK", ""),
+                        help="work directory used by daily_sync.py fetch (default: $SYNC_WORK)")
     args = parser.parse_args(argv)
     work = Path(args.work) if args.work else None
     summary = load_summary() if (STATE / "summary.json").exists() else None

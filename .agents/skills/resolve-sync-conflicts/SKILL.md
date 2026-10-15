@@ -20,22 +20,37 @@ The job is to get from there to a sync that builds and passes the Python tests.
   the range) and `.sync/upstream/log/<path>.txt` (the upstream merges that touched it).
 - `.sync/build.json` and the full logs in `.sync/build/` once the build has run.
 - chDB's own history: `git log` and `git diff` in this checkout.
+- What syncs have broken before:
+  `.agents/skills/sync-clickhouse-baseline/references/guide.md`, kept for the
+  person-led upgrade. Its import rules, risky modules, the embedded, client and
+  host-lifecycle reviews, the failure patterns, the test attribution notes and the
+  five audits apply here as they are. Its review documents, approval stops and
+  commit layout do not: here nobody waits for approval, and the workflow commits.
 
 ## Procedure
 
-1. Resolve every conflict, following the rules below.
-2. Run `bash .github/nightly/build_and_test.sh`. The first run builds everything
+1. Read the guide above, then resolve every conflict, following the rules below.
+2. Run `python3 .github/nightly/checks.py all`. It scripts the guide's cheapest
+   audits: chDB lines a merge dropped and upstream lines that never arrived,
+   `ForceFunctionReferences.cpp` against `REGISTER_FUNCTION` both ways, `LocalServer`
+   initialisation `EmbeddedServer` lacks, and submodule bumps against their
+   `contrib/*-cmake` file lists. Fix what it reports that is real; the pull request
+   shows its last report.
+3. Run `bash .github/nightly/build_and_test.sh`. The first run builds everything
    (about an hour); later runs rebuild what changed. To check one file quickly,
    build its object with `ninja -C buildlib <target>`.
-3. If it fails, find the cause in its output and the full log, fix what the sync
+4. If it fails, find the cause in its output and the full log, fix what the sync
    broke, and run it again. Repeat until it prints PASS, or until you can make no
-   further progress.
-4. Write `.sync/resolution.md`.
+   further progress. On a crash, get a stack from a debugger before changing code.
+5. Write `.sync/resolution.md`.
 
 ## Rules
 
-1. **Resolve by intent, hunk by hunk.** Read what each side changed and why. Keep
-   both: the chDB change and the upstream change. Never take a whole side for a file.
+1. **Resolve by intent, hunk by hunk.** Read what each side changed and why. Take
+   upstream where the chDB side is only text left over from an older sync; keep a
+   real chDB feature or fix, adapted to the new upstream API; keep both when the
+   changes are independent; decide words or arguments separately when one line
+   carries several changes. Never take a whole side for a file.
 2. **chDB changes must survive.** Code under `CHDB_LITE`, `CHDB_WASM_*`, `OS_WASM`,
    `USE_PYTHON` or another `CHDB*` guard, lines marked `// chdb:`, and embedded-server
    hooks stay. Upstream decides everything else.
