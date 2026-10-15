@@ -66,9 +66,11 @@ jobs:
           sudo cp gh_*/bin/gh /usr/local/bin/
           gh --version
 
+      # With the tags, which setup.py takes the wheel's version from.
       - uses: actions/checkout@v7
         with:
           ref: main
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Wait while a sync pull request is open
@@ -152,13 +154,15 @@ jobs:
               jupyter nbconvert "fastjsonschema<2.22" "$polars"
           done
 
+      # Restored, never saved: main's builds own that cache, and release builds restore
+      # it, so nothing the sync compiled, or Claude Code changed, ends up there.
       - name: ccache
         if: steps.apply.outcome == 'success'
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: ubuntu-22.04-x86_64
           max-size: 5G
-          append-timestamp: true
+          save: false
 
       # build_and_test.sh checks the submodules out first; the token, read-only, only
       # authenticates those clones on the pool's shared egress IP.
