@@ -1,6 +1,6 @@
 name: Daily ClickHouse sync
 
-# Brings ClickHouse master into main once a day. It picks the newest master
+# Brings ClickHouse master into main once every weekday. It picks the newest master
 # commit upstream CI passed, applies the diff since UPSTREAM_COMMIT to the paths
 # chDB keeps, and opens a pull request:
 #
@@ -15,7 +15,7 @@ name: Daily ClickHouse sync
 
 on:
   schedule:
-    - cron: '17 2 * * *'
+    - cron: '17 2 * * 1-5'   # weekdays
   workflow_dispatch:
     inputs:
       target:
@@ -62,7 +62,7 @@ jobs:
       - name: Report a stalled sync
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/nightly/daily_sync.py stall --max-age-hours 72
+        run: python3 .github/nightly/daily_sync.py stall --max-weekday-hours 72
 
       - name: Wait while a sync pull request is open
         id: open

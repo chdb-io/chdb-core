@@ -63,6 +63,13 @@ class ParseAndClassify(unittest.TestCase):
         self.assertEqual(skipped["chDB keeps its own version"], 1)
         self.assertEqual(skipped["changed in a tree chDB drops"], 1)
 
+    def test_weekday_hours(self):
+        utc = dt.timezone.utc
+        friday_noon = dt.datetime(2026, 10, 16, 12, tzinfo=utc)
+        self.assertEqual(sync.weekday_hours(friday_noon, dt.datetime(2026, 10, 19, 12, tzinfo=utc)), 24)
+        self.assertEqual(sync.weekday_hours(dt.datetime(2026, 10, 17, 1, tzinfo=utc),
+                                            dt.datetime(2026, 10, 18, 23, tzinfo=utc)), 0)
+
     def test_conflict_marker(self):
         self.assertTrue(sync.CONFLICT_MARKER.search("a\n<<<<<<< ours\nb\n"))
         self.assertTrue(sync.CONFLICT_MARKER.search("a\n|||||||\n"))

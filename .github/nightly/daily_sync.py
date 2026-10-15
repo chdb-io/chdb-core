@@ -588,6 +588,17 @@ def gh(*args, check=True) -> str:
     return run(["gh", *args], check=check).stdout
 
 
+def weekday_hours(start: dt.datetime, end: dt.datetime) -> float:
+    """Hours between start and end that fall on Monday to Friday, UTC: the sync's days."""
+    hours, moment = 0.0, start
+    while moment < end:
+        midnight = dt.datetime.combine(moment.date() + dt.timedelta(days=1), dt.time(), tzinfo=dt.timezone.utc)
+        if moment.weekday() < 5:
+            hours += (min(midnight, end) - moment).total_seconds() / 3600
+        moment = midnight
+    return hours
+
+
 def cmd_stall(args) -> int:
     repo = os.environ["GITHUB_REPOSITORY"]
     landed = gh("api", f"repos/{repo}/commits?path={UPSTREAM_FILE.name}&sha=main&per_page=1",
@@ -597,22 +608,22 @@ def cmd_stall(args) -> int:
     issue = next((i["number"] for i in issues if i["title"].startswith(STALL_TITLE)), None)
     if not landed:
         return 0
-    age_hours = (dt.datetime.now(dt.timezone.utc)
-                 - dt.datetime.fromisoformat(landed.replace("Z", "+00:00"))).total_seconds() / 3600
-    if age_hours < args.max_age_hours:
+    age_hours = weekday_hours(dt.datetime.fromisoformat(landed.replace("Z", "+00:00")),
+                              dt.datetime.now(dt.timezone.utc))
+    if age_hours < args.max_weekday_hours:
         if issue:
             gh("issue", "close", str(issue), "--repo", repo, "--comment",
-               f"A sync landed {age_hours:.0f} hours ago; closing.")
+               f"A sync landed {age_hours:.0f} weekday hours ago; closing.")
         return 0
     if issue is None:
         body = (
-            f"main has not taken a ClickHouse sync for {age_hours / 24:.1f} days "
+            f"main has not taken a ClickHouse sync for {age_hours / 24:.1f} working days "
             f"(last `{UPSTREAM_FILE.name}` change: {landed}).\n\n"
             "Usually an open sync pull request is waiting for review, or the daily sync "
             "workflow is failing. See .github/nightly/README.md."
         )
         gh("issue", "create", "--repo", repo, "--title", STALL_TITLE, "--body", body)
-    print(f"Last sync landed {age_hours:.0f} hours ago")
+    print(f"Last sync landed {age_hours:.0f} weekday hours ago")
     return 0
 
 
@@ -646,7 +657,7 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_commit)
 
     p = sub.add_parser("stall")
-    p.add_argument("--max-age-hours", type=float, default=72)
+    p.add_argument("--max-weekday-hours", type=float, default=72, help="Monday to Friday hours, UTC")
     p.set_defaults(func=cmd_stall)
 
     args = parser.parse_args(argv)

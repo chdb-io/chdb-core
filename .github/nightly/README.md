@@ -4,7 +4,7 @@ Two workflows keep `main` close to ClickHouse master and publish what it builds.
 
 | Workflow | When | What it does |
 |---|---|---|
-| `daily_sync.yml` | 02:17 UTC, or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT` and opens a pull request |
+| `daily_sync.yml` | 02:17 UTC, Monday to Friday, or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT` and opens a pull request |
 | `nightly_publish.yml` | After the scheduled wheel builds (16:00 UTC, Monday to Friday) | Finishes the `nightly` pre-release the builds upload their wheels to, and updates the dashboard |
 
 Both stay off until their repository variable is set (below).
@@ -39,8 +39,8 @@ Both stay off until their repository variable is set (below).
 
 While a sync pull request is open, the daily run does nothing, so a review is never
 overwritten; the next sync after it merges covers the days in between. When no sync
-has landed for 72 hours, the run opens an issue titled "Daily ClickHouse sync has
-stalled" and closes it once one lands.
+has landed for three working days (72 hours of Monday to Friday, UTC), the run opens
+an issue titled "Daily ClickHouse sync has stalled" and closes it once one lands.
 
 ### The first sync
 
