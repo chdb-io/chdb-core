@@ -359,3 +359,26 @@ new call order, not merely whether Git reported a textual conflict.
 **Remaining validation.** Local arm64 wheel and the original DataStore settings tests pass;
 the exact macOS 14 CI image is unavailable locally. The complete DataStore integration suite
 also needs its separate remote ClickHouse test server, not installed in the isolated fixture.
+
+## 9. Python query callback closes its own connection (#284 review)
+
+**Failure.** A PR review found that calling `conn.close()` from a Python UDF or reader
+callback can hang. A local child process executing a one-row UDF query timed out after six
+seconds instead of returning or raising.
+
+**Root cause.** The #254 connection operation lease increments `active_operations` on the
+calling Python thread. Its reentrant-close guard is thread-local, but the engine invokes
+Python UDF and reader callbacks on pipeline threads. A callback on another thread does not
+see that guard; `close()` waits for the operation to finish while the operation waits for
+the callback to return.
+
+**Fix and validation.** On a thread attached to an engine query, a Python connection with
+active operations refuses `close()` instead of waiting. An idle connection may still be
+closed from a callback. Subprocess tests with a timeout exercise both UDF and PyReader
+callbacks, check that the active connection remains usable afterward, and keep ordinary
+cross-thread close/drain behavior covered by the original #254 tests.
+
+**Why the first local checks missed it.** They covered explicit close, an in-flight query
+on another Python thread, and interpreter exit, but no reentrant close from a query's
+Python callback. Include that case whenever an operation lease waits for workers that can
+call back into the public API.

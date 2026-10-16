@@ -23,6 +23,7 @@
 #include <pybind11/pybind11.h>
 #include <IO/Progress.h>
 #include <Interpreters/DatabaseCatalog.h>
+#include <Common/CurrentThread.h>
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
@@ -579,6 +580,16 @@ void connection_wrapper::close()
     for (auto * active = current_python_operation; active; active = active->previous)
         if (active->owner.get() == this)
             throw std::runtime_error("Cannot close a connection from its active operation");
+
+    /// Python UDFs and readers may call back on an engine pipeline thread, not
+    /// the thread that owns Operation's TLS marker. Waiting there for this
+    /// connection's active query would wait for the callback itself to return.
+    if (DB::CurrentThread::tryGetQueryContext())
+    {
+        std::lock_guard lock(lifecycle_mutex);
+        if (active_operations)
+            throw std::runtime_error("Cannot close a connection with active operations from a query callback");
+    }
 
     chdb_connection * to_close = nullptr;
     {
