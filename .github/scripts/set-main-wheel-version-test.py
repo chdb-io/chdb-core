@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import importlib.util
 import pathlib
 import tempfile
@@ -11,6 +12,9 @@ SPEC = importlib.util.spec_from_file_location("set_main_wheel_version", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+
+# 2026-10-15 16:17:59 UTC
+COMMIT_TIME = int(datetime.datetime(2026, 10, 15, 16, 17, 59, tzinfo=datetime.timezone.utc).timestamp())
 
 
 class MainWheelVersionTest(unittest.TestCase):
@@ -39,6 +43,25 @@ class MainWheelVersionTest(unittest.TestCase):
     def test_rejects_negative_distance(self):
         with self.assertRaisesRegex(ValueError, "cannot be negative"):
             MODULE.main_version("v26.9.0", -1, "abcdef")
+
+    def test_dev_number_is_the_commit_minute_in_utc(self):
+        self.assertEqual(MODULE.dev_number(COMMIT_TIME), 2610151617)
+
+    def test_nightly_has_no_local_version(self):
+        self.assertEqual(MODULE.nightly_version("v26.9.0", COMMIT_TIME, (26, 9)), "26.9.0.post1.dev2610151617")
+
+    def test_nightly_names_a_newer_engine_line(self):
+        self.assertEqual(MODULE.nightly_version("v26.9.0", COMMIT_TIME, (26, 11)), "26.11.0.dev2610151617")
+
+    def test_nightly_after_rc(self):
+        self.assertEqual(
+            MODULE.nightly_version("v26.9.2-rc.2", COMMIT_TIME, (26, 9)),
+            "26.9.2rc2.post1.dev2610151617",
+        )
+
+    def test_engine_line(self):
+        self.assertEqual(MODULE.engine_line('#define CHDB_VERSION "26.11.0-dev"\n'), (26, 11))
+        self.assertIsNone(MODULE.engine_line("no version here"))
 
     def test_replace_once_preserves_missing_final_newline(self):
         with tempfile.TemporaryDirectory() as directory:

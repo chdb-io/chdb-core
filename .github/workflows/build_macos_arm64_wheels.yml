@@ -1,8 +1,6 @@
 name: Build & Test macOS arm64
 
 on:
-  schedule:
-    - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       TAG_NAME:
@@ -27,6 +25,11 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -40,28 +43,52 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
 
 concurrency:
-  # Keep daily builds independent from main pushes while replacing stale PR runs.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Replace stale pull request runs. On main a newer push replaces a pending run, but
+  # a merged ClickHouse sync gets a group of its own: its build is the nightly. The
+  # merge commit's message names the sync branch (a squash or rebase merge's does
+  # not, and that build shares main's group).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # DEBUG_MODE disabled for all builds
   EFFECTIVE_DEBUG_MODE: 'false'
-  # Scheduled (nightly) runs build and test the Python wheel only. They skip the
-  # static library, chdb-core-lite, debug symbols, the libchdb/ADBC/Go checks
-  # and the checks of other packages, and test each Python version against one
-  # pandas line (3.14 against both). Pushes, pull requests and releases run
-  # everything as before.
-  WHEEL_ONLY: ${{ github.event_name == 'schedule' }}
 
 jobs:
+  # Main's build of a merged ClickHouse sync pull request is the nightly: its wheel
+  # gets a nightly version and goes to the nightly release.
+  nightly_gate:
+    name: Nightly gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
+    uses: ./.github/workflows/nightly_gate.yml
+
   build_universal_wheel_on_linux:
     name: Build on Linux (cross-compile for macOS arm64)
     runs-on: [self-hosted, linux, arm64, ubuntu-latest]
-    if: ${{ !github.event.pull_request.draft }}
+    needs: nightly_gate
+    outputs:
+      nightly: ${{ needs.nightly_gate.outputs.nightly }}
+    # Skip draft pull requests, and releases that are not version tags: the
+    # rolling `nightly` pre-release is created once and must not start a build.
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) }}
     timeout-minutes: 600
+    # The nightly, main's build of a merged sync, builds and tests the Python wheel
+    # only: it skips the static library, chdb-core-lite, debug symbols, the
+    # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
+    # version against one pandas line (3.14 against both). The sync pull request's own
+    # CI ran all of it on every platform. Everything else builds as before.
+    env:
+      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
     steps:
       - name: Install Python build dependencies
         run: |
@@ -225,8 +252,12 @@ jobs:
     name: Test on macOS arm64
     runs-on: macos-14-xlarge
     needs: build_universal_wheel_on_linux
-    if: ${{ !github.event.pull_request.draft }}
+    # An explicit status check: the implicit success() would also look at the
+    # nightly gate, which other events skip, and skip this job with it.
+    if: ${{ !cancelled() && needs.build_universal_wheel_on_linux.result == 'success' && !github.event.pull_request.draft }}
     timeout-minutes: 600
+    env:
+      WHEEL_ONLY: ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' }}
     steps:
       # First step in the job: a cutoff recorded later is skipped when an
       # earlier step fails, and the collector then falls back to reporting
@@ -334,7 +365,7 @@ jobs:
           pyenv shell --unset
       - name: Set version for main wheel
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: python3 .github/scripts/set-main-wheel-version.py
+        run: python3 .github/scripts/set-main-wheel-version.py ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && '--nightly' || '' }}
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -590,6 +621,9 @@ jobs:
                   exit $EXIT_CODE
                 fi
               else
+                if [ "$WHEEL_ONLY" = true ]; then  # the nightly: per-test results for its dashboard
+                  export CHDB_JUNIT_DIR="$GITHUB_WORKSPACE/junit/py${version}-${PANDAS_CONSTRAINT//[!0-9A-Za-z.]/_}"
+                fi
                 make test
               fi
 
@@ -915,6 +949,16 @@ jobs:
           gh release upload ${{ github.ref_name }} macos-arm64-debuginfo.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # The nightly's test results, for its dashboard, also when the tests failed; a
+      # failed upload must not keep the nightly wheel upload below from running.
+      - name: Upload test results
+        if: always() && needs.build_universal_wheel_on_linux.outputs.nightly == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-macos-arm64
+          path: junit/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
           name: chdb-artifacts-macos-arm64
@@ -924,6 +968,13 @@ jobs:
             ./macos-arm64-libchdb-static.tar.gz
             ./macos-arm64-debuginfo.tar.gz
           overwrite: true
+      # The build of a merged sync feeds the nightly release directly;
+      # nightly_publish.yml finishes it once all four platforms are done.
+      - name: Upload the wheel to the nightly release
+        if: needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && vars.NIGHTLY_PUBLISH_ENABLED == 'true'
+        run: .github/nightly/upload_wheel.sh dist/chdb_core-*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       # A release goes to PyPI, a candidate does not, and a release opts out by
       # saying [no-pypi] in its notes. The script owns that policy and logs
       # which way it went; see it for why the quota makes the opt-out worth

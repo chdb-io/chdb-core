@@ -9,6 +9,14 @@ Move chdb-core from one ClickHouse release to another with a small, reviewable c
 
 Before changing files, read the matching [guide](references/guide.md).
 
+`main` also takes ClickHouse master every day through `.github/workflows/daily_sync.yml`
+(see `.github/nightly/README.md`); its conflicts follow the `resolve-sync-conflicts`
+skill. This skill covers the person-led work: reviewing a line upgrade such as the
+first daily sync, bringing a monthly release branch up to its first stable, or
+finishing a daily sync that is blocked. The path rules in
+`scripts/sync_preflight.py` are shared with the daily sync, so a change to them
+changes both. For SHAs on master, pass the commit instead of a tag.
+
 ## How the files work together
 
 - `SKILL.md` defines the required order, review stops, commit structure, and completion rules.

@@ -22,20 +22,42 @@ on:
       - main
     paths-ignore:
       - '**/*.md'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths-ignore:
       - '**/*.md'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
 
 concurrency:
   # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
-  # starving later runs. Never cancel main or release runs.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # starving later runs. Never cancel main or release runs. A merged ClickHouse sync,
+  # which builds nothing here, gets a group of its own rather than replace main's
+  # pending run; its merge commit's message names the sync branch.
+  group: ${{ github.workflow }}-${{ github.ref }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Main's build of a merged ClickHouse sync pull request is the nightly, which makes
+  # the four platforms' Python wheels alone; the sync pull request's own CI already
+  # ran this workflow, so it sits the nightly out.
+  nightly_gate:
+    name: Nightly gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
+    uses: ./.github/workflows/nightly_gate.yml
 
   # ───────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — native build, audit, and test
@@ -43,7 +65,9 @@ jobs:
   ft_linux_x86_64:
     name: FT wheels (Linux x86_64)
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
-    if: ${{ !github.event.pull_request.draft }}
+    needs: nightly_gate
+    # Not on draft pull requests, nor on the nightly (see nightly_gate).
+    if: ${{ !cancelled() && needs.nightly_gate.outputs.nightly != 'true' && !github.event.pull_request.draft }}
     timeout-minutes: 600
     steps:
       # First step in the job: a cutoff recorded later is skipped when an

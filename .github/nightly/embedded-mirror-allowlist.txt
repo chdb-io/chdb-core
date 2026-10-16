@@ -1,0 +1,5 @@
+# Calls the upstream LocalServer.cpp makes that EmbeddedServer.cpp deliberately
+# does not mirror. checks.py `embedded` stops warning about a name listed here.
+#
+# One name per line, then the reason, e.g.
+#   registerServerPort   chDB never listens on a port

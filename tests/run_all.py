@@ -2,9 +2,12 @@
 
 import glob
 import os
+import re
 import subprocess
 import sys
+import time
 import unittest
+import xml.etree.ElementTree as ET
 
 
 class Colors:
@@ -62,6 +65,82 @@ NGROUPS = 4
 HERE = os.path.dirname(os.path.abspath(__file__)) or "."
 os.chdir(HERE)
 
+# Set CHDB_JUNIT_DIR to also write one JUnit XML file per subprocess there; the
+# nightly dashboard reads them. Results and exit codes are unchanged.
+JUNIT_DIR = os.environ.get("CHDB_JUNIT_DIR")
+
+
+class _RecordingResult(unittest.TextTestResult):
+    """TextTestResult that also remembers each test's outcome and duration."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.records = []
+        self._started = 0.0
+
+    def startTest(self, test):
+        self._started = time.monotonic()
+        super().startTest(test)
+
+    def _record(self, test, status, detail=""):
+        self.records.append((test, status, time.monotonic() - self._started, detail))
+
+    def addSuccess(self, test):
+        super().addSuccess(test)
+        self._record(test, "passed")
+
+    def addFailure(self, test, err):
+        super().addFailure(test, err)
+        self._record(test, "failure", self._exc_info_to_string(err, test))
+
+    def addError(self, test, err):
+        super().addError(test, err)
+        self._record(test, "error", self._exc_info_to_string(err, test))
+
+    def addSkip(self, test, reason):
+        super().addSkip(test, reason)
+        self._record(test, "skipped", reason)
+
+    def addExpectedFailure(self, test, err):
+        super().addExpectedFailure(test, err)
+        self._record(test, "passed")
+
+    def addUnexpectedSuccess(self, test):
+        super().addUnexpectedSuccess(test)
+        self._record(test, "failure", "unexpected success")
+
+    def addSubTest(self, test, subtest, err):
+        # A failing subtest fails its test, which then never reaches addSuccess.
+        super().addSubTest(test, subtest, err)
+        if err is not None:
+            status = "failure" if issubclass(err[0], test.failureException) else "error"
+            self._record(test, status, f"{subtest}\n{self._exc_info_to_string(err, test)}")
+
+
+def _write_junit(name, result, load_errors):
+    suite = ET.Element("testsuite", name=name)
+    counts = {"failure": 0, "error": 0, "skipped": 0}
+    for test, status, seconds, detail in result.records:
+        test_id = test.id()
+        classname, _, method = test_id.rpartition(".")
+        case = ET.SubElement(suite, "testcase", classname=classname or test_id,
+                             name=method or test_id, time=f"{seconds:.3f}")
+        if status != "passed":
+            counts[status] += 1
+            message = detail.strip().splitlines()[-1][:200] if detail.strip() else status
+            ET.SubElement(case, status, message=message).text = detail
+    for mod in load_errors:
+        counts["error"] += 1
+        case = ET.SubElement(suite, "testcase", classname=mod, name="<module load>", time="0")
+        ET.SubElement(case, "error", message="module failed to load")
+    suite.set("tests", str(len(result.records) + len(load_errors)))
+    suite.set("failures", str(counts["failure"]))
+    suite.set("errors", str(counts["error"]))
+    suite.set("skipped", str(counts["skipped"]))
+    os.makedirs(JUNIT_DIR, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+    ET.ElementTree(suite).write(os.path.join(JUNIT_DIR, f"{safe}.xml"), encoding="utf-8", xml_declaration=True)
+
 
 def _run_modules(mods):
     """Load and run the given test modules in THIS process. Loading by name
@@ -79,7 +158,11 @@ def _run_modules(mods):
         except Exception as exc:  # noqa: BLE001 - surface import failures, don't abort
             print(f"{Colors.RED}[run_all] failed to load {mod}: {exc}{Colors.END}")
             load_errors.append(mod)
-    ret = unittest.TextTestRunner(verbosity=2).run(suite)
+    if JUNIT_DIR:
+        ret = unittest.TextTestRunner(verbosity=2, resultclass=_RecordingResult).run(suite)
+        _write_junit(os.environ.get("CHDB_JUNIT_NAME", "tests"), ret, load_errors)
+    else:
+        ret = unittest.TextTestRunner(verbosity=2).run(suite)
     if load_errors:
         print(f"{Colors.RED}[run_all] modules that failed to load: "
               f"{', '.join(load_errors)}{Colors.END}")
@@ -113,7 +196,8 @@ for gi, grp in enumerate(groups, 1):
         continue
     print(f"\n{Colors.YELLOW}[run_all] main shard {gi}/{NGROUPS} "
           f"({len(grp)} modules){Colors.END}", flush=True)
-    if subprocess.call([sys.executable, __file__, "--only", *grp]) != 0:
+    env = dict(os.environ, CHDB_JUNIT_NAME=f"main-shard-{gi}")
+    if subprocess.call([sys.executable, __file__, "--only", *grp], env=env) != 0:
         failed.append(f"main-shard-{gi}")
 
 for target in ISOLATED:
@@ -121,7 +205,8 @@ for target in ISOLATED:
         continue
     print(f"\n{Colors.YELLOW}[run_all] isolated subprocess: {target}{Colors.END}",
           flush=True)
-    if subprocess.call([sys.executable, __file__, "--only", target]) != 0:
+    env = dict(os.environ, CHDB_JUNIT_NAME=target)
+    if subprocess.call([sys.executable, __file__, "--only", target], env=env) != 0:
         failed.append(target)
 
 if not failed:

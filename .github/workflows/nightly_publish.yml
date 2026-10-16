@@ -1,0 +1,113 @@
+name: Publish nightly build
+
+# The nightly is main's build of a merged ClickHouse sync pull request: the four
+# wheel workflows build that push like any other, and also upload their wheel to the
+# rolling `nightly` pre-release. This runs when each of them finishes; for a sync's
+# merge, once all four runs for the commit are done, it moves the release to that
+# commit, keeps the newest 20 nights of wheels, and has chDB turn the night's results
+# into the dashboard, which goes to Vercel with its data in Vercel Blob.
+# See .github/nightly/README.md.
+
+on:
+  workflow_run:
+    workflows:
+      - Build & Test Linux x86_64
+      - Build & Test Linux arm64
+      - Build & Test macOS arm64
+      - Build & Test macOS x86_64
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: 'Merged sync commit on main whose builds to publish (default: the newest build)'
+        required: false
+        default: ''
+
+# Four completions per push, each publication idempotent. A commit's runs queue
+# behind each other and the last one publishes; keyed by commit, so a completion for
+# another commit cannot replace the night's pending run.
+concurrency:
+  group: nightly-publish-${{ github.event.workflow_run.head_sha || inputs.head_sha || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # the nightly release and its tag
+  actions: read         # the build runs, their jobs and artifacts
+  pull-requests: read   # the open sync pull request the dashboard shows
+
+jobs:
+  publish:
+    if: >-
+      vars.NIGHTLY_PUBLISH_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Finish the nightly release
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.head_sha }}
+        run: >-
+          python3 .github/nightly/publish.py
+          --head-sha "$HEAD_SHA"
+          --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
+
+      # The latest release from PyPI: the nightly wheels stay on the release.
+      - name: Install chDB
+        if: steps.publish.outputs.ready == 'true'
+        run: python3 -m pip install --quiet chdb-core
+
+      - name: Build the dashboard data
+        if: steps.publish.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+          BLOB_BASE_URL: ${{ vars.BLOB_BASE_URL }}
+        run: python3 .github/nightly/report.py --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
+
+      - name: Install the Vercel CLI
+        if: steps.publish.outputs.ready == 'true' && (vars.BLOB_BASE_URL != '' || vars.VERCEL_PROJECT_ID != '')
+        run: npm install --global vercel@64
+
+      # The night's Parquet files and log tails; report.py reads earlier nights
+      # back from the store's public URLs.
+      - name: Store the night in Vercel Blob
+        if: steps.publish.outputs.ready == 'true' && vars.BLOB_BASE_URL != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        working-directory: ${{ runner.temp }}/nightly/store
+        # An empty token would leave the CLI waiting for an interactive login.
+        run: |
+          : "${VERCEL_TOKEN:?the VERCEL_TOKEN secret is not set}" "${BLOB_READ_WRITE_TOKEN:?the BLOB_READ_WRITE_TOKEN secret is not set}"
+          for path in $(find . -type f | sed 's|^\./||' | sort); do
+            vercel blob put "$path" --pathname "$path" --access public --allow-overwrite \
+              --rw-token "$BLOB_READ_WRITE_TOKEN" --token "$VERCEL_TOKEN" --non-interactive
+          done
+
+      - name: Deploy the dashboard to Vercel
+        if: steps.publish.outputs.ready == 'true' && vars.VERCEL_PROJECT_ID != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          : "${VERCEL_TOKEN:?the VERCEL_TOKEN secret is not set}"
+          vercel deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN" --non-interactive
+
+      - uses: actions/upload-artifact@v7
+        if: steps.publish.outputs.ready == 'true'
+        with:
+          name: nightly-site-${{ github.run_id }}
+          path: ${{ runner.temp }}/site
