@@ -86,7 +86,8 @@ def load_summary() -> dict:
 
 def check_markers(_work=None, _summary=None):
     errors = []
-    staged = [p for p in git("diff", "--cached", "--name-only", "-z", "HEAD").split("\0") if p]
+    # --ignore-submodules: Git 2.55 would read a .gitmodules this check may find broken.
+    staged = [p for p in git("diff", "--cached", "--name-only", "-z", "--ignore-submodules=none", "HEAD").split("\0") if p]
     for path in staged:
         text = worktree_read(path)
         if text is not None and MARKER.search(text):
