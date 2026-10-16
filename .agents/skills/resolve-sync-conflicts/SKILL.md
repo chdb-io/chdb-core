@@ -85,6 +85,10 @@ As in a monthly upgrade, look it up with Git:
 7. **Stage a file you create** with `git add <path>`, or it is left out. Do not
    commit or push.
 8. **No conflict markers may remain**: `<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`.
+9. **Resolve `.gitmodules` first** when it conflicts, and `git add` it only once it is
+   clean: Git 2.55 and later refuse most commands that touch a submodule (`git status`,
+   `git diff`, `git add`, the submodule checkout) while a staged `.gitmodules` has
+   markers in it.
 
 ## Output
 

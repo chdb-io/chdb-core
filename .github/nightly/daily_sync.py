@@ -324,7 +324,7 @@ def apply_gitlinks(changes: list[Change], ours: dict[str, str], preflight) -> li
             entry["action"] = "held: a submodule turned into a file, or back"
         elif change.status == "D":
             if current == change.old_sha:
-                git("rm", "--cached", "--quiet", "--", change.path)
+                git("update-index", "--force-remove", "--", change.path)
                 entry["action"] = "removed"
             elif current:
                 entry["action"] = "held: chDB pins its own commit"
@@ -360,7 +360,7 @@ def follow_upstream_line() -> dict | None:
         return None
     new = f"{upstream[1]}.{upstream[2]}.0-dev"
     CHDB_HEADER.write_text(header.replace(declared.group(0), f'#define CHDB_VERSION "{new}"', 1))
-    git("add", "--", str(CHDB_HEADER.relative_to(ROOT)))
+    git("update-index", "--add", "--", str(CHDB_HEADER.relative_to(ROOT)))
     return {"from": declared.group(0).split('"')[1], "to": new}
 
 
@@ -385,6 +385,17 @@ def copy_blobs(work: Path, shas) -> None:
         pack = run(["git", f"--git-dir={upstream_dir(work)}", "pack-objects", "-q", "--stdout"],
                    stdin=missing.encode(), binary=True).stdout
         run(["git", "index-pack", "--stdin"], stdin=pack, binary=True)
+
+
+def unmerged_paths() -> list[str]:
+    """The paths left in conflict, from the index itself.
+
+    With a conflict left in .gitmodules, the commands below stay with plumbing or
+    pass --ignore-submodules: from Git 2.55 on, a command that may look at a
+    submodule reads a merged .gitmodules for its settings and dies on the markers.
+    """
+    entries = (entry.split("\t", 1)[1] for entry in git("ls-files", "-z", "--unmerged").split("\0") if entry)
+    return list(dict.fromkeys(entries))
 
 
 def ensure_clean() -> None:
@@ -441,7 +452,7 @@ def cmd_apply(args) -> int:
             ["git", "-c", "merge.conflictStyle=zdiff3", "apply", "--3way", "--index", "--whitespace=nowarn", str(patch)],
             check=False,
         )
-        conflicts = [p for p in git("diff", "--name-only", "-z", "--diff-filter=U").split("\0") if p]
+        conflicts = unmerged_paths()
         if proc.returncode != 0 and not conflicts:
             raise SyncError(f"git apply failed without leaving conflicts:\n{proc.stderr.strip()}")
     if removed:
@@ -452,12 +463,12 @@ def cmd_apply(args) -> int:
             if c.new_mode != "000000":
                 entries.append(f"{c.new_mode} {c.new_sha} 3\t{c.path}")
         git("update-index", "-z", "--index-info", stdin="".join(e + "\0" for e in entries))
-        conflicts = [p for p in git("diff", "--name-only", "-z", "--diff-filter=U").split("\0") if p]
+        conflicts = unmerged_paths()
 
     submodules = apply_gitlinks(gitlinks, ours_gitlinks, preflight)
     version = follow_upstream_line()
     UPSTREAM_FILE.write_text(target + "\n")
-    git("add", "--", UPSTREAM_FILE.name)
+    git("update-index", "--add", "--", UPSTREAM_FILE.name)
 
     summary = {
         "base": base,
@@ -507,22 +518,23 @@ def gitlinks(env=None) -> dict[str, str]:
 
 
 def stage_worktree(env=None) -> str:
-    """Stage every tracked change and return the index's tree; env may name another index.
+    """Stage every change to a tracked file and return the index's tree; env may name another index.
 
-    `git add -u` would also stage whatever each submodule has checked out, or its
-    removal when it is not checked out at all; the pointers stay what apply set.
+    What `git add -u` does, in plumbing (see unmerged_paths), and without the
+    submodules: `git add -u` would also stage whatever each one has checked out, or
+    its removal when it is not checked out at all; the pointers stay what apply set.
     """
     pins = gitlinks(env)
-    git("add", "-u", env=env)
-    staged_pins = gitlinks(env)
-    for path, sha in pins.items():
-        if staged_pins.get(path) != sha:
-            git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}", env=env)
+    changed = git("ls-files", "-z", "--modified", "--deleted", env=env).split("\0")
+    unmerged = [entry.split("\t", 1)[1] for entry in git("ls-files", "-z", "--unmerged", env=env).split("\0") if entry]
+    paths = sorted({path for path in changed + unmerged if path and path not in pins})
+    if paths:
+        git("update-index", "--add", "--remove", "-z", "--stdin", stdin="".join(p + "\0" for p in paths), env=env)
     return git("write-tree", env=env).strip()
 
 
 def changed_paths(old: str, new: str) -> list[str]:
-    return [p for p in git("diff", "--name-only", "-z", old, new).split("\0") if p]
+    return [p for p in git("diff", "--name-only", "-z", "--ignore-submodules=none", old, new).split("\0") if p]
 
 
 def cmd_snapshot(args) -> int:
@@ -573,8 +585,9 @@ def cmd_stage(args) -> int:
     ]
     save_summary(summary)
     base = summary.get("chdb_base", "HEAD")
-    (STATE / "pr-upstream.diff").write_bytes(run(["git", "diff", "--binary", base, applied], binary=True).stdout)
-    (STATE / "pr-changes.diff").write_bytes(run(["git", "diff", "--binary", applied, final], binary=True).stdout)
+    patch = ["git", "diff", "--binary", "--ignore-submodules=none"]
+    (STATE / "pr-upstream.diff").write_bytes(run([*patch, base, applied], binary=True).stdout)
+    (STATE / "pr-changes.diff").write_bytes(run([*patch, applied, final], binary=True).stdout)
     (STATE / "commit-upstream.txt").write_text(commit_message(summary, "upstream"))
     (STATE / "commit-changes.txt").write_text(changes_message(summary))
     (STATE / "pr_title.txt").write_text(commit_title(summary) + "\n")
@@ -712,7 +725,7 @@ def pr_body(summary: dict) -> str:
 
 def cmd_commit(args) -> int:
     """Commit what stage staged as one commit, for a sync finished by hand."""
-    if not git("diff", "--cached", "--name-only").strip():
+    if not git("diff", "--cached", "--name-only", "--ignore-submodules=none").strip():
         raise SyncError("nothing is staged")
     run(["git", "commit", "--quiet", "-F", "-"], stdin=commit_message(load_summary()))
     print(git("log", "-1", "--format=%H %s").strip())
