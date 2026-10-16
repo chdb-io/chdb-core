@@ -13,6 +13,7 @@
 #include "PythonUDFRegistry.h"
 #include "StoragePython.h"
 #include "ChdbClient.h"
+#include "EmbeddedServer.h"
 #include "PyDateTimeHelper.h"
 #include "chdb.h"
 
@@ -21,10 +22,20 @@
 #endif
 #include <pybind11/pybind11.h>
 #include <IO/Progress.h>
+#include <Interpreters/DatabaseCatalog.h>
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <exception>
+#include <cstring>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 #if USE_JEMALLOC
 #    include <Common/memory.h>
 #endif
@@ -43,6 +54,63 @@ extern bool inside_main = true;
 
 namespace
 {
+
+/// chdb_spec: Python owns only connections constructed by this module. Keep
+/// their registry alive past C++ static teardown; the Python atexit callback
+/// drains it while Python and the engine's static dependencies are still live.
+struct PythonConnectionRegistry
+{
+    std::mutex mutex;
+    std::condition_variable state_changed;
+    bool exiting = false;
+    size_t active_stateless_queries = 0;
+    std::atomic<bool> exit_complete{false};
+    std::vector<std::weak_ptr<connection_wrapper>> connections;
+
+    static PythonConnectionRegistry & instance()
+    {
+        static auto * registry = new PythonConnectionRegistry;
+        return *registry;
+    }
+};
+
+/// Diagnostic deadline only: the monitor never releases an object that an
+/// operation still uses. The embedding process' watchdog owns the hard limit.
+class PythonExitWatchdog
+{
+public:
+    PythonExitWatchdog() : monitor([this]
+    {
+        std::unique_lock lock(mutex);
+        if (!finished_changed.wait_for(lock, std::chrono::minutes(5), [this] { return finished; }))
+        {
+            const char * current = phase.load(std::memory_order_acquire);
+            (void)::write(STDERR_FILENO, current, std::strlen(current));
+            finished_changed.wait(lock, [this] { return finished; });
+        }
+    }) {}
+
+    ~PythonExitWatchdog()
+    {
+        {
+            std::lock_guard lock(mutex);
+            finished = true;
+        }
+        finished_changed.notify_all();
+        monitor.join();
+    }
+
+    void setPhase(const char * value) { phase.store(value, std::memory_order_release); }
+
+private:
+    std::mutex mutex;
+    std::condition_variable finished_changed;
+    bool finished = false;
+    std::atomic<const char *> phase{"chDB Python exit: shutdown still pending after 300s\n"};
+    std::thread monitor;
+};
+thread_local connection_wrapper::Operation * current_python_operation = nullptr;
+/// chdb_spec: end Python connection exit ownership.
 
 std::string paramValueToString(const py::handle & value)
 {
@@ -117,6 +185,23 @@ DB::ChdbClient * getChdbClient(chdb_connection handle)
     return static_cast<DB::ChdbClient *>(connection->server);
 }
 
+}
+
+CHDB::PythonRuntimeOperationGuard::PythonRuntimeOperationGuard()
+{
+    auto & registry = PythonConnectionRegistry::instance();
+    std::lock_guard lock(registry.mutex);
+    if (registry.exiting)
+        throw std::runtime_error("chDB is shutting down");
+    ++registry.active_stateless_queries;
+}
+
+CHDB::PythonRuntimeOperationGuard::~PythonRuntimeOperationGuard()
+{
+    auto & registry = PythonConnectionRegistry::instance();
+    std::lock_guard lock(registry.mutex);
+    if (!--registry.active_stateless_queries)
+        registry.state_changed.notify_all();
 }
 
 namespace CHDB
@@ -194,6 +279,7 @@ query_result * query(
     const std::string & udfPath = {},
     const py::dict & params = py::dict())
 {
+    CHDB::PythonRuntimeOperationGuard operation;
     return new query_result(queryToBuffer(queryStr, output_format, path, udfPath, parseParametersDict(params)));
 }
 
@@ -355,26 +441,207 @@ connection_wrapper::connection_wrapper(const std::string & conn_str)
     is_memory_db = (path == ":memory:");
 }
 
+std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::string & conn_str)
+{
+    auto & registry = PythonConnectionRegistry::instance();
+    std::lock_guard lock(registry.mutex);
+    if (registry.exiting)
+        throw std::runtime_error("chDB is shutting down");
+
+    auto result = std::make_shared<connection_wrapper>(conn_str);
+    if (registry.connections.size() >= 64)
+        std::erase_if(registry.connections, [](const auto & item) { return item.expired(); });
+    registry.connections.push_back(result);
+    return result;
+}
+
+connection_wrapper::Operation connection_wrapper::startOperation()
+{
+    auto & registry = PythonConnectionRegistry::instance();
+    std::lock_guard registry_lock(registry.mutex);
+    if (registry.exiting)
+        throw std::runtime_error("chDB is shutting down");
+
+    std::lock_guard lock(lifecycle_mutex);
+    if (closing || !conn)
+        throw std::runtime_error("Connection is closed");
+    ++active_operations;
+    return Operation(shared_from_this(), conn);
+}
+
+connection_wrapper::Operation::Operation(std::shared_ptr<connection_wrapper> owner_, chdb_connection * cell)
+    : owner(std::move(owner_)), cell_(cell), previous(current_python_operation)
+{
+    current_python_operation = this;
+}
+
+connection_wrapper::Operation::~Operation()
+{
+    if (owner)
+    {
+        current_python_operation = previous;
+        owner->finishOperation();
+    }
+}
+
+void connection_wrapper::finishOperation()
+{
+    std::lock_guard lock(lifecycle_mutex);
+    --active_operations;
+    if (!active_operations)
+        lifecycle_changed.notify_all();
+}
+
+bool connection_wrapper::isOpen() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    return conn && !closing;
+}
+
+size_t connection_wrapper::activeOperationCount() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    return active_operations;
+}
+
+bool connection_wrapper::needsExitClose() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    return !closed;
+}
+
+bool connection_wrapper::closePythonConnectionsAtExit()
+{
+    auto & registry = PythonConnectionRegistry::instance();
+    std::vector<std::shared_ptr<connection_wrapper>> live;
+    {
+        std::lock_guard lock(registry.mutex);
+        registry.exiting = true;
+        for (auto & entry : registry.connections)
+            if (auto connection = entry.lock())
+                live.push_back(std::move(connection));
+        registry.connections.clear();
+    }
+
+    const bool had_live_connection = std::any_of(live.begin(), live.end(), [](const auto & connection)
+    {
+        return connection->needsExitClose();
+    });
+
+    {
+        std::unique_lock lock(registry.mutex);
+        py::gil_scoped_release release;
+        registry.state_changed.wait(lock, [&registry] { return !registry.active_stateless_queries; });
+        lock.unlock();
+    }
+
+    const size_t open_python_clients = static_cast<size_t>(std::count_if(live.begin(), live.end(), [](const auto & connection)
+    {
+        return connection->isOpen();
+    }));
+    {
+        py::gil_scoped_release release;
+        DB::EmbeddedServer::cancelPythonQueriesIfExclusive(open_python_clients);
+    }
+
+    std::exception_ptr first_error;
+    for (auto & connection : live)
+    {
+        try
+        {
+            connection->close();
+        }
+        catch (...)
+        {
+            if (!first_error)
+                first_error = std::current_exception();
+        }
+    }
+    if (first_error)
+        std::rethrow_exception(first_error);
+    return had_live_connection;
+}
+
 connection_wrapper::~connection_wrapper()
 {
-    py::gil_scoped_release release;
-    chdb_close_conn(conn);
+    try
+    {
+        close();
+    }
+    catch (...)
+    {
+        /// C++ destructors must not throw.
+    }
 }
 
 void connection_wrapper::close()
 {
-    if (conn && !progress_callback.is_none())
-        set_progress_callback(py::none());
+    for (auto * active = current_python_operation; active; active = active->previous)
+        if (active->owner.get() == this)
+            throw std::runtime_error("Cannot close a connection from its active operation");
+
+    chdb_connection * to_close = nullptr;
+    {
+        std::unique_lock lock(lifecycle_mutex);
+        if (closed)
+            return;
+        if (closing)
+        {
+            py::gil_scoped_release release;
+            lifecycle_changed.wait(lock, [this] { return closed; });
+            lock.unlock();
+            return;
+        }
+        closing = true;
+        if (active_operations)
+        {
+            {
+                py::gil_scoped_release release;
+                lifecycle_changed.wait(lock, [this] { return !active_operations; });
+                lock.unlock();
+            }
+            lock.lock();
+        }
+        to_close = std::exchange(conn, nullptr);
+    }
+
+    SCOPE_EXIT({
+        std::lock_guard lock(lifecycle_mutex);
+        closed = true;
+        closing = false;
+        lifecycle_changed.notify_all();
+    });
+
+    std::exception_ptr callback_error;
+    try
+    {
+        if (to_close && progress_callback && !progress_callback.is_none())
+        {
+            if (auto * client = getChdbClient(*to_close))
+                client->setProgressValuesCallback(nullptr);
+            progress_callback = py::object{};
+        }
+    }
+    catch (...)
+    {
+        callback_error = std::current_exception();
+    }
+#if USE_CLIENT_AI
+    ai_processor.reset();
+#endif
+    if (to_close)
     {
         py::gil_scoped_release release;
-        chdb_close_conn(conn);
+        chdb_close_conn(to_close);
     }
-    // Ensure that if a new connection is created before this object is destroyed that we don't try to close it.
-    conn = nullptr;
+    if (callback_error)
+        std::rethrow_exception(callback_error);
 }
 
 void connection_wrapper::set_progress_callback(const py::object & callback)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     auto * client = getChdbClient(*conn);
     if (!client)
         return;
@@ -428,7 +695,7 @@ void connection_wrapper::set_progress_callback(const py::object & callback)
 
 cursor_wrapper * connection_wrapper::cursor()
 {
-    return new cursor_wrapper(this);
+    return new cursor_wrapper(shared_from_this());
 }
 
 void connection_wrapper::commit()
@@ -438,6 +705,8 @@ void connection_wrapper::commit()
 
 query_result * connection_wrapper::query(const std::string & query_str, const std::string & format, const py::dict & params)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     if (Poco::toLower(format) == "dataframe")
         throw std::runtime_error("Unsupported output format dataframe, please use 'query_df' function");
 
@@ -463,6 +732,8 @@ query_result * connection_wrapper::query(const std::string & query_str, const st
 
 py::object connection_wrapper::query_df(const std::string & query_str, const py::dict & params)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     static const std::string format = "dataframe";
 
     chdb_result * result = nullptr;
@@ -508,6 +779,8 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
 
 std::string connection_wrapper::generate_sql(const std::string & prompt)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
 #if USE_CLIENT_AI
     if (!ai_config.has_value())
         ai_config = DB::AIConfiguration{};
@@ -530,6 +803,8 @@ std::string connection_wrapper::generate_sql(const std::string & prompt)
 
 streaming_query_result * connection_wrapper::send_query(const std::string & query_str, const std::string & format, const py::dict & params)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     const auto parsed_params = parseParametersDict(params);
     auto * client = getChdbClient(*conn);
     QueryParameterGuard guard(client, parsed_params);
@@ -550,6 +825,8 @@ streaming_query_result * connection_wrapper::send_query(const std::string & quer
 
 query_result * connection_wrapper::streaming_fetch_result(streaming_query_result * streaming_result)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     py::gil_scoped_release release;
 
     if (!streaming_result || !streaming_result->get_result())
@@ -570,6 +847,8 @@ query_result * connection_wrapper::streaming_fetch_result(streaming_query_result
 
 py::object connection_wrapper::streaming_fetch_df(streaming_query_result * streaming_result)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     if (!streaming_result || !streaming_result->get_result())
         return py::none();
 
@@ -604,6 +883,8 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
 
 void connection_wrapper::streaming_cancel_query(streaming_query_result * streaming_result)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     py::gil_scoped_release release;
 
     if (!streaming_result || !streaming_result->get_result())
@@ -614,6 +895,8 @@ void connection_wrapper::streaming_cancel_query(streaming_query_result * streami
 
 streaming_insert_result * connection_wrapper::send_insert(const std::string & query_str, const std::string & format)
 {
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     py::gil_scoped_release release;
     auto * stream = chdb_stream_insert_n(*conn, query_str.data(), query_str.size(), format.data(), format.size());
     auto * err = chdb_stream_insert_error(stream);
@@ -628,6 +911,7 @@ streaming_insert_result * connection_wrapper::send_insert(const std::string & qu
 
 void connection_wrapper::insert_append(streaming_insert_result * ins, const py::bytes & data)
 {
+    auto operation = startOperation();
     if (!ins || !ins->get_stream())
         throw std::runtime_error("Invalid insert stream");
 
@@ -653,6 +937,7 @@ void connection_wrapper::insert_append(streaming_insert_result * ins, const py::
 
 query_result * connection_wrapper::insert_done(streaming_insert_result * ins)
 {
+    auto operation = startOperation();
     if (!ins || !ins->get_stream())
         throw std::runtime_error("Invalid insert stream");
 
@@ -675,6 +960,7 @@ query_result * connection_wrapper::insert_done(streaming_insert_result * ins)
 
 void connection_wrapper::insert_cancel(streaming_insert_result * ins)
 {
+    auto operation = startOperation();
     py::gil_scoped_release release;
 
     if (!ins || !ins->get_stream())
@@ -710,14 +996,15 @@ void raiseOnEngineError(chdb_result * result)
 /// interpreter instead of raising.
 void connection_wrapper::requireOpen() const
 {
-    if (!conn)
+    if (!isOpen())
         throw std::runtime_error("Connection is closed");
 }
 
 void connection_wrapper::backup_database(
     const std::string & database, const std::string & file_path, const std::string & base_file_path)
 {
-    requireOpen();
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     py::gil_scoped_release release;
     raiseOnEngineError(chdb_backup_database_n(
         *conn,
@@ -731,7 +1018,8 @@ void connection_wrapper::backup_database(
 
 void connection_wrapper::restore_database(const std::string & database, const std::string & file_path)
 {
-    requireOpen();
+    auto operation = startOperation();
+    auto * conn = operation.cell();
     py::gil_scoped_release release;
     raiseOnEngineError(
         chdb_restore_database_n(*conn, database.data(), database.size(), file_path.data(), file_path.size()));
@@ -739,7 +1027,8 @@ void connection_wrapper::restore_database(const std::string & database, const st
 
 py::dict connection_wrapper::classify_query(const std::string & sql, const std::string & target_database)
 {
-    requireOpen();
+    auto operation = startOperation();
+    auto * conn = operation.cell();
 
     chdb_query_analysis_v1 analysis{};
     analysis.struct_size = sizeof(analysis);
@@ -880,18 +1169,50 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
 
 void cursor_wrapper::execute(const std::string & query_str)
 {
+    auto operation = conn->startOperation();
     release_result();
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(conn->get_conn()), query_str);
+    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*operation.cell()), query_str);
     // Use JSONCompactEachRowWithNamesAndTypes format for better type support
     py::gil_scoped_release release;
-    current_result = chdb_query_n(conn->get_conn(), query_str.data(), query_str.size(), CURSOR_DEFAULT_FORMAT, CURSOR_DEFAULT_FORMAT_LEN);
+    current_result = chdb_query_n(*operation.cell(), query_str.data(), query_str.size(), CURSOR_DEFAULT_FORMAT, CURSOR_DEFAULT_FORMAT_LEN);
 }
 
 
-/// Cleanup function to be called before Python interpreter exits.
-/// This ensures JIT cache is cleared before static CHJIT instances are destroyed.
+/// chdb_spec: Python's atexit callbacks run before C++ static destructors.
+/// Close only this extension's live connections while their Python callbacks
+/// and the engine's static dependencies are still valid. C hosts retain
+/// ownership of their own connections and terminate the engine themselves.
 static void chdb_cleanup_at_exit()
 {
+    auto & registry = PythonConnectionRegistry::instance();
+    try
+    {
+        PythonExitWatchdog watchdog;
+        watchdog.setPhase("chDB Python exit: waiting for active operations or connection close after 300s\n");
+        const bool closed_live_connection = connection_wrapper::closePythonConnectionsAtExit();
+        watchdog.setPhase("chDB Python exit: waiting for engine pool shutdown after 300s\n");
+        if (closed_live_connection)
+        {
+            if (chdb_shutdown() != CHDBSuccess && !DB::EmbeddedServer::hasActiveClients())
+                throw std::runtime_error("chDB shutdown did not finish before Python exit");
+        }
+        else if (!DB::EmbeddedServer::hasActiveClients()
+            && (!DB::EmbeddedServer::lastCleanupSucceeded() || DB::DatabaseCatalog::isAvailable()))
+            throw std::runtime_error("Context/catalog cleanup did not finish before Python exit");
+        registry.exit_complete.store(true, std::memory_order_release);
+    }
+    catch (const std::exception & e)
+    {
+        std::fputs("chDB Python exit shutdown incomplete: ", stderr);
+        std::fputs(e.what(), stderr);
+        std::fputc('\n', stderr);
+    }
+    catch (...)
+    {
+        std::fputs("chDB Python exit shutdown incomplete: unknown error\n", stderr);
+    }
+
+    /// The JIT cache must be empty before its process-global owners die.
 #if USE_EMBEDDED_COMPILER
     try
     {
@@ -904,6 +1225,7 @@ static void chdb_cleanup_at_exit()
     }
 #endif
 }
+/// chdb_spec: end Python pre-static shutdown.
 
 #ifdef CHDB_FREE_THREADING
 PYBIND11_MODULE(_chdb, m, py::mod_gil_not_used())
@@ -913,10 +1235,23 @@ PYBIND11_MODULE(_chdb, m)
 {
     m.doc() = "chDB module for query function";
 
-    /// Register atexit handler to clean up JIT cache before interpreter exits.
-    /// This prevents use-after-free when CompiledFunctionHolder destructors
-    /// try to access already-destroyed static CHJIT instances.
+    /// Register before user code can create a connection. This callback also
+    /// clears the JIT cache before its static owners are destroyed.
     py::module_::import("atexit").attr("register")(py::cpp_function(&chdb_cleanup_at_exit));
+    m.def("_python_exit_cleanup_complete", []
+    {
+        return PythonConnectionRegistry::instance().exit_complete.load(std::memory_order_acquire);
+    });
+    m.def("_python_active_operations", []
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        size_t active = 0;
+        for (const auto & entry : registry.connections)
+            if (auto connection = entry.lock())
+                active += connection->activeOperationCount();
+        return active;
+    });
 
     /// py::arithmetic() is what makes the documented ordering usable: without
     /// it a pybind enum has no __lt__, and max() over a batch's classes fails.
@@ -1035,7 +1370,7 @@ PYBIND11_MODULE(_chdb, m)
             "    List[str, str]: List of column name and type pairs.");
 
     py::class_<cursor_wrapper>(m, "cursor")
-        .def(py::init<connection_wrapper *>())
+        .def(py::init<std::shared_ptr<connection_wrapper>>())
         .def("execute", &cursor_wrapper::execute)
         .def("commit", &cursor_wrapper::commit)
         .def("close", &cursor_wrapper::close)
@@ -1049,8 +1384,8 @@ PYBIND11_MODULE(_chdb, m)
         .def("has_error", &cursor_wrapper::has_error)
         .def("error_message", &cursor_wrapper::error_message);
 
-    py::class_<connection_wrapper>(m, "connect")
-        .def(py::init([](const std::string & path) { return new connection_wrapper(path); }), py::arg("path") = ":memory:")
+    py::class_<connection_wrapper, std::shared_ptr<connection_wrapper>>(m, "connect")
+        .def(py::init(&connection_wrapper::createPython), py::arg("path") = ":memory:")
         .def("cursor", &connection_wrapper::cursor)
         .def("execute", &connection_wrapper::query)
         .def("commit", &connection_wrapper::commit)

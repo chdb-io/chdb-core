@@ -45,6 +45,17 @@ threading, memory, signal, logger, shutdown, or build/runtime boundaries,
 review the corresponding embedded paths using
 [guide.md](references/guide.md).
 
+For changes to `Context`/`DatabaseCatalog` shutdown or statics it calls,
+review paired `// chdb_spec` lifetime differences at the **new call sites**.
+An apparently clean merge can still drop one. Record the upstream change,
+chDB's reason, the combined shutdown order, and a deterministic exit test in
+`sync-review/<tag>/conflicts.md`; the marker is a review cue, not automatic
+merge protection. An unclosed Python connection after import-time connect/
+close must finish catalog cleanup before C++ static destructors and pool
+teardown: subprocess exit code zero alone did not reveal issue #254's skipped
+cleanup. Also check explicit close, in-flight operations, and affected C/Go
+and downstream binding paths.
+
 ## Workflow
 
 ### 1. Prepare

@@ -312,3 +312,50 @@ that fails on Linux.
 precisely so non-server binaries do not have to, and adding the call is then not a no-op: it
 changes the configuration and the moment of binding. The "calls the release added to
 LocalServer" diff finds candidates, it does not decide them.
+
+## 8. DataStore subprocess reaches static destruction with a live catalog (#254)
+
+**Failure.** The v26.9.0 macOS arm64 release job failed twice in the upstream chdb v4.4.0
+`test_override_setting_via_datastore_dataframe_query` subprocess. A later `main` run at
+`d22aa2a` reproduced the intermittent `-6` with empty captured stdout/stderr. Its symbolicated
+stack is C++ static finalization -> `DatabaseCatalog` destruction -> per-database table shutdown
+-> `StaticThreadPool::get()` -> invalid free while formatting the exception. The invalid free
+does not, by itself, establish where allocator corruption began.
+
+**Root cause established locally.** A chdb import opens and closes a version-probe connection.
+That first shutdown constructs `NamedSessionsStorage`, which C++ destroys before the embedded
+server's later C++ `atexit` callback. The DataStore `Python(df)` query leaves another connection
+open. At exit the callback attempts `Session::shutdownNamedSessions()` after its function-static
+storage has been destroyed. Its mutex throws `Invalid argument`; `EmbeddedServer::cleanup()`
+previously suppressed that message. Context shutdown stops before catalog cleanup, and the
+catalog survives into static finalization. The order and retained catalog were observed 20/20
+times in a diagnostic build; macOS 26 ended with code zero on all 20, unlike intermittent
+macOS 14 CI. Skipping only named sessions revealed another destroyed static mutex, so a
+single-synchronizer guard is not a repair.
+
+**Fix.** The Python extension's existing Python-level `atexit` callback now closes only its
+registered live native connections while Python and ClickHouse statics are still valid. A
+shared holder keeps cursor owners alive; operation leases and the exit gate stop new Python
+work and drain in-flight calls. Once that callback has closed a live Python connection, it
+attempts terminal pool shutdown only after embedded Context/catalog cleanup is confirmed.
+An independent C/Go host still closes its own handles and calls `chdb_shutdown()` explicitly;
+the C API now refuses to tear pools down under a catalog left by incomplete embedded cleanup.
+The upstream parallel table-shutdown algorithm is unchanged.
+
+**Why earlier checks missed it.** The child assertion checked only exit code zero. The
+`Invalid argument` message was filtered, so a complete query followed by incomplete cleanup
+looked like a pass on macOS 26. The first failing release run did not retain a stack; #253
+added crash diagnostics that made the later static-destruction path visible.
+
+**What catches it next time.** In an isolated Python child, register a verification callback
+before importing `_chdb`; it runs after the extension's earlier-exit callback and asserts the
+engine finished closing before C++ static destructors. Include an import-time warmup,
+`Python(df)`, an unclosed connection, explicit-close controls, a live cursor and stream, and
+an in-flight query. Check the catalog-before-pool invariant instead of accepting only a zero
+exit status. Review the paired `// chdb_spec` lifetime differences against every upstream
+change to Context, catalog, static services, thread pools, and the Python binding; record the
+new call order, not merely whether Git reported a textual conflict.
+
+**Remaining validation.** Local arm64 wheel and the original DataStore settings tests pass;
+the exact macOS 14 CI image is unavailable locally. The complete DataStore integration suite
+also needs its separate remote ClickHouse test server, not installed in the isolated fixture.

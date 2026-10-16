@@ -5,10 +5,12 @@
 
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
+#include <Interpreters/DatabaseCatalog.h>
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
@@ -1575,6 +1577,16 @@ chdb_state chdb_shutdown(void)
     /// here on the engine is closed for business even if a join below fails.
     if (!DB::EmbeddedServer::beginShutdown())
         return CHDBError;
+
+    /// chdb_spec: Closing the last client is not proof that Context and its
+    /// catalog finished shutting down. Do not destroy pools beneath a catalog
+    /// left alive by an exception in embedded cleanup.
+    if (!DB::EmbeddedServer::lastCleanupSucceeded() || DB::DatabaseCatalog::isAvailable())
+    {
+        std::fputs("chDB shutdown refused: Context/catalog cleanup did not complete\n", stderr);
+        return CHDBError;
+    }
+    /// chdb_spec: end embedded catalog-before-pool invariant.
 
     try
     {
