@@ -139,11 +139,6 @@ def is_ancestor(work: Path, older: str, newer: str) -> bool:
 # --------------------------------------------------------------------------- fetch
 
 
-def has_commit(work: Path, rev: str) -> bool:
-    proc = run(["git", f"--git-dir={upstream_dir(work)}", "cat-file", "-e", f"{rev}^{{commit}}"], check=False)
-    return proc.returncode == 0
-
-
 def version_key(tag: str) -> tuple[int, ...]:
     return tuple(int(n) for n in re.findall(r"\d+", tag))
 
@@ -182,8 +177,9 @@ def cmd_fetch(args) -> int:
     stop = branch_point_before(work, base_time)
     depth = [f"--shallow-exclude={stop}"] if stop else ["--depth=5000"]
     ugit(work, *fetch, *depth, "origin", f"+refs/heads/master:{UPSTREAM_MASTER}", base)
-    if args.target and not has_commit(work, args.target):
-        ugit(work, *fetch, "--depth=1", "origin", args.target)
+    if args.target:
+        # No depth: --depth=1 would cut the history behind a commit the clone has.
+        ugit(work, *fetch, "origin", args.target)
     head = ugit(work, "rev-parse", UPSTREAM_MASTER).strip()
     print(f"ClickHouse master is at {head[:12]}; chDB is synced to {base[:12]}")
     return 0
@@ -238,10 +234,16 @@ def next_branch_point(work: Path, base: str, target: str) -> tuple[str, str] | N
     Upstream forks release branch X.Y off master at the commit it tags
     v(X.Y+1).1.1-new. The monthly release is cut from the main commit synced to
     exactly that point, so the daily sync stops there on its way past.
+
+    Only the tags fetch fetched count, the ones no older than UPSTREAM_COMMIT; the
+    next branch point is among them. Asking about any other one would make Git fetch
+    it, and in this partial clone that is the whole history behind it, again for
+    every older tag.
     """
+    fetched = set(ugit(work, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/upstream-tags/").split())
     out = ugit(work, "ls-remote", "--tags", "origin", "refs/tags/v*.1.1-new*")
     for tag, sha in sorted(parse_branch_points(out).items(), key=lambda point: version_key(point[0])):
-        if has_commit(work, sha) and is_ancestor(work, sha, target) and not is_ancestor(work, sha, base):
+        if tag in fetched and is_ancestor(work, sha, target) and not is_ancestor(work, sha, base):
             return tag, sha
     return None
 
