@@ -21,6 +21,9 @@ if [ -f "$HOME/.cargo/env" ]; then
   . "$HOME/.cargo/env"
 fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
+# chDB's AI client picks these up, and the Claude Code step has ANTHROPIC_API_KEY:
+# the AI tests would then call a provider and fail instead of skipping, as in CI.
+unset ANTHROPIC_API_KEY OPENAI_API_KEY AI_API_KEY
 # The pybind11 shims for the two installed versions only; the default wants all six.
 export CHDB_PYBIND11_PYTHON_VERSIONS="3.9 3.14"
 # vars.sh writes CHDB_VERSION into chdb.h; hand it the value the sync left there,

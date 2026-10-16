@@ -214,7 +214,7 @@ jobs:
             claude -p "$(cat .github/nightly/resolve_prompt.md)" \
             --model "$MODEL" \
             --effort max \
-            --max-turns 500 \
+            --max-turns 1000 \
             --permission-mode dontAsk \
             --allowedTools "Bash,Read,Edit,Write,Grep,Glob,TodoWrite" \
             --output-format stream-json --verbose \
