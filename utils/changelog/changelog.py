@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # In our CI this script runs in style-test containers
 
+<<<<<<< ours
 import argparse
 import logging
 import os.path as p
@@ -9,6 +10,15 @@ import re
 from datetime import date, timedelta
 from subprocess import CalledProcessError, DEVNULL
 from typing import Dict, List, Optional, TextIO
+||||||| base
+# The main script is moved to tests/ci/changelog.py
+# It depends on the ci scripts too hard to keep it here
+# Here's only a wrapper around it for the people who used to it
+=======
+# The main script is moved to ci/tools/changelog.py
+# It depends on the ci scripts too hard to keep it here
+# Here's only a wrapper around it for the people who used to it
+>>>>>>> theirs
 
 from fuzzywuzzy.fuzz import ratio  # type: ignore
 from github_helper import GitHub, PullRequest, PullRequests, Repository
@@ -415,6 +425,12 @@ def main():
 
     write_changelog(args.output, descriptions)
 
+<<<<<<< ours
+||||||| base
+SCRIPT_PATH = (Path(__file__).parents[2] / "tests/ci/changelog.py").absolute()
+=======
+SCRIPT_PATH = (Path(__file__).parents[2] / "ci/tools/changelog.py").absolute()
+>>>>>>> theirs
 
 if __name__ == "__main__":
     main()

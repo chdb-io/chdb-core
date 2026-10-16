@@ -52,9 +52,50 @@ extern const int BAD_ARGUMENTS;
 
 namespace
 {
+<<<<<<< ours
 void validateSQLFunctionRecursiveness(const IAST & node, const String & function_to_create)
 {
     for (const auto & child : node.children)
+||||||| base
+    void validateSQLFunctionRecursiveness(const IAST & node, const String & function_to_create)
+=======
+    void validateLambdaArgumentList(const ASTFunction & lambda_arguments_tuple)
+    {
+        UnorderedSetWithMemoryTracking<String> arguments;
+
+        for (const auto & argument : lambda_arguments_tuple.arguments->children)
+        {
+            const auto * argument_identifier = argument->as<ASTIdentifier>();
+
+            if (!argument_identifier)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda argument must be identifier");
+
+            if (argument_identifier->name_parts.size() > 1)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                    "Lambda argument identifier must contain single part. Actual {}",
+                    argument_identifier->full_name);
+
+            const auto & argument_name = argument_identifier->name();
+            auto [_, inserted] = arguments.insert(argument_name);
+            if (!inserted)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
+        }
+    }
+
+    void validateNestedLambdaArgumentLists(const IAST & node)
+    {
+        const auto * nested_lambda = node.as<ASTFunction>();
+
+        /// isASTLambdaFunction has established that the first argument is a `tuple` function carrying arguments.
+        if (nested_lambda && isASTLambdaFunction(*nested_lambda))
+            validateLambdaArgumentList(*nested_lambda->arguments->children[0]->as<ASTFunction>());
+
+        for (const auto & child : node.children)
+            validateNestedLambdaArgumentLists(*child);
+    }
+
+    void validateSQLFunctionRecursiveness(const IAST & node, const String & function_to_create)
+>>>>>>> theirs
     {
         auto function_name_opt = tryGetFunctionName(child);
         if (function_name_opt && function_name_opt.value() == function_to_create)
@@ -71,16 +112,49 @@ void validateSQLFunction(ASTPtr function, const String & name)
     if (!lambda_function)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Expected function, got: {}", function->formatForErrorMessage());
 
+<<<<<<< ours
     auto & lambda_function_expression_list = lambda_function->arguments->children;
+||||||| base
+        auto & lambda_function_expression_list = lambda_function->arguments->children;
+=======
+        if (lambda_function->name != "lambda")
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Expected lambda expression, got: {}", function->formatForErrorMessage());
+>>>>>>> theirs
 
+<<<<<<< ours
     if (lambda_function_expression_list.size() != 2)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have arguments and body");
+||||||| base
+        if (lambda_function_expression_list.size() != 2)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have arguments and body");
+=======
+        if (!lambda_function->arguments || lambda_function->arguments->children.size() != 2)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have arguments and body");
+>>>>>>> theirs
 
+<<<<<<< ours
     const ASTFunction * tuple_function_arguments = lambda_function_expression_list[0]->as<ASTFunction>();
+||||||| base
+        const ASTFunction * tuple_function_arguments = lambda_function_expression_list[0]->as<ASTFunction>();
+=======
+        auto & lambda_function_expression_list = lambda_function->arguments->children;
 
+        const ASTFunction * tuple_function_arguments = lambda_function_expression_list[0]->as<ASTFunction>();
+>>>>>>> theirs
+
+<<<<<<< ours
     if (!tuple_function_arguments || !tuple_function_arguments->arguments || tuple_function_arguments->name != "tuple")
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid arguments");
+||||||| base
+        if (!tuple_function_arguments || !tuple_function_arguments->arguments || tuple_function_arguments->name != "tuple")
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid arguments");
+=======
+        if (!tuple_function_arguments || !tuple_function_arguments->arguments || tuple_function_arguments->name != "tuple"
+            || tuple_function_arguments->parameters)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid arguments");
+>>>>>>> theirs
 
+<<<<<<< ours
     UnorderedSetWithMemoryTracking<String> arguments;
 
     for (const auto & argument : tuple_function_arguments->arguments->children)
@@ -95,13 +169,40 @@ void validateSQLFunction(ASTPtr function, const String & name)
         if (!inserted)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
     }
+||||||| base
+        UnorderedSetWithMemoryTracking<String> arguments;
+
+        for (const auto & argument : tuple_function_arguments->arguments->children)
+        {
+            const auto * argument_identifier = argument->as<ASTIdentifier>();
+
+            if (!argument_identifier)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda argument must be identifier");
+
+            const auto & argument_name = argument_identifier->name();
+            auto [_, inserted] = arguments.insert(argument_name);
+            if (!inserted)
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
+        }
+=======
+        validateLambdaArgumentList(*tuple_function_arguments);
+>>>>>>> theirs
 
     ASTPtr function_body = lambda_function_expression_list[1];
     if (!function_body)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Lambda must have valid function body");
 
+<<<<<<< ours
     validateSQLFunctionRecursiveness(*function_body, name);
 }
+||||||| base
+        validateSQLFunctionRecursiveness(*function_body, name);
+    }
+=======
+        validateNestedLambdaArgumentLists(*function_body);
+        validateSQLFunctionRecursiveness(*function_body, name);
+    }
+>>>>>>> theirs
 }
 
 ASTPtr normalizeCreateFunctionQuery(const IAST & create_function_query, const ContextPtr & context)
@@ -150,6 +251,27 @@ UserDefinedSQLFunctionFactory::UserDefinedSQLFunctionFactory()
     : WithContext(Context::getGlobalContextInstance())
 {}
 
+/// The shape of a definition that `UserDefinedSQLFunctionVisitor` relies on; `validateSQLFunction` adds the rules for new definitions.
+static void validateSQLFunctionShape(const IAST & function)
+{
+    const auto * lambda_function = function.as<ASTFunction>();
+    const auto * lambda_arguments = lambda_function && lambda_function->arguments && lambda_function->arguments->children.size() >= 2
+        ? lambda_function->arguments->children[0]->as<ASTFunction>()
+        : nullptr;
+
+    if (!lambda_arguments || !lambda_arguments->arguments
+        || !std::ranges::all_of(lambda_arguments->arguments->children, [](const ASTPtr & argument) { return argument->as<ASTIdentifier>() != nullptr; }))
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Invalid SQL user defined function: {}", function.formatForErrorMessage());
+
+    UnorderedSetWithMemoryTracking<String> argument_names;
+    for (const auto & argument : lambda_arguments->arguments->children)
+    {
+        const auto & argument_name = argument->as<ASTIdentifier &>().name();
+        if (!argument_names.insert(argument_name).second)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Identifier {} already used as function parameter", argument_name);
+    }
+}
+
 /// Checks that a specified function can be registered, throws an exception if not.
 static void checkCanBeRegistered(
     const ContextPtr & context, const String & function_name, const IAST & create_function_query, bool throw_if_exists)
@@ -168,7 +290,7 @@ static void checkCanBeRegistered(
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "User defined wasm function '{}' already exists", function_name);
 
     if (const auto * create_sql_function_query = typeid_cast<const ASTCreateSQLFunctionQuery *>(&create_function_query))
-        validateSQLFunction(create_sql_function_query->function_core, function_name);
+        validateSQLFunctionShape(*create_sql_function_query->function_core);
 }
 
 static void checkCanBeUnregistered(const ContextPtr & context, const String & function_name)
@@ -217,6 +339,14 @@ bool UserDefinedSQLFunctionFactory::registerFunction(const ContextMutablePtr & c
     }
 
     return true;
+}
+
+bool UserDefinedSQLFunctionFactory::createFunction(const ContextMutablePtr & current_context, const String & function_name, ASTPtr create_function_query, bool throw_if_exists, bool replace_if_exists)
+{
+    if (const auto * create_sql_function_query = typeid_cast<const ASTCreateSQLFunctionQuery *>(create_function_query.get()))
+        validateSQLFunction(create_sql_function_query->function_core, function_name);
+
+    return registerFunction(current_context, function_name, std::move(create_function_query), throw_if_exists, replace_if_exists);
 }
 
 bool UserDefinedSQLFunctionFactory::unregisterFunction(const ContextMutablePtr & current_context, const String & function_name, bool throw_if_not_exists)

@@ -267,6 +267,7 @@ void ClientApplicationBase::init(int argc, char ** argv)
         fatal_channel_ptr->addChannel(fatal_file_channel_ptr);
     }
 
+<<<<<<< ours
     /// chDB: create loggers for once
     static std::once_flag once;
     std::call_once(
@@ -274,6 +275,11 @@ void ClientApplicationBase::init(int argc, char ** argv)
         [this]()
         {
             fatal_log = createLogger("ClientBase", fatal_channel_ptr.get(), Poco::Message::PRIO_FATAL);
+||||||| base
+    fatal_log = createLogger("ClientBase", fatal_channel_ptr.get(), Poco::Message::PRIO_FATAL);
+=======
+    fatal_log = createLogger(fatal_log_name, fatal_channel_ptr.get(), Poco::Message::PRIO_FATAL);
+>>>>>>> theirs
 #if defined(OS_HAS_SIGNAL_HANDLERS)
             /// Without signals nothing ever writes to the signal pipe, so there is nothing to listen
             /// for - and the blocking read of that pipe is all the listener thread does.
