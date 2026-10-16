@@ -99,10 +99,12 @@ jobs:
           SUBMODULE_DEPTH: 1
         run: .github/scripts/update-submodules.sh
 
+      # yasm: the native bootstrap configures libhdfs3, which needs it on x86_64. Other
+      # jobs install it on the pool's hosts, but not on every one.
       - name: Install build deps
         run: |
           sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends lld ninja-build ccache
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends lld ninja-build ccache yasm
 
       # emcmake needs a recent cmake on PATH; the self-hosted runner does not provide
       # one for this job, so install a pinned cmake (+ninja) ourselves.
