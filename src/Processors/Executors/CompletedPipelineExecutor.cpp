@@ -84,9 +84,10 @@ void CompletedPipelineExecutor::execute()
     /// callback is still installed (below); only the interactive cancellation/polling
     /// is skipped. The query runs to completion.
     {
-        PipelineExecutor executor(pipeline.processors, pipeline.process_list_element);
-        executor.setReadProgressCallback(pipeline.getReadProgressCallback());
-        executor.execute(pipeline.getNumThreads(), pipeline.getConcurrencyControl());
+        auto executor = createExecutor(pipeline.processors, pipeline.process_list_element);
+        executor->setReadProgressCallback(pipeline.getReadProgressCallback());
+        executor->setStepProfiler(pipeline.getStepProfiler());
+        executor->execute(pipeline.getNumThreads(), pipeline.getConcurrencyControl());
         return;
     }
 #endif

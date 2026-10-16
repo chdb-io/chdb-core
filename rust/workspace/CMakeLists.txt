@@ -18,27 +18,15 @@ endif()
 option (ENABLE_PRQL "Enable prql" ${ENABLE_LIBRARIES})
 option (ENABLE_SKIM "Enable skim" ${ENABLE_LIBRARIES})
 option (ENABLE_POLYGLOT "Enable polyglot SQL transpiler" ${ENABLE_LIBRARIES})
-<<<<<<< ours
+option (ENABLE_PCO "Enable pco (pcodec) compression codec" ${ENABLE_LIBRARIES})
 # chdb: WasmTime backs the WebAssembly UDF runtime and is enabled independently
 # of ENABLE_LIBRARIES (see chdb/build.sh). It is built from the same cargo
 # workspace, so it must be considered here too — otherwise this early return
 # would skip clickhouse_import_crate() and add_subdirectory(wasmtime) below.
 option (ENABLE_WASMTIME "Enable WasmTime engine" ${ENABLE_LIBRARIES})
-||||||| base
-=======
-option (ENABLE_PCO "Enable pco (pcodec) compression codec" ${ENABLE_LIBRARIES})
->>>>>>> theirs
 
-<<<<<<< ours
-if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_WASMTIME)
-    message(STATUS "prql, skim, polyglot, and wasmtime are disabled")
-||||||| base
-if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT)
-    message(STATUS "prql, skim, and polyglot are disabled")
-=======
-if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_PCO)
-    message(STATUS "prql, skim, polyglot, and pco are disabled")
->>>>>>> theirs
+if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_PCO AND NOT ENABLE_WASMTIME)
+    message(STATUS "prql, skim, polyglot, pco, and wasmtime are disabled")
     return()
 endif()
 
@@ -55,6 +43,9 @@ if (ENABLE_SKIM)
 endif()
 if (ENABLE_POLYGLOT)
     list (APPEND _ch_rust_enabled_crates _ch_rust_polyglot)
+endif()
+if (ENABLE_PCO)
+    list (APPEND _ch_rust_enabled_crates _ch_rust_pco)
 endif()
 if (ENABLE_WASMTIME)
     list (APPEND _ch_rust_enabled_crates _ch_rust_wasmtime)

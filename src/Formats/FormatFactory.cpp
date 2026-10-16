@@ -379,15 +379,9 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.arrow.parallel_encoding = settings[Setting::output_format_arrow_parallel_encoding];
     format_settings.arrow.output_use_native_writer = settings[Setting::output_format_arrow_use_native_writer];
     format_settings.arrow.output_date_as_uint16 = settings[Setting::output_format_arrow_date_as_uint16];
-<<<<<<< ours
     format_settings.arrow.output_uuid_as_fixed_byte_array = settings[Setting::output_format_arrow_uuid_as_fixed_byte_array];
     format_settings.arrow.output_variant_as_string = settings[Setting::output_format_arrow_variant_as_string];
-    format_settings.arrow.output_unsupported_types_as_binary = settings[Setting::output_format_arrow_unsupported_types_as_binary];
-||||||| base
-    format_settings.arrow.output_unsupported_types_as_binary = settings[Setting::output_format_arrow_unsupported_types_as_binary];
-=======
     format_settings.arrow.output_unsupported_types = getArrowUnsupportedTypesMode(settings);
->>>>>>> theirs
     format_settings.arrow.output_record_batch_rows = settings[Setting::output_format_arrow_record_batch_size];
     format_settings.arrow.output_record_batch_bytes = settings[Setting::output_format_arrow_record_batch_size_bytes];
     format_settings.orc.allow_missing_columns = settings[Setting::input_format_orc_allow_missing_columns];

@@ -11303,7 +11303,8 @@ namespace
 /// `need_stop` on every element instead of every 8192, so a test with a fixture of a reasonable
 /// size can prove with a timed assertion that the walk itself honors `need_stop` (reaching the
 /// regular polling cadence would require a fixture with many thousands of parts).
-bool isPartsSnapshotSlowdownActive(const StorageID & storage_id)
+/// chdb: `storage_id` is unused when libfiu is disabled (fiu_do_on expands to nothing), e.g. the lite build.
+bool isPartsSnapshotSlowdownActive([[maybe_unused]] const StorageID & storage_id)
 {
     bool active = false;
     fiu_do_on(FailPoints::slowdown_system_parts_enumeration,

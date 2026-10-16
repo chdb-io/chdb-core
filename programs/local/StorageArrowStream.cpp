@@ -27,6 +27,7 @@ void registerStorageArrowStream(StorageFactory & factory)
             CHDB::ArrowStreamRegistry::ArrowStreamInfo stream_info = std::any_cast<CHDB::ArrowStreamRegistry::ArrowStreamInfo>(args.engine_args[0]);
             return std::make_shared<StorageArrowStream>(args.table_id, stream_info, args.columns, args.getLocalContext());
         },
+        SecretArgumentsSpec{},
         {
             .supports_settings = false,
             .supports_parallel_insert = false,

@@ -5828,16 +5828,8 @@ Enabled by default.
     DECLARE(Bool, optimize_respect_aliases, true, R"(
 If it is set to true, it will respect aliases in WHERE/GROUP BY/ORDER BY, that will help with partition pruning/secondary indexes/optimize_aggregation_in_order/optimize_read_in_order/optimize_trivial_count
 )", 0) \
-<<<<<<< ours
     DECLARE(UInt64, mutations_sync, 1, R"(
-Allows to execute `ALTER TABLE ... UPDATE|DELETE|MATERIALIZE INDEX|MATERIALIZE PROJECTION|MATERIALIZE COLUMN|MATERIALIZE STATISTICS` queries ([mutations](/reference/statements/alter/index#mutations)) synchronously.
-||||||| base
-    DECLARE(UInt64, mutations_sync, 0, R"(
-Allows to execute `ALTER TABLE ... UPDATE|DELETE|MATERIALIZE INDEX|MATERIALIZE PROJECTION|MATERIALIZE COLUMN|MATERIALIZE STATISTICS` queries ([mutations](/reference/statements/alter/index#mutations)) synchronously.
-=======
-    DECLARE(UInt64, mutations_sync, 0, R"(
 Controls how the client waits for mutations created by [`ALTER TABLE`](/reference/statements/alter/index) operations such as `UPDATE`, `DELETE`, `MATERIALIZE INDEX`, `MATERIALIZE PROJECTION`, `MATERIALIZE COLUMN`, and `MATERIALIZE STATISTICS`.
->>>>>>> theirs
 
 Possible values:
 

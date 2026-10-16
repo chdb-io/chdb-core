@@ -4,14 +4,8 @@
 namespace DB
 {
 
-<<<<<<< ours
 std::once_flag global_register_once_flag;
 
-void registerInterpreterSelectQuery(InterpreterFactory & factory);
-||||||| base
-void registerInterpreterSelectQuery(InterpreterFactory & factory);
-=======
->>>>>>> theirs
 void registerInterpreterSelectQueryAnalyzer(InterpreterFactory & factory);
 void registerInterpreterInsertQuery(InterpreterFactory & factory);
 void registerInterpreterCreateQuery(InterpreterFactory & factory);

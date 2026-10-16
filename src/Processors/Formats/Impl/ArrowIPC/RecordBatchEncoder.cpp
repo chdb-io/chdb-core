@@ -26,12 +26,8 @@
 #include <DataTypes/Serializations/ISerialization.h>
 #include <IO/NetUtils.h>
 #include <IO/WriteBufferFromString.h>
-<<<<<<< ours
-||||||| base
-=======
 #include <IO/WriteBufferFromVector.h>
 #include <Processors/Formats/Impl/ArrowOpaqueColumn.h>
->>>>>>> theirs
 #include <Core/UUID.h>
 #include <Common/assert_cast.h>
 #include <base/arithmeticOverflow.h>

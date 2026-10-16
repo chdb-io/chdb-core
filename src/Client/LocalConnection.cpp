@@ -32,18 +32,8 @@
 #include <Common/ProfileEvents.h>
 #include <Parsers/ASTFromJSON.h>
 #include <Parsers/Trino/ParserTrinoQuery.h>
-<<<<<<< ours
-||||||| base
-#include <Parsers/Kusto/parseKQLQuery.h>
-#include <Parsers/PRQL/ParserPRQLQuery.h>
-#include <Parsers/Prometheus/ParserPrometheusQuery.h>
-=======
-#include <Parsers/Kusto/parseKQLQuery.h>
-#include <Parsers/PRQL/ParserPRQLQuery.h>
-#include <Parsers/Prometheus/ParserPrometheusQuery.h>
 #include <Parsers/LogsQL/ParserLogsQLQuery.h>
 #include <Parsers/LogsQL/parseLogsQLQuery.h>
->>>>>>> theirs
 
 namespace ProfileEvents
 {

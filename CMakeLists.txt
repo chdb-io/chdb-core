@@ -312,18 +312,10 @@ if (OS_LINUX)
 
     if (LINKER_NAME MATCHES "lld" AND NOT SANITIZE AND NOT SANITIZE_COVERAGE AND NOT WITH_COVERAGE)
         # Fold identical code and data sections to reduce binary size.
-<<<<<<< ours
-        # chdb-spec: --icf=safe (not upstream's --icf=all) to avoid folding
-        # functions whose addresses are taken; also apply to SHARED_LINKER_FLAGS
-        # for libchdb.so.
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=safe")
-        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--icf=safe")
-||||||| base
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=all")
-=======
         # `safe` keeps address-taken functions distinct, as C and C++ require.
         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--icf=safe")
->>>>>>> theirs
+        # chdb-spec: also apply to SHARED_LINKER_FLAGS for libchdb.so.
+        set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--icf=safe")
     endif ()
 
     # In Release builds, strip residual debug sections that may come from contrib
@@ -800,13 +792,11 @@ endif ()
 
 include(cmake/dbms_glob_sources.cmake)
 
-<<<<<<< ours
 # Must precede the default_libs.cmake dispatch below: that is what pulls in
 # cmake/unwind.cmake and cmake/cxx.cmake, which add_subdirectory() the libcxx, libcxxabi and
 # libunwind configurations. Those call hide_bundled_runtime(), so it has to exist by then.
 include (cmake/bundled_runtime_visibility.cmake)
-||||||| base
-=======
+
 # Position independent code is enabled on every amd64 and aarch64 build:
 # 1. Position independent binaries and libraries have no limit for maximum size of relocation. It allows to avoid
 # multiple sophisticated problems like linking with sanitizers or linking of rust.
@@ -827,24 +817,30 @@ include (cmake/bundled_runtime_visibility.cmake)
 # compile without -fPIE. That only breaks with compilers that do not default to PIE
 # (clang with CLANG_DEFAULT_PIE_ON_LINUX=OFF, as configured by some distributions), because then the
 # non-relocatable objects of those libraries cannot be linked into the PIE executable.
-if (ARCH_AMD64 OR ARCH_AARCH64)
-    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
+# chdb_spec
+# chdb builds a shared library, so every object needs -fPIC (not upstream's -fPIE) and the
+# position-independent executable logic below does not apply. Upstream's current block is kept
+# verbatim but commented out so the next baseline sync sees no textual drift here.
+set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-    # -fPIE only makes the code relocatable; whether the executable itself is position independent is
-    # the compiler driver's default unless the linker is asked explicitly, so ask it.
-    # musl links with -static-pie instead (see cmake/linux/default_libs.cmake).
-    # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
-    if (OS_LINUX AND NOT USE_MUSL)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
-    endif()
-endif()
-
-if (ENABLE_POSITION_INDEPENDENT_BINARY)
-    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
-endif()
->>>>>>> theirs
+# if (ARCH_AMD64 OR ARCH_AARCH64)
+#     set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
+#
+#     # -fPIE only makes the code relocatable; whether the executable itself is position independent is
+#     # the compiler driver's default unless the linker is asked explicitly, so ask it.
+#     # musl links with -static-pie instead (see cmake/linux/default_libs.cmake).
+#     # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
+#     if (OS_LINUX AND NOT USE_MUSL)
+#         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
+#     endif()
+# endif()
+#
+# if (ENABLE_POSITION_INDEPENDENT_BINARY)
+#     set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
+#     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
+#     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
+# endif()
+# chdb_spec
 
 add_library(global-group INTERFACE)
 if (OS_LINUX OR OS_ANDROID)
@@ -888,41 +884,7 @@ endif ()
 
 set (CMAKE_POSTFIX_VARIABLE "CMAKE_${CMAKE_BUILD_TYPE_UC}_POSTFIX")
 
-<<<<<<< ours
-# Position independent code is enabled on every amd64 and aarch64 build:
-# 1. Position independent binaries and libraries have no limit for maximum size of relocation. It allows to avoid
-# multiple sophisticated problems like linking with sanitizers or linking of rust.
-# 2. -flto=thin leads to some other way of linkage. For example for rust libraries build
-# we don't see any relocation-related errors without -fPIC, but with enabled -flto=thin. While without
-# -flto=thin we have relocation errors like:
-# rust-lld: error: relocation R_X86_64_32S cannot be used against symbol 'SEED_encrypt'; recompile with -fPIC
-#
-# For some sophisticated platforms we have different issues with fPIC:
-# For example riscv toolchain itself compiled without fPIC
-# chdb_spec
-# chdb builds a shared library, so every object needs -fPIC and the position-independent
-# executable logic below does not apply. Upstream's current block is kept verbatim but
-# commented out so the next baseline sync sees no textual drift here.
-set (CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-# if (ARCH_AMD64 OR ARCH_AARCH64)
-#     set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
-#
-#     # -fPIC only makes the code relocatable; whether the executable itself is position independent is
-#     # the compiler driver's default unless the linker is asked explicitly, so ask it.
-#     # musl links statically, and -static-pie needs an rcrt1.o that contrib/musl-cmake does not build.
-#     # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
-#     if (OS_LINUX AND NOT USE_MUSL)
-#         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
-#     endif()
-# endif()
-#
-# if (ENABLE_POSITION_INDEPENDENT_BINARY)
-#     set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-#     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
-#     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-# endif()
-#
+# chdb_spec: upstream's -no-pie block, commented out: chdb links a shared library.
 # if (NOT OS_ANDROID AND OS_LINUX AND NOT ARCH_S390X AND NOT SANITIZE AND NOT ENABLE_POSITION_INDEPENDENT_BINARY)
 #     # Using '-no-pie' builds executables with fixed addresses, resulting in slightly more efficient code
 #     # and keeping binary addresses constant even with ASLR enabled.
@@ -934,57 +896,6 @@ set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 #     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie -Wl,-no-pie")
 # endif ()
 # chdb_spec
-||||||| base
-# Position independent code is enabled on every amd64 and aarch64 build:
-# 1. Position independent binaries and libraries have no limit for maximum size of relocation. It allows to avoid
-# multiple sophisticated problems like linking with sanitizers or linking of rust.
-# 2. -flto=thin leads to some other way of linkage. For example for rust libraries build
-# we don't see any relocation-related errors without -fPIC, but with enabled -flto=thin. While without
-# -flto=thin we have relocation errors like:
-# rust-lld: error: relocation R_X86_64_32S cannot be used against symbol 'SEED_encrypt'; recompile with -fPIC
-#
-# For some sophisticated platforms we have different issues with fPIC:
-# For example riscv toolchain itself compiled without fPIC
-if (ARCH_AMD64 OR ARCH_AARCH64)
-    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
-
-    # -fPIC only makes the code relocatable; whether the executable itself is position independent is
-    # the compiler driver's default unless the linker is asked explicitly, so ask it.
-    # musl links statically, and -static-pie needs an rcrt1.o that contrib/musl-cmake does not build.
-    # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
-    if (OS_LINUX AND NOT USE_MUSL)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
-    endif()
-endif()
-
-if (ENABLE_POSITION_INDEPENDENT_BINARY)
-    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-endif()
-
-if (NOT OS_ANDROID AND OS_LINUX AND NOT ARCH_S390X AND NOT SANITIZE AND NOT ENABLE_POSITION_INDEPENDENT_BINARY)
-    # Using '-no-pie' builds executables with fixed addresses, resulting in slightly more efficient code
-    # and keeping binary addresses constant even with ASLR enabled.
-    # Disabled on Android as it requires PIE: https://source.android.com/docs/security/enhancements#android-5
-    # Disabled on IBM S390X due to build issues with 'no-pie'
-    # Disabled with sanitizers to avoid issues with maximum relocation size: https://github.com/ClickHouse/ClickHouse/pull/49145
-    set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fno-pie")
-    set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -fno-pie")
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie -Wl,-no-pie")
-endif ()
-=======
-if (NOT OS_ANDROID AND OS_LINUX AND NOT ARCH_S390X AND NOT SANITIZE AND NOT ENABLE_POSITION_INDEPENDENT_BINARY)
-    # Using '-no-pie' builds executables with fixed addresses, resulting in slightly more efficient code
-    # and keeping binary addresses constant even with ASLR enabled.
-    # Disabled on Android as it requires PIE: https://source.android.com/docs/security/enhancements#android-5
-    # Disabled on IBM S390X due to build issues with 'no-pie'
-    # Disabled with sanitizers to avoid issues with maximum relocation size: https://github.com/ClickHouse/ClickHouse/pull/49145
-    set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -fno-pie")
-    set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -fno-pie")
-    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -no-pie -Wl,-no-pie")
-endif ()
->>>>>>> theirs
 
 # Full RELRO (relocation read-only): '-z now' resolves all dynamic relocations at startup and '-z relro'
 # then maps the global offset table read-only, so an arbitrary write cannot redirect a call through it.

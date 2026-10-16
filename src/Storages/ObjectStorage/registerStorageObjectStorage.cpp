@@ -1617,6 +1617,7 @@ SETTINGS iceberg_metadata_staleness_ms=120000
             auto configuration = std::make_shared<StorageWasmWebIcebergConfiguration>(storage_settings);
             return createStorageObjectStorage(args, configuration);
         },
+        DataLake::withSecretSettings(s3TableEngineSecretArguments()),
         {
             .supports_settings = true,
             .supports_sort_order = true,
@@ -2625,6 +2626,7 @@ void registerStorageDeltaLake(StorageFactory & factory)
             auto configuration = std::make_shared<StorageWasmWebDeltaLakeConfiguration>(storage_settings);
             return createStorageObjectStorage(args, configuration);
         },
+        DataLake::withSecretSettings(s3TableEngineSecretArguments()),
         {
             .supports_settings = true,
             .supports_schema_inference = true,

@@ -16,24 +16,9 @@
 #include <sys/resource.h>
 #include <algorithm>
 #include <exception>
-<<<<<<< ours
 #include <filesystem>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
-||||||| base
-#include <Common/Config/getLocalConfigPath.h>
-#include <Common/CurrentMemoryTracker.h>
-#include <Common/PerCPUMemory.h>
-#include <Common/logger_useful.h>
-#include <Common/formatReadable.h>
-=======
-#include <Common/Config/getConfigPath.h>
-#include <Common/Config/getLocalConfigPath.h>
-#include <Common/CurrentMemoryTracker.h>
-#include <Common/PerCPUMemory.h>
-#include <Common/logger_useful.h>
-#include <Common/formatReadable.h>
->>>>>>> theirs
 #include <Core/Defines.h>
 #include <Core/Settings.h>
 #include <Core/UUID.h>
@@ -48,14 +33,9 @@
 #include <Databases/DatabaseMemory.h>
 #include <Databases/DatabasesCommon.h>
 #include <Databases/DatabaseAtomic.h>
-<<<<<<< ours
 #include <Databases/DatabaseFilesystem.h>
-||||||| base
-=======
 #include <Databases/DatabaseOnDisk.h>
->>>>>>> theirs
 #include <Databases/DatabaseOverlay.h>
-<<<<<<< ours
 #include <Databases/registerDatabases.h>
 #include <Dictionaries/registerDictionaries.h>
 #include <Disks/registerDisks.h>
@@ -67,15 +47,8 @@
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/SharedThreadPools.h>
-#include <Interpreters/FileCache/FileCacheFactory.h>
-||||||| base
-#include <Storages/System/attachSystemTables.h>
-#include <Storages/System/attachInformationSchemaTables.h>
-=======
-#include <Storages/System/attachSystemTables.h>
-#include <Storages/System/attachInformationSchemaTables.h>
 #include <Interpreters/CancellationChecker.h>
->>>>>>> theirs
+#include <Interpreters/FileCache/FileCacheFactory.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
@@ -104,27 +77,11 @@
 #include <Common/JemallocMergeTreeArena.h>
 #include <Storages/MergeTree/ColumnsCache.h>
 #include <Common/StackTrace.h>
-<<<<<<< ours
-||||||| base
-#include <Interpreters/FileCache/FileCacheFactory.h>
-=======
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
-#include <Interpreters/FileCache/FileCacheFactory.h>
->>>>>>> theirs
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <Loggers/OwnSplitChannel.h>
-<<<<<<< ours
-||||||| base
-#include <IO/ReadBufferFromFile.h>
-#include <IO/ReadBufferFromString.h>
-#include <IO/SharedThreadPools.h>
-=======
-#include <IO/ReadBufferFromFile.h>
-#include <IO/ReadBufferFromString.h>
-#include <IO/SharedThreadPools.h>
 #include <IO/WriteHelpers.h>
->>>>>>> theirs
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTFunction.h>
@@ -174,9 +131,9 @@
 #include <Poco/SimpleFileChannel.h>
 #include <Poco/String.h>
 #include <Poco/ThreadPool.h>
-<<<<<<< ours
 #include <Poco/Util/XMLConfiguration.h>
 #include <Common/Config/ConfigProcessor.h>
+#include <Common/Config/getConfigPath.h>
 #include <Common/Config/getLocalConfigPath.h>
 #include <Common/CurrentMemoryTracker.h>
 #include <Common/CurrentMetrics.h>
@@ -196,14 +153,8 @@
 #include <Common/formatReadable.h>
 #include <Common/getMultipleKeysFromConfig.h>
 #include <Common/logger_useful.h>
-||||||| base
 
-#include <algorithm>
-=======
-
-#include <algorithm>
 #include <thread>
->>>>>>> theirs
 
 #include "config.h"
 
@@ -725,17 +676,6 @@ DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPt
     /// the lookup misses the previous run's symlink and a fresh UUID is picked.
     fs::path existing_path_symlink = fs::weakly_canonical(context->getPath()) / DatabaseCatalog::getMetadataDirPath(name_);
     if (FS::isSymlinkNoThrow(existing_path_symlink))
-<<<<<<< ours
-        default_database_uuid = parse<UUID>(FS::readSymlink(existing_path_symlink).filename());
-||||||| base
-    {
-        auto symlink_path = FS::readSymlink(existing_path_symlink);
-        /// If symlink ends with '/':
-        if (!symlink_path.has_filename() && symlink_path.has_parent_path())
-            symlink_path = symlink_path.parent_path();
-        default_database_uuid = parse<UUID>(symlink_path.filename());
-    }
-=======
     {
         auto symlink_path = FS::readSymlink(existing_path_symlink);
         /// If symlink ends with '/':
@@ -746,12 +686,11 @@ DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPt
     /// The file is written on the first run, before any table creates the symlink.
     else if (UUID uuid_from_metadata_file = tryReadAtomicDatabaseUUID(name_, context); uuid_from_metadata_file != UUIDHelpers::Nil)
         default_database_uuid = uuid_from_metadata_file;
->>>>>>> theirs
     else
         default_database_uuid = UUIDHelpers::generateV4();
 
-    fs::path default_database_metadata_path = fs::weakly_canonical(context->getPath()) / "store"
-        / DatabaseCatalog::getPathForUUID(default_database_uuid);
+    fs::path default_database_metadata_path = fs::weakly_canonical(context->getPath()) /
+        DatabaseCatalog::getStoreDirPath(default_database_uuid);
 
     overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
     /// The URL database handles local files, URLs and object storage uniformly: with the `file://`
@@ -1459,7 +1398,6 @@ try
         Poco::ErrorHandler::set(&error_handler);
     }
 
-<<<<<<< ours
     std::call_once(
         global_register_once_flag,
         []()
@@ -1467,7 +1405,7 @@ try
             chdb_embedded_server_initialized = true;
 
             registerInterpreters();
-            registerStatements();
+            registerParsers();
             /// Don't initialize DateLUT
             registerFunctions();
             registerAggregateFunctions();
@@ -1484,46 +1422,14 @@ try
             CHDB::registerDataFrameOutputFormat();
 
             registerDictionaries();
+            setSecretArgumentsFinder(&SecretArgumentsRegistry::instance());
             registerDisks(/* global_skip_access_check= */ true);
             registerFormats();
             QueryPlanStepRegistry::registerPlanSteps();
         });
-||||||| base
-    registerInterpreters();
-    registerStatements();
-    /// Don't initialize DateLUT
-    registerFunctions();
-    registerAggregateFunctions();
-    registerTableFunctions();
-    registerDatabases();
-    registerStorages();
-    registerDictionaries();
-    registerDisks(/* global_skip_access_check= */ true);
-    registerFormats();
-    QueryPlanStepRegistry::registerPlanSteps();
-=======
-    registerInterpreters();
-    registerParsers();
-    /// Don't initialize DateLUT
-    registerFunctions();
-    registerAggregateFunctions();
-    registerTableFunctions();
-    registerDatabases();
-    registerStorages();
-    registerDictionaries();
-    setSecretArgumentsFinder(&SecretArgumentsRegistry::instance());
-    registerDisks(/* global_skip_access_check= */ true);
-    registerFormats();
-    QueryPlanStepRegistry::registerPlanSteps();
->>>>>>> theirs
 
     processConfig();
 
-<<<<<<< ours
-    SCOPE_EXIT({ if (!is_background) cleanup(); });
-||||||| base
-    SCOPE_EXIT({ cleanup(); });
-=======
     /// `workerFunction()` returns only on `terminateThread()`, so it must not hold a slot of a
     /// bounded pool. SCOPE_EXIT is LIFO, so registering this guard before the `cleanup()` one keeps
     /// the checker running while `cleanup()` waits for listener connections to drain.
@@ -1537,8 +1443,7 @@ try
         }
     });
 
-    SCOPE_EXIT({ cleanup(); });
->>>>>>> theirs
+    SCOPE_EXIT({ if (!is_background) cleanup(); });
 
     cancellation_thread = std::thread([] { CancellationChecker::getInstance().workerFunction(); });
 
@@ -2092,8 +1997,7 @@ void LocalServer::processConfig()
         if (!server_default_database.empty() && !getClientConfiguration().has("only-system-tables"))
             writeMissingDatabaseMetadataFile(*DatabaseCatalog::instance().getDatabase(server_default_database), global_context);
 
-        const bool metadata_exists = fs::exists(fs::path(path) / "metadata");
-        if (metadata_exists)
+        if (fs::exists(fs::path(path) / "metadata"))
         {
             LOG_DEBUG(log, "Loading metadata from {}", path);
 
@@ -2118,16 +2022,8 @@ void LocalServer::processConfig()
             LOG_DEBUG(log, "Loaded metadata.");
         }
 
-<<<<<<< ours
-        /// A fresh persistent path has no metadata directory yet. DDL executed by
-        /// the first session can create it, so start the cleanup tasks even when
-        /// there was no metadata to load. Otherwise DROP ... SYNC waits forever.
-        if (!metadata_exists && !getClientConfiguration().has("only-system-tables"))
-||||||| base
-=======
         /// `DROP ... SYNC` waits for the drop task, so it has to run also when no metadata was loaded.
         if (!started_background_tasks)
->>>>>>> theirs
         {
             DatabaseCatalog::instance().createBackgroundTasks();
             DatabaseCatalog::instance().startupBackgroundTasks();

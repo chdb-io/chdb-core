@@ -2226,11 +2226,13 @@ The command returns a table with `metric_name` and `metric_value` columns showin
          {.description = R"(The table function can be used to read the Iceberg table stored on S3 object store (via the WASM web-fetch data plane). Alias to icebergS3)",
             .examples{{IcebergDefinition::name, "SELECT * FROM iceberg(url, access_key_id, secret_access_key)", ""}},
             .category = FunctionDocumentation::Category::TableFunction},
+        DataLake::withSecretSettings(s3TableFunctionSecretArguments(false)),
         {.allow_readonly = false});
     factory.registerFunction<TableFunctionIcebergS3>(
          {.description = R"(The table function can be used to read the Iceberg table stored on S3 object store (via the WASM web-fetch data plane).)",
             .examples{{IcebergS3Definition::name, "SELECT * FROM icebergS3(url, access_key_id, secret_access_key)", ""}},
             .category = FunctionDocumentation::Category::TableFunction},
+        DataLake::withSecretSettings(s3TableFunctionSecretArguments(false)),
         {.allow_readonly = false});
 #endif
 #if USE_AZURE_BLOB_STORAGE
@@ -2561,6 +2563,7 @@ void registerTableFunctionDeltaLake(TableFunctionFactory & factory)
          {.description = R"(The table function can be used to read the DeltaLake table stored on S3 (via the WASM web-fetch data plane and the legacy metadata reader).)",
             .examples{{DeltaLakeDefinition::name, "SELECT * FROM deltaLake(url, access_key_id, secret_access_key)", ""}},
             .category = FunctionDocumentation::Category::TableFunction},
+         DataLake::withSecretSettings(s3TableFunctionSecretArguments(false)),
          {.allow_readonly = false});
 }
 #endif

@@ -15,12 +15,8 @@
 #include <Common/Stopwatch.h>
 #include "base/types.h"
 #include <Core/ExternalTable.h>
-<<<<<<< ours
 #include <Core/Settings.h>
-||||||| base
-=======
 #include <Core/Field.h>
->>>>>>> theirs
 #include <Interpreters/Context.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Poco/ConsoleChannel.h>
@@ -172,7 +168,6 @@ public:
     bool tryStopQuery() { return query_interrupt_handler.tryStop(); }
     void stopQuery() { query_interrupt_handler.stop(); }
 
-<<<<<<< ours
     /// Steals and returns the query output vector.
     /// Afterward, the content of query_result_memory is released by the Python side.
     std::vector<char> * stealQueryOutputVector()
@@ -198,12 +193,7 @@ public:
     void setBackground(bool is_background_) { is_background = is_background_; }
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
 
-    ASTPtr parseQuery(const char *& pos, const char * end, const Settings & settings, bool allow_multi_statements);
-||||||| base
-    ASTPtr parseQuery(const char *& pos, const char * end, const Settings & settings, bool allow_multi_statements);
-=======
     ASTPtr parseQuery(const char *& pos, const char * end, const Settings & settings, bool allow_multi_statements, const char * raw_query_begin = nullptr);
->>>>>>> theirs
     /// Returns true if query succeeded
     bool processTextAsSingleQuery(const String & full_query);
 

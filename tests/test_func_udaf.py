@@ -1331,45 +1331,54 @@ class TestUDAFQueryShapes(UDAFTestCase):
         self.assertEqual(py_rows, ["0,0", "1,1", "2,3", "3,6", "4,10"])
         self.assertEqual(py_rows, builtin_rows)
 
-    def test_query_result_cache_treats_the_udaf_as_non_deterministic(self):
-        self.register("qc_sum", PySum)
+    def query_result_cache_refusal(self, name, signature, query):
+        """The error the query result cache raises for `query`, or "" if it caches the result.
 
-        with self.assertRaises(Exception) as ctx:
-            self.session.query(
-                "SELECT qc_sum(toInt64(number)) FROM numbers(5) SETTINGS use_query_cache = 1, "
-                "query_cache_nondeterministic_function_handling = 'throw'",
-                "CSV",
-            )
-        self.assertIn("non-deterministic", str(ctx.exception))
+        The cache only looks for non-deterministic functions when some backend can store the
+        result (ClickHouse #115382), and chDB's in-memory query cache stores nothing, so the
+        query runs against the query cache on disk, backed by a filesystem cache. That needs a
+        filesystem cache in the configuration, which is read when the engine starts: hence the
+        fresh interpreter. `signature` is the source of the arguments after the accumulator.
+        """
+        return self.run_isolated(
+            "d = tempfile.mkdtemp()\n"
+            "config = os.path.join(d, 'config.xml')\n"
+            "with open(config, 'w') as f:\n"
+            "    f.write('<clickhouse><filesystem_caches><query_results><path>' + d + '/query_results/</path>'\n"
+            "            '<max_size>16Mi</max_size></query_results></filesystem_caches></clickhouse>')\n"
+            "session = Session(':memory:?config-file=' + config)\n"
+            f"chdb.create_aggregate_function({name!r}, PySum{signature})\n"
+            "try:\n"
+            f"    session.query({query!r} + \" SETTINGS use_query_cache = 1, \"\n"
+            "                  \"query_cache_on_disk_cache_name = 'query_results', \"\n"
+            "                  \"query_cache_nondeterministic_function_handling = 'throw'\", 'CSV')\n"
+            "except Exception as e:\n"
+            "    print(e)\n"
+            "session.close()\n"
+        )
+
+    def test_query_result_cache_treats_the_udaf_as_non_deterministic(self):
+        refusal = self.query_result_cache_refusal(
+            "qc_sum", "", "SELECT qc_sum(toInt64(number)) FROM numbers(5)")
+        self.assertIn("non-deterministic", refusal)
 
     def test_query_result_cache_sees_a_udaf_named_by_arrayreduce(self):
         # arrayReduce names the aggregate in a string literal, so the cache matcher has to
         # look inside it; the AST function name is arrayReduce, which is deterministic.
-        self.register("qc_reduce_sum", PySum, [INT64], INT64)
-
-        with self.assertRaises(Exception) as ctx:
-            self.session.query(
-                "SELECT arrayReduce('qc_reduce_sum', [toInt64(1), toInt64(2)]) "
-                "SETTINGS use_query_cache = 1, "
-                "query_cache_nondeterministic_function_handling = 'throw'",
-                "CSV",
-            )
-        self.assertIn("non-deterministic", str(ctx.exception))
+        refusal = self.query_result_cache_refusal(
+            "qc_reduce_sum", ", [INT64], INT64",
+            "SELECT arrayReduce('qc_reduce_sum', [toInt64(1), toInt64(2)])")
+        self.assertIn("non-deterministic", refusal)
 
     def test_query_result_cache_refuses_a_computed_aggregate_name(self):
         # arrayReduce's first argument only has to be a constant expression, not a literal,
         # so the name cannot always be read from the AST. A computed name is treated as
         # non-deterministic rather than silently cached.
+        refusal = self.query_result_cache_refusal(
+            "qc_computed_sum", ", [INT64], INT64",
+            "SELECT arrayReduce(concat('qc_computed_', 'sum'), [toInt64(1), toInt64(2)])")
+        self.assertIn("non-deterministic", refusal)
         self.register("qc_computed_sum", PySum, [INT64], INT64)
-
-        with self.assertRaises(Exception) as ctx:
-            self.session.query(
-                "SELECT arrayReduce(concat('qc_computed_', 'sum'), [toInt64(1), toInt64(2)]) "
-                "SETTINGS use_query_cache = 1, "
-                "query_cache_nondeterministic_function_handling = 'throw'",
-                "CSV",
-            )
-        self.assertIn("non-deterministic", str(ctx.exception))
         # ... and it still computes the right answer when the cache is not involved.
         self.assertEqual(
             self.scalar("SELECT arrayReduce(concat('qc_computed_', 'sum'), [toInt64(1), toInt64(2)])"),

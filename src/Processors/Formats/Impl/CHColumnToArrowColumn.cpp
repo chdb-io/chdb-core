@@ -27,11 +27,6 @@
 #include <DataTypes/Serializations/ISerialization.h>
 #include <Common/IntervalKind.h>
 #include <DataTypes/DataTypeUUID.h>
-<<<<<<< ours
-||||||| base
-=======
-#include <DataTypes/Serializations/ISerialization.h>
->>>>>>> theirs
 #include <IO/WriteBufferFromString.h>
 #include <Processors/Formats/IOutputFormat.h>
 #include <Processors/Formats/Impl/ArrowBufferedStreams.h>
@@ -273,7 +268,6 @@ namespace DB
         }
     }
 
-<<<<<<< ours
     static void fillArrowArrayWithJSONColumnData(
         ColumnPtr write_column,
         const DataTypePtr & column_type,
@@ -303,8 +297,8 @@ namespace DB
             }
             checkStatus(status, write_column->getName(), format_name);
         }
-||||||| base
-=======
+    }
+
     static void fillArrowArrayWithOpaqueColumnData(
         ColumnPtr write_column,
         const DataTypePtr & column_type,
@@ -327,7 +321,6 @@ namespace DB
             appendOpaqueColumnData(
                 assert_cast<arrow::BinaryBuilder &>(*array_builder),
                 write_column, column_type, null_bytemap, format_name, settings, as_text, start, end);
->>>>>>> theirs
     }
 
     /// Invert values since Arrow interprets 1 as a non-null value, while CH as a null
@@ -2047,15 +2040,15 @@ namespace DB
                 field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
             }
 
-<<<<<<< ours
             if (isJSONLikeType(removeNullable(column_type)))
             {
                 auto ext_metadata = arrow::key_value_metadata(
                     {"ARROW:extension:name", "ARROW:extension:metadata"},
                     {"arrow.json", ""}
                 );
-||||||| base
-=======
+                field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
+            }
+
             /// A type with no Arrow mapping is written as an opaque `utf8`/`binary` column, which is
             /// otherwise indistinguishable from a genuine string or binary one, so tag it with the same
             /// Arrow extension type the native IPC writer uses. Nested children are tagged by
@@ -2064,7 +2057,6 @@ namespace DB
             if (!opaque_type_name.empty())
             {
                 auto ext_metadata = opaqueFieldMetadata(opaque_type_name);
->>>>>>> theirs
                 field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
             }
 

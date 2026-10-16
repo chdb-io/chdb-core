@@ -822,32 +822,26 @@ buildField(
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.uuid")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
     }
-<<<<<<< ours
     if (isJSONLikeType(t))
     {
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.json")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
     }
-    if (!kvs.empty())
-        custom_metadata_off = b.CreateVector(kvs);
-||||||| base
-=======
     else if (!opaque_type_name.empty())
     {
         /// A type written as an opaque `Utf8`/`Binary` column is otherwise indistinguishable from a genuine
         /// string or binary column. Declare it as an Arrow extension type carrying the original ClickHouse
         /// type name, so a consumer can tell the two apart. Per the Arrow extension-type convention a reader
         /// that does not know the extension name ignores the metadata and sees the plain storage type.
-        VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
         kvs.push_back(flatbuf::CreateKeyValue(
             b,
             b.CreateString("ARROW:extension:name"),
             b.CreateString(
                 FormatSettings::ARROW_OPAQUE_EXTENSION_NAME.data(), FormatSettings::ARROW_OPAQUE_EXTENSION_NAME.size())));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString(opaque_type_name)));
-        custom_metadata_off = b.CreateVector(kvs);
     }
->>>>>>> theirs
+    if (!kvs.empty())
+        custom_metadata_off = b.CreateVector(kvs);
 
     auto name_off = b.CreateString(name);
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::Field>>> children_off = 0;

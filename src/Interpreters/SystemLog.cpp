@@ -473,18 +473,6 @@ String escapeStringForRegexp(const String & s)
 
 SystemLogs::SystemLogs(ContextPtr global_context, const Poco::Util::AbstractConfiguration & config)
 {
-<<<<<<< ours
-#if defined(CHDB_WASM_SINGLE_THREADED)
-    /// Each system log spawns a background "saving" thread (ThreadFromGlobalPool),
-    /// which is impossible without -pthread. Disable system logs entirely: all log
-    /// members stay null, the standard "log not configured" state every caller of
-    /// getQueryLog()/etc. already handles.
-    (void)global_context;
-    (void)config;
-    return;
-#endif
-||||||| base
-=======
 /// Register default names even for disabled logs whose old tables may still be attached.
 #define REGISTER_DOCUMENTATION_SOURCE(log_type, member, descr) \
     registerSystemTableDocumentationSource(#member, SYSTEM_LOG_DOCUMENTATION_SOURCE, descr); \
@@ -503,7 +491,16 @@ SystemLogs::SystemLogs(ContextPtr global_context, const Poco::Util::AbstractConf
     registerSystemTableDocumentationSource(
         "bucketed_metric_log", BucketedMetricLog::DOCUMENTATION_SOURCE, BucketedMetricLog::DOCUMENTATION);
 
->>>>>>> theirs
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// Each system log spawns a background "saving" thread (ThreadFromGlobalPool),
+    /// which is impossible without -pthread. Disable system logs entirely: all log
+    /// members stay null, the standard "log not configured" state every caller of
+    /// getQueryLog()/etc. already handles.
+    (void)global_context;
+    (void)config;
+    return;
+#endif
+
 /// NOLINTBEGIN(bugprone-macro-parentheses)
 #define CREATE_PUBLIC_MEMBERS(log_type, member, descr) \
     member = createSystemLog<log_type>(global_context, "system", #member, config, #member, descr); \

@@ -24,7 +24,8 @@ namespace FailPoints
 namespace
 {
 
-constexpr std::string_view pulling_async_pipeline_executor_delay_first_pull_query_id_prefix
+/// chdb: unused when libfiu is disabled (fiu_do_on expands to nothing), e.g. the lite build.
+[[maybe_unused]] constexpr std::string_view pulling_async_pipeline_executor_delay_first_pull_query_id_prefix
     = "pulling_async_pipeline_executor_delay_first_pull_";
 
 }

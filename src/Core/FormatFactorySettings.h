@@ -1683,8 +1683,8 @@ Use Arrow FIXED_SIZE_BINARY type instead of Binary for FixedString columns.
         {"23.2", false, true, "Use Arrow FIXED_SIZE_BINARY type for FixedString by default"}) \
     DECLARE(ArrowCompression, output_format_arrow_compression_method, "lz4_frame", R"(
 Compression method for Arrow output format. Supported codecs: lz4_frame, zstd, none (uncompressed)
-<<<<<<< ours
-)", 0) \
+)", 0, \
+        {"23.3", "none", "lz4_frame", "Use lz4 compression in Arrow output format by default"}) \
     DECLARE(Bool, output_format_arrow_parallel_encoding, true, R"(
 Encode Arrow output (Arrow / ArrowStream) using multiple threads. CH chunks are converted to Arrow
 RecordBatches in parallel and serialized to the IPC stream in arrival order on the main thread.
@@ -1692,27 +1692,16 @@ Automatically falls back to single-threaded mode when LowCardinality columns are
 Dictionary (output_format_arrow_low_cardinality_as_dictionary = 1), because the dictionary state
 must be shared across batches.
 )", 0) \
-||||||| base
-)", 0) \
-=======
-)", 0, \
-        {"23.3", "none", "lz4_frame", "Use lz4 compression in Arrow output format by default"}) \
->>>>>>> theirs
     DECLARE(Bool, output_format_arrow_date_as_uint16, false, R"(
 Write Date values as plain 16-bit numbers (read back as UInt16), instead of converting to a 32-bit Arrow DATE32 type (read back as Date32).
-<<<<<<< ours
-)", 0) \
+)", 0, \
+        {"26.2", true, false, "Write Date as Arrow DATE32 instead of plain UInt16 by default."}) \
     DECLARE(Bool, output_format_arrow_uuid_as_fixed_byte_array, false, R"(
 Write UUID values as plain FixedSizeBinary(16), without Arrow UUID extension metadata.
 )", 0) \
     DECLARE(Bool, output_format_arrow_variant_as_string, false, R"(
 Write Variant values as Arrow String containing JSON text instead of Arrow DenseUnion.
 )", 0) \
-||||||| base
-)", 0) \
-=======
-)", 0, \
-        {"26.2", true, false, "Write Date as Arrow DATE32 instead of plain UInt16 by default."}) \
     DECLARE(ArrowUnsupportedTypes, output_format_arrow_unsupported_types, "binary", R"(
 What to write for a column whose type has no first-class Arrow mapping (for example `JSON`, `Dynamic`, `QBit` or `AggregateFunction`):
 
@@ -1735,7 +1724,6 @@ ClickHouse reads such a column back into the type the tag names only where the r
 Takes precedence over the older `output_format_arrow_unsupported_types_as_binary`, which is only consulted when this setting is left at its default.
 )", 0, \
         {"26.10", "binary", "binary", "New setting superseding `output_format_arrow_unsupported_types_as_binary`, adding a `text` mode. Its default matches the previous behavior, so `compatibility` must not change it."}) \
->>>>>>> theirs
     DECLARE(Bool, output_format_arrow_unsupported_types_as_binary, true, R"(
 Output types having no conversion as raw binary data. If false - such types would raise an exception.
 
@@ -1766,7 +1754,8 @@ Buffering blocks can increase memory use and delay the first record batch until 
     DECLARE(Bool, output_format_arrow_use_native_writer, true, R"(
 Use the native ClickHouse writer for the Arrow and ArrowStream formats instead of the one based on the Apache Arrow library.
 chdb keeps the Apache Arrow library writer, which upstream removed in v26.9.
-)", 0) \
+)", 0, \
+        {"26.7", false, true, "New setting to use the native ClickHouse writer for the Arrow and ArrowStream formats instead of the Apache Arrow library."}) \
     \
     DECLARE(Bool, output_format_orc_string_as_string, true, R"(
 Use ORC String type instead of Binary for String columns
@@ -2045,26 +2034,6 @@ Supported modes:
     MAKE_OBSOLETE(M, Bool, input_format_parquet_import_nested, false) \
     MAKE_OBSOLETE(M, Bool, input_format_orc_import_nested, false) \
     MAKE_OBSOLETE(M, Bool, output_format_enable_streaming, false) \
-<<<<<<< ours
-    MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader, false) \
-    MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader_v3, true) \
-    MAKE_OBSOLETE(M, Bool, input_format_orc_use_fast_decoder, true) \
-    MAKE_OBSOLETE(M, Bool, input_format_arrow_use_native_reader, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_use_custom_encoder, true) \
-    MAKE_OBSOLETE(M, ParquetVersion, output_format_parquet_version, "2.latest") \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_compliant_nested_types, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_unsupported_types_as_binary, false) \
-||||||| base
-    MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader, false) \
-    MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader_v3, true) \
-    MAKE_OBSOLETE(M, Bool, input_format_orc_use_fast_decoder, true) \
-    MAKE_OBSOLETE(M, Bool, input_format_arrow_use_native_reader, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_arrow_use_native_writer, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_use_custom_encoder, true) \
-    MAKE_OBSOLETE(M, ParquetVersion, output_format_parquet_version, "2.latest") \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_compliant_nested_types, true) \
-    MAKE_OBSOLETE(M, Bool, output_format_parquet_unsupported_types_as_binary, false) \
-=======
     MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader, false, \
         {"24.6", false, false, "When reading Parquet files, to use native reader instead of arrow reader."}) \
     MAKE_OBSOLETE(M, Bool, input_format_parquet_use_native_reader_v3, true, \
@@ -2076,9 +2045,6 @@ Supported modes:
     MAKE_OBSOLETE(M, Bool, input_format_arrow_use_native_reader, true, \
         {"26.8", true, true, "Obsolete setting, the native ClickHouse reader is now always used for the `Arrow` and `ArrowStream` formats (the Apache Arrow library-based reader has been removed)."}, \
         {"26.7", false, true, "New setting to use the native ClickHouse reader for the Arrow and ArrowStream formats instead of the Apache Arrow library."}) \
-    MAKE_OBSOLETE(M, Bool, output_format_arrow_use_native_writer, true, \
-        {"26.8", true, true, "Obsolete setting, the native ClickHouse writer is now always used for the `Arrow` and `ArrowStream` formats (the Apache Arrow library-based writer has been removed)."}, \
-        {"26.7", false, true, "New setting to use the native ClickHouse writer for the Arrow and ArrowStream formats instead of the Apache Arrow library."}) \
     MAKE_OBSOLETE(M, Bool, output_format_parquet_use_custom_encoder, true, \
         {"26.5", true, true, "Obsolete setting, the custom encoder is now always used."}, \
         {"24.5", false, true, "Enable custom Parquet encoder."}) \
@@ -2091,7 +2057,6 @@ Supported modes:
     MAKE_OBSOLETE(M, Bool, output_format_parquet_unsupported_types_as_binary, false, \
         {"26.5", false, false, "Obsolete setting, the native writer always throws UNKNOWN_TYPE for unsupported types."}, \
         {"26.4", false, false, "New setting to convert unsupported CH types to parquet (arrow) binary instead of UNKNOWN_TYPE exception."}) \
->>>>>>> theirs
 
 #endif // __CLION_IDE__
 
