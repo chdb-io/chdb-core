@@ -17,6 +17,7 @@ to pass or fail; the report goes into the pull request's description.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -243,21 +244,38 @@ def check_submodules(_work: Path, summary: dict):
     urls = gitmodules_urls() if moved else {}
     if urls is None:
         return [".gitmodules cannot be parsed; resolve it before this check"], []
+
+    def cmake_list(path: str) -> Path:
+        return ROOT / "contrib" / f"{Path(path).name}-cmake" / "CMakeLists.txt"
+
+    # Each pin is a blobless fetch of a whole tree, some of them large; the old pin is
+    # only needed against a cmake list. They run side by side.
+    pins = []
+    for sub in moved:
+        url = urls.get(sub["path"])
+        if url:
+            pins.append((url, sub["upstream_new"]))
+            if sub.get("action") == "bumped" and cmake_list(sub["path"]).is_file():
+                pins.append((url, sub["upstream_old"]))
+    pins = sorted(set(pins))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        trees = dict(zip(pins, pool.map(lambda pin: files_at(*pin), pins)))
+
     for sub in moved:
         path, sha = sub["path"], sub["upstream_new"]
         url = urls.get(path)
         if not url:
             errors.append(f"`{path}` has no URL in .gitmodules")
             continue
-        files = files_at(url, sha)
+        files = trees[(url, sha)]
         if files is None:
             errors.append(f"`{path}`: {sha[:12]} cannot be fetched from {url}")
             continue
-        cmake = ROOT / "contrib" / f"{Path(path).name}-cmake" / "CMakeLists.txt"
+        cmake = cmake_list(path)
         if not cmake.is_file():
             continue
         # Only what the bump broke: a path the old pin had and the new one lacks.
-        before = files_at(url, sub["upstream_old"]) if sub.get("action") == "bumped" else None
+        before = trees.get((url, sub["upstream_old"])) if sub.get("action") == "bumped" else None
         for rel in cmake_paths(cmake.read_text(errors="replace"), Path(path).name):
             if not tree_has(files, rel) and (before is None or tree_has(before, rel)):
                 errors.append(f"`{cmake.relative_to(ROOT)}` names `{rel}`, which {path} no longer has at {sha[:12]}")

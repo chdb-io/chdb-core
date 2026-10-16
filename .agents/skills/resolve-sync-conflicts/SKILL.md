@@ -37,7 +37,7 @@ As in a monthly upgrade, look it up with Git:
 
 1. Read the guide above, then resolve every conflict, following the rules below,
    and write `.sync/resolution.md` (see Output). Bring it up to date after each step
-   below: the daily workflow stops Claude Code at 05:30 UTC, and the pull request
+   below: the daily workflow stops Claude Code at 05:00 UTC, and the pull request
    opens with what the file says then.
 2. Run the checks that cost seconds, and fix what they report that is real:
    - `python3 .github/nightly/checks.py all` scripts the guide's cheapest audits:

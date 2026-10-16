@@ -48,7 +48,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.DAILY_SYNC_ENABLED == 'true'
     # It builds chDB, so it runs where the sync pull request's own CI does.
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
-    # Claude Code stops by 05:30 UTC, so a run ends within a day of its start.
+    # Claude Code stops by 05:00 UTC, so a run ends within a day of its start.
     timeout-minutes: 1440
     permissions:
       contents: read
@@ -203,10 +203,13 @@ jobs:
           BASH_MAX_TIMEOUT_MS: '10800000'
         run: |
           npm install --global @anthropic-ai/claude-code@2
-          # Stop by 05:30 UTC: the runners restart around 06:00 UTC, and the steps
-          # below have to stage what was done and hand it to the pull request.
-          budget=$(( ($(date -ud 'tomorrow 05:30' +%s) - $(date -u +%s)) % 86400 ))
-          status=0
+          # Stop by 05:00 UTC: the runners' package updates start at 06:00 UTC and
+          # may restart them within the hour, and the steps below (the checks take up to
+          # 30 minutes) have to stage what was done and hand it to the pull request.
+          budget=$(( ($(date -ud 'tomorrow 05:00' +%s) - $(date -u +%s)) % 86400 ))
+          # The session streams into this log as it goes (claude_progress.py), so it
+          # shows also when the deadline stops it before its final result.
+          set +e
           timeout --kill-after=2m "$(( budget > 600 ? budget : 600 ))" \
             claude -p "$(cat .github/nightly/resolve_prompt.md)" \
             --model "$MODEL" \
@@ -214,19 +217,23 @@ jobs:
             --max-turns 500 \
             --permission-mode dontAsk \
             --allowedTools "Bash,Read,Edit,Write,Grep,Glob,TodoWrite" \
-            --output-format json > "$RUNNER_TEMP/claude.json" || status=$?
-          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("result","")[-4000:])' \
-            "$RUNNER_TEMP/claude.json" || true
+            --output-format stream-json --verbose \
+            | python3 .github/nightly/claude_progress.py "$RUNNER_TEMP/claude.jsonl"
+          status=${PIPESTATUS[0]}
+          set -e
           if [ "$status" = 124 ]; then
-            echo "::warning::Claude Code stopped at the 05:30 UTC deadline; the pull request shows where the sync stands."
+            echo "::warning::Claude Code stopped at the 05:00 UTC deadline; the pull request shows where the sync stands."
           elif [ "$status" != 0 ]; then
             echo "::warning::Claude Code exited with status $status; the pull request shows where the sync stands."
           fi
           echo "Claude Code" > .sync/changed_by
 
-      # A report for the reviewer; nothing here stops the pull request.
+      # A report for the reviewer; nothing here stops the pull request, not even a
+      # check that hangs.
       - name: Check the sync
         if: steps.apply.outcome == 'success'
+        timeout-minutes: 30
+        continue-on-error: true
         run: python3 .github/nightly/checks.py all --work "$SYNC_WORK"
 
       - name: Stage the sync

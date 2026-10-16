@@ -13,6 +13,6 @@ broke and run it again, until it passes or you can make no further progress.
 
 Write `.sync/resolution.md` for the pull request once the conflicts are resolved,
 and bring it up to date after every build and test run: the workflow stops you at
-05:30 UTC, and the pull request then opens with what it says.
+05:00 UTC, and the pull request then opens with what it says.
 
 Do not commit or push: the workflow stages your changes and opens the pull request.
