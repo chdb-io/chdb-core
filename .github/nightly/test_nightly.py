@@ -109,6 +109,10 @@ class BranchPoints(unittest.TestCase):
             git(f"--git-dir={bare}", "remote", "add", "origin", up.as_uri(), cwd=work)
             git(f"--git-dir={bare}", "fetch", "-q", "--no-tags", "--shallow-exclude=v26.10.1.1-new", "origin",
                 f"+refs/heads/master:{sync.UPSTREAM_MASTER}", release, cwd=work)
+            # fetch's branch_point_before leaves the tags no older than the release here.
+            for tag in ("v26.10.1.1-new", "v26.11.1.1-new"):
+                git(f"--git-dir={bare}", "fetch", "-q", "--no-tags", "--depth=1", "origin",
+                    f"+refs/tags/{tag}:refs/upstream-tags/{tag}", cwd=work)
 
             stop = ("v26.11.1.1-new", point)
             self.assertEqual(sync.next_branch_point(work, release, after), stop)
