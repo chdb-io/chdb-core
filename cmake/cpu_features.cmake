@@ -17,14 +17,7 @@ if (ARCH_AARCH64)
     if (NO_ARMV81_OR_HIGHER)
         # crc32 is optional in v8.0 and mandatory in v8.1. Enable it as __crc32()* is used in lot's of places and even very old ARM CPUs
         # support it.
-<<<<<<< ours
-        set (COMPILER_FLAGS "${COMPILER_FLAGS} -march=armv8+crc")
-||||||| base
-        set (COMPILER_FLAGS "${COMPILER_FLAGS} -march=armv8+crc")
-        list(APPEND RUSTFLAGS_CPU "-C" "target_feature=+crc,-neon")
-=======
         set (COMPILER_FLAGS "${COMPILER_FLAGS} -march=armv8-a+crc")
->>>>>>> theirs
         list(APPEND RUSTFLAGS_CPU "-C" "target_feature=+crc")
     else ()
         # ARMv8.2 is quite ancient but the lowest common denominator supported by both Graviton 2 and 3 processors [1, 10]. In particular, it

@@ -1040,7 +1040,6 @@ try
         }
         else
         {
-<<<<<<< ours
             /// out_buf = std_out.get();
             /// The underlying vector<char> will be freed by `free_result` from Python side.
             /// When the input query contains multiple statements, such as "SELECT 1; SELECT 2". When executing "SELECT 2",
@@ -1051,44 +1050,11 @@ try
                 query_result_buf = std::make_shared<WriteBufferFromVectorMTB<std::vector<char>>>(*query_result_memory, AppendModeTag{});
             }
             else
-||||||| base
-            underlying_buf = std_out.get();
-        }
-
-        /// Use the flush callback wrapper to prevent progress flickering
-        std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
-            underlying_buf,
-            [this]()
-=======
-            underlying_buf = std_out.get();
-        }
-
-        /// The data written to stdout can mix with the progress only if it is displayed on the terminal,
-        /// either directly or through a pager. Otherwise (e.g., stdout is redirected to a pipe or a file),
-        /// clearing the progress on every flush only makes it flicker.
-        const bool output_goes_to_terminal = stdout_is_a_tty || !pager.empty();
-
-        /// Use the flush callback wrapper to prevent progress flickering
-        std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
-            underlying_buf,
-            [this, output_goes_to_terminal]()
->>>>>>> theirs
             {
-<<<<<<< ours
-||||||| base
-                /// If results are written INTO OUTFILE, we can avoid clearing progress to avoid flicker.
-                if (need_render_progress && tty_buf && (!select_into_file || select_into_file_and_stdout))
-=======
-                /// If results are written INTO OUTFILE, we can avoid clearing progress to avoid flicker.
-                bool output_may_mix_with_progress = output_goes_to_terminal && (!select_into_file || select_into_file_and_stdout);
-
-                if (need_render_progress && tty_buf && output_may_mix_with_progress)
->>>>>>> theirs
                 {
                     MemoryTrackerBlockerInThread blocker;
                     query_result_memory = new std::vector<char>(4096);
                 }
-<<<<<<< ours
                 query_result_buf = std::make_shared<WriteBufferFromVectorMTB<std::vector<char>>>(*query_result_memory);
             }
 
@@ -1103,23 +1069,25 @@ try
 
         if (underlying_buf)
         {
+            /// The data written to stdout can mix with the progress only if it is displayed on the terminal,
+            /// either directly or through a pager. Otherwise (e.g., stdout is redirected to a pipe or a file),
+            /// clearing the progress on every flush only makes it flicker.
+            const bool output_goes_to_terminal = stdout_is_a_tty || !pager.empty();
+
             /// Use the flush callback wrapper to prevent progress flickering
             std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
                 underlying_buf,
-                [this]()
-||||||| base
-                if (need_render_progress_table && tty_buf && (!select_into_file || select_into_file_and_stdout))
-=======
-                if (need_render_progress_table && tty_buf && output_may_mix_with_progress)
->>>>>>> theirs
+                [this, output_goes_to_terminal]()
                 {
                     /// If results are written INTO OUTFILE, we can avoid clearing progress to avoid flicker.
-                    if (need_render_progress && tty_buf && (!select_into_file || select_into_file_and_stdout))
+                    bool output_may_mix_with_progress = output_goes_to_terminal && (!select_into_file || select_into_file_and_stdout);
+
+                    if (need_render_progress && tty_buf && output_may_mix_with_progress)
                     {
                         std::unique_lock lock(tty_mutex);
                         progress_indication.clearProgressOutput(*tty_buf, lock);
                     }
-                    if (need_render_progress_table && tty_buf && (!select_into_file || select_into_file_and_stdout))
+                    if (need_render_progress_table && tty_buf && output_may_mix_with_progress)
                     {
                         std::unique_lock lock(tty_mutex);
                         progress_table.clearTableOutput(*tty_buf, lock);

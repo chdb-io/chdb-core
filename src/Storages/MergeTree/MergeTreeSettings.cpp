@@ -966,18 +966,10 @@ If settings `min_age_to_force_merge_seconds` and
 Possible values:
 - `true`
 - `false`
-<<<<<<< ours
-)", false) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 0, R"(
-||||||| base
-)", false) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 25, R"(
-=======
 )", false, \
         {"26.2", false, true, "Limit part sizes even with min_age_to_force_merge_seconds by default"}, \
         {"25.1", false, false, "New setting"}) \
-    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 25, R"(
->>>>>>> theirs
+    DECLARE(UInt64, number_of_free_entries_in_pool_to_execute_optimize_entire_partition, 0, R"(
 When there is less than specified number of free entries in pool, do not
 execute optimizing entire partition in the background (this task generated
 when set `min_age_to_force_merge_seconds` and enable

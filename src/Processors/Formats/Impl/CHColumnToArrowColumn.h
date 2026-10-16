@@ -34,17 +34,10 @@ public:
         bool use_64_bit_indexes_for_dictionary = false;
         /// Output Date as UInt16 instead of Arrow DATE32 for backward compatibility.
         bool output_date_as_uint16 = false;
-<<<<<<< ours
         /// Output UUID as plain FixedSizeBinary(16), without Arrow extension metadata.
         bool output_uuid_as_fixed_byte_array = false;
         /// Output Variant as Arrow String containing JSON text instead of Arrow DenseUnion.
         bool output_variant_as_string = false;
-        /// Output types having no conversion as raw binary data. If false - such types would raise UNKNOWN_TYPE exception.
-        bool output_unsupported_types_as_binary = false;
-||||||| base
-        /// Output types having no conversion as raw binary data. If false - such types would raise UNKNOWN_TYPE exception.
-        bool output_unsupported_types_as_binary = false;
-=======
         /// What to do with a type having no conversion: reject it, or write one serialized value per row
         /// into an Arrow `utf8`/`binary` column.
         FormatSettings::ArrowUnsupportedTypes output_unsupported_types = FormatSettings::ArrowUnsupportedTypes::THROW;
@@ -56,7 +49,6 @@ public:
         /// Carries an initializer like every other member, so that a caller listing only the leading fields
         /// positionally does not trip `-Wmissing-field-initializers`.
         FormatSettings format_settings{};
->>>>>>> theirs
     };
 
     static std::shared_ptr<arrow::Schema> calculateArrowSchema(

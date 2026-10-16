@@ -381,7 +381,6 @@
 [submodule "contrib/clickstack"]
 	path = contrib/clickstack
 	url = https://github.com/ClickHouse/clickhouse-clickstack.git
-<<<<<<< ours
 # chdb_spec
 [submodule "contrib/pybind11"]
 	path = contrib/pybind11
@@ -392,15 +391,12 @@
 [submodule "contrib/pybind11-upstream"]
 	path = contrib/pybind11-upstream
 	url = https://github.com/pybind/pybind11.git
-||||||| base
-=======
 [submodule "contrib/ipcrypt2"]
 	path = contrib/ipcrypt2
 	url = https://github.com/jedisct1/ipcrypt2.git
 [submodule "contrib/heks"]
 	path = contrib/heks
 	url = https://github.com/ClickHouse/heks.git
->>>>>>> theirs
 [submodule "contrib/musl"]
 	path = contrib/musl
 	url = https://github.com/ClickHouse/musl

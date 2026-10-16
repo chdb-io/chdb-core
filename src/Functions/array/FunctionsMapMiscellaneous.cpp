@@ -701,17 +701,6 @@ using FunctionMapReverseSort = FunctionMapToArrayAdapter<FunctionArrayReverseSor
 using FunctionMapPartialSort = FunctionMapToArrayAdapter<FunctionArrayPartialSort, MapToNestedAdapter<NameMapPartialSort>, NameMapPartialSort>;
 using FunctionMapPartialReverseSort = FunctionMapToArrayAdapter<FunctionArrayPartialReverseSort, MapToNestedAdapter<NameMapPartialReverseSort>, NameMapPartialReverseSort>;
 
-<<<<<<< ours
-#if defined(CHDB_LITE) && CHDB_LITE
-/// chdb-core-lite: keep mapConcat/mapKeys/mapValues/mapContains{,Key,Value};
-/// drop higher-order map fns (Filter/Apply/Exists/All), sort variants, and
-/// Like-pattern lookups.
-#define CHDB_LITE_MAP(call) (void)0
-#else
-#define CHDB_LITE_MAP(call) call
-#endif
-||||||| base
-=======
 class FunctionMapRemove final : public IFunction
 {
 public:
@@ -822,7 +811,15 @@ public:
 private:
     FunctionOverloadResolverPtr is_distinct_from_resolver;
 };
->>>>>>> theirs
+
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: keep mapConcat/mapKeys/mapValues/mapEntries/mapRemove/mapContains{,Key,Value};
+/// drop higher-order map fns (Filter/Apply/Exists/All), sort variants, and
+/// Like-pattern lookups.
+#define CHDB_LITE_MAP(call) (void)0
+#else
+#define CHDB_LITE_MAP(call) call
+#endif
 
 REGISTER_FUNCTION(MapMiscellaneous)
 {

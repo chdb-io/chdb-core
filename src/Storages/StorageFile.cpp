@@ -1991,19 +1991,13 @@ Chunk StorageFileSource::generate()
                     if (current_path.empty())
                         return {};
 
-<<<<<<< ours
-                    bool path_missing = !fs::exists(current_path);
+                    bool path_missing = !existsOrFileNameTooLong([&] { return fs::exists(current_path); });
 #if defined(OS_WASM)
                     /// A JS-registered file (db.registerFile) has no real FS path; read lazily.
                     if (path_missing && tryGetJSFileSize(current_path))
                         path_missing = false;
 #endif
                     if (path_missing)
-||||||| base
-                    if (!fs::exists(current_path))
-=======
-                    if (!existsOrFileNameTooLong([&] { return fs::exists(current_path); }))
->>>>>>> theirs
                     {
                         if (getContext()->getSettingsRef()[Setting::engine_file_empty_if_not_exists])
                         {

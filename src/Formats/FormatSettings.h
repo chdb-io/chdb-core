@@ -225,15 +225,9 @@ struct FormatSettings
         bool output_use_native_writer = true;
         bool parallel_encoding = true;
         bool output_date_as_uint16 = false;
-<<<<<<< ours
         bool output_uuid_as_fixed_byte_array = false;
         bool output_variant_as_string = false;
-        bool output_unsupported_types_as_binary = true;
-||||||| base
-        bool output_unsupported_types_as_binary = true;
-=======
         ArrowUnsupportedTypes output_unsupported_types = ArrowUnsupportedTypes::BINARY;
->>>>>>> theirs
         UInt64 output_record_batch_rows = 0;
         UInt64 output_record_batch_bytes = 0;
     } arrow{};

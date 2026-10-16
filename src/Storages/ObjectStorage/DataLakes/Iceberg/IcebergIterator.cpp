@@ -281,10 +281,6 @@ void DataFileEntriesStream::run()
     if (!data_snapshot)
         return;
 
-<<<<<<< ours
-    if (prepare)
-        prepare();
-
 #if defined(CHDB_WASM_SINGLE_THREADED)
     /// v26.9 decodes each manifest on a thread pool. This build has no threads, so scheduling
     /// onto that pool raises CANNOT_SCHEDULE_TASK. Decode where the caller stands and hand back
@@ -305,12 +301,6 @@ void DataFileEntriesStream::run()
         return promise.get_future();
     };
 #else
-||||||| base
-    if (prepare)
-        prepare();
-
-=======
->>>>>>> theirs
     auto stream_runner = threadPoolCallbackRunnerUnsafe<void>(getIcebergManifestDecodeThreadPool().get(), DB::ThreadName::ICEBERG_ITERATOR);
 #endif
 

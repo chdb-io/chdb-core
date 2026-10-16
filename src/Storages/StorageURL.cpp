@@ -611,12 +611,7 @@ StorageURLSource::StorageURLSource(
     initialize = [=, this]()
     {
         std::vector<String> current_uri_options;
-<<<<<<< ours
         std::pair<Poco::URI, StorageURLReadBufferPtr> uri_and_buf;
-||||||| base
-        std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> uri_and_buf;
-=======
-        std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> uri_and_buf;
         auto stop_if_query_cancelled = [&]
         {
             /// QueryStatus is marked before its cancellation is delivered to the processors, so
@@ -634,7 +629,6 @@ StorageURLSource::StorageURLSource(
 
             return cancellation->isCancelled();
         };
->>>>>>> theirs
         do
         {
             current_uri_options = (*uri_iterator)();
@@ -1006,11 +1000,6 @@ Chunk StorageURLSource::generate()
 
 void StorageURLSource::onFinish() { parser_shared_resources->finishStream(); }
 
-<<<<<<< ours
-std::pair<Poco::URI, StorageURLReadBufferPtr> StorageURLSource::getFirstAvailableURIAndReadBuffer(
-||||||| base
-std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource::getFirstAvailableURIAndReadBuffer(
-=======
 void StorageURLSource::cancel(CancelReason reason) noexcept
 {
     /// Stop retrying the HTTP requests and wake up the backoff between the attempts, so that the read
@@ -1047,8 +1036,7 @@ void StorageURLSource::cancel(CancelReason reason) noexcept
     ISource::cancel(reason);
 }
 
-std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource::getFirstAvailableURIAndReadBuffer(
->>>>>>> theirs
+std::pair<Poco::URI, StorageURLReadBufferPtr> StorageURLSource::getFirstAvailableURIAndReadBuffer(
     std::vector<String>::const_iterator & option,
     const std::vector<String>::const_iterator & end,
     ContextPtr context_,
@@ -1066,12 +1054,7 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
     ReadSettings read_settings = context_->getReadSettings();
 
     size_t options = std::distance(option, end);
-<<<<<<< ours
     std::pair<Poco::URI, StorageURLReadBufferPtr> last_skipped_empty_res;
-||||||| base
-    std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> last_skipped_empty_res;
-=======
-    std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> last_skipped_empty_res;
 
     /// A cancellation which lands where no request is in flight for it to interrupt - between the
     /// options, after an empty file has been skipped or a probe has failed, and after the last option
@@ -1118,7 +1101,6 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
         return false;
     };
 
->>>>>>> theirs
     for (; option != end; ++option)
     {
         if (stop_if_cancelled())
@@ -1136,7 +1118,13 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
 
         try
         {
-<<<<<<< ours
+            /// When initialization is not delayed, the buffer constructor starts the first request.
+            /// Check once more immediately before construction, so a cancellation that lands after
+            /// the loop-top check cannot start a request for this failover option.
+            FailPointInjection::pauseFailPoint(FailPoints::storage_url_pause_before_read_buffer_creation);
+            if (stop_if_cancelled())
+                return {};
+
 #if defined(OS_WASM)
             /// No sockets in wasm: fetch over the host JS runtime (synchronous XHR + Range).
             /// Basic-auth credentials are carried inside request_uri (setCredentials above).
@@ -1158,18 +1146,6 @@ std::pair<Poco::URI, std::unique_ptr<ReadWriteBufferFromHTTP>> StorageURLSource:
                 res->eof();
 #else
             StorageURLReadBufferPtr res = BuilderRWBufferFromHTTP(request_uri)
-||||||| base
-            auto res = BuilderRWBufferFromHTTP(request_uri)
-=======
-            /// When initialization is not delayed, the buffer constructor starts the first request.
-            /// Check once more immediately before construction, so a cancellation that lands after
-            /// the loop-top check cannot start a request for this failover option.
-            FailPointInjection::pauseFailPoint(FailPoints::storage_url_pause_before_read_buffer_creation);
-            if (stop_if_cancelled())
-                return {};
-
-            auto res = BuilderRWBufferFromHTTP(request_uri)
->>>>>>> theirs
                            .withConnectionGroup(HTTPConnectionGroupType::STORAGE)
                            .withMethod(http_method)
                            .withSettings(read_settings)
