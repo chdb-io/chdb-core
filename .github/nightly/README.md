@@ -32,7 +32,8 @@ Both stay off until their repository variable is set (below).
    on the same machine (`claude -p`, effort max, following
    `.agents/skills/resolve-sync-conflicts`): it resolves the conflicts, fixes what
    the sync broke and reruns `build_and_test.sh` until it passes or it can make no
-   further progress, and writes down what it did. It is stopped at 05:30 UTC,
+   further progress, and writes down what it did; its session streams into the job
+   log. It is stopped at 05:00 UTC,
    before the runners' restart, and the pull request opens with whatever it got to.
    It never holds `SYNC_PAT`.
 5. `checks.py` reports what a build and tests do not show: chDB changes lost or
