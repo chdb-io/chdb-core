@@ -4,12 +4,15 @@
 namespace DB
 {
 
+<<<<<<< ours
 std::once_flag global_register_once_flag;
 
 void registerInterpreterSelectQuery(InterpreterFactory & factory);
+||||||| base
+void registerInterpreterSelectQuery(InterpreterFactory & factory);
+=======
+>>>>>>> theirs
 void registerInterpreterSelectQueryAnalyzer(InterpreterFactory & factory);
-void registerInterpreterSelectWithUnionQuery(InterpreterFactory & factory);
-void registerInterpreterSelectIntersectExceptQuery(InterpreterFactory & factory);
 void registerInterpreterInsertQuery(InterpreterFactory & factory);
 void registerInterpreterCreateQuery(InterpreterFactory & factory);
 void registerInterpreterDropQuery(InterpreterFactory & factory);
@@ -77,10 +80,7 @@ void registerInterpreters()
 {
     auto & factory = InterpreterFactory::instance();
 
-    registerInterpreterSelectQuery(factory);
     registerInterpreterSelectQueryAnalyzer(factory);
-    registerInterpreterSelectWithUnionQuery(factory);
-    registerInterpreterSelectIntersectExceptQuery(factory);
     registerInterpreterInsertQuery(factory);
     registerInterpreterCreateQuery(factory);
     registerInterpreterDropQuery(factory);

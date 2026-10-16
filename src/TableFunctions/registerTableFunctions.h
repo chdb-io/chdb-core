@@ -59,6 +59,8 @@ void registerTableFunctionJDBC(TableFunctionFactory & factory);
 void registerTableFunctionView(TableFunctionFactory & factory);
 void registerTableFunctionViewIfPermitted(TableFunctionFactory & factory);
 
+void registerTableFunctionObfuscate(TableFunctionFactory & factory);
+
 #if USE_MYSQL
 void registerTableFunctionMySQL(TableFunctionFactory & factory);
 #endif
@@ -76,6 +78,8 @@ void registerTableFunctionDictionary(TableFunctionFactory & factory);
 void registerTableFunctionFormat(TableFunctionFactory & factory);
 
 void registerTableFunctionExplain(TableFunctionFactory & factory);
+
+void registerTableFunctionTraceView(TableFunctionFactory & factory);
 
 void registerTableFunctionObjectStorage(TableFunctionFactory & factory);
 void registerTableFunctionObjectStorageCluster(TableFunctionFactory & factory);
