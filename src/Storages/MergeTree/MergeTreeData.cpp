@@ -6786,7 +6786,7 @@ void MergeTreeData::PartsTemporaryRename::rollBackAll()
         try
         {
             const String full_path = fs::path(storage.relative_data_path) / source_dir;
-            disk->moveFile(fs::path(full_path) / new_dir, fs::path(full_path) / old_dir);
+            disk->moveDirectory(fs::path(full_path) / new_dir, fs::path(full_path) / old_dir);
         }
         catch (...)
         {

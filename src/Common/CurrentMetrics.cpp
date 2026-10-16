@@ -241,6 +241,8 @@
     \
     M(DiskPlainRewritableAzureDirectoryMapSize, "Number of local-to-remote path entries in the 'plain_rewritable' in-memory map for AzureObjectStorage.") \
     M(DiskPlainRewritableAzureFileCount, "Number of file entries in the 'plain_rewritable' in-memory map for AzureObjectStorage.") \
+    M(DiskPlainRewritableCallbackDirectoryMapSize, "Number of local-to-remote path entries in the 'plain_rewritable' in-memory map for CallbackObjectStorage.") \
+    M(DiskPlainRewritableCallbackFileCount, "Number of file entries in the 'plain_rewritable' in-memory map for CallbackObjectStorage.") \
     M(DiskPlainRewritableLocalDirectoryMapSize, "Number of local-to-remote path entries in the 'plain_rewritable' in-memory map for LocalObjectStorage.") \
     M(DiskPlainRewritableLocalFileCount, "Number of file entries in the 'plain_rewritable' in-memory map for LocalObjectStorage.") \
     M(DiskPlainRewritableS3DirectoryMapSize, "Number of local-to-remote path entries in the 'plain_rewritable' in-memory map for S3ObjectStorage.") \

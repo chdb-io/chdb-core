@@ -71,6 +71,8 @@ String DataSourceDescription::name() const
                     return "azure_blob_storage";
                 case ObjectStorageType::Local:
                     return "local_blob_storage";
+                case ObjectStorageType::Callback:
+                    return "callback";
                 case ObjectStorageType::Web:
                     return "web";
                 case ObjectStorageType::None:
