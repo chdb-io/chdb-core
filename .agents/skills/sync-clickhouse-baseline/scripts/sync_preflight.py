@@ -52,11 +52,13 @@ DROPPED_TREE_PREFIXES = (
     "docker/",
     "docs/",
     "tests/",
+    "utils/",
 )
-# utils/ is not dropped: chDB builds utils/CMakeLists.txt, and the build runs
-# utils/list-licenses/list-licenses.sh, so the files chDB carries there follow
-# upstream. New ones are still not imported.
-UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES + ("utils/",)
+# Except what chDB's build runs from them: system.licenses comes from
+# utils/list-licenses/list-licenses.sh (src/Storages/System/StorageSystemLicenses.sh),
+# so that directory follows upstream. chDB's other utils/ copies date from 2024.
+FOLLOWED_UNDER_DROPPED = ("utils/list-licenses/",)
+UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES
 
 # Files at the same path in both trees where chDB keeps its own version, so an
 # upstream edit to them is not a change for chDB to take.
@@ -117,7 +119,8 @@ def scoped_candidate(status: str, paths: list[str], base_paths: set[str]) -> tup
     new_path = paths[-1]
     if old_path in CHDB_OWNED_FILES or new_path in CHDB_OWNED_FILES:
         return False, "chDB keeps its own version"
-    if code in {"M", "T", "D"} and old_path.startswith(DROPPED_TREE_PREFIXES):
+    if (code in {"M", "T", "D"} and old_path.startswith(DROPPED_TREE_PREFIXES)
+            and not old_path.startswith(FOLLOWED_UNDER_DROPPED)):
         return False, "changed in a tree chDB drops"
     if code in {"M", "T"}:
         retained = new_path in base_paths
@@ -129,7 +132,8 @@ def scoped_candidate(status: str, paths: list[str], base_paths: set[str]) -> tup
         excluded = (
             new_path in NO_OP_EXACT
             or new_path.startswith(NO_OP_PREFIXES)
-            or new_path.startswith(UPSTREAM_ADD_EXCLUDED_PREFIXES)
+            or (new_path.startswith(UPSTREAM_ADD_EXCLUDED_PREFIXES)
+                and not new_path.startswith(FOLLOWED_UNDER_DROPPED))
         )
         return not excluded, "new relevant path" if not excluded else "new path in known no-op/excluded tree"
     if code in {"R", "C"}:

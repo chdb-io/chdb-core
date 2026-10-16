@@ -46,12 +46,15 @@ class ParseAndClassify(unittest.TestCase):
         self.assertEqual(changes[1].new_mode, "160000")
 
     def test_classify(self):
-        chdb = {"src/kept.cpp", "ci/stale.py", "utils/list-licenses/list-licenses.sh", "README.md", "src/gone.cpp"}
+        chdb = {"src/kept.cpp", "ci/stale.py", "utils/changelog/changelog.py", "utils/list-licenses/list-licenses.sh",
+                "README.md", "src/gone.cpp"}
         raw = self.raw(
             ("100644", "100644", A, B, "M", "src/kept.cpp"),
             ("100644", "100644", A, B, "M", "src/dropped.cpp"),
             ("100644", "100644", A, B, "M", "ci/stale.py"),
+            ("100644", "100644", A, B, "M", "utils/changelog/changelog.py"),
             ("100644", "100644", A, B, "M", "utils/list-licenses/list-licenses.sh"),
+            ("000000", "100644", ZERO, B, "A", "utils/list-licenses/Unlicense.txt"),
             ("100644", "100644", A, B, "M", "README.md"),
             ("000000", "100644", ZERO, B, "A", "src/new.cpp"),
             ("000000", "100644", ZERO, B, "A", "tests/queries/0_x.sql"),
@@ -60,10 +63,11 @@ class ParseAndClassify(unittest.TestCase):
             ("160000", "160000", A, B, "M", "contrib/lib"),
         )
         files, gitlinks, skipped = sync.classify(sync.parse_raw(raw), chdb, preflight)
-        self.assertEqual(files, ["src/kept.cpp", "utils/list-licenses/list-licenses.sh", "src/new.cpp", "src/gone.cpp"])
+        self.assertEqual(files, ["src/kept.cpp", "utils/list-licenses/list-licenses.sh", "utils/list-licenses/Unlicense.txt",
+                                 "src/new.cpp", "src/gone.cpp"])
         self.assertEqual([g.path for g in gitlinks], ["contrib/lib"])
         self.assertEqual(skipped["chDB keeps its own version"], 1)
-        self.assertEqual(skipped["changed in a tree chDB drops"], 1)
+        self.assertEqual(skipped["changed in a tree chDB drops"], 2)
 
     def test_parse_branch_points(self):
         out = (f"{A}\trefs/tags/v26.10.1.1-new\n{B}\trefs/tags/v26.10.1.1-new^{{}}\n"

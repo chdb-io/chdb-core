@@ -590,12 +590,6 @@ def cmd_stage(args) -> int:
 # -------------------------------------------------------------------------- commit
 
 
-def pr_link(number: int) -> str:
-    # Through GitHub's redirect, as Dependabot links, so that a hundred upstream pull
-    # requests a day do not each get "mentioned this" in their timeline.
-    return f"[#{number}](https://redirect.github.com/{UPSTREAM_REPO}/pull/{number})"
-
-
 def commit_title(summary: dict) -> str:
     return f"Sync ClickHouse master up to {summary['target'][:11]}"
 
@@ -707,17 +701,12 @@ def pr_body(summary: dict) -> str:
     checks = STATE / "checks.md"
     if checks.exists():
         out += ["", checks.read_text().strip()]
-    prs = summary["upstream_prs"]
-    if prs:
-        shown = ", ".join(pr_link(n) for n in prs[:300])
-        more = f" and {len(prs) - 300} more" if len(prs) > 300 else ""
-        out += ["", "<details><summary>Upstream pull requests</summary>", "", shown + more, "", "</details>"]
     out += ["", "Opened by `.github/workflows/daily_sync.yml`; see `.github/nightly/README.md`."]
     body = "\n".join(out) + "\n"
     if len(body) > PR_BODY_LIMIT:
         body = (body[:PR_BODY_LIMIT].rsplit("\n", 1)[0]
                 + "\n\n**Cut at GitHub's length limit. The run's `sync-<run id>` artifact has the notes "
-                "(`resolution.md`, `checks.md`) and the upstream pull requests (`summary.json`).**\n")
+                "(`resolution.md`, `checks.md`).**\n")
     return body
 
 
