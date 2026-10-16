@@ -20,8 +20,9 @@ Both stay off until their repository variable is set (below).
    `git apply --3way`. The path rules live in
    `.agents/skills/sync-clickhouse-baseline/scripts/sync_preflight.py`: files chDB
    deleted stay deleted; upstream trees chDB drops (`tests/`, `docs/`, `ci/`,
-   `docker/`, `.github/` ...) are never imported, and of `utils/` only the files
-   chDB carries; chDB keeps its own `README.md`, `CONTRIBUTING.md`, `.gitignore` and
+   `docker/`, `utils/`, `.github/` ...) are never imported, except
+   `utils/list-licenses/`, which the build runs; chDB keeps its own `README.md`,
+   `CONTRIBUTING.md`, `.gitignore` and
    `pyproject.toml`. A file upstream deleted after chDB changed it is left as a
    modify/delete conflict. Submodule
    pointers move when chDB pins the same commit upstream did, and are held when chDB
