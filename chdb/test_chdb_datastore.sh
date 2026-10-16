@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run chdb's DataStore test suite against the freshly-built chdb-core wheel.
 #
-# This script fetches the latest chdb (chdb-io/chdb) release tag, clones the
+# This script selects a chdb (chdb-io/chdb) release tag, clones the
 # repository at that tag, layers the chdb wrapper package on top of the
 # already-installed chdb-core wheel, and executes datastore/tests/ via pytest.
 # A local ClickHouse server is started automatically by the datastore tests'
@@ -99,12 +99,15 @@ fi
 CHDB_SRC="${WORKDIR}/chdb"
 echo "Cloning chdb-io/chdb@${CHDB_TAG} into ${CHDB_SRC}..."
 git clone --depth 1 --branch "${CHDB_TAG}" https://github.com/chdb-io/chdb.git "${CHDB_SRC}"
+echo "Resolved chdb revision: $(git -C "${CHDB_SRC}" rev-parse HEAD)"
 
 echo "Installing chdb wrapper on top of chdb-core (no deps to preserve local chdb-core)..."
 ${PYTHON} -m pip install --no-deps --force-reinstall "${CHDB_SRC}"
 
 echo "Installing test dependencies (pytest, pytest-timeout, hypothesis)..."
 ${PYTHON} -m pip install --upgrade pytest pytest-timeout hypothesis
+echo "DataStore Python dependency snapshot (package versions only):"
+${PYTHON} -m pip list --format=freeze
 
 cd "${CHDB_SRC}"
 
