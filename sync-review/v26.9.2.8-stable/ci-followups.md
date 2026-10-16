@@ -382,3 +382,20 @@ cross-thread close/drain behavior covered by the original #254 tests.
 on another Python thread, and interpreter exit, but no reentrant close from a query's
 Python callback. Include that case whenever an operation lease waits for workers that can
 call back into the public API.
+
+## 10. Lite wheel runs a shutdown test that requires FIU (#284 CI)
+
+**Failure.** The Linux x86_64/arm64 and macOS x86_64/arm64 PR jobs all failed in
+"Test chdb-core-lite wheel on Python 3.9 and 3.14". Their logs identify the same
+`test_python_exit_cleans_catalog_after_table_shutdown_error` failure: its child tries
+`SYSTEM ENABLE FAILPOINT database_catalog_throw_on_table_shutdown` and gets
+`SUPPORT_IS_DISABLED` before testing exit cleanup.
+
+**Cause and fix.** `CHDB_LITE` deliberately disables `ENABLE_LIBFIU`, so that fault
+injection cannot run in the lite wheel. Skip only this test when `CHDB_LITE=1`;
+the other exit tests still run in lite, and the failpoint test still runs in
+the full wheel.
+
+**Why local checks missed it.** The local regression run used the full macOS build,
+which includes FIU. Test both `CHDB_LITE=1` and full test selection before the next
+PR build when adding a test that requires a compile-time optional feature.

@@ -1,5 +1,6 @@
 #!python3
 
+import os
 import subprocess
 import sys
 import unittest
@@ -184,6 +185,7 @@ class TestExitWithOpenConnection(unittest.TestCase):
     def test_python_exit_cancels_unfinished_insert(self):
         self._run_child(CHILD_VERIFY_ACTIVE_INSERT, 3)
 
+    @unittest.skipIf(os.environ.get("CHDB_LITE") == "1", "chdb-core-lite is built without FIU failpoints")
     def test_python_exit_cleans_catalog_after_table_shutdown_error(self):
         self._run_child(CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN, 3)
 
