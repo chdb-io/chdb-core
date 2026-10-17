@@ -80,6 +80,8 @@ namespace DB
     extern void registerFunctionArrayJoin(FunctionFactory & factory);
     extern void registerFunctionArrayLevenshtein(FunctionFactory & factory);
     extern void registerFunctionArrayMap(FunctionFactory & factory);
+    extern void registerFunctionArrayMinMaxIndex(FunctionFactory & factory);
+    extern void registerFunctionArrayPackBits(FunctionFactory & factory);
     extern void registerFunctionArrayPopBack(FunctionFactory & factory);
     extern void registerFunctionArrayPopFront(FunctionFactory & factory);
     extern void registerFunctionArrayPushBack(FunctionFactory & factory);
@@ -88,6 +90,7 @@ namespace DB
     extern void registerFunctionArrayReduce(FunctionFactory & factory);
     extern void registerFunctionArrayReduceInRanges(FunctionFactory & factory);
     extern void registerFunctionArrayRemove(FunctionFactory & factory);
+    extern void registerFunctionArrayRemoveAt(FunctionFactory & factory);
     extern void registerFunctionArrayResize(FunctionFactory & factory);
     extern void registerFunctionArrayReverse(FunctionFactory & factory);
     extern void registerFunctionArrayShiftOrRotate(FunctionFactory & factory);
@@ -215,6 +218,7 @@ namespace DB
     extern void registerFunctionEmpty(FunctionFactory & factory);
     extern void registerFunctionEmptyArray(FunctionFactory & factory);
     extern void registerFunctionEmptyArrayToSingle(FunctionFactory & factory);
+    extern void registerFunctionEncodeAndDecodeQuotedPrintable(FunctionFactory & factory);
     extern void registerFunctionEncodeAndDecodeURLComponent(FunctionFactory & factory);
     extern void registerFunctionEncodeXMLComponent(FunctionFactory & factory);
     extern void registerFunctionEndsWith(FunctionFactory & factory);
@@ -226,6 +230,7 @@ namespace DB
     extern void registerFunctionErfc(FunctionFactory & factory);
     extern void registerFunctionErrorCodeToName(FunctionFactory & factory);
     extern void registerFunctionEvalMLMethod(FunctionFactory & factory);
+    extern void registerFunctionExactDivide(FunctionFactory & factory);
     extern void registerFunctionExp(FunctionFactory & factory);
     extern void registerFunctionExp10(FunctionFactory & factory);
     extern void registerFunctionExp2(FunctionFactory & factory);
@@ -325,6 +330,7 @@ namespace DB
     extern void registerFunctionHypot(FunctionFactory & factory);
     extern void registerFunctionILike(FunctionFactory & factory);
     extern void registerFunctionIcebergBucket(FunctionFactory & factory);
+    extern void registerFunctionIcebergDateTransforms(FunctionFactory & factory);
     extern void registerFunctionIcebergHash(FunctionFactory & factory);
     extern void registerFunctionIcebergTruncate(FunctionFactory & factory);
     extern void registerFunctionIdentity(FunctionFactory & factory);
@@ -461,6 +467,7 @@ namespace DB
     extern void registerFunctionNotLike(FunctionFactory & factory);
     extern void registerFunctionNotMatch(FunctionFactory & factory);
     extern void registerFunctionNotMatchCaseInsensitive(FunctionFactory & factory);
+    extern void registerFunctionNotSimilarTo(FunctionFactory & factory);
     extern void registerFunctionNow(FunctionFactory & factory);
     extern void registerFunctionNow64(FunctionFactory & factory);
     extern void registerFunctionNowInBlock(FunctionFactory & factory);
@@ -501,6 +508,7 @@ namespace DB
     extern void registerFunctionPositionUTF8(FunctionFactory & factory);
     extern void registerFunctionPositiveModulo(FunctionFactory & factory);
     extern void registerFunctionPositiveModuloOrNull(FunctionFactory & factory);
+    extern void registerFunctionPostgresCatalog(FunctionFactory & factory);
     extern void registerFunctionPow(FunctionFactory & factory);
     extern void registerFunctionPrintf(FunctionFactory & factory);
     extern void registerFunctionProfiles(FunctionFactory & factory);
@@ -555,6 +563,7 @@ namespace DB
     extern void registerFunctionShowCertificate(FunctionFactory & factory);
     extern void registerFunctionSigmoid(FunctionFactory & factory);
     extern void registerFunctionSign(FunctionFactory & factory);
+    extern void registerFunctionSimilarTo(FunctionFactory & factory);
     extern void registerFunctionSin(FunctionFactory & factory);
     extern void registerFunctionSinh(FunctionFactory & factory);
     extern void registerFunctionSleep(FunctionFactory & factory);
@@ -837,13 +846,15 @@ namespace DB
     extern void registerFunctionIdna(FunctionFactory & factory);
     extern void registerFunctionPunycode(FunctionFactory & factory);
 #endif
+#if USE_IPCRYPT
+    extern void registerFunctionIPCrypt(FunctionFactory & factory);
+#endif
 #if USE_LIBSTEMMER
     extern void registerFunctionStem(FunctionFactory & factory);
 #endif
 #if USE_NLP
     extern void registerFunctionDetectCharset(FunctionFactory & factory);
     extern void registerFunctionDetectLanguage(FunctionFactory & factory);
-    extern void registerFunctionDetectTonality(FunctionFactory & factory);
     extern void registerFunctionLemmatize(FunctionFactory & factory);
     extern void registerFunctionSynonyms(FunctionFactory & factory);
 #endif
@@ -891,6 +902,9 @@ namespace DB
 #if USE_ULID
     extern void registerFunctionGenerateULID(FunctionFactory & factory);
     extern void registerFunctionULIDStringToDateTime(FunctionFactory & factory);
+#endif
+#if USE_XGBOOST
+    extern void registerFunctionPredictXGBoost(FunctionFactory & factory);
 #endif
 #if WITH_COVERAGE_DEPTH
     extern void registerFunctionCoverageLines(FunctionFactory & factory);
@@ -964,6 +978,8 @@ namespace DB
             &registerFunctionArrayJoin,
             &registerFunctionArrayLevenshtein,
             &registerFunctionArrayMap,
+            &registerFunctionArrayMinMaxIndex,
+            &registerFunctionArrayPackBits,
             &registerFunctionArrayPopBack,
             &registerFunctionArrayPopFront,
             &registerFunctionArrayPushBack,
@@ -972,6 +988,7 @@ namespace DB
             &registerFunctionArrayReduce,
             &registerFunctionArrayReduceInRanges,
             &registerFunctionArrayRemove,
+            &registerFunctionArrayRemoveAt,
             &registerFunctionArrayResize,
             &registerFunctionArrayReverse,
             &registerFunctionArrayShiftOrRotate,
@@ -1099,6 +1116,7 @@ namespace DB
             &registerFunctionEmpty,
             &registerFunctionEmptyArray,
             &registerFunctionEmptyArrayToSingle,
+            &registerFunctionEncodeAndDecodeQuotedPrintable,
             &registerFunctionEncodeAndDecodeURLComponent,
             &registerFunctionEncodeXMLComponent,
             &registerFunctionEndsWith,
@@ -1110,6 +1128,7 @@ namespace DB
             &registerFunctionErfc,
             &registerFunctionErrorCodeToName,
             &registerFunctionEvalMLMethod,
+            &registerFunctionExactDivide,
             &registerFunctionExp,
             &registerFunctionExp10,
             &registerFunctionExp2,
@@ -1209,6 +1228,7 @@ namespace DB
             &registerFunctionHypot,
             &registerFunctionILike,
             &registerFunctionIcebergBucket,
+            &registerFunctionIcebergDateTransforms,
             &registerFunctionIcebergHash,
             &registerFunctionIcebergTruncate,
             &registerFunctionIdentity,
@@ -1345,6 +1365,7 @@ namespace DB
             &registerFunctionNotLike,
             &registerFunctionNotMatch,
             &registerFunctionNotMatchCaseInsensitive,
+            &registerFunctionNotSimilarTo,
             &registerFunctionNow,
             &registerFunctionNow64,
             &registerFunctionNowInBlock,
@@ -1385,6 +1406,7 @@ namespace DB
             &registerFunctionPositionUTF8,
             &registerFunctionPositiveModulo,
             &registerFunctionPositiveModuloOrNull,
+            &registerFunctionPostgresCatalog,
             &registerFunctionPow,
             &registerFunctionPrintf,
             &registerFunctionProfiles,
@@ -1439,6 +1461,7 @@ namespace DB
             &registerFunctionShowCertificate,
             &registerFunctionSigmoid,
             &registerFunctionSign,
+            &registerFunctionSimilarTo,
             &registerFunctionSin,
             &registerFunctionSinh,
             &registerFunctionSleep,
@@ -1721,13 +1744,15 @@ namespace DB
             &registerFunctionIdna,
             &registerFunctionPunycode,
 #endif
+#if USE_IPCRYPT
+            &registerFunctionIPCrypt,
+#endif
 #if USE_LIBSTEMMER
             &registerFunctionStem,
 #endif
 #if USE_NLP
             &registerFunctionDetectCharset,
             &registerFunctionDetectLanguage,
-            &registerFunctionDetectTonality,
             &registerFunctionLemmatize,
             &registerFunctionSynonyms,
 #endif
@@ -1775,6 +1800,9 @@ namespace DB
 #if USE_ULID
             &registerFunctionGenerateULID,
             &registerFunctionULIDStringToDateTime,
+#endif
+#if USE_XGBOOST
+            &registerFunctionPredictXGBoost,
 #endif
 #if WITH_COVERAGE_DEPTH
             &registerFunctionCoverageLines,

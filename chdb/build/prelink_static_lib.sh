@@ -34,6 +34,11 @@
 # .chdb suffix, which nothing defines. Weak references the C library exports are meant for it
 # and keep their names (__rseq_offset; c_library_exports.sh).
 #
+# On aarch64 the same run also renames the code sections, in runs of at most 64 MB, so that the
+# consumer's linker gives each run an output section of its own: GNU ld cannot place the stubs
+# of over 300 MB of code in one output section within the +-128 MB a branch reaches, see
+# split_static_lib_text.py.
+#
 # The result is shipped as a one-member archive, so consumers keep linking with -lchdb.
 #
 # Tool choices, each forced by something in the archive:
@@ -155,8 +160,14 @@ awk '$1 == "w" || $1 == "v" { print $2 }' "${WORK_DIR}/undefined.txt" | sort -u 
     | comm -23 - "${WORK_DIR}/c_library.txt" | awk '{ print $1, $1 ".chdb" }' > "${WORK_DIR}/hooks.txt"
 echo "  optional hooks: $(cut -d ' ' -f 1 "${WORK_DIR}/hooks.txt" | tr '\n' ' ')"
 
+# The aarch64 code split, see above. A response file: it is half a million options.
+: > "${WORK_DIR}/split.txt"
+if [ "$(readelf -h "${WORK_DIR}/chdb_prelinked.o" | awk '$1 == "Machine:" { print $2 }')" = AArch64 ]; then
+    python3 "${MY_DIR}/split_static_lib_text.py" "${WORK_DIR}/chdb_prelinked.o" > "${WORK_DIR}/split.txt"
+fi
+
 "${PRELINK_OBJCOPY}" --keep-global-symbols="${WORK_DIR}/keep.txt" --redefine-syms="${WORK_DIR}/hooks.txt" \
-    --remove-section=.llvm_addrsig "${WORK_DIR}/chdb_prelinked.o" "${WORK_DIR}/object.o"
+    --remove-section=.llvm_addrsig @"${WORK_DIR}/split.txt" "${WORK_DIR}/chdb_prelinked.o" "${WORK_DIR}/object.o"
 rm -f "${WORK_DIR}/chdb_prelinked.o"
 
 # Where the object's data starts inside the archive. gold - only gold - slows down

@@ -62,9 +62,8 @@ if (CHDB_LITE)
         AggregateFunctionKolmogorovSmirnovTest.cpp
         AggregateFunctionIntervalLengthSum.cpp
         # TimeSeries module: niche, used for Prometheus-style queries. Drop ~13 MB unstripped.
-        TimeSeries/AggregateFunctionTimeseriesHelpers.cpp
-        TimeSeries/AggregateFunctionLast2Samples.cpp
-        TimeSeries/AggregateFunctionTimeSeriesGroupArray.cpp
+        # This is its entry point; the rest of the module is dropped below.
+        TimeSeries/registerAggregateFunctionTimeseries.cpp
         # uniqCombined precision variants: keep 17 (default) and 12 (v26.7 column
         # statistics build uniqCombined64(12) during merges/mutations); drop the rest.
         # The switch in AggregateFunctionUniqCombined.cpp is gated by CHDB_LITE
@@ -147,8 +146,6 @@ if (CHDB_LITE)
         registerAggregateFunctionKolmogorovSmirnovTest
         registerAggregateFunctionIntervalLengthSum
         registerAggregateFunctionTimeseries
-        registerAggregateFunctionLast2Samples
-        registerAggregateFunctionTimeseriesGroupArray
         # UniqCombined precision drops have no register fns — emit dummy unused stubs
         _chdb_unused_uniqcombined_13_stub
         _chdb_unused_uniqcombined_14_stub
@@ -184,6 +181,10 @@ if (CHDB_LITE)
         set(_chdb_stub_decls "${_chdb_stub_decls}    void ${_reg}(AggregateFunctionFactory &);\n    void ${_reg}(AggregateFunctionFactory &) {}\n")
     endforeach()
     set(_chdb_stub_decls "${_chdb_stub_decls}}\n")
+    # The rest of the TimeSeries module. Since the 26.10 line every function of it is registered
+    # through registerAggregateFunctionTimeseries (stubbed above), so nothing references these.
+    file(GLOB _chdb_timeseries_sources RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/TimeSeries/*.cpp")
+    list(REMOVE_ITEM clickhouse_aggregate_functions_sources ${_chdb_timeseries_sources})
     set(_chdb_stub_file "${CMAKE_CURRENT_BINARY_DIR}/chdbAggregateStubs.cpp")
     file(WRITE "${_chdb_stub_file}" "${_chdb_stub_decls}")
     list(APPEND clickhouse_aggregate_functions_sources "${_chdb_stub_file}")

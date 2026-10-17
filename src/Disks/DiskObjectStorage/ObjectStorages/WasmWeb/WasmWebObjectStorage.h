@@ -82,8 +82,8 @@ public:
     /// versions / log files when the catalog does not pin them explicitly).
     void listObjects(const std::string & path, RelativePathsWithMetadata & children, size_t max_keys) const override;
 
-    /// v26.9 returns the created generation's ETag; read-only here, so it never returns.
-    String copyObject( /// NOLINT
+    /// Read-only here, so it never returns.
+    void copyObject( /// NOLINT
         const StoredObject & object_from,
         const StoredObject & object_to,
         const ReadSettings & read_settings,

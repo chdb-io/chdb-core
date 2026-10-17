@@ -18,14 +18,15 @@ endif()
 option (ENABLE_PRQL "Enable prql" ${ENABLE_LIBRARIES})
 option (ENABLE_SKIM "Enable skim" ${ENABLE_LIBRARIES})
 option (ENABLE_POLYGLOT "Enable polyglot SQL transpiler" ${ENABLE_LIBRARIES})
+option (ENABLE_PCO "Enable pco (pcodec) compression codec" ${ENABLE_LIBRARIES})
 # chdb: WasmTime backs the WebAssembly UDF runtime and is enabled independently
 # of ENABLE_LIBRARIES (see chdb/build.sh). It is built from the same cargo
 # workspace, so it must be considered here too — otherwise this early return
 # would skip clickhouse_import_crate() and add_subdirectory(wasmtime) below.
 option (ENABLE_WASMTIME "Enable WasmTime engine" ${ENABLE_LIBRARIES})
 
-if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_WASMTIME)
-    message(STATUS "prql, skim, polyglot, and wasmtime are disabled")
+if (NOT ENABLE_PRQL AND NOT ENABLE_SKIM AND NOT ENABLE_POLYGLOT AND NOT ENABLE_PCO AND NOT ENABLE_WASMTIME)
+    message(STATUS "prql, skim, polyglot, pco, and wasmtime are disabled")
     return()
 endif()
 
@@ -42,6 +43,9 @@ if (ENABLE_SKIM)
 endif()
 if (ENABLE_POLYGLOT)
     list (APPEND _ch_rust_enabled_crates _ch_rust_polyglot)
+endif()
+if (ENABLE_PCO)
+    list (APPEND _ch_rust_enabled_crates _ch_rust_pco)
 endif()
 if (ENABLE_WASMTIME)
     list (APPEND _ch_rust_enabled_crates _ch_rust_wasmtime)
@@ -108,6 +112,36 @@ if (ENABLE_POLYGLOT)
             # Ensure localize runs before strip (they both modify the same .a)
             if (TARGET localize_rust_c__ch_rust_polyglot)
                 add_dependencies(strip_polyglot_symbols localize_rust_c__ch_rust_polyglot)
+            endif()
+        endif ()
+    endif ()
+endif()
+
+if (ENABLE_PCO)
+    clickhouse_config_crate_flags(_ch_rust_pco)
+    target_include_directories(_ch_rust_pco INTERFACE pco/include)
+    add_library(ch_rust::pco ALIAS _ch_rust_pco)
+
+    # Strip internal symbols from the pco static library; only the two C FFI
+    # entry points need to stay visible (the pco crate and its dependencies
+    # export a large number of internal symbols). Same guards as prql/polyglot.
+    if (NOT CMAKE_AR MATCHES "dummy_compiler_linker" AND NOT SANITIZE AND NOT OS_DARWIN
+        AND NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "ppc64le")
+        find_program(_LLD_FOR_STRIP NAMES "ld.lld-${COMPILER_VERSION_MAJOR}" "ld.lld")
+        if (_LLD_FOR_STRIP)
+            set(_pco_lib "${CMAKE_CURRENT_BINARY_DIR}/lib_ch_rust_pco.a")
+            add_custom_target(strip_pco_symbols
+                COMMAND bash "${ClickHouse_SOURCE_DIR}/cmake/strip_rust_symbols.sh"
+                    "${_pco_lib}" "${CMAKE_AR}" "${CMAKE_OBJCOPY}" "${_LLD_FOR_STRIP}"
+                    pco_compress pco_decompress
+                DEPENDS cargo-build__ch_rust_pco
+                COMMENT "Stripping internal symbols from pco library"
+                VERBATIM
+            )
+            add_dependencies(_ch_rust_pco strip_pco_symbols)
+            # Ensure localize runs before strip (they both modify the same .a)
+            if (TARGET localize_rust_c__ch_rust_pco)
+                add_dependencies(strip_pco_symbols localize_rust_c__ch_rust_pco)
             endif()
         endif ()
     endif ()
