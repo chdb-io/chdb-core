@@ -10,6 +10,7 @@
 #include <Common/StatusFile.h>
 
 #include <filesystem>
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -49,6 +50,9 @@ public:
     /// the process. Deciding and claiming under one lock is what keeps a
     /// concurrent connect from slipping in behind the check.
     static bool beginShutdown();
+    static bool hasActiveClients();
+    static bool lastCleanupSucceeded();
+    static void cancelPythonQueriesIfExclusive(size_t python_clients);
 
     std::string getPath() const { return db_path; }
 
@@ -66,6 +70,7 @@ private:
     static size_t client_ref_count;
     /// Set by beginShutdown(); guarded by instance_mutex.
     static bool engine_stopped;
+    static std::atomic<bool> last_cleanup_succeeded;
     /// Whether --config-file was passed by the caller, as opposed to a config found next to the
     /// process. Only an explicit one may arm system logs.
     bool config_file_passed_explicitly = false;

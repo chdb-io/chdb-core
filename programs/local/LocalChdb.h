@@ -8,8 +8,11 @@
 #include "config.h"
 
 #include <filesystem>
+#include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 #include <IO/Progress.h>
 
 #if USE_CLIENT_AI
@@ -32,10 +35,16 @@ class __attribute__((visibility("default"))) query_result;
 class __attribute__((visibility("default"))) streaming_query_result;
 class __attribute__((visibility("default"))) streaming_insert_result;
 
-class connection_wrapper
+class connection_wrapper : public std::enable_shared_from_this<connection_wrapper>
 {
 private:
-    chdb_connection * conn;
+    chdb_connection * conn = nullptr;
+    mutable std::mutex lifecycle_mutex;
+    std::condition_variable lifecycle_changed;
+    size_t active_operations = 0;
+    bool closing = false;
+    bool closed = false;
+    void finishOperation();
     std::string db_path;
     bool is_memory_db;
     bool is_readonly;
@@ -48,9 +57,32 @@ private:
 #endif
 
 public:
+    class Operation
+    {
+    public:
+        Operation(const Operation &) = delete;
+        Operation & operator=(const Operation &) = delete;
+        Operation(Operation &&) = delete;
+        ~Operation();
+
+        chdb_connection * cell() const { return cell_; }
+
+    private:
+        friend class connection_wrapper;
+        Operation(std::shared_ptr<connection_wrapper> owner_, chdb_connection * cell_);
+        std::shared_ptr<connection_wrapper> owner;
+        chdb_connection * cell_;
+        Operation * previous = nullptr;
+    };
+
     explicit connection_wrapper(const std::string & conn_str);
-    chdb_connection get_conn() { return *conn; }
     ~connection_wrapper();
+    static std::shared_ptr<connection_wrapper> createPython(const std::string & conn_str);
+    static bool closePythonConnectionsAtExit();
+    Operation startOperation();
+    size_t activeOperationCount() const;
+    bool needsExitClose() const;
+    bool isOpen() const;
     cursor_wrapper * cursor();
     void commit();
     void close();
@@ -289,7 +321,7 @@ public:
 class cursor_wrapper
 {
 private:
-    connection_wrapper * conn;
+    std::shared_ptr<connection_wrapper> conn;
     chdb_result * current_result;
 
     void release_result()
@@ -303,7 +335,7 @@ private:
     }
 
 public:
-    explicit cursor_wrapper(connection_wrapper * connection) : conn(connection), current_result(nullptr) { }
+    explicit cursor_wrapper(std::shared_ptr<connection_wrapper> connection) : conn(std::move(connection)), current_result(nullptr) { }
 
     ~cursor_wrapper() { release_result(); }
 
@@ -318,6 +350,7 @@ public:
 
     py::memoryview get_memview()
     {
+        conn->requireOpen();
         if (current_result == nullptr)
         {
             return py::memoryview(py::memoryview::from_memory(nullptr, 0, true));
@@ -327,41 +360,49 @@ public:
 
     size_t data_size()
     {
+        conn->requireOpen();
         return chdb_result_length(current_result);
     }
 
     size_t rows_read()
     {
+        conn->requireOpen();
         return chdb_result_rows_read(current_result);
     }
 
     size_t bytes_read()
     {
+        conn->requireOpen();
         return chdb_result_bytes_read(current_result);
     }
 
     size_t storage_rows_read()
     {
+        conn->requireOpen();
         return chdb_result_storage_rows_read(current_result);
     }
 
     size_t storage_bytes_read()
     {
+        conn->requireOpen();
         return chdb_result_storage_bytes_read(current_result);
     }
 
     double elapsed()
     {
+        conn->requireOpen();
         return chdb_result_elapsed(current_result);
     }
 
     bool has_error()
     {
+        conn->requireOpen();
         return chdb_result_error(current_result) != nullptr;
     }
 
     py::str error_message()
     {
+        conn->requireOpen();
         auto error_message = chdb_result_error(current_result);
         if (error_message)
         {
