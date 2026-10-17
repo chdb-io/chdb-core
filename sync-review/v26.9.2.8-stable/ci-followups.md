@@ -399,3 +399,26 @@ the full wheel.
 **Why local checks missed it.** The local regression run used the full macOS build,
 which includes FIU. Test both `CHDB_LITE=1` and full test selection before the next
 PR build when adding a test that requires a compile-time optional feature.
+
+## 11. Python 3.9 full-wheel exit sometimes reports incomplete shutdown (#284 CI)
+
+**Failure.** In Linux x86_64's full-wheel test on Python 3.9, run 38970588814,
+`test_python_exit_closes_engine_before_static_destructors` passed four child runs
+and returned 96 on the fifth. The child said only `chDB shutdown did not finish
+before Python exit`. The same full-wheel step passed in the previous PR run;
+100 local macOS/Python 3.11 child exits also passed. This is not the lite/FIU skip.
+
+**What is known.** The catalog-incomplete branch has its own stderr message, which
+was absent. The remaining possible paths include an exception while stopping
+static or global pools and a refusal by `GlobalThreadPool::finalizeIfIdle()` when
+jobs remain. The failure did not retain a pool snapshot in the captured child
+stderr, so the owner and root cause are still unknown.
+
+**Diagnostic change.** Report the failed shutdown stage and exception directly
+to stderr. On a global-pool refusal, include a current scheduled-job count and
+the live local-pool worker snapshot on stderr, in addition to the existing Poco
+log. Do not change the refusal, force a join, or weaken the exit assertion.
+
+**Next validation.** Use the new diagnostic in the exact Linux x86_64/Python 3.9
+full-wheel path to identify the owner. Local full-build exit tests should stay
+green; a green local run does not close the CI-only investigation.
