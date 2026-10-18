@@ -8,6 +8,11 @@ name: Nightly gate
 # which only daily_sync.yml pushes. However it is merged (merge commit, squash or
 # rebase), GitHub records the commit it put on main as the pull request's
 # merge_commit_sha when it merges, before the push event. publish.py asks the same.
+#
+# The gate only runs in a wheel workflow that the push starts, and a merge that changes
+# no file starts none of them: their paths-ignore matches when every changed path does,
+# which an empty change list always satisfies. Rebuilding a nightly by hand therefore
+# takes a sync pull request that changes a file outside those lists.
 
 on:
   workflow_call:
