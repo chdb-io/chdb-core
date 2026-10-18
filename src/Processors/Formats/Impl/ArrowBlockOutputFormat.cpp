@@ -116,7 +116,8 @@ void ArrowBlockOutputFormat::initializeOnFirstChunk(const Chunk & chunk)
             .output_date_as_uint16 = format_settings.arrow.output_date_as_uint16,
             .output_uuid_as_fixed_byte_array = format_settings.arrow.output_uuid_as_fixed_byte_array,
             .output_variant_as_string = format_settings.arrow.output_variant_as_string,
-            .output_unsupported_types_as_binary = format_settings.arrow.output_unsupported_types_as_binary,
+            .output_unsupported_types = format_settings.arrow.output_unsupported_types,
+            .format_settings = format_settings,
         });
 
     /// Use the first chunk to materialize the Arrow schema so that the writer header

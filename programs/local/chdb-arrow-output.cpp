@@ -53,13 +53,17 @@ CHColumnToArrowColumn::Settings buildConverterSettings(
     settings.output_date_as_uint16 = false;
     settings.output_uuid_as_fixed_byte_array = output_uuid_as_fixed_byte_array;
     settings.output_variant_as_string = output_variant_as_string;
-    settings.output_unsupported_types_as_binary = false;
+    /// `format_settings` (what an opaque value is serialized with) keeps its defaults: there is no
+    /// query context here.
+    settings.output_unsupported_types = FormatSettings::ArrowUnsupportedTypes::THROW;
 
     if (options)
     {
         settings.output_string_as_string = options->string_as_string != 0;
         settings.low_cardinality_as_dictionary = options->low_cardinality_as_dictionary != 0;
-        settings.output_unsupported_types_as_binary = options->unsupported_as_binary != 0;
+        settings.output_unsupported_types = options->unsupported_as_binary != 0
+            ? FormatSettings::ArrowUnsupportedTypes::BINARY
+            : FormatSettings::ArrowUnsupportedTypes::THROW;
     }
     return settings;
 }

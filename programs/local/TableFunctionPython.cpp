@@ -209,6 +209,7 @@ This table function requires a single argument which is the name of the Python o
             .examples = {{"python", "SELECT * FROM Python(PyReader)", ""}},
             .category = FunctionDocumentation::Category::TableFunction,
         },
+        SecretArgumentsSpec{},
         {},
         TableFunctionFactory::Case::Insensitive);
 }

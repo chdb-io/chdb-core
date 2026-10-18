@@ -39,16 +39,18 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
+#include <Interpreters/SecretArgumentsRegistry.h>
 #include <Interpreters/SystemLog.h>
 #include <Interpreters/loadMetadata.h>
 #include <Interpreters/registerInterpreters.h>
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <Loggers/OwnSplitChannel.h>
-#include <Parsers/registerStatements.h>
+#include <Parsers/registerParsers.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Processors/QueryPlan/QueryPlanStepRegistry.h>
+#include <Storages/MergeTree/ColumnsCache.h>
 #include <Storages/MergeTree/MergeList.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/System/attachInformationSchemaTables.h>
@@ -76,6 +78,7 @@
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
 #include <Common/Exception.h>
+#include <Common/IMemoryReleasableCache.h>
 #include <Common/Macros.h>
 #include <Common/NamedCollections/NamedCollectionsFactory.h>
 #include <Common/PoolId.h>
@@ -118,6 +121,11 @@ namespace ServerSetting
 {
 extern const ServerSettingsUInt32 allow_feature_tier;
 extern const ServerSettingsDouble cache_size_to_ram_max_ratio;
+extern const ServerSettingsString columns_cache_policy;
+extern const ServerSettingsDouble columns_cache_free_memory_ratio;
+extern const ServerSettingsUInt64 columns_cache_history_window_ms;
+extern const ServerSettingsDouble columns_cache_size_ratio;
+extern const ServerSettingsDouble columns_cache_size_to_ram_ratio;
 extern const ServerSettingsUInt64 compiled_expression_cache_elements_size;
 extern const ServerSettingsUInt64 compiled_expression_cache_size;
 extern const ServerSettingsUInt64 database_catalog_drop_table_concurrency;
@@ -181,6 +189,8 @@ extern const ServerSettingsDouble uncompressed_cache_size_ratio;
 extern const ServerSettingsString primary_index_cache_policy;
 extern const ServerSettingsUInt64 primary_index_cache_size;
 extern const ServerSettingsDouble primary_index_cache_size_ratio;
+extern const ServerSettingsUInt64 query_cache_max_entry_size_in_bytes;
+extern const ServerSettingsUInt64 query_cache_max_entry_size_in_rows;
 extern const ServerSettingsString query_condition_cache_policy;
 extern const ServerSettingsString unique_key_bitmap_cache_policy;
 extern const ServerSettingsUInt64 query_condition_cache_size;
@@ -605,6 +615,11 @@ void EmbeddedServer::cleanup()
     }
     catch (...) {}
 
+    /// The columns cache goes away with the context; stop resizing it.
+    setMemoryReleasableCache(nullptr);
+    if (memory_worker)
+        memory_worker->setReleasableCache(nullptr);
+
     try
     {
         if (global_context)
@@ -763,7 +778,7 @@ try
             chdb_embedded_server_initialized = true;
 
             registerInterpreters();
-            registerStatements();
+            registerParsers();
             /// Don't initialize DateLUT
             registerFunctions();
             registerAggregateFunctions();
@@ -787,6 +802,9 @@ try
 #endif
 
             registerDictionaries();
+            /// Without a finder, formatting a query that may carry secrets (an s3() argument, a
+            /// dictionary SOURCE, ...) throws LOGICAL_ERROR, as upstream LocalServer installs it too.
+            setSecretArgumentsFinder(&SecretArgumentsRegistry::instance());
             registerDisks(/* global_skip_access_check= */ true);
             registerFormats();
             QueryPlanStepRegistry::registerPlanSteps();
@@ -921,6 +939,31 @@ void EmbeddedServer::processConfig()
             log, "Lowered mark cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(mark_cache_size));
     }
     global_context->setMarkCache(mark_cache_policy, mark_cache_size, mark_cache_size_ratio);
+
+    /// The columns cache is only filled by queries with `use_columns_cache` enabled; set it up as
+    /// clickhouse-local does, or that setting is silently ignored.
+    String columns_cache_policy = server_settings[ServerSetting::columns_cache_policy];
+    /// Unless configured explicitly, the columns cache is sized relative to the memory of the server.
+    size_t columns_cache_size = config().getUInt64("columns_cache_size",
+        getDefaultColumnsCacheSize(physical_server_memory, server_settings[ServerSetting::columns_cache_size_to_ram_ratio]));
+    double columns_cache_size_ratio = server_settings[ServerSetting::columns_cache_size_ratio];
+    if (columns_cache_size > max_cache_size)
+    {
+        columns_cache_size = max_cache_size;
+        LOG_DEBUG(log, "Lowered columns cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(columns_cache_size));
+    }
+    global_context->setColumnsCache(columns_cache_policy, columns_cache_size, columns_cache_size_ratio);
+    /// The cache counts against `max_server_memory_usage`, so it has to be able to give that memory back.
+    /// Unregistered in cleanup(), before the context that owns the cache goes away.
+    if (auto columns_cache = global_context->getColumnsCache())
+    {
+        columns_cache->setAutoResizeSettings(
+            server_settings[ServerSetting::columns_cache_free_memory_ratio],
+            server_settings[ServerSetting::columns_cache_history_window_ms]);
+        setMemoryReleasableCache(columns_cache.get());
+        if (memory_worker)
+            memory_worker->setReleasableCache(columns_cache);
+    }
 
     String index_uncompressed_cache_policy = server_settings[ServerSetting::index_uncompressed_cache_policy];
     size_t index_uncompressed_cache_size = server_settings[ServerSetting::index_uncompressed_cache_size];
@@ -1069,8 +1112,10 @@ void EmbeddedServer::processConfig()
     query_condition_cache_size = std::min(query_condition_cache_size, max_cache_size);
     global_context->setQueryConditionCache(query_condition_cache_policy, query_condition_cache_size, query_condition_cache_size_ratio);
 
-    /// Initialize a dummy query result cache.
-    global_context->setQueryResultCache(0, 0, 0, 0);
+    /// Initialize a query result cache which stores nothing in memory. The maximum entry sizes are configured as in the server: they
+    /// apply to the query result cache on disk as well, as in clickhouse-local.
+    global_context->setQueryResultCache(
+        0, 0, server_settings[ServerSetting::query_cache_max_entry_size_in_bytes], server_settings[ServerSetting::query_cache_max_entry_size_in_rows]);
 
     /// Initialize a dummy UNIQUE KEY delete-bitmap cache.
     global_context->setDeleteBitmapCache(server_settings[ServerSetting::unique_key_bitmap_cache_policy], 0, 0);
