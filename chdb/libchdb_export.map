@@ -85,6 +85,10 @@
         /* Engine Shutdown */
         chdb_shutdown;
 
+        /* Host Object Storage */
+        chdb_register_object_storage;
+        chdb_unregister_object_storage;
+
     local:
         *;
 };
