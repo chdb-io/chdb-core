@@ -26,7 +26,10 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -138,13 +141,31 @@ class Store:
         return f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
 
     def nights(self, table: str, schema: str, days: int) -> str:
-        """A FROM clause over the table's night and the `days` nights before it."""
+        """A FROM clause over the table's night and those of the `days` nights before it
+        that are in the store."""
         if not self.remote:
             return f"file({lit(str(self.local / table / '*.parquet'))}, 'Parquet', {lit(schema)})"
-        dates = ",".join((self.date - dt.timedelta(days=d)).isoformat() for d in range(1, days + 1))
-        earlier = f"url({lit(f'{self.remote}/{table}/{{{dates}}}.parquet')}, 'Parquet', {lit(schema)})"
         night = f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
+        dates = [(self.date - dt.timedelta(days=d)).isoformat() for d in range(1, days + 1)]
+        with ThreadPoolExecutor(16) as pool:
+            dates = [d for d, ok in zip(dates, pool.map(lambda d: self.stored(f"{table}/{d}.parquet"), dates)) if ok]
+        if not dates:
+            return night
+        names = dates[0] if len(dates) == 1 else "{" + ",".join(dates) + "}"
+        earlier = f"url({lit(f'{self.remote}/{table}/{names}.parquet')}, 'Parquet', {lit(schema)})"
         return f"(SELECT * FROM {earlier} UNION ALL SELECT * FROM {night})"
+
+    def stored(self, rel: str) -> bool:
+        """Whether the remote store has the file. url() reads a missing one, which the
+        store answers with a 404, as an empty Parquet file and fails, even with
+        http_skip_not_found_url_for_globs, so only the nights that exist are read."""
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{self.remote}/{rel}", method="HEAD"), timeout=60):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            raise
 
 
 def query(chdb, sql: str) -> list[dict]:

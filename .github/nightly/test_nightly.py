@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 import unittest.mock
+import urllib.error
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -394,9 +395,31 @@ class Reporting(unittest.TestCase):
             self.assertFalse(local.remote)
             self.assertTrue(local.nights("runs", "x UInt8", 3).startswith(f"file('{tmp}/store/runs/*.parquet'"))
         with unittest.mock.patch.dict(os.environ, {"BLOB_BASE_URL": "https://b.example/"}):
-            remote = report.Store(Path("/w"), "2026-10-15").nights("runs", "x UInt8", 2)
-        self.assertIn("url('https://b.example/runs/{2026-10-14,2026-10-13}.parquet', 'Parquet', 'x UInt8')", remote)
-        self.assertIn("file('/w/store/runs/2026-10-15.parquet'", remote)
+            store = report.Store(Path("/w"), "2026-10-15")
+        night = "file('/w/store/runs/2026-10-15.parquet', 'Parquet', 'x UInt8')"
+        # Only the nights the store has are read: url() fails on a missing one.
+        for stored, earlier in ((["runs/2026-10-14.parquet", "runs/2026-10-12.parquet"], "{2026-10-14,2026-10-12}"),
+                                (["runs/2026-10-13.parquet"], "2026-10-13")):
+            with unittest.mock.patch.object(store, "stored", side_effect=lambda rel: rel in stored):
+                remote = store.nights("runs", "x UInt8", 3)
+            self.assertIn(f"url('https://b.example/runs/{earlier}.parquet', 'Parquet', 'x UInt8')", remote)
+            self.assertIn(night, remote)
+        with unittest.mock.patch.object(store, "stored", return_value=False):
+            self.assertEqual(store.nights("runs", "x UInt8", 3), night)  # the first night
+
+    def test_store_stored(self):
+        store = report.Store(Path("/w"), "2026-10-15")
+        store.remote = "https://b.example"
+        missing = urllib.error.HTTPError("https://b.example/runs/x.parquet", 404, "Not Found", {}, None)
+        denied = urllib.error.HTTPError("https://b.example/runs/x.parquet", 403, "Forbidden", {}, None)
+        with unittest.mock.patch("urllib.request.urlopen") as urlopen:
+            self.assertTrue(store.stored("runs/x.parquet"))
+            self.assertEqual(urlopen.call_args[0][0].get_method(), "HEAD")
+            urlopen.side_effect = missing
+            self.assertFalse(store.stored("runs/x.parquet"))
+            urlopen.side_effect = denied
+            with self.assertRaises(urllib.error.HTTPError):
+                store.stored("runs/x.parquet")
 
 
 if __name__ == "__main__":
