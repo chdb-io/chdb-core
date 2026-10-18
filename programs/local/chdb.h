@@ -1163,8 +1163,11 @@ CHDB_EXPORT void chdb_reset_signal_handlers(void);
  * chdb_connect(): callers are serialized, and a connect racing a shutdown either
  * gets in first and is counted, or arrives later and is refused.
  *
- * Skipping it stays as safe as it has always been for a process that just exits:
- * the threads left running are reaped by process exit.
+ * A C/C++/Go host must call this before its own runtime teardown or unloading
+ * the library. OS thread reaping is not a substitute for Context/catalog
+ * cleanup: C++ static destructors can run while those resources are still
+ * referenced. CHDBError also means embedded cleanup was incomplete; do not
+ * treat a zero connection count as proof that the engine stopped cleanly.
  *
  * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
  *         connection is still open or some thread could not be stopped

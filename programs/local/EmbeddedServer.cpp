@@ -14,6 +14,7 @@
 #include <Storages/StorageFactory.h>
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -63,6 +64,7 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <sys/resource.h>
+#include <unistd.h>
 #include <Poco/Logger.h>
 #include <Poco/NullChannel.h>
 #include <Poco/SimpleFileChannel.h>
@@ -584,6 +586,7 @@ void EmbeddedServer::logMergeTreeStateAtShutdown() const
 
 void EmbeddedServer::cleanup()
 {
+    bool context_cleaned = !global_context;
     try
     {
         logMergeTreeStateAtShutdown();
@@ -626,21 +629,26 @@ void EmbeddedServer::cleanup()
         {
             global_context->shutdown();
             global_context.reset();
+            context_cleaned = true;
         }
     }
     catch (const std::exception & e)
     {
-        /// During Python interpreter exit, mutexes may be in invalid state
-        /// due to static object destruction order. This is expected and harmless.
-        /// Only print error for unexpected exceptions.
-        std::string_view msg = e.what();
-        if (msg.find("mutex") == std::string_view::npos &&
-            msg.find("Invalid argument") == std::string_view::npos)
-        {
-            std::cerr << "Exception in global_context->shutdown(): " << e.what() << std::endl;
-        }
+        /// chdb_spec: A failed Context shutdown can leave the catalog alive.
+        /// Never hide it as a benign mutex error before the pool teardown.
+        /// Use raw stderr: the C++ logger/iostream statics might be gone.
+        static constexpr char prefix[] = "Exception in global_context->shutdown(): ";
+        (void)::write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
+        (void)::write(STDERR_FILENO, e.what(), std::strlen(e.what()));
+        (void)::write(STDERR_FILENO, "\n", 1);
+        /// chdb_spec: end embedded shutdown failure reporting.
     }
-    catch (...) {}
+    catch (...)
+    {
+        static constexpr char message[] = "Unknown exception in global_context->shutdown()\n";
+        (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
+    }
+    last_cleanup_succeeded.store(context_cleaned, std::memory_order_release);
 
     try
     {
@@ -1280,6 +1288,7 @@ std::unique_ptr<EmbeddedServer> EmbeddedServer::global_instance;
 std::mutex EmbeddedServer::instance_mutex;
 size_t EmbeddedServer::client_ref_count = 0;
 bool EmbeddedServer::engine_stopped = false;
+std::atomic<bool> EmbeddedServer::last_cleanup_succeeded{true};
 
 EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 {
@@ -1318,6 +1327,7 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
         return *global_instance;
     }
 
+    last_cleanup_succeeded.store(false, std::memory_order_release);
     global_instance = std::make_unique<EmbeddedServer>();
     try
     {
@@ -1364,6 +1374,27 @@ bool EmbeddedServer::beginShutdown()
 
     engine_stopped = true;
     return true;
+}
+
+bool EmbeddedServer::hasActiveClients()
+{
+    std::lock_guard<std::mutex> lock(instance_mutex);
+    return client_ref_count != 0;
+}
+
+bool EmbeddedServer::lastCleanupSucceeded()
+{
+    return last_cleanup_succeeded.load(std::memory_order_acquire);
+}
+
+void EmbeddedServer::cancelPythonQueriesIfExclusive(size_t python_clients)
+{
+    std::lock_guard<std::mutex> lock(instance_mutex);
+    /// chdb_spec: Do not cancel a C/Go host's query when its connection shares
+    /// this embedded server with a finalizing Python interpreter.
+    if (python_clients && client_ref_count == python_clients && global_instance && global_instance->global_context)
+        global_instance->global_context->getProcessList().killAllQueries();
+    /// chdb_spec: end Python-only exit cancellation.
 }
 
 void EmbeddedServer::initializeWithArgs(int argc, char ** argv)

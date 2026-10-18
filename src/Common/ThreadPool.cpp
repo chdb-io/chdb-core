@@ -13,6 +13,7 @@
 #include <Common/saturatedDuration.h>
 #include <base/scope_guard.h>
 
+#include <cstdio>
 #include <map>
 #include <type_traits>
 #include <unordered_map>
@@ -1363,13 +1364,24 @@ bool GlobalThreadPool::shutdownAndJoin()
     {
         try
         {
+            const auto live_local_pools = snapshotLocalThreadPools();
+            /// chdb_spec: Poco logging may no longer reach a Python child at
+            /// interpreter exit. Record this refusal on stderr as well; active()
+            /// is a post-refusal snapshot and may already have fallen to zero.
+            std::fprintf(
+                stderr,
+                "chDB global pool shutdown refused: active jobs now=%zu; live local pool workers=[%s]\n",
+                the_instance->active(),
+                live_local_pools.c_str());
+            /// chdb_spec: end Python exit failure diagnostics.
             LOG_INFO(
                 &Poco::Logger::get("GlobalThreadPool"),
                 "shutdownAndJoin(): not joining, a job still holds a pool thread; live local pool workers: [{}]",
-                snapshotLocalThreadPools());
+                live_local_pools);
         }
         catch (...) // NOLINT(bugprone-empty-catch) Ok: diagnostic must not change the outcome
         {
+            std::fputs("chDB global pool shutdown refused: snapshot unavailable\n", stderr);
         }
         return false;
     }

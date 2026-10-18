@@ -5,10 +5,12 @@
 
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
+#include <Interpreters/DatabaseCatalog.h>
 #if USE_PYTHON
 #    include <PythonTableCache.h>
 #endif
@@ -1576,6 +1578,17 @@ chdb_state chdb_shutdown(void)
     if (!DB::EmbeddedServer::beginShutdown())
         return CHDBError;
 
+    /// chdb_spec: Closing the last client is not proof that Context and its
+    /// catalog finished shutting down. Do not destroy pools beneath a catalog
+    /// left alive by an exception in embedded cleanup.
+    if (!DB::EmbeddedServer::lastCleanupSucceeded() || DB::DatabaseCatalog::isAvailable())
+    {
+        std::fputs("chDB shutdown refused: Context/catalog cleanup did not complete\n", stderr);
+        return CHDBError;
+    }
+    /// chdb_spec: end embedded catalog-before-pool invariant.
+
+    const char * shutdown_stage = "static thread pools";
     try
     {
         /// Order matters: the shared pools run their workers on threads borrowed
@@ -1583,15 +1596,26 @@ chdb_state chdb_shutdown(void)
         /// a worker parked inside a shared pool.
         DB::StaticThreadPool::shutdownAll();
 
+        shutdown_stage = "global thread pool";
         /// Declines to join, and logs which pools are to blame, when a job still
         /// holds a pool thread -- a pool owned by some static-lifetime object we
         /// cannot reach, such as a filesystem cache. Those threads then outlive
         /// this call, as they did before it existed, so report the failure.
         if (!GlobalThreadPool::shutdownAndJoin())
+        {
+            std::fputs("chDB shutdown failed: global thread pool did not become idle\n", stderr);
             return CHDBError;
+        }
+    }
+    catch (const std::exception & e)
+    {
+        std::fprintf(stderr, "chDB shutdown failed during %s: %s\n", shutdown_stage, e.what());
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+        return CHDBError;
     }
     catch (...)
     {
+        std::fprintf(stderr, "chDB shutdown failed during %s: unknown exception\n", shutdown_stage);
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
         return CHDBError;
     }

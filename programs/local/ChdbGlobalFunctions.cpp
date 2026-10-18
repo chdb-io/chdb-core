@@ -79,6 +79,7 @@ void createFunction(
     const py::object & on_null,
     const py::object & on_error)
 {
+    PythonRuntimeOperationGuard operation;
     try
     {
         DB::DataTypePtr data_type = nullptr;
@@ -112,6 +113,7 @@ void createAggregateFunction(
     const py::object & on_null,
     const py::object & on_error)
 {
+    PythonRuntimeOperationGuard operation;
     try
     {
         DB::DataTypePtr data_type = nullptr;
@@ -136,6 +138,7 @@ void createAggregateFunction(
 
 void dropAggregateFunction(const std::string & name)
 {
+    PythonRuntimeOperationGuard operation;
     try
     {
         std::ignore = removePythonUDAF(name);
@@ -148,6 +151,7 @@ void dropAggregateFunction(const std::string & name)
 
 void dropFunction(const std::string & name)
 {
+    PythonRuntimeOperationGuard operation;
     try
     {
         std::ignore = removePythonUDF(name);
