@@ -83,7 +83,9 @@ class _RecordingResult(unittest.TextTestResult):
         super().startTest(test)
 
     def _record(self, test, status, detail=""):
-        self.records.append((test, status, time.monotonic() - self._started, detail))
+        # The id, not the test: a test case kept alive keeps its connection open, and
+        # the next test that connects to another path then fails.
+        self.records.append((test.id(), status, time.monotonic() - self._started, detail))
 
     def addSuccess(self, test):
         super().addSuccess(test)
@@ -120,8 +122,7 @@ class _RecordingResult(unittest.TextTestResult):
 def _write_junit(name, result, load_errors):
     suite = ET.Element("testsuite", name=name)
     counts = {"failure": 0, "error": 0, "skipped": 0}
-    for test, status, seconds, detail in result.records:
-        test_id = test.id()
+    for test_id, status, seconds, detail in result.records:
         classname, _, method = test_id.rpartition(".")
         case = ET.SubElement(suite, "testcase", classname=classname or test_id,
                              name=method or test_id, time=f"{seconds:.3f}")
