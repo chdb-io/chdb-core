@@ -30,7 +30,6 @@ if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     os.chdir("/tmp")
 
 import boto3  # noqa: E402
-import chdb  # noqa: E402
 
 import nightly_data  # noqa: E402
 from nightly_data import NIGHTS_SCHEMA, PLATFORMS, RUNS_SCHEMA, SETTINGS, TESTS_SCHEMA, lit  # noqa: E402
@@ -47,6 +46,18 @@ DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 _s3 = boto3.client("s3", endpoint_url=ENDPOINT or None)
 _cache: dict[str, tuple[float, dict]] = {}
+_chdb = None
+
+
+def engine():
+    """chDB, imported by the first request rather than at start-up: loading its 600 MB
+    library from a cold image can outlast the 10 seconds Lambda gives initialization,
+    and an initialization that runs out starts over within the first request."""
+    global _chdb
+    if _chdb is None:
+        import chdb
+        _chdb = chdb
+    return _chdb
 
 
 def table(name: str, schema: str, night: str = "*") -> str:
@@ -76,18 +87,18 @@ def ok(body, content_type: str = "application/json", **headers) -> dict:
 
 
 def latest(api: str) -> dict:
-    nights = nightly_data.rows(chdb, f"""
+    nights = nightly_data.rows(engine(), f"""
         SELECT * FROM {table("nights", NIGHTS_SCHEMA)}
         ORDER BY date DESC, generated_at DESC LIMIT 1 {SETTINGS}""")
     if not nights:
         return respond(404, {"error": "no nightly has been published"})
     night = nights[0]
     date = str(night["date"])
-    runs = nightly_data.rows(chdb, f"SELECT * FROM {table('runs', RUNS_SCHEMA, date)} {SETTINGS}")
+    runs = nightly_data.rows(engine(), f"SELECT * FROM {table('runs', RUNS_SCHEMA, date)} {SETTINGS}")
     keys = stored(f"logs/{date}/") | stored(f"tests/{date}")
     failing = []
     if f"tests/{date}.parquet" in keys:
-        failing = nightly_data.failing_tests(chdb, table("tests", TESTS_SCHEMA, date))
+        failing = nightly_data.failing_tests(engine(), table("tests", TESTS_SCHEMA, date))
     logs = {}
     for name in [*PLATFORMS, "chdb"]:
         if f"logs/{date}/{name}.txt.gz" in keys:
@@ -105,7 +116,7 @@ def history(query: dict) -> dict:
         return respond(400, {"error": "days must be a number"})
     if not 1 <= days <= MAX_DAYS:
         return respond(400, {"error": f"days must be between 1 and {MAX_DAYS}"})
-    return ok({"rows": nightly_data.history(chdb, table("runs", RUNS_SCHEMA), days)})
+    return ok({"rows": nightly_data.history(engine(), table("runs", RUNS_SCHEMA), days)})
 
 
 def log(date: str, name: str, query: dict) -> dict:
@@ -126,7 +137,7 @@ def route(method: str, path: str, query: dict, api: str) -> dict:
         return respond(405, {"error": "only GET"})
     parts = [p for p in path.split("/") if p]
     if parts == ["health"]:
-        return respond(200, {"status": "ok", "engine": getattr(chdb, "__version__", ""), "bucket": BUCKET})
+        return respond(200, {"status": "ok", "engine": getattr(engine(), "__version__", ""), "bucket": BUCKET})
     if parts == ["latest"]:
         return latest(api)
     if parts == ["history"]:
