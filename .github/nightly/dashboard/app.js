@@ -29,7 +29,7 @@ function el(tag, attrs = {}, ...children) {
     if (key === "class") node.className = value;
     else node.setAttribute(key, value);
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child === null || child === undefined || child === false) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
