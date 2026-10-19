@@ -17,6 +17,7 @@ const STATUS = {
   timed_out: { cls: "critical", icon: "✕", label: "Timed out" },
 };
 const NOT_RUN = { cls: "none", icon: "–", label: "Not run" };
+const API_TIMEOUT_MS = 10000;
 const SVG = "http://www.w3.org/2000/svg";
 
 const state = { days: 30, latest: null, history: [], source: "" };
@@ -354,9 +355,14 @@ async function main() {
       render();
     });
   }
-  const get = (url) => fetch(url, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const get = (url, ms) => fetch(url, { cache: "no-store", signal: ms ? AbortSignal.timeout(ms) : undefined })
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
   const config = (await get("config.json")) || {};
-  let [latest, history] = config.api ? await Promise.all(["latest", "history"].map((name) => get(`${config.api}/${name}`))) : [];
+  // An API instance that starts cold takes seconds to load chDB, and after a deploy far
+  // longer; past API_TIMEOUT_MS the page shows the copy from publication instead.
+  let [latest, history] = config.api
+    ? await Promise.all(["latest", "history"].map((name) => get(`${config.api}/${name}`, API_TIMEOUT_MS)))
+    : [];
   state.source = "live from the nightly API";
   if (!latest || !history) {
     [latest, history] = await Promise.all(["latest", "history"].map((name) => get(`data/${name}.json`)));
