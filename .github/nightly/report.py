@@ -27,6 +27,8 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -81,11 +83,41 @@ def junit_rows(junit_dir: Path, platform: str, night: dict) -> list[dict]:
     return rows
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def job_log(repo: str, job_id: int) -> str:
+    """A job's complete log. Not through gh, which refuses to print a response holding
+    terminal escape sequences, and logs are full of them (gh 2.102)."""
+    request = urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/jobs/{job_id}/logs", headers={
+        "Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json"})
+    # The API redirects to blob storage, which must not get the token.
+    try:
+        urllib.request.build_opener(_NoRedirect).open(request, timeout=60)
+        raise RuntimeError("the logs API answered without a redirect")
+    except urllib.error.HTTPError as e:
+        if e.code not in (301, 302, 303, 307, 308):
+            raise
+        location = e.headers["Location"]
+    with urllib.request.urlopen(location, timeout=300) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
 def run_logs(repo: str, run_id: int) -> list[dict]:
     """The complete log of every job of a run that ran, with its name and conclusion."""
     jobs = gh("api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
               "--jq", "[.jobs[] | select(.conclusion != null and .conclusion != \"skipped\") | {id, name, conclusion}]").strip()
-    return [{**job, "log": gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")} for job in json.loads(jobs or "[]")]
+    result = []
+    for job in json.loads(jobs or "[]"):
+        try:
+            log = job_log(repo, job["id"])
+        except Exception as e:  # the night goes on, and its log says why it is missing
+            print(f"::warning::the log of job {job['id']} ({job['name']}) did not download: {e}")
+            log = f"(the log did not download: {e})\n"
+        result.append({**job, "log": log})
+    return result
 
 
 def joined_log(jobs: list[dict]) -> str:

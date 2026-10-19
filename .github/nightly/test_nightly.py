@@ -35,8 +35,7 @@ report = load("report", HERE / "report.py")
 nightly_data = load("nightly_data", HERE / "nightly_data.py")
 chdb_nightly = load("chdb_nightly", HERE / "chdb_nightly.py")
 # The API imports boto3 and chDB, which these offline tests need not install.
-with unittest.mock.patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=lambda *a, **k: unittest.mock.MagicMock()),
-                                            "chdb": types.SimpleNamespace(__version__="26.9.0")}):
+with unittest.mock.patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=lambda *a, **k: unittest.mock.MagicMock())}):
     api = load("app", HERE / "api" / "app.py")
 preflight = load("sync_preflight", sync.PREFLIGHT)
 
@@ -413,8 +412,8 @@ class Reporting(unittest.TestCase):
         log = "\n".join([f"line {i}" for i in range(1000)] + ["##[error]Process completed with exit code 1."]
                         + [f"cleanup {i}" for i in range(2000)])
         jobs = '[{"id": 7, "name": "build", "conclusion": "failure"}, {"id": 8, "name": "gate", "conclusion": "success"}]'
-        with unittest.mock.patch.object(report, "gh", lambda *args: jobs if "/runs/" in args[1] else
-                                        (log if args[1].endswith("/7/logs") else "gate ok")):
+        with unittest.mock.patch.object(report, "gh", return_value=jobs), \
+                unittest.mock.patch.object(report, "job_log", lambda repo, job: log if job == 7 else "gate ok"):
             runs = report.run_logs("o/r", 1)
         self.assertEqual([(j["name"], j["conclusion"]) for j in runs], [("build", "failure"), ("gate", "success")])
         joined = report.joined_log(runs)
@@ -427,6 +426,27 @@ class Reporting(unittest.TestCase):
         self.assertNotIn("cleanup 0", tail)
         self.assertEqual(report.failure_tail([runs[1]]), "")  # nothing failed
         self.assertEqual(nightly_data.error_tail("a\nb\n", 1), "b\n")  # no error: the end
+
+    def test_job_log_follows_the_redirect_without_the_token(self):
+        redirect = report.urllib.error.HTTPError("https://api.github.com/x", 302, "Found",
+                                                 {"Location": "https://blob.example/log?sig=1"}, None)
+        opener = unittest.mock.MagicMock()
+        opener.open.side_effect = redirect
+        body = unittest.mock.MagicMock()
+        body.__enter__.return_value.read.return_value = "\ufeffline 1\n\x1b[36;1mline 2\n".encode()
+        with unittest.mock.patch.dict(os.environ, {"GH_TOKEN": "t0ken"}), \
+                unittest.mock.patch.object(report.urllib.request, "build_opener", return_value=opener), \
+                unittest.mock.patch.object(report.urllib.request, "urlopen", return_value=body) as urlopen:
+            log = report.job_log("o/r", 7)
+        request = opener.open.call_args[0][0]
+        self.assertEqual(request.full_url, "https://api.github.com/repos/o/r/actions/jobs/7/logs")
+        self.assertEqual(request.get_header("Authorization"), "Bearer t0ken")
+        urlopen.assert_called_once_with("https://blob.example/log?sig=1", timeout=300)  # no token
+        self.assertIn("\x1b[36;1mline 2", log)  # escape sequences and all
+        jobs = '[{"id": 7, "name": "build", "conclusion": "success"}]'
+        with unittest.mock.patch.object(report, "gh", return_value=jobs), \
+                unittest.mock.patch.object(report, "job_log", side_effect=OSError("timed out")):
+            self.assertEqual(report.run_logs("o/r", 1)[0]["log"], "(the log did not download: timed out)\n")
 
     def test_store_nights(self):
         self.assertEqual(nightly_data.lit("it's"), "'it\\'s'")
@@ -515,7 +535,8 @@ class Api(unittest.TestCase):
         return api.route(method, path, query or {}, "https://f.example")
 
     def test_routes(self):
-        self.assertEqual(json.loads(self.call("/health")["body"])["engine"], "26.9.0")
+        with unittest.mock.patch.object(api, "engine", return_value=types.SimpleNamespace(__version__="26.9.0")):
+            self.assertEqual(json.loads(self.call("/health")["body"])["engine"], "26.9.0")
         self.assertEqual(self.call("/latest", method="POST")["statusCode"], 405)
         self.assertEqual(self.call("/nope")["statusCode"], 404)
         # Rejected before any query runs.
