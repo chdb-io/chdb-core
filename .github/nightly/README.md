@@ -1,13 +1,14 @@
 # Daily ClickHouse sync and nightly builds
 
-Two workflows keep `main` close to ClickHouse master and publish what it builds.
+Three workflows keep `main` close to ClickHouse master and publish what it builds.
 
 | Workflow | When | What it does |
 |---|---|---|
 | `daily_sync.yml` | 22:17 UTC, Sunday to Thursday (06:17 in Beijing, Monday to Friday), or by hand | Applies the ClickHouse master diff since `UPSTREAM_COMMIT`, builds and tests it, and opens a pull request |
-| `nightly_publish.yml` | After main's build of each merged sync pull request | Finishes the `nightly` pre-release that build uploads its wheels to, and updates the dashboard |
+| `nightly_publish.yml` | After main's build of each merged sync pull request | Finishes the `nightly` pre-release that build uploads its wheels to, adds the chdb nightly, stores the night in S3 and updates the dashboard |
+| `nightly_api.yml` | When `api/` or `nightly_data.py` changes on main, or by hand | Deploys the nightly API, the chDB Lambda function the dashboard reads |
 
-Both stay off until their repository variable is set (below).
+They stay off until their repository variables are set (below).
 
 ## Daily sync
 
@@ -123,16 +124,51 @@ newer night is already out (a rerun of an older night's job), then:
   nights, a night being one commit. The release is created once; afterwards only
   its assets, notes and tag move, so no `release: published` event starts the
   release builds, and the release workflows skip any tag that is not `v*` anyway;
+- builds the chdb nightly (`chdb_nightly.py`, below) and adds it to the release;
 - writes a PEP 503 index from the release's asset list, whose names and sha256
   digests are all it needs (no wheel is downloaded), so
   `pip install --pre --extra-index-url <site>/simple chdb-core` installs the newest
-  nightly;
+  chdb-core nightly and `... chdb` the newest chdb nightly with it;
 - runs `report.py` on the latest chdb-core release: chDB writes the night's runs,
-  test results and failure log tails as files named by the date, which the workflow
-  uploads to a public Vercel Blob store; it computes the history with SQL over that
-  night and the ones before it, read straight from the store's URLs with `url()`,
-  and lists the night's failing tests;
-- deploys `dashboard/`, its data and the pip index to Vercel.
+  test results and night record as Parquet files named by the date, next to the
+  complete log of every platform's run, failed or not; the workflow uploads them
+  to the nightly store, an S3 bucket. chDB also computes the history with SQL over
+  that night and the ones before it, read from the bucket with `s3()`, and the
+  night's failing tests, as `data/*.json`;
+- deploys `dashboard/`, that data and the pip index to Vercel. The dashboard reads
+  the nightly API, and `data/*.json` when the API cannot be reached.
+
+### The chdb nightly
+
+chdb (chdb-io/chdb, the DataStore API) is a pure-Python package on top of chdb-core.
+For a night with a chdb-core wheel on the release, `chdb_nightly.py` copies a
+checkout of chdb's `main` and changes the copy, never the chdb repository: the
+version becomes the minor after chdb's newest PyPI release with the night's dev
+number, e.g. `4.5.0.dev2610180851`, newer than every release so that `pip --pre`
+picks it, and the chdb-core requirement becomes the night's exact version. It builds
+the wheel and uploads it to the release untested, since chdb's own CI tests its
+`main`. On a platform the night has no chdb-core wheel for, pip backtracks to the
+newest chdb nightly whose chdb-core it can install. chdb's wheels, like chdb-core's,
+go when their night is older than the newest 20. The outcome and the build log are
+on the dashboard; chdb never holds up chdb-core's night.
+
+### The nightly store and API
+
+The store is an S3 bucket, one file per table and night (`nightly_data.py` lists
+them). The publish job writes it through a GitHub OIDC role; nothing in it is
+public. The nightly API (`api/app.py`) is an AWS Lambda function, a container image
+since chDB's wheel is too big for a zip deployment, behind a function URL. It runs
+chDB over the bucket with the function's read-only role and answers a fixed set of
+read-only requests, the same queries `report.py` runs (`nightly_data.py`):
+
+| Request | Answer |
+|---|---|
+| `GET /latest` | the newest night, as `data/latest.json` |
+| `GET /history?days=N` | the runs of the last N nights (90; at most 365), as `data/history.json` |
+| `GET /logs/<date>/<platform>` | the complete log of that platform's run |
+| `GET /logs/<date>/<platform>?tail=error` | its lines up to the first error |
+| `GET /logs/<date>/chdb` | the chdb nightly's build log |
+| `GET /health` | the engine version |
 
 ## Setup
 
@@ -148,18 +184,41 @@ newer night is already out (a rerun of an older night's job), then:
 | `VERCEL_TOKEN` | secret | nightly | Vercel access token for the team that owns the project |
 | `VERCEL_ORG_ID` | variable | nightly | That team's id |
 | `VERCEL_PROJECT_ID` | variable | nightly | The dashboard's project; deployment is skipped when unset |
-| `BLOB_BASE_URL` | variable | nightly | Base URL of the public Blob store, `https://<store id>.public.blob.vercel-storage.com` |
-| `BLOB_READ_WRITE_TOKEN` | secret | nightly | The Blob store's read-write token |
+| `NIGHTLY_AWS_REGION` | variable | nightly, API | The region of the bucket and the function, e.g. `ap-southeast-1` |
+| `NIGHTLY_AWS_ROLE_ARN` | variable | nightly, API | The role the workflows assume through GitHub's OIDC provider |
+| `NIGHTLY_BUCKET` | variable | nightly, API | The nightly store's bucket; without it the store stays on the runner and the history is the night alone |
+| `NIGHTLY_API_URL` | variable | nightly | The function URL of the nightly API, which `config.json` gives the dashboard |
+| `NIGHTLY_API_FUNCTION`, `NIGHTLY_API_REPOSITORY` | variable | API | Optional; the function and the ECR repository, both `chdb-nightly-api` by default |
 
 In Vercel, in the dashboard or with the CLI: create the project with no Git
 connection and no build, since the workflow deploys a finished directory (drop
 any page on vercel.com/drop, or run `vercel project create <name>`); make sure
 Deployment Protection leaves its production domain public (pip and readers fetch
-it without a Vercel login); add a `chdb.io` subdomain to it (a CNAME in chdb.io's
-DNS) or keep its `*.vercel.app` domain; and create a public Blob store.
+it without a Vercel login); and add a `chdb.io` subdomain to it (a CNAME in
+chdb.io's DNS) or keep its `*.vercel.app` domain.
 
-Without `BLOB_BASE_URL` the report still runs, with the history limited to the
-night itself.
+In AWS, in one region:
+
+1. An S3 bucket with all public access blocked. Optionally a lifecycle rule that
+   expires `logs/` after some months.
+2. The GitHub OIDC identity provider, `https://token.actions.githubusercontent.com`
+   with audience `sts.amazonaws.com`, once per account.
+3. The workflows' role (`NIGHTLY_AWS_ROLE_ARN`), trusting that provider for
+   `repo:chdb-io/chdb-core:ref:refs/heads/main`, allowed `s3:ListBucket` on the
+   bucket, `s3:GetObject` and `s3:PutObject` on its objects (`<bucket>/*`),
+   `ecr:GetAuthorizationToken` and the push actions on the API's ECR
+   repository, and `lambda:UpdateFunctionCode`, `lambda:GetFunction` and
+   `lambda:GetFunctionConfiguration` on the function.
+4. A private ECR repository for the API's image, `chdb-nightly-api`.
+5. The function's execution role: `AWSLambdaBasicExecutionRole`, and
+   `s3:ListBucket` and `s3:GetObject` on the bucket.
+6. Run `nightly_api.yml` by hand, which pushes the first image, then create the
+   function from it: container image, x86_64, the execution role, 2048 MB, a 30
+   second timeout, a small reserved concurrency, and the environment variables
+   `NIGHTLY_BUCKET`, `NIGHTLY_SITE_URL` and `GITHUB_REPOSITORY`. Give it a function
+   URL with auth type `NONE` and CORS allowing the dashboard's origin with `GET`,
+   and set `NIGHTLY_API_URL` to it. Later runs of `nightly_api.yml` update the
+   function.
 
 ## Files
 
@@ -173,7 +232,10 @@ night itself.
 | `embedded-mirror-allowlist.txt` | `LocalServer` calls `EmbeddedServer` deliberately skips |
 | `upload_wheel.sh` | a merged sync's wheel to the nightly release |
 | `publish.py` | nightly release tag, retention and pip index |
-| `report.py` | dashboard data, computed by chDB |
+| `chdb_nightly.py` | the chdb nightly, pinned to the night's chdb-core |
+| `report.py` | the nightly store and the dashboard's data, computed by chDB |
+| `nightly_data.py` | the store's tables and the queries `report.py` and the API share |
+| `api/` | the nightly API: chDB in AWS Lambda over the store |
 | `dashboard/` | the static dashboard |
 | `test_nightly.py` | offline tests, run by Pull-CI |
 | `../../UPSTREAM_COMMIT` | the ClickHouse commit `main` is synced to |
