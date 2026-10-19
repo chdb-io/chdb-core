@@ -1,6 +1,8 @@
-// Renders the nightly dashboard from data/*.json, which report.py computes with
-// chDB in CI. No dependencies. Every string from the data goes in through
-// textContent, never innerHTML: test names and titles are untrusted.
+// Renders the nightly dashboard. Its data comes from the nightly API (config.json
+// names it), a chDB Lambda function that queries the nightly store in S3, and from
+// data/*.json, the copy report.py computes with chDB in CI, when the API cannot be
+// reached. No dependencies. Every string from the data goes in through textContent,
+// never innerHTML: test names and titles are untrusted.
 
 const PLATFORMS = [
   { id: "linux-x86_64", label: "Linux x86_64", slot: 1 },
@@ -17,7 +19,7 @@ const STATUS = {
 const NOT_RUN = { cls: "none", icon: "–", label: "Not run" };
 const SVG = "http://www.w3.org/2000/svg";
 
-const state = { days: 30, latest: null, history: [] };
+const state = { days: 30, latest: null, history: [], source: "" };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -274,20 +276,38 @@ function renderTests() {
     : el("p", { class: "empty" }, "No failing tests."));
 }
 
+function link(href, text) {
+  return href ? el("a", { href }, text) : text;
+}
+
 function renderInstall() {
   const latest = state.latest;
   const index = (latest && latest.install.index_url) || `${location.origin}/simple`;
   const root = document.getElementById("install");
   root.replaceChildren(
     el("p", { class: "caption" }, "Newest nightly (pre-release; not for production):"),
-    el("pre", { class: "install" }, el("code", {}, `pip install --pre --extra-index-url ${index} chdb-core`)),
-    el("p", { class: "caption" }, "Pin one night with chdb-core==<version>. The newest 20 nightly builds are kept on the ",
+    el("pre", { class: "install" }, el("code", {},
+      `pip install --pre --extra-index-url ${index} chdb-core\npip install --pre --extra-index-url ${index} chdb`)),
+    el("p", { class: "caption" }, "chdb is chdb-io/chdb's main, pinned to the chdb-core of its night. ",
+      "Pin one night with chdb-core==<version> or chdb==<version>. The newest 20 nights are kept on the ",
       el("a", { href: latest ? latest.install.release_url : "#" }, "nightly release"), "."),
   );
-  const logs = (latest ? latest.platforms : []).filter((p) => p.log);
+  if (!latest) return;
+  const chdb = latest.chdb || {};
+  if (chdb.status === "published") {
+    root.append(el("p", { class: "caption" }, "chdb nightly of this night: ", el("code", {}, chdb.version), " from ",
+      link(chdb.commit_url, el("code", {}, (chdb.commit || "").slice(0, 12))), ".",
+      chdb.log ? [" ", el("a", { href: chdb.log }, "Build and test log"), "."] : ""));
+  } else if (chdb.status) {
+    const why = chdb.status === "failed" ? "its build or tests failed" : "not every platform has a chdb-core wheel";
+    root.append(el("p", { class: "caption" }, `No chdb nightly for this night: ${why}; the previous one stays the newest. `,
+      chdb.log ? el("a", { href: chdb.log }, "Build and test log") : ""));
+  }
+  const logs = latest.platforms.filter((p) => p.log || p.error_log);
   if (logs.length) {
-    root.append(el("p", { class: "caption" }, "Failure log tails from the newest night: ",
-      logs.map((p, k) => [k ? ", " : "", el("a", { href: p.log }, platformLabel(p.platform))])));
+    root.append(el("p", { class: "caption" }, "Logs of the newest night: ",
+      logs.map((p, k) => [k ? "; " : "", link(p.log, platformLabel(p.platform)),
+        p.error_log ? [" (", el("a", { href: p.error_log }, "up to the first error"), ")"] : ""])));
   }
 }
 
@@ -296,7 +316,7 @@ function renderFooter() {
   const footer = document.getElementById("footer");
   if (!latest) return;
   const engine = latest.engine || {};
-  footer.replaceChildren(`Data computed with chDB ${engine.version || ""}. Generated ${latest.generated_at}.`);
+  footer.replaceChildren(`Data computed with chDB ${engine.version || ""}, ${state.source}. Published ${latest.generated_at}.`);
   document.getElementById("updated").textContent = `Updated ${latest.generated_at.replace("T", " ").replace("Z", " UTC")}.`;
 }
 
@@ -334,8 +354,14 @@ async function main() {
       render();
     });
   }
-  const load = (name) => fetch(`data/${name}.json`, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const [latest, history] = await Promise.all(["latest", "history"].map(load));
+  const get = (url) => fetch(url, { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const config = (await get("config.json")) || {};
+  let [latest, history] = config.api ? await Promise.all(["latest", "history"].map((name) => get(`${config.api}/${name}`))) : [];
+  state.source = "live from the nightly API";
+  if (!latest || !history) {
+    [latest, history] = await Promise.all(["latest", "history"].map((name) => get(`data/${name}.json`)));
+    state.source = "as of its publication";
+  }
   state.latest = latest;
   state.history = (history && history.rows) || [];
   render();

@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import gzip
 import importlib.util
+import json
 import os
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 import unittest.mock
-import urllib.error
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -29,6 +32,12 @@ sync = load("daily_sync", HERE / "daily_sync.py")
 checks = load("checks", HERE / "checks.py")
 publish = load("publish", HERE / "publish.py")
 report = load("report", HERE / "report.py")
+nightly_data = load("nightly_data", HERE / "nightly_data.py")
+chdb_nightly = load("chdb_nightly", HERE / "chdb_nightly.py")
+# The API imports boto3 and chDB, which these offline tests need not install.
+with unittest.mock.patch.dict(sys.modules, {"boto3": types.SimpleNamespace(client=lambda *a, **k: unittest.mock.MagicMock()),
+                                            "chdb": types.SimpleNamespace(__version__="26.9.0")}):
+    api = load("app", HERE / "api" / "app.py")
 preflight = load("sync_preflight", sync.PREFLIGHT)
 
 ZERO = "0" * 40
@@ -319,6 +328,8 @@ class Publishing(unittest.TestCase):
     linux = "chdb_core-26.10.0.dev2610151617-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
     mac = "chdb_core-26.10.0.dev2610151617-cp39-abi3-macosx_11_0_arm64.whl"
     old = "chdb_core-26.10.0.dev2609010930-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl"
+    chdb = "chdb-4.5.0.dev2610151617-py3-none-any.whl"
+    old_chdb = "chdb-4.5.0.dev2609010930-py3-none-any.whl"
 
     def asset(self, name, updated_at="2026-10-15T20:00:00Z"):
         return {"name": name, "size": 7, "digest": "sha256:" + "f" * 64, "updated_at": updated_at}
@@ -338,25 +349,45 @@ class Publishing(unittest.TestCase):
 
     def test_night_wheels(self):
         self.assertEqual(publish.dev_number("2026-10-15T16:17:59Z"), "2610151617")
-        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset("notes.txt")]
+        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset(self.chdb),
+                  self.asset("notes.txt")]
         wheels = publish.night_wheels(assets, "2610151617")
-        self.assertEqual([w["platform"] for w in wheels], ["linux-x86_64", "macos-arm64"])
+        self.assertEqual([w["platform"] for w in wheels], ["linux-x86_64", "macos-arm64"])  # chdb-core's only
+        self.assertEqual([w["name"] for w in publish.night_wheels(assets, "2610151617", "chdb")], [self.chdb])
+        self.assertEqual([publish.wheel_project(n) for n in (self.linux, self.chdb, "chdb.tar.gz")], ["chdb-core", "chdb", ""])
         self.assertEqual(wheels[0]["sha256"], "f" * 64)
         self.assertEqual(publish.wheel_platform(self.old), "linux-aarch64")
         self.assertEqual(publish.wheel_version(self.linux), "26.10.0.dev2610151617")
 
     def test_stale(self):
-        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset("notes.txt")]
-        self.assertEqual(publish.stale(assets, 1), [self.old])
+        assets = [self.asset(self.linux), self.asset(self.mac), self.asset(self.old), self.asset(self.chdb),
+                  self.asset(self.old_chdb), self.asset("notes.txt")]
+        self.assertEqual(publish.stale(assets, 1), sorted([self.old, self.old_chdb]))  # chdb goes with its night
         self.assertEqual(publish.stale(assets, 2), [])
         self.assertEqual(publish.dev_of(self.old), 2609010930)
 
     def test_pep503(self):
-        pages = publish.pep503_pages("chdb-io/chdb-core", [self.asset(self.linux), self.asset("notes.txt")])
+        pages = publish.pep503_pages("chdb-io/chdb-core", [self.asset(self.linux), self.asset(self.chdb),
+                                                            self.asset("notes.txt")])
         project = pages["simple/chdb-core/index.html"]
         self.assertIn(f"https://github.com/chdb-io/chdb-core/releases/download/nightly/{self.linux}#sha256=", project)
         self.assertNotIn("notes.txt", project)
+        self.assertNotIn(self.chdb, project)
+        self.assertIn(self.chdb, pages["simple/chdb/index.html"])
         self.assertIn('href="chdb-core/"', pages["simple/index.html"])
+        self.assertIn('href="chdb/"', pages["simple/index.html"])
+        # No chdb nightly yet: no page for it.
+        self.assertNotIn("simple/chdb/index.html", publish.pep503_pages("o/r", [self.asset(self.linux)]))
+
+    def test_release_notes(self):
+        night = {"version": "26.10.0.dev2610151617", "head_sha": A, "date": "2026-10-15", "wheels": [{}],
+                 "chdb": {"status": "published", "version": "4.5.0.dev2610151617", "commit": B}}
+        notes = publish.release_notes(night, "https://n.example/", 20)
+        self.assertIn("pip install --pre --extra-index-url https://n.example/simple chdb-core\n", notes)
+        self.assertIn("pip install --pre --extra-index-url https://n.example/simple chdb\n", notes)
+        self.assertIn(f"chdb `4.5.0.dev2610151617` is chdb-io/chdb@{B[:12]}", notes)
+        night["chdb"]["status"] = "failed"
+        self.assertNotIn("chdb-io/chdb@", publish.release_notes(night, "", 20))
 
 
 class Reporting(unittest.TestCase):
@@ -378,48 +409,133 @@ class Reporting(unittest.TestCase):
         self.assertEqual(rows[1]["test"], "test_a.T.test_bad")
         self.assertEqual(rows[0]["suite"], "py3.9-pandas_3.0/main-shard-1")
 
-    def test_failed_log_tail_ends_at_the_first_error(self):
+    def test_run_logs_and_failure_tail(self):
         log = "\n".join([f"line {i}" for i in range(1000)] + ["##[error]Process completed with exit code 1."]
                         + [f"cleanup {i}" for i in range(2000)])
-        answers = {"jobs": '[{"id": 7, "name": "build"}]', "logs": log}
-        with unittest.mock.patch.object(report, "gh", lambda *args: answers["jobs" if "/runs/" in args[1] else "logs"]):
-            tail = report.failed_log_tail("o/r", 1).splitlines()
+        jobs = '[{"id": 7, "name": "build", "conclusion": "failure"}, {"id": 8, "name": "gate", "conclusion": "success"}]'
+        with unittest.mock.patch.object(report, "gh", lambda *args: jobs if "/runs/" in args[1] else
+                                        (log if args[1].endswith("/7/logs") else "gate ok")):
+            runs = report.run_logs("o/r", 1)
+        self.assertEqual([(j["name"], j["conclusion"]) for j in runs], [("build", "failure"), ("gate", "success")])
+        joined = report.joined_log(runs)
+        self.assertIn("==> build (failure)\nline 0", joined)
+        self.assertIn("cleanup 1999", joined)  # the complete log
+        self.assertIn("==> gate (success)\ngate ok", joined)
+        tail = report.failure_tail(runs).splitlines()
         self.assertEqual(tail[-1], "##[error]Process completed with exit code 1.")
-        self.assertEqual(len(tail), report.LOG_TAIL_LINES + 1)  # the header, then the lines
+        self.assertEqual(len(tail), nightly_data.LOG_TAIL_LINES + 1)  # the header, then the lines
         self.assertNotIn("cleanup 0", tail)
+        self.assertEqual(report.failure_tail([runs[1]]), "")  # nothing failed
+        self.assertEqual(nightly_data.error_tail("a\nb\n", 1), "b\n")  # no error: the end
 
     def test_store_nights(self):
-        self.assertEqual(report.lit("it's"), "'it\\'s'")
-        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"BLOB_BASE_URL": ""}):
+        self.assertEqual(nightly_data.lit("it's"), "'it\\'s'")
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"NIGHTLY_S3_URL": ""}):
             local = report.Store(Path(tmp), "2026-10-15")
             self.assertFalse(local.remote)
-            self.assertTrue(local.nights("runs", "x UInt8", 3).startswith(f"file('{tmp}/store/runs/*.parquet'"))
-        with unittest.mock.patch.dict(os.environ, {"BLOB_BASE_URL": "https://b.example/"}):
-            store = report.Store(Path("/w"), "2026-10-15")
-        night = "file('/w/store/runs/2026-10-15.parquet', 'Parquet', 'x UInt8')"
-        # Only the nights the store has are read: url() fails on a missing one.
-        for stored, earlier in ((["runs/2026-10-14.parquet", "runs/2026-10-12.parquet"], "{2026-10-14,2026-10-12}"),
-                                (["runs/2026-10-13.parquet"], "2026-10-13")):
-            with unittest.mock.patch.object(store, "stored", side_effect=lambda rel: rel in stored):
-                remote = store.nights("runs", "x UInt8", 3)
-            self.assertIn(f"url('https://b.example/runs/{earlier}.parquet', 'Parquet', 'x UInt8')", remote)
-            self.assertIn(night, remote)
-        with unittest.mock.patch.object(store, "stored", return_value=False):
-            self.assertEqual(store.nights("runs", "x UInt8", 3), night)  # the first night
+            self.assertTrue(local.nights("runs", "x UInt8").startswith(f"file('{tmp}/store/runs/*.parquet'"))
+        with unittest.mock.patch.dict(os.environ, {"NIGHTLY_S3_URL": "https://b.s3.ap-southeast-1.amazonaws.com/"}):
+            remote = report.Store(Path("/w"), "2026-10-15").nights("runs", "x UInt8")
+        # The bucket's earlier nights, but not this one, which a new publication rewrites.
+        self.assertEqual(remote, "(SELECT * FROM s3('https://b.s3.ap-southeast-1.amazonaws.com/runs/*.parquet', "
+                                 "'Parquet', 'x UInt8') WHERE date != '2026-10-15' UNION ALL SELECT * FROM "
+                                 "file('/w/store/runs/2026-10-15.parquet', 'Parquet', 'x UInt8'))")
 
-    def test_store_stored(self):
-        store = report.Store(Path("/w"), "2026-10-15")
-        store.remote = "https://b.example"
-        missing = urllib.error.HTTPError("https://b.example/runs/x.parquet", 404, "Not Found", {}, None)
-        denied = urllib.error.HTTPError("https://b.example/runs/x.parquet", 403, "Forbidden", {}, None)
-        with unittest.mock.patch("urllib.request.urlopen") as urlopen:
-            self.assertTrue(store.stored("runs/x.parquet"))
-            self.assertEqual(urlopen.call_args[0][0].get_method(), "HEAD")
-            urlopen.side_effect = missing
-            self.assertFalse(store.stored("runs/x.parquet"))
-            urlopen.side_effect = denied
-            with self.assertRaises(urllib.error.HTTPError):
-                store.stored("runs/x.parquet")
+    def test_latest(self):
+        night = {"date": "2026-10-15", "head_sha": A, "version": "26.10.0.dev2610151617", "upstream_commit": B,
+                 "sync_conclusion": "", "sync_url": "", "sync_created_at": "", "chdb_version": "4.5.0.dev2610151617",
+                 "chdb_commit": B, "chdb_status": "published", "engine": "26.9.0", "generated_at": "2026-10-15T20:00:00Z"}
+        runs = [{"platform": "macos-arm64", "conclusion": "failure", "duration_min": 9.5, "tests_total": 3,
+                 "tests_failed": 1, "url": "u", "wheel_bytes": 3 * 1048576}]
+        doc = nightly_data.latest(night, runs, [], repo="o/r", site_url="https://n.example/",
+                                  logs={"macos-arm64": {"log": "L", "error_log": "E"}, "chdb": {"log": "C"}})
+        self.assertEqual([p["platform"] for p in doc["platforms"]], nightly_data.PLATFORMS)
+        mac = doc["platforms"][2]
+        self.assertEqual((mac["conclusion"], mac["wheel_mb"], mac["log"], mac["error_log"]), ("failure", 3.0, "L", "E"))
+        self.assertEqual(doc["platforms"][0]["conclusion"], "missing")
+        self.assertIsNone(doc["sync"]["last_run"])
+        self.assertEqual(doc["sync"]["upstream_url"], f"https://github.com/ClickHouse/ClickHouse/commit/{B}")
+        self.assertEqual(doc["chdb"]["commit_url"], f"https://github.com/chdb-io/chdb/commit/{B}")
+        self.assertEqual(doc["chdb"]["log"], "C")
+        self.assertEqual(doc["install"]["index_url"], "https://n.example/simple")
+
+
+class ChdbNightly(unittest.TestCase):
+    pyproject = """[project]
+name = "chdb"
+version = "3.7.0"
+dependencies = [
+    "chdb-core>=26.7.0",
+    "pandas>=2.1.0",
+]
+
+[project.optional-dependencies]
+durable = ["boto3>=1.36", "chdb-core>=26.7.3"]
+"""
+
+    def test_next_dev_version(self):
+        self.assertEqual(chdb_nightly.next_dev_version("4.4.0", "2610180851"), "4.5.0.dev2610180851")
+        self.assertEqual(chdb_nightly.next_dev_version("4.9.12", "1"), "4.10.0.dev1")
+        with self.assertRaises(ValueError):
+            chdb_nightly.next_dev_version("latest", "1")
+
+    def test_pin(self):
+        text = chdb_nightly.pin(self.pyproject, "4.5.0.dev1", "26.10.0.dev1")
+        self.assertIn('version = "4.5.0.dev1"', text)
+        self.assertIn('"chdb-core==26.10.0.dev1",', text)
+        self.assertIn('durable = ["boto3>=1.36", "chdb-core>=26.7.3"]', text)  # an extra keeps its floor
+        with self.assertRaises(ValueError):
+            chdb_nightly.pin(self.pyproject.replace('"chdb-core>=26.7.0",', ""), "4.5.0.dev1", "26.10.0.dev1")
+        source = 'x = 1\n__version__ = "3.7.0"\n'
+        self.assertEqual(chdb_nightly.set_module_version(source, "4.5.0.dev1"), 'x = 1\n__version__ = "4.5.0.dev1"\n')
+
+    def test_a_night_without_every_platform_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work, src = Path(tmp) / "work", Path(tmp) / "src"
+            work.mkdir()
+            subprocess.run(["git", "init", "-q", str(src)], check=True)
+            subprocess.run(["git", "-C", str(src), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                            "--allow-empty", "-m", "x"], check=True)
+            night = {"date": "2026-10-15", "version": "26.10.0.dev1", "wheels": [{"platform": "linux-x86_64"}]}
+            (work / "night.json").write_text(json.dumps(night))
+            with unittest.mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}), \
+                    unittest.mock.patch.object(chdb_nightly, "build_and_test") as build:
+                self.assertEqual(chdb_nightly.main(["--work", str(work), "--src", str(src)]), 0)
+            build.assert_not_called()
+            result = json.loads((work / "night.json").read_text())["chdb"]
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("linux-aarch64", result["reason"])
+        self.assertEqual(len(result["commit"]), 40)
+
+
+class Api(unittest.TestCase):
+    def call(self, path, query=None, method="GET"):
+        return api.route(method, path, query or {}, "https://f.example")
+
+    def test_routes(self):
+        self.assertEqual(json.loads(self.call("/health")["body"])["engine"], "26.9.0")
+        self.assertEqual(self.call("/latest", method="POST")["statusCode"], 405)
+        self.assertEqual(self.call("/nope")["statusCode"], 404)
+        # Rejected before any query runs.
+        self.assertEqual(self.call("/history", {"days": "x"})["statusCode"], 400)
+        self.assertEqual(self.call("/history", {"days": "366"})["statusCode"], 400)
+        for path in ("/logs/2026-10-15/windows", "/logs/yesterday/linux-x86_64", "/logs/2026-10-15/../x"):
+            self.assertEqual(self.call(path)["statusCode"], 404, path)
+
+    def test_logs(self):
+        log = "\n".join([f"line {i}" for i in range(500)] + ["##[error]boom", "cleanup"])
+        body = types.SimpleNamespace(read=lambda: gzip.compress(log.encode()))
+        with unittest.mock.patch.object(api, "_s3") as s3:
+            s3.get_object.return_value = {"Body": body}
+            full = self.call("/logs/2026-10-15/linux-x86_64")
+            s3.get_object.assert_called_with(Bucket=api.BUCKET, Key="logs/2026-10-15/linux-x86_64.txt.gz")
+            tail = self.call("/logs/2026-10-15/linux-x86_64", {"tail": "error"})
+        # Passed on compressed, for the browser to inflate.
+        self.assertTrue(full["isBase64Encoded"])
+        self.assertEqual(full["headers"]["Content-Encoding"], "gzip")
+        self.assertEqual(gzip.decompress(api.base64.b64decode(full["body"])).decode(), log)
+        self.assertTrue(tail["body"].endswith("##[error]boom\n"))
+        self.assertEqual(len(tail["body"].splitlines()), nightly_data.LOG_TAIL_LINES)
 
 
 if __name__ == "__main__":

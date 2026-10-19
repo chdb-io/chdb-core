@@ -4,8 +4,9 @@ name: Publish nightly build
 # wheel workflows build that push like any other, and also upload their wheel to the
 # rolling `nightly` pre-release. This runs when each of them finishes; for a sync's
 # merge, once all four runs for the commit are done, it moves the release to that
-# commit, keeps the newest 20 nights of wheels, and has chDB turn the night's results
-# into the dashboard, which goes to Vercel with its data in Vercel Blob.
+# commit, keeps the newest 20 nights of wheels, builds the chdb nightly against it,
+# and has chDB turn the night's results and logs into the nightly store in S3, which
+# the nightly API (a chDB Lambda function) serves to the dashboard on Vercel.
 # See .github/nightly/README.md.
 
 on:
@@ -35,6 +36,7 @@ permissions:
   contents: write       # the nightly release and its tag
   actions: read         # the build runs, their jobs and artifacts
   pull-requests: read   # the open sync pull request the dashboard shows
+  id-token: write       # the AWS role that writes the nightly store, through GitHub's OIDC provider
 
 jobs:
   publish:
@@ -42,7 +44,7 @@ jobs:
       vars.NIGHTLY_PUBLISH_ENABLED == 'true' &&
       (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,38 +65,65 @@ jobs:
           --head-sha "$HEAD_SHA"
           --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
 
+      # chdb-io/chdb's main, which chdb_nightly.py copies and pins to the night's chdb-core.
+      - uses: actions/checkout@v7
+        if: steps.publish.outputs.ready == 'true'
+        with:
+          repository: chdb-io/chdb
+          ref: main
+          path: chdb-src
+          persist-credentials: false
+
+      # Never fails the night: the outcome goes into night.json for the dashboard.
+      - name: Build the chdb nightly
+        if: steps.publish.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/nightly/chdb_nightly.py --work "$RUNNER_TEMP/nightly" --src chdb-src
+
+      - name: Write the pip index and the release notes
+        if: steps.publish.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
+        run: >-
+          python3 .github/nightly/publish.py --index
+          --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
+
+      - name: Configure AWS credentials
+        if: steps.publish.outputs.ready == 'true' && vars.NIGHTLY_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.NIGHTLY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.NIGHTLY_AWS_REGION }}
+
       # The latest release from PyPI: the nightly wheels stay on the release.
       - name: Install chDB
         if: steps.publish.outputs.ready == 'true'
         run: python3 -m pip install --quiet chdb-core
 
+      # chDB reads the earlier nights from the bucket with the credentials above.
       - name: Build the dashboard data
         if: steps.publish.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NIGHTLY_SITE_URL: ${{ vars.NIGHTLY_SITE_URL }}
-          BLOB_BASE_URL: ${{ vars.BLOB_BASE_URL }}
+          NIGHTLY_API_URL: ${{ vars.NIGHTLY_API_URL }}
+          NIGHTLY_S3_URL: >-
+            ${{ vars.NIGHTLY_BUCKET && format('https://{0}.s3.{1}.amazonaws.com', vars.NIGHTLY_BUCKET, vars.NIGHTLY_AWS_REGION) || '' }}
         run: python3 .github/nightly/report.py --work "$RUNNER_TEMP/nightly" --site "$RUNNER_TEMP/site"
 
-      - name: Install the Vercel CLI
-        if: steps.publish.outputs.ready == 'true' && (vars.BLOB_BASE_URL != '' || vars.VERCEL_PROJECT_ID != '')
-        run: npm install --global vercel@64
-
-      # The night's Parquet files and log tails; report.py reads earlier nights
-      # back from the store's public URLs.
-      - name: Store the night in Vercel Blob
-        if: steps.publish.outputs.ready == 'true' && vars.BLOB_BASE_URL != ''
+      # The night's Parquet files and logs, read by the nightly API and by later nights.
+      - name: Store the night in S3
+        if: steps.publish.outputs.ready == 'true' && vars.NIGHTLY_BUCKET != ''
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
-        working-directory: ${{ runner.temp }}/nightly/store
-        # An empty token would leave the CLI waiting for an interactive login.
-        run: |
-          : "${VERCEL_TOKEN:?the VERCEL_TOKEN secret is not set}" "${BLOB_READ_WRITE_TOKEN:?the BLOB_READ_WRITE_TOKEN secret is not set}"
-          for path in $(find . -type f | sed 's|^\./||' | sort); do
-            vercel blob put "$path" --pathname "$path" --access public --allow-overwrite \
-              --rw-token "$BLOB_READ_WRITE_TOKEN" --token "$VERCEL_TOKEN" --non-interactive
-          done
+          BUCKET: ${{ vars.NIGHTLY_BUCKET }}
+        run: aws s3 cp "$RUNNER_TEMP/nightly/store" "s3://$BUCKET/" --recursive --no-progress
+
+      - name: Install the Vercel CLI
+        if: steps.publish.outputs.ready == 'true' && vars.VERCEL_PROJECT_ID != ''
+        run: npm install --global vercel@64
 
       - name: Deploy the dashboard to Vercel
         if: steps.publish.outputs.ready == 'true' && vars.VERCEL_PROJECT_ID != ''

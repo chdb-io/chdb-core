@@ -1,0 +1,71 @@
+name: Deploy the nightly API
+
+# Builds the container image of the nightly API (.github/nightly/api: chDB in AWS
+# Lambda, serving the nightly store in S3 to the dashboard), pushes it to ECR and
+# points the Lambda function at it. Runs when the API changes on main. The function
+# is created once by hand (.github/nightly/README.md); until it exists this only
+# pushes the image it is created from.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/nightly/api/**'
+      - '.github/nightly/nightly_data.py'
+      - '.github/workflows/nightly_api.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-api
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # the AWS role, through GitHub's OIDC provider
+
+jobs:
+  deploy:
+    if: vars.NIGHTLY_AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FUNCTION: ${{ vars.NIGHTLY_API_FUNCTION || 'chdb-nightly-api' }}
+      REPOSITORY: ${{ vars.NIGHTLY_API_REPOSITORY || 'chdb-nightly-api' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.NIGHTLY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.NIGHTLY_AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        # Lambda takes a single-platform image manifest, not the index buildx makes when
+        # it attaches provenance and SBOM attestations.
+        run: |
+          image="$REGISTRY/$REPOSITORY:$GITHUB_SHA"
+          docker build --platform linux/amd64 --provenance=false --sbom=false \
+            -f .github/nightly/api/Dockerfile -t "$image" .github/nightly
+          docker push "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Point the function at the image
+        run: |
+          if ! out=$(aws lambda get-function --function-name "$FUNCTION" 2>&1); then
+            if grep -q ResourceNotFoundException <<< "$out"; then
+              echo "::notice::The Lambda function $FUNCTION does not exist yet. Create it from $IMAGE as .github/nightly/README.md describes."
+              exit 0
+            fi
+            echo "$out"
+            exit 1
+          fi
+          aws lambda update-function-code --function-name "$FUNCTION" --image-uri "$IMAGE" > /dev/null
+          aws lambda wait function-updated --function-name "$FUNCTION"
+          echo "$FUNCTION now runs $IMAGE"

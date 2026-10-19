@@ -30,6 +30,7 @@ on:
       - '.github/nightly/**'
       - '.github/workflows/daily_sync.yml'
       - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -48,6 +49,7 @@ on:
       - '.github/nightly/**'
       - '.github/workflows/daily_sync.yml'
       - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
 
 concurrency:
   # Replace stale pull request runs. On main a newer push replaces a pending run, but

@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Turn a night's results into the dashboard's data, with chDB doing the work.
+"""Turn a night's results into the nightly store and the dashboard's data, with chDB.
 
-publish.py leaves --work/night.json and the JUnit files of each platform. This
-script adds the sync state, then lets chDB:
+publish.py leaves --work/night.json and the JUnit files of each platform, and
+chdb_nightly.py adds the chdb nightly to night.json. This script adds the sync
+state, then lets chDB:
 
-- write the night's rows as Parquet, one file per table, and the tail of every
-  failed job's log into --work/store, which the workflow uploads to Vercel Blob,
+- write the night's rows as Parquet into --work/store, one file per table
+  (nightly_data.py lists them), next to the complete log of every platform's
+  run; the workflow uploads the store to the S3 bucket the nightly API reads,
 - compute the history with SQL over the night and the nights before it, which
-  chDB reads straight from the Blob store's public URLs with url() (from
-  --work/store when BLOB_BASE_URL is unset), and the night's failing tests.
+  chDB reads from the bucket with s3() (from --work/store when NIGHTLY_S3_URL is
+  unset), and the night's failing tests.
 
-The test results of every night are stored too, for later analysis; the
-dashboard reads only the night's.
-
-The results go to --site/data/*.json, beside the static dashboard.
+The results also go to --site/data/*.json, beside the static dashboard, which
+reads them when the nightly API cannot be reached.
 """
 
 from __future__ import annotations
@@ -21,44 +21,27 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import gzip
 import json
 import os
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DASHBOARD = HERE / "dashboard"
-UPSTREAM_REPO = "ClickHouse/ClickHouse"
-PLATFORMS = ["linux-x86_64", "linux-aarch64", "macos-arm64", "macos-x86_64"]
-LOG_TAIL_LINES = 300
+sys.path.insert(0, str(HERE))
+import nightly_data  # noqa: E402
+from nightly_data import NIGHTS_SCHEMA, PLATFORMS, RUNS_SCHEMA, TESTS_SCHEMA, lit  # noqa: E402
 
-RUNS_SCHEMA = (
-    "date Date, head_sha String, version String, platform String, conclusion String, "
-    "duration_min Float64, wheel_bytes UInt64, tests_total UInt32, tests_failed UInt32, "
-    "url String, upstream_commit String, engine String"
-)
-TESTS_SCHEMA = (
-    "date Date, head_sha String, platform String, suite String, test String, status String, time_s Float64"
-)
-RUNS_DAYS = 90
-# A night without a file (no build, or no Blob store yet) reads as empty: url() skips
-# a glob's URLs that answer 404 (http_skip_not_found_url_for_globs, on by default).
-QUERY_SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0"
+DASHBOARD = HERE / "dashboard"
+HISTORY_DAYS = 90
 
 
 def gh(*args) -> str:
     proc = subprocess.run(["gh", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return proc.stdout if proc.returncode == 0 else ""
-
-
-def lit(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 # ---------------------------------------------------------------------- collection
@@ -69,11 +52,7 @@ def sync_state(repo: str, head_sha: str) -> dict:
     upstream = base64.b64decode(encoded).decode().split()[0] if encoded else ""
     last = gh("api", f"repos/{repo}/actions/workflows/daily_sync.yml/runs?per_page=1",
               "--jq", ".workflow_runs[0] | {conclusion, url: .html_url, created_at}").strip()
-    return {
-        "upstream_commit": upstream,
-        "upstream_url": f"https://github.com/{UPSTREAM_REPO}/commit/{upstream}" if upstream else "",
-        "last_run": json.loads(last) if last and last != "null" else None,
-    }
+    return {"upstream_commit": upstream, "last_run": json.loads(last) if last and last != "null" else None}
 
 
 def junit_rows(junit_dir: Path, platform: str, night: dict) -> list[dict]:
@@ -102,34 +81,42 @@ def junit_rows(junit_dir: Path, platform: str, night: dict) -> list[dict]:
     return rows
 
 
-def failed_log_tail(repo: str, run_id: int) -> str:
-    jobs = gh("api", f"repos/{repo}/actions/runs/{run_id}/jobs",
-              "--jq", '[.jobs[] | select(.conclusion == "failure") | {id, name}]').strip()
-    parts = []
-    for job in json.loads(jobs or "[]"):
-        lines = gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs").splitlines()
-        # Up to the first error: what follows is the always-run steps and the cleanup.
-        end = next((i + 1 for i, line in enumerate(lines) if "##[error]" in line), len(lines))
-        tail = "\n".join(lines[max(0, end - LOG_TAIL_LINES):end])
-        parts.append(f"==> {job['name']} ({LOG_TAIL_LINES} lines up to the first error)\n{tail}\n")
-    return "\n".join(parts)
+def run_logs(repo: str, run_id: int) -> list[dict]:
+    """The complete log of every job of a run that ran, with its name and conclusion."""
+    jobs = gh("api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100",
+              "--jq", "[.jobs[] | select(.conclusion != null and .conclusion != \"skipped\") | {id, name, conclusion}]").strip()
+    return [{**job, "log": gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")} for job in json.loads(jobs or "[]")]
+
+
+def joined_log(jobs: list[dict]) -> str:
+    return "\n".join(f"==> {job['name']} ({job['conclusion']})\n{job['log']}" for job in jobs)
+
+
+def failure_tail(jobs: list[dict]) -> str:
+    """Each failed job's log up to its first error."""
+    return "\n".join(
+        f"==> {job['name']} ({nightly_data.LOG_TAIL_LINES} lines up to the first error)\n"
+        f"{nightly_data.error_tail(job['log'])}"
+        for job in jobs if job["conclusion"] == "failure"
+    )
 
 
 # ------------------------------------------------------------------------- storage
 
 
 class Store:
-    """The nightly rows: one Parquet file per table and night, named by its date.
+    """The nightly store: one Parquet file per table and night, named by its date.
 
-    The night itself goes to --work/store, which the workflow uploads to the
-    public Vercel Blob store at BLOB_BASE_URL; earlier nights are read back from
-    there. Without BLOB_BASE_URL every night is read from --work/store.
+    The night goes to --work/store, which the workflow uploads to the S3 bucket at
+    NIGHTLY_S3_URL; earlier nights are read back from there with s3(). S3 lists the
+    bucket, so a glob reads exactly the nights it has, and none reads as no rows.
+    Without NIGHTLY_S3_URL every night is read from --work/store.
     """
 
     def __init__(self, work: Path, date: str):
         self.local = work / "store"
-        self.remote = os.environ.get("BLOB_BASE_URL", "").rstrip("/")
-        self.date = dt.date.fromisoformat(date)
+        self.remote = os.environ.get("NIGHTLY_S3_URL", "").rstrip("/")
+        self.date = date
 
     def path(self, rel: str) -> Path:
         path = self.local / rel
@@ -140,37 +127,24 @@ class Store:
         """The table's rows for the night alone."""
         return f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
 
-    def nights(self, table: str, schema: str, days: int) -> str:
-        """A FROM clause over the table's night and those of the `days` nights before it
-        that are in the store."""
+    def nights(self, table: str, schema: str) -> str:
+        """A FROM clause over the table's night and every night before it in the store."""
         if not self.remote:
             return f"file({lit(str(self.local / table / '*.parquet'))}, 'Parquet', {lit(schema)})"
-        night = f"file({lit(str(self.local / table / f'{self.date}.parquet'))}, 'Parquet', {lit(schema)})"
-        dates = [(self.date - dt.timedelta(days=d)).isoformat() for d in range(1, days + 1)]
-        with ThreadPoolExecutor(16) as pool:
-            dates = [d for d, ok in zip(dates, pool.map(lambda d: self.stored(f"{table}/{d}.parquet"), dates)) if ok]
-        if not dates:
-            return night
-        names = dates[0] if len(dates) == 1 else "{" + ",".join(dates) + "}"
-        earlier = f"url({lit(f'{self.remote}/{table}/{names}.parquet')}, 'Parquet', {lit(schema)})"
-        return f"(SELECT * FROM {earlier} UNION ALL SELECT * FROM {night})"
+        # The bucket may hold this night already, from an earlier publication of it.
+        earlier = f"s3({lit(f'{self.remote}/{table}/*.parquet')}, 'Parquet', {lit(schema)})"
+        return (f"(SELECT * FROM {earlier} WHERE date != {lit(self.date)} "
+                f"UNION ALL SELECT * FROM {self.night(table, schema)})")
 
-    def stored(self, rel: str) -> bool:
-        """Whether the remote store has the file. url() reads a missing one, which the
-        store answers with a 404, as an empty Parquet file and fails, even with
-        http_skip_not_found_url_for_globs, so only the nights that exist are read."""
-        try:
-            with urllib.request.urlopen(urllib.request.Request(f"{self.remote}/{rel}", method="HEAD"), timeout=60):
-                return True
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return False
-            raise
-
-
-def query(chdb, sql: str) -> list[dict]:
-    out = str(chdb.query(sql, "JSONEachRow"))
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+    def write(self, chdb, table: str, schema: str, rows: list[dict], work: Path) -> None:
+        source = work / f"{table}.jsonl"
+        write_jsonl(source, rows)
+        # Named by date alone: a `date=...` directory would read as a Hive partition column.
+        chdb.query(
+            f"INSERT INTO FUNCTION file({lit(str(self.path(f'{table}/{self.date}.parquet')))}, 'Parquet') "
+            f"SELECT * FROM file({lit(str(source))}, 'JSONEachRow', {lit(schema)}) "
+            "SETTINGS engine_file_truncate_on_insert = 1"
+        )
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -202,7 +176,7 @@ def main(argv=None) -> int:
     for platform in PLATFORMS:
         tests += junit_rows(work / "junit" / platform, platform, night)
     sizes = {w["platform"]: w["size"] for w in night["wheels"]}
-    runs, logs = [], {}
+    runs, logged, static_logs = [], [], {}
     for platform in PLATFORMS:
         run = night["runs"].get(platform, {})
         mine = [t for t in tests if t["platform"] == platform]
@@ -220,87 +194,56 @@ def main(argv=None) -> int:
             "upstream_commit": sync["upstream_commit"],
             "engine": engine,
         })
-        if run.get("conclusion") == "failure":
-            tail = failed_log_tail(repo, run["id"])
-            if tail:
-                logs[platform] = tail
+        jobs = run_logs(repo, run["id"]) if run.get("id") else []
+        if not jobs:
+            continue
+        # The complete log of every run, failed or not, for the API to serve.
+        store.path(f"logs/{date}/{platform}.txt.gz").write_bytes(gzip.compress(joined_log(jobs).encode()))
+        logged.append(platform)
+        tail = failure_tail(jobs)
+        if tail:
+            # Without the API, the dashboard links a copy of the failures' tails beside it.
+            static_logs[platform] = f"logs/{date}-{platform}.txt"
+            (site / "logs").mkdir(parents=True, exist_ok=True)
+            (site / static_logs[platform]).write_text(tail)
 
-    runs_file, tests_file = work / "runs.jsonl", work / "tests.jsonl"
-    write_jsonl(runs_file, runs)
-    write_jsonl(tests_file, tests)
-    # Named by date alone: a `date=...` directory would read as a Hive partition column.
-    chdb.query(
-        f"INSERT INTO FUNCTION file({lit(str(store.path(f'runs/{date}.parquet')))}, 'Parquet') "
-        f"SELECT * FROM file({lit(str(runs_file))}, 'JSONEachRow', {lit(RUNS_SCHEMA)}) "
-        "SETTINGS engine_file_truncate_on_insert = 1"
-    )
-    if tests:
-        chdb.query(
-            f"INSERT INTO FUNCTION file({lit(str(store.path(f'tests/{date}.parquet')))}, 'Parquet') "
-            f"SELECT * FROM file({lit(str(tests_file))}, 'JSONEachRow', {lit(TESTS_SCHEMA)}) "
-            "SETTINGS engine_file_truncate_on_insert = 1"
-        )
-
-    log_links = {}
-    for platform, tail in logs.items():
-        name = f"{date}-{platform}.txt"
-        local = site / "logs" / name
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_text(tail)
-        log_links[platform] = f"logs/{name}"
-        chdb.query(
-            f"INSERT INTO FUNCTION file({lit(str(store.path(f'logs/{date}/{platform}.txt.gz')))}, "
-            "'LineAsString', 'line String', 'gzip') "
-            f"SELECT line FROM file({lit(str(local))}, 'LineAsString', 'line String') "
-            "SETTINGS engine_file_truncate_on_insert = 1"
-        )
-
-    all_runs = store.nights("runs", RUNS_SCHEMA, RUNS_DAYS)
-    history = query(chdb, f"""
-        SELECT toString(date) AS date, platform, conclusion, round(duration_min, 1) AS duration_min,
-               round(wheel_bytes / 1048576, 1) AS wheel_mb, tests_total, tests_failed,
-               version, head_sha, url
-        FROM {all_runs}
-        WHERE date >= today() - 90
-        ORDER BY date DESC, platform
-        LIMIT 1 BY date, platform
-        {QUERY_SETTINGS}, prefer_column_name_to_alias = 1""")
-
-    failing = []
-    if tests:
-        failing = query(chdb, f"""
-            SELECT DISTINCT platform, test
-            FROM {store.night("tests", TESTS_SCHEMA)}
-            WHERE status IN ('failure', 'error')
-            ORDER BY platform, test
-            LIMIT 200
-            {QUERY_SETTINGS}""")
-
-    site_url = os.environ.get("NIGHTLY_SITE_URL", "").rstrip("/")
-    latest = {
+    chdb_night = night.get("chdb", {})
+    last_run = sync["last_run"] or {}
+    night_row = {
+        "date": date,
+        "head_sha": sha,
+        "version": night["version"],
+        "upstream_commit": sync["upstream_commit"],
+        "sync_conclusion": last_run.get("conclusion") or "",
+        "sync_url": last_run.get("url") or "",
+        "sync_created_at": last_run.get("created_at") or "",
+        "chdb_version": chdb_night.get("version", ""),
+        "chdb_commit": chdb_night.get("commit", ""),
+        "chdb_status": chdb_night.get("status", ""),
+        "engine": engine,
         "generated_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "engine": {"version": engine},
-        "night": {"date": date, "head_sha": sha, "version": night["version"],
-                  "commit_url": f"https://github.com/{repo}/commit/{sha}"},
-        "platforms": [
-            {**{k: r[k] for k in ("platform", "conclusion", "duration_min", "tests_total", "tests_failed", "url")},
-             "wheel_mb": round(r["wheel_bytes"] / 1048576, 1), "log": log_links.get(r["platform"], "")}
-            for r in runs
-        ],
-        "sync": sync,
-        "failing_tests": failing,
-        "install": {
-            "index_url": f"{site_url}/simple" if site_url else "",
-            "release_url": f"https://github.com/{repo}/releases/tag/nightly",
-        },
     }
+    store.write(chdb, "runs", RUNS_SCHEMA, runs, work)
+    store.write(chdb, "nights", NIGHTS_SCHEMA, [night_row], work)
+    if tests:
+        store.write(chdb, "tests", TESTS_SCHEMA, tests, work)
+
+    history = nightly_data.history(chdb, store.nights("runs", RUNS_SCHEMA), HISTORY_DAYS)
+    failing = nightly_data.failing_tests(chdb, store.night("tests", TESTS_SCHEMA)) if tests else []
+
+    # What the API's /latest and /history answer, for when the dashboard cannot reach it.
+    static = {p: {"error_log": path} for p, path in static_logs.items()}
+    latest = nightly_data.latest(night_row, runs, failing, repo=repo,
+                                 site_url=os.environ.get("NIGHTLY_SITE_URL", ""), logs=static)
     (data / "latest.json").write_text(json.dumps(latest, indent=2) + "\n")
     (data / "history.json").write_text(json.dumps({"rows": history}) + "\n")
+    api = os.environ.get("NIGHTLY_API_URL", "").rstrip("/")
+    (site / "config.json").write_text(json.dumps({"api": api}) + "\n")
     for file in DASHBOARD.iterdir():
         if file.is_file():
             shutil.copy(file, site / file.name)
-    print(f"Dashboard data for {date} ({sha[:12]}): {len(history)} history rows, "
-          f"{len(failing)} failing tests; storage: {'Vercel Blob' if store.remote else 'local'}")
+    print(f"Dashboard data for {date} ({sha[:12]}): {len(history)} history rows, {len(failing)} failing tests, "
+          f"logs of {', '.join(logged) or 'no runs'}; store: {store.remote or 'local'}; API: {api or 'none'}")
     return 0
 
 

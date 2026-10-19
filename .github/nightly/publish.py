@@ -8,9 +8,12 @@ merge it waits until all four runs for the commit are done, and then:
 
 - moves the `nightly` tag to that commit and keeps the wheels of the newest --keep
   nights, a night being one commit,
-- writes a PEP 503 index (simple/) of the wheels left into --site,
-- downloads the runs' test results, writes --work/night.json for report.py, and
-  sets the `ready` output.
+- downloads the runs' test results, writes --work/night.json for chdb_nightly.py
+  and report.py, and sets the `ready` output.
+
+With --index, once chdb_nightly.py has added the chdb nightly to the release, it
+writes a PEP 503 index (simple/) of the release's wheels, chdb-core's and chdb's,
+into --site and the release notes.
 
 No wheel is downloaded: names, sizes and sha256 digests come from the release API.
 Only the release's assets, notes and tag move, so no `release: published` event
@@ -36,7 +39,9 @@ PLATFORMS = {
     "macos-arm64": "build_macos_arm64_wheels.yml",
     "macos-x86_64": "build_macos_x86_wheels.yml",
 }
-PROJECT = "chdb-core"
+# Distribution -> the prefix of its wheel names. chdb is chdb-io/chdb's pure-Python
+# package, built by chdb_nightly.py against the night's chdb-core.
+PROJECTS = {"chdb-core": "chdb_core-", "chdb": "chdb-"}
 SYNC_BRANCH = "sync/clickhouse-master"
 
 
@@ -73,8 +78,16 @@ def release_assets(repo: str, release_id: str) -> list[dict]:
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
+def wheel_project(name: str) -> str:
+    if name.endswith(".whl"):
+        for project, prefix in PROJECTS.items():
+            if name.startswith(prefix):
+                return project
+    return ""
+
+
 def is_wheel(name: str) -> bool:
-    return name.startswith("chdb_core-") and name.endswith(".whl")
+    return bool(wheel_project(name))
 
 
 def wheel_version(name: str) -> str:
@@ -103,17 +116,18 @@ def dev_number(committed_at: str) -> str:
     return parse_time(committed_at).astimezone(dt.timezone.utc).strftime("%y%m%d%H%M")
 
 
-def night_wheels(assets: list[dict], dev: str) -> list[dict]:
-    """The wheels built from the night's commit: their version ends in .dev<dev>."""
+def night_wheels(assets: list[dict], dev: str, project: str = "chdb-core") -> list[dict]:
+    """The project's wheels of the night: their version ends in .dev<dev>."""
     return [
         {"platform": wheel_platform(a["name"]), "name": a["name"], "size": a["size"], "sha256": sha256_of(a)}
         for a in assets
-        if is_wheel(a["name"]) and wheel_version(a["name"]).endswith(f".dev{dev}")
+        if wheel_project(a["name"]) == project and wheel_version(a["name"]).endswith(f".dev{dev}")
     ]
 
 
 def stale(assets: list[dict], keep: int) -> list[str]:
-    """Wheels of all but the newest `keep` nights; a night's wheels share its dev number."""
+    """Wheels of all but the newest `keep` nights; a night's wheels, chdb's included, share
+    its dev number."""
     nights = sorted({dev_of(a["name"]) for a in assets if is_wheel(a["name"])}, reverse=True)
     old = set(nights[keep:])
     return sorted(a["name"] for a in assets if is_wheel(a["name"]) and dev_of(a["name"]) in old)
@@ -139,45 +153,77 @@ def minutes_between(start: str, end: str) -> float:
 
 def pep503_pages(repo: str, assets: list[dict]) -> dict[str, str]:
     """Return {relative path: html} for a PEP 503 simple index of the release's wheels."""
-    links = []
+    links = {project: [] for project in PROJECTS}
     for asset in sorted(assets, key=lambda a: a["name"], reverse=True):
-        if not is_wheel(asset["name"]):
+        project = wheel_project(asset["name"])
+        if not project:
             continue
         url = f"https://github.com/{repo}/releases/download/{TAG}/{asset['name']}"
         if sha256_of(asset):
             url += f"#sha256={sha256_of(asset)}"
-        links.append(
+        links[project].append(
             f'    <a href="{html.escape(url)}" data-requires-python="&gt;=3.9">{html.escape(asset["name"])}</a><br>'
         )
-    project = (
-        "<!DOCTYPE html>\n<html>\n  <head><title>Links for chdb-core</title></head>\n  <body>\n"
-        "    <h1>Links for chdb-core</h1>\n" + "\n".join(links) + "\n  </body>\n</html>\n"
-    )
-    root = (
+    pages = {}
+    for project, lines in links.items():
+        if lines:
+            pages[f"simple/{project}/index.html"] = (
+                f"<!DOCTYPE html>\n<html>\n  <head><title>Links for {project}</title></head>\n  <body>\n"
+                f"    <h1>Links for {project}</h1>\n" + "\n".join(lines) + "\n  </body>\n</html>\n"
+            )
+    pages["simple/index.html"] = (
         "<!DOCTYPE html>\n<html>\n  <body>\n"
-        f'    <a href="{PROJECT}/">{PROJECT}</a>\n  </body>\n</html>\n'
+        + "".join(f'    <a href="{project}/">{project}</a><br>\n' for project, lines in links.items() if lines)
+        + "  </body>\n</html>\n"
     )
-    return {"simple/index.html": root, f"simple/{PROJECT}/index.html": project}
+    return pages
 
 
 def release_notes(night: dict, site: str, keep: int) -> str:
     lines = [
-        "Rolling nightly builds of chdb-core from `main`, one per day. Not for production.",
+        "Rolling nightly builds of chdb-core from `main`, one per day, and of chdb from "
+        "chdb-io/chdb's `main` against it. Not for production.",
         "",
     ]
+    chdb = night.get("chdb", {})
     if site:
+        index = f"{site.rstrip('/')}/simple"
         lines += [
             "Install the newest nightly:",
             "```",
-            f"pip install --pre --extra-index-url {site.rstrip('/')}/simple {PROJECT}",
+            f"pip install --pre --extra-index-url {index} chdb-core",
+            f"pip install --pre --extra-index-url {index} chdb",
             "```",
             f"Status, history and logs: {site}",
             "",
         ]
     if night["wheels"]:
-        lines.append(f"Newest: `{night['version']}`, built from {night['head_sha'][:12]} on {night['date']}.")
+        lines.append(f"Newest: chdb-core `{night['version']}`, built from {night['head_sha'][:12]} on {night['date']}.")
+    if chdb.get("status") == "published":
+        lines.append(f"chdb `{chdb['version']}` is chdb-io/chdb@{chdb['commit'][:12]}, "
+                     f"pinned to chdb-core `{night['version']}`.")
     lines.append(f"The newest {keep} nightly builds are kept.")
     return "\n".join(lines) + "\n"
+
+
+def write_index(repo: str, work: Path, site: Path, site_url: str, keep: int) -> int:
+    """The --index step: the simple index of the release's wheels, and its notes."""
+    night = json.loads((work / "night.json").read_text())
+    release_id = gh("api", f"repos/{repo}/releases/tags/{TAG}", "--jq", ".id", check=False).strip()
+    if not release_id:
+        print("No nightly release yet; no index to write")
+        return 0
+    assets = release_assets(repo, release_id)
+    for rel, text in pep503_pages(repo, assets).items():
+        page = site / rel
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(text)
+    notes = work / "notes.md"
+    notes.write_text(release_notes(night, site_url, keep))
+    gh("release", "edit", TAG, "--repo", repo, "--notes-file", str(notes))
+    wheels = sum(1 for a in assets if is_wheel(a["name"]))
+    print(f"Index of {wheels} wheels written; chdb nightly: {night.get('chdb', {}).get('status', 'not built')}")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -186,6 +232,8 @@ def main(argv=None) -> int:
     parser.add_argument("--work", required=True)
     parser.add_argument("--site", required=True)
     parser.add_argument("--keep", type=int, default=20, help="nights whose wheels to keep")
+    parser.add_argument("--index", action="store_true",
+                        help="only write the simple index and the release notes of the published night")
     args = parser.parse_args(argv)
 
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -193,6 +241,8 @@ def main(argv=None) -> int:
     work, site = Path(args.work), Path(args.site)
     work.mkdir(parents=True, exist_ok=True)
     site.mkdir(parents=True, exist_ok=True)
+    if args.index:
+        return write_index(repo, work, site, site_url, args.keep)
 
     head_sha = args.head_sha
     if not head_sha:
@@ -252,14 +302,8 @@ def main(argv=None) -> int:
         deleted = stale(assets, args.keep)
         for name in deleted:
             gh("release", "delete-asset", TAG, name, "--repo", repo, "--yes", check=False)
-        notes = work / "notes.md"
-        notes.write_text(release_notes(night, site_url, args.keep))
-        gh("release", "edit", TAG, "--repo", repo, "--notes-file", str(notes))
 
-    for rel, text in pep503_pages(repo, [a for a in assets if a["name"] not in deleted]).items():
-        page = site / rel
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text)
+    # The index and the notes wait for the chdb nightly: publish.py --index.
     (work / "night.json").write_text(json.dumps(night, indent=2) + "\n")
     print(f"Night of {night['date']} ({head_sha[:12]}): {len(wheels)} of {len(PLATFORMS)} wheels on the "
           f"release; deleted {len(deleted)} old ones")
