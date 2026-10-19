@@ -9,7 +9,7 @@ fixed and read-only; no request carries SQL:
                                            365), as data/history.json
   GET /logs/<date>/<platform>              the complete log of the platform's run
   GET /logs/<date>/<platform>?tail=error   its lines up to the first error
-  GET /logs/<date>/chdb                    the chdb nightly's build and tests
+  GET /logs/<date>/chdb                    the chdb nightly's build
 
 The store is the bucket NIGHTLY_BUCKET, which report.py fills (nightly_data.py lists
 its files); the function's role may only read it. The function URL answers CORS.

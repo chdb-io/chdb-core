@@ -297,11 +297,11 @@ function renderInstall() {
   if (chdb.status === "published") {
     root.append(el("p", { class: "caption" }, "chdb nightly of this night: ", el("code", {}, chdb.version), " from ",
       link(chdb.commit_url, el("code", {}, (chdb.commit || "").slice(0, 12))), ".",
-      chdb.log ? [" ", el("a", { href: chdb.log }, "Build and test log"), "."] : ""));
+      chdb.log ? [" ", el("a", { href: chdb.log }, "Build log"), "."] : ""));
   } else if (chdb.status) {
-    const why = chdb.status === "failed" ? "its build or tests failed" : "not every platform has a chdb-core wheel";
+    const why = chdb.status === "failed" ? "its build failed" : "the night has no chdb-core wheel";
     root.append(el("p", { class: "caption" }, `No chdb nightly for this night: ${why}; the previous one stays the newest. `,
-      chdb.log ? el("a", { href: chdb.log }, "Build and test log") : ""));
+      chdb.log ? el("a", { href: chdb.log }, "Build log") : ""));
   }
   const logs = latest.platforms.filter((p) => p.log || p.error_log);
   if (logs.length) {

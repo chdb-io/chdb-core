@@ -141,17 +141,16 @@ newer night is already out (a rerun of an older night's job), then:
 ### The chdb nightly
 
 chdb (chdb-io/chdb, the DataStore API) is a pure-Python package on top of chdb-core.
-For a night whose four chdb-core wheels all reached the release, `chdb_nightly.py`
-copies a checkout of chdb's `main` and changes the copy, never the chdb repository:
-the version becomes the minor after chdb's newest PyPI release with the night's dev
+For a night with a chdb-core wheel on the release, `chdb_nightly.py` copies a
+checkout of chdb's `main` and changes the copy, never the chdb repository: the
+version becomes the minor after chdb's newest PyPI release with the night's dev
 number, e.g. `4.5.0.dev2610180851`, newer than every release so that `pip --pre`
 picks it, and the chdb-core requirement becomes the night's exact version. It builds
-the wheel, runs chdb's DataStore tests from the untouched checkout against that
-wheel and the night's Linux x86_64 chdb-core wheel, and uploads it to the release
-only if they pass. A night without one keeps the previous chdb nightly as the
-newest; its wheels, like chdb-core's, go when the night is older than the newest 20.
-The outcome and the build and test log are on the dashboard; chdb never holds up
-chdb-core's night.
+the wheel and uploads it to the release untested, since chdb's own CI tests its
+`main`. On a platform the night has no chdb-core wheel for, pip backtracks to the
+newest chdb nightly whose chdb-core it can install. chdb's wheels, like chdb-core's,
+go when their night is older than the newest 20. The outcome and the build log are
+on the dashboard; chdb never holds up chdb-core's night.
 
 ### The nightly store and API
 
@@ -168,7 +167,7 @@ read-only requests, the same queries `report.py` runs (`nightly_data.py`):
 | `GET /history?days=N` | the runs of the last N nights (90; at most 365), as `data/history.json` |
 | `GET /logs/<date>/<platform>` | the complete log of that platform's run |
 | `GET /logs/<date>/<platform>?tail=error` | its lines up to the first error |
-| `GET /logs/<date>/chdb` | the chdb nightly's build and test log |
+| `GET /logs/<date>/chdb` | the chdb nightly's build log |
 | `GET /health` | the engine version |
 
 ## Setup

@@ -489,23 +489,25 @@ durable = ["boto3>=1.36", "chdb-core>=26.7.3"]
         source = 'x = 1\n__version__ = "3.7.0"\n'
         self.assertEqual(chdb_nightly.set_module_version(source, "4.5.0.dev1"), 'x = 1\n__version__ = "4.5.0.dev1"\n')
 
-    def test_a_night_without_every_platform_is_skipped(self):
+    def test_a_night_with_a_wheel_gets_a_chdb_nightly(self):
         with tempfile.TemporaryDirectory() as tmp:
             work, src = Path(tmp) / "work", Path(tmp) / "src"
             work.mkdir()
             subprocess.run(["git", "init", "-q", str(src)], check=True)
             subprocess.run(["git", "-C", str(src), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
                             "--allow-empty", "-m", "x"], check=True)
-            night = {"date": "2026-10-15", "version": "26.10.0.dev1", "wheels": [{"platform": "linux-x86_64"}]}
-            (work / "night.json").write_text(json.dumps(night))
-            with unittest.mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}), \
-                    unittest.mock.patch.object(chdb_nightly, "build_and_test") as build:
-                self.assertEqual(chdb_nightly.main(["--work", str(work), "--src", str(src)]), 0)
-            build.assert_not_called()
-            result = json.loads((work / "night.json").read_text())["chdb"]
-        self.assertEqual(result["status"], "skipped")
-        self.assertIn("linux-aarch64", result["reason"])
-        self.assertEqual(len(result["commit"]), 40)
+            results = {}
+            for wheels in ([], [{"platform": "macos-arm64"}]):
+                night = {"date": "2026-10-15", "version": "26.10.0.dev1", "wheels": wheels}
+                (work / "night.json").write_text(json.dumps(night))
+                with unittest.mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}), \
+                        unittest.mock.patch.object(chdb_nightly, "build", return_value={"status": "published"}) as build:
+                    self.assertEqual(chdb_nightly.main(["--work", str(work), "--src", str(src)]), 0)
+                results[len(wheels)] = (json.loads((work / "night.json").read_text())["chdb"], build.called)
+        self.assertEqual(results[0][0]["status"], "skipped")  # no chdb-core to pin to
+        self.assertFalse(results[0][1])
+        self.assertEqual(results[1][0]["status"], "published")  # one platform is enough
+        self.assertEqual(len(results[1][0]["commit"]), 40)
 
 
 class Api(unittest.TestCase):

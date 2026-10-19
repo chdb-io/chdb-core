@@ -44,7 +44,7 @@ jobs:
       vars.NIGHTLY_PUBLISH_ENABLED == 'true' &&
       (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
