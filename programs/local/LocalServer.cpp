@@ -334,12 +334,8 @@ namespace ErrorCodes
     extern const int FILE_ALREADY_EXISTS;
     extern const int INVALID_CONFIG_PARAMETER;
     extern const int NETWORK_ERROR;
-<<<<<<< ours
-    extern const int UNKNOWN_FORMAT;
-||||||| base
-=======
     extern const int SUPPORT_IS_DISABLED;
->>>>>>> theirs
+    extern const int UNKNOWN_FORMAT;
     extern const int UNSUPPORTED_METHOD;
 }
 

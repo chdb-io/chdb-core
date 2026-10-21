@@ -53,55 +53,23 @@ void CompressedWriteBuffer::nextImpl()
     char * compressed_ptr = nullptr;
     if (compress_in_place)
     {
-<<<<<<< ours
-        char * out_compressed_ptr = out.position() + sizeof(CityHash_v1_0_2::uint128);
-        UInt32 compressed_size;
-        {
-            ProfileEventTimeIncrement<Time::Microseconds> watch(ProfileEvents::CompressedWriteBufferCompressMicroseconds);
-            compressed_size = codec->compress(working_buffer.begin(), decompressed_size, out_compressed_ptr);
-        }
-
-        CityHash_v1_0_2::uint128 checksum = CityHash_v1_0_2::CityHash128(out_compressed_ptr, compressed_size);
-
-        writeBinaryLittleEndian(checksum.low64, out);
-        writeBinaryLittleEndian(checksum.high64, out);
-
-        out.position() += compressed_size;
-||||||| base
-        char * out_compressed_ptr = out.position() + sizeof(CityHash_v1_0_2::uint128);
-        UInt32 compressed_size = codec->compress(working_buffer.begin(), decompressed_size, out_compressed_ptr);
-
-        CityHash_v1_0_2::uint128 checksum = CityHash_v1_0_2::CityHash128(out_compressed_ptr, compressed_size);
-
-        writeBinaryLittleEndian(checksum.low64, out);
-        writeBinaryLittleEndian(checksum.high64, out);
-
-        out.position() += compressed_size;
-=======
         compressed_ptr = out.position() + sizeof(CityHash_v1_0_2::uint128);
->>>>>>> theirs
     }
     else
     {
         compressed_buffer.resize(compressed_reserve_size);
-<<<<<<< ours
-        UInt32 compressed_size;
-        {
-            ProfileEventTimeIncrement<Time::Microseconds> watch(ProfileEvents::CompressedWriteBufferCompressMicroseconds);
-            compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_buffer.data());
-        }
-||||||| base
-        UInt32 compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_buffer.data());
-=======
         compressed_ptr = compressed_buffer.data();
     }
 
-    UInt32 compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
+    UInt32 compressed_size = 0;
+    {
+        ProfileEventTimeIncrement<Time::Microseconds> watch(ProfileEvents::CompressedWriteBufferCompressMicroseconds);
+        compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
 
-    /// The block is stored as is if compression saves less than 1/8 of its size.
-    if (uncompressed_codec && static_cast<UInt64>(compressed_size) * 8 > static_cast<UInt64>(decompressed_size) * 7)
-        compressed_size = uncompressed_codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
->>>>>>> theirs
+        /// The block is stored as is if compression saves less than 1/8 of its size.
+        if (uncompressed_codec && static_cast<UInt64>(compressed_size) * 8 > static_cast<UInt64>(decompressed_size) * 7)
+            compressed_size = uncompressed_codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
+    }
 
     CityHash_v1_0_2::uint128 checksum = CityHash_v1_0_2::CityHash128(compressed_ptr, compressed_size);
 

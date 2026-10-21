@@ -129,7 +129,6 @@ static bool isClickHouseApp(std::string_view app_suffix, std::vector<char *> & a
     return !argv.empty() && (app_name == argv[0] || endsWith(argv[0], "/" + app_name));
 }
 
-<<<<<<< ours
 // chdb_spec
 // chdb is loaded into a host process, so it must not override the host's dlopen.
 // Upstream's current block is kept verbatim but commented out so the next baseline
@@ -143,10 +142,18 @@ static bool isClickHouseApp(std::string_view app_suffix, std::vector<char *> & a
 // /// We do allow `dlopen()` in case of OpenSSL FIPS build,
 // /// because it requires a FIPS provider (i.e. fips.so), which is loaded dynamically.
 // ///
+// /// And in a build with the GPU engine, because CUDA has no other way to reach a device: there is
+// /// no static driver library to link: even `libcudart_static.a` finds the driver by
+// /// `dlopen("libcuda.so.1")`, and with the stub below in place it is told there is none and reports
+// /// that the driver is too old. So `-DENABLE_GPU=1` gives up this protection for the whole binary,
+// /// which is one more reason for that build to stay experimental.
+// ///
 // /// Not on WebAssembly: Emscripten's libc unconditionally defines `dlerror` (its own code
 // /// pulls it in), so the override would be a duplicate symbol at the link - and a sandbox
 // /// cannot load libraries in the first place.
-// #if !(defined(USE_MUSL) || USE_OPENSSL_FIPS || defined(OS_WASM))
+// ///
+// /// Keep this guard identical to the one in `programs/keeper/keeper_main.cpp`.
+// #if !(defined(USE_MUSL) || USE_OPENSSL_FIPS || USE_GPU || defined(OS_WASM))
 // extern "C"
 // {
 //     void * dlopen(const char *, int);
@@ -181,101 +188,6 @@ extern "C" void (*je_malloc_message)(void *, const char * s);
 static __attribute__((constructor(0))) void init_je_malloc_message() { je_malloc_message = [](void *, const char *){}; }
 #elif USE_JEMALLOC
 #include <unordered_set>
-||||||| base
-/// Don't allow dlopen in the main ClickHouse binary, because it is harmful and insecure.
-/// We don't use it. But it can be used by some libraries for implementation of "plugins".
-/// We absolutely discourage the ancient technique of loading
-/// 3rd-party uncontrolled dangerous libraries into the process address space,
-/// because it is insane.
-///
-/// We do allow `dlopen()` in case of OpenSSL FIPS build,
-/// because it requires a FIPS provider (i.e. fips.so), which is loaded dynamically.
-///
-/// Not on WebAssembly: Emscripten's libc unconditionally defines `dlerror` (its own code
-/// pulls it in), so the override would be a duplicate symbol at the link - and a sandbox
-/// cannot load libraries in the first place.
-#if !(defined(USE_MUSL) || USE_OPENSSL_FIPS || defined(OS_WASM))
-extern "C"
-{
-    void * dlopen(const char *, int);
-    void * dlmopen(long, const char *, int); // NOLINT
-    int dlclose(void *);
-    const char * dlerror();
-
-    void * dlopen(const char *, int)
-    {
-        return nullptr;
-    }
-
-    void * dlmopen(long, const char *, int) // NOLINT
-    {
-        return nullptr;
-    }
-
-    int dlclose(void *)
-    {
-        return 0;
-    }
-
-    const char * dlerror()
-    {
-        return "ClickHouse does not allow dynamic library loading";
-    }
-}
-#endif
-
-=======
-/// Don't allow dlopen in the main ClickHouse binary, because it is harmful and insecure.
-/// We don't use it. But it can be used by some libraries for implementation of "plugins".
-/// We absolutely discourage the ancient technique of loading
-/// 3rd-party uncontrolled dangerous libraries into the process address space,
-/// because it is insane.
-///
-/// We do allow `dlopen()` in case of OpenSSL FIPS build,
-/// because it requires a FIPS provider (i.e. fips.so), which is loaded dynamically.
-///
-/// And in a build with the GPU engine, because CUDA has no other way to reach a device: there is
-/// no static driver library to link: even `libcudart_static.a` finds the driver by
-/// `dlopen("libcuda.so.1")`, and with the stub below in place it is told there is none and reports
-/// that the driver is too old. So `-DENABLE_GPU=1` gives up this protection for the whole binary,
-/// which is one more reason for that build to stay experimental.
-///
-/// Not on WebAssembly: Emscripten's libc unconditionally defines `dlerror` (its own code
-/// pulls it in), so the override would be a duplicate symbol at the link - and a sandbox
-/// cannot load libraries in the first place.
-///
-/// Keep this guard identical to the one in `programs/keeper/keeper_main.cpp`.
-#if !(defined(USE_MUSL) || USE_OPENSSL_FIPS || USE_GPU || defined(OS_WASM))
-extern "C"
-{
-    void * dlopen(const char *, int);
-    void * dlmopen(long, const char *, int); // NOLINT
-    int dlclose(void *);
-    const char * dlerror();
-
-    void * dlopen(const char *, int)
-    {
-        return nullptr;
-    }
-
-    void * dlmopen(long, const char *, int) // NOLINT
-    {
-        return nullptr;
-    }
-
-    int dlclose(void *)
-    {
-        return 0;
-    }
-
-    const char * dlerror()
-    {
-        return "ClickHouse does not allow dynamic library loading";
-    }
-}
-#endif
-
->>>>>>> theirs
 /// Ignore messages which can be safely ignored, e.g. EAGAIN on pthread_create,
 /// or messages that do not mean anything to the user.
 extern "C" void (*je_malloc_message)(void *, const char * s);

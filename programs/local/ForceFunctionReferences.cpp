@@ -53,6 +53,7 @@ namespace DB
     extern void registerFunctionArrayAll(FunctionFactory & factory);
     extern void registerFunctionArrayAutocorrelation(FunctionFactory & factory);
     extern void registerFunctionArrayBottomK(FunctionFactory & factory);
+    extern void registerFunctionArrayCombinatorics(FunctionFactory & factory);
     extern void registerFunctionArrayCompact(FunctionFactory & factory);
     extern void registerFunctionArrayConcat(FunctionFactory & factory);
     extern void registerFunctionArrayCount(FunctionFactory & factory);
@@ -951,6 +952,7 @@ namespace DB
             &registerFunctionArrayAll,
             &registerFunctionArrayAutocorrelation,
             &registerFunctionArrayBottomK,
+            &registerFunctionArrayCombinatorics,
             &registerFunctionArrayCompact,
             &registerFunctionArrayConcat,
             &registerFunctionArrayCount,

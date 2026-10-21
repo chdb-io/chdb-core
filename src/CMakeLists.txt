@@ -639,11 +639,6 @@ endif()
 add_library (dbms STATIC ${dbms_headers} ${dbms_sources})
 
 target_link_libraries (dbms PRIVATE ch_contrib::libdivide daemon)
-<<<<<<< ours
-||||||| base
-target_link_libraries (dbms PRIVATE ch_contrib::sql_console_resources)
-target_link_libraries (dbms PRIVATE ch_contrib::clickstack_resources)
-=======
 
 if (ENABLE_GPU)
     target_link_libraries (dbms PRIVATE clickhouse_gpu_cudf ch_gpu::cudart ch_contrib::nvcomp)
@@ -655,9 +650,6 @@ if (ENABLE_GPU)
         "$<TARGET_PROPERTY:_cccl,INTERFACE_INCLUDE_DIRECTORIES>"
         "$<TARGET_PROPERTY:_rmm,INTERFACE_INCLUDE_DIRECTORIES>")
 endif ()
-target_link_libraries (dbms PRIVATE ch_contrib::sql_console_resources)
-target_link_libraries (dbms PRIVATE ch_contrib::clickstack_resources)
->>>>>>> theirs
 target_link_libraries (dbms PRIVATE ch_contrib::xxHash)
 # Guarded: chdb does not initialise every upstream resource submodule.
 if (TARGET ch_contrib::sql_console_resources)
