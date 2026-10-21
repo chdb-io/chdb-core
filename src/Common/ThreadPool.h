@@ -276,12 +276,13 @@ private:
     void finishNoLock(const std::lock_guard<std::mutex> & lock);
     void finalize();
 
-    /// finalize(), but it refuses when a job still occupies a thread instead of
-    /// joining it, and it decides that under the same lock that sets `shutdown`
-    /// so no job can be admitted in between. Returns false only in that case.
+    /// finalize(), but it refuses while `unfinished_jobs` -- the jobs whose
+    /// function may still be running or waiting to run -- is not zero instead of
+    /// joining, and it decides that under the same lock that sets `shutdown` so
+    /// no job can be admitted in between. Returns false only in that case.
     /// A caller that finds the pool already shut down returns true without
     /// joining: the join runs once, on whoever set the flag.
-    bool finalizeIfIdle();
+    bool finalizeIfIdle(const std::atomic<size_t> & unfinished_jobs);
 
     void onDestroy();
 };

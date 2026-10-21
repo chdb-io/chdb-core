@@ -754,7 +754,7 @@ void ThreadPoolImpl<Thread>::finish()
 /// Like finalize(), but gives up instead of waiting when the pool still has work.
 /// Used by chdb_shutdown() to stop the engine only when nothing is running.
 template <typename Thread>
-bool ThreadPoolImpl<Thread>::finalizeIfIdle()
+bool ThreadPoolImpl<Thread>::finalizeIfIdle(const std::atomic<size_t> & unfinished_jobs)
 {
     {
         std::lock_guard lock(mutex);
@@ -768,7 +768,11 @@ bool ThreadPoolImpl<Thread>::finalizeIfIdle()
         /// Deciding this outside the lock is what makes a plain `active() == 0`
         /// test useless: a job admitted between the test and the flag being set
         /// would still be there for the join to wait on, possibly forever.
-        if (scheduled_jobs != 0)
+        ///
+        /// Not `scheduled_jobs`: a job stays there for a moment after its owner
+        /// has joined it, until its worker gets back to this lock. Such a job has
+        /// nothing left to wait for, so joining its thread below is safe.
+        if (unfinished_jobs != 0)
             return false;
 
         finishNoLock(lock);
@@ -1350,25 +1354,29 @@ void GlobalThreadPool::shutdown()
     }
 }
 
+namespace
+{
+
+/// chdb_spec: ThreadFromGlobalPool threads whose function has not finished, queued
+/// or running. A thread leaves this count before it signals join(), unlike the
+/// pool's `scheduled_jobs`, so a thread that has been joined is never in it.
+/// Every global-pool job is such a thread: startThreadFromGlobalPool is the only
+/// caller that schedules on the global pool (threadPoolCallbackRunner forbids it).
+std::atomic<size_t> unfinished_threads_from_global_pool{0};
+
+}
+
 bool GlobalThreadPool::shutdownAndJoin()
 {
     if (!the_instance)
         return true;
 
-    /// chdb_spec: a joined thread still counts as a job for a moment.
-    /// ThreadFromGlobalPool::join() returns once the job body ends, but the worker
-    /// drops the job from `scheduled_jobs` only after destroying it, under the pool
-    /// lock. Python exit gets here right after joining its last query threads, so
-    /// let such jobs leave first; a job that really holds a thread outlasts the wait
-    /// and is refused below. The decision itself stays under the lock.
-    (void)the_instance->waitUntil(std::chrono::steady_clock::now() + std::chrono::seconds(1));
-
-    /// Refuses under the same lock that shuts the pool down when a job still
-    /// occupies a thread. That job belongs to a pool we cannot reach -- one owned
-    /// by a static-lifetime object such as a filesystem cache -- and joining its
-    /// parked worker would block forever, so name the pools and leave those
-    /// threads to process exit.
-    if (!the_instance->finalizeIfIdle())
+    /// Refuses under the same lock that shuts the pool down when a thread's
+    /// function is still running or queued. That job belongs to a pool we cannot
+    /// reach -- one owned by a static-lifetime object such as a filesystem cache --
+    /// and joining its parked worker would block forever, so name the pools and
+    /// leave those threads to process exit.
+    if (!the_instance->finalizeIfIdle(unfinished_threads_from_global_pool))
     {
         try
         {
@@ -1411,6 +1419,9 @@ void startThreadFromGlobalPool(
     /// NOTE:
     /// - If scheduleOrThrow throws, the ThreadFromGlobalPoolImpl destructor won't be called.
     /// - `this` cannot be passed in the lambda since after detach() it is no longer valid.
+    /// chdb_spec: counted until the job signals join(), see unfinished_threads_from_global_pool.
+    ++unfinished_threads_from_global_pool;
+    scope_guard not_scheduled([] { --unfinished_threads_from_global_pool; });
     GlobalThreadPool::instance().scheduleOrThrow(
         [my_state = std::move(state),
          my_func = std::move(func),
@@ -1420,6 +1431,7 @@ void startThreadFromGlobalPool(
         {
             SCOPE_EXIT(
                 my_state->thread_id = std::thread::id();
+                --unfinished_threads_from_global_pool; /// chdb_spec: before join() can return
                 my_state->event.set();
             );
 
@@ -1440,6 +1452,7 @@ void startThreadFromGlobalPool(
         {},
         0,
         propagate_opentelemetry_context);
+    not_scheduled.release();
 }
 
 CannotAllocateThreadFaultInjector & CannotAllocateThreadFaultInjector::instance()
