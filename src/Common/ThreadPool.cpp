@@ -1355,6 +1355,14 @@ bool GlobalThreadPool::shutdownAndJoin()
     if (!the_instance)
         return true;
 
+    /// chdb_spec: a joined thread still counts as a job for a moment.
+    /// ThreadFromGlobalPool::join() returns once the job body ends, but the worker
+    /// drops the job from `scheduled_jobs` only after destroying it, under the pool
+    /// lock. Python exit gets here right after joining its last query threads, so
+    /// let such jobs leave first; a job that really holds a thread outlasts the wait
+    /// and is refused below. The decision itself stays under the lock.
+    (void)the_instance->waitUntil(std::chrono::steady_clock::now() + std::chrono::seconds(1));
+
     /// Refuses under the same lock that shuts the pool down when a job still
     /// occupies a thread. That job belongs to a pool we cannot reach -- one owned
     /// by a static-lifetime object such as a filesystem cache -- and joining its
