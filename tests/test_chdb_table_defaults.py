@@ -325,5 +325,34 @@ class TestMaxInsertThreadsDefault(unittest.TestCase):
         self.assertEqual(self.sinks("SETTINGS max_insert_threads = 4, max_insert_threads_min_free_memory_per_thread = 0"), 4)
 
 
+class TestParallelDistinctDefault(unittest.TestCase):
+    """chDB keeps an unordered DISTINCT in input order: DataStore's drop_duplicates() relies on it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = connect(os.path.join(self.tmp.name, "db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_default_is_off_and_not_reported_as_user_set(self):
+        self.assertEqual(
+            rows(self.conn, "SELECT value, changed FROM system.settings WHERE name = 'allow_parallel_distinct'"),
+            [["0", "0"]],
+        )
+
+    def test_distinct_keeps_first_occurrences_in_input_order(self):
+        path = os.path.join(self.tmp.name, "people.csv")
+        with open(path, "w") as f:
+            f.write("name,age\nAlice,25\nBob,30\nAlice,25\nCharlie,35\nBob,30\nAlice,25\n")
+        # With allow_parallel_distinct = 1 the order changes from run to run, so repeat.
+        for _ in range(20):
+            self.assertEqual(
+                rows(self.conn, f"SELECT DISTINCT * FROM file('{path}', 'CSVWithNames')"),
+                [["Alice", "25"], ["Bob", "30"], ["Charlie", "35"]],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
