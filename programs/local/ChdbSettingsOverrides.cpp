@@ -17,6 +17,7 @@ namespace DB
 {
 namespace Setting
 {
+extern const SettingsBool allow_parallel_distinct;
 extern const SettingsBool materialize_statistics_on_insert;
 extern const SettingsMaxThreads max_insert_threads;
 extern const SettingsMaxThreads max_threads;
@@ -124,6 +125,13 @@ void applySettingsOverridesForChdb(ContextMutablePtr context)
     /// little memory already drop to 1 thread through max_insert_threads_min_free_memory_per_thread.
     /// Users can still raise it per query.
     setAdjustedDefault(settings, Setting::max_insert_threads, 1);
+
+    /// 26.11 evaluates the final DISTINCT on several threads by hash-partitioning its input, so an
+    /// unordered DISTINCT stops returning rows in input order, even from one small file. DataStore
+    /// pushes pandas drop_duplicates() down as SELECT DISTINCT and relies on the first occurrences
+    /// keeping their input order: with this on, chdb 4.4.0 returns them shuffled. Users can opt in
+    /// with allow_parallel_distinct=1.
+    setAdjustedDefault(settings, Setting::allow_parallel_distinct, false);
 
 #if defined(OS_LINUX)
     /// On multi-socket machines a default of "one thread per core" backfires:

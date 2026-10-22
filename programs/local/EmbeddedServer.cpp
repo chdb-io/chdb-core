@@ -132,6 +132,7 @@ extern const ServerSettingsUInt64 compiled_expression_cache_elements_size;
 extern const ServerSettingsUInt64 compiled_expression_cache_size;
 extern const ServerSettingsUInt64 database_catalog_drop_table_concurrency;
 extern const ServerSettingsString default_database;
+extern const ServerSettingsBool enable_gpu;
 extern const ServerSettingsString index_mark_cache_policy;
 extern const ServerSettingsUInt64 index_mark_cache_size;
 extern const ServerSettingsDouble index_mark_cache_size_ratio;
@@ -191,6 +192,9 @@ extern const ServerSettingsDouble uncompressed_cache_size_ratio;
 extern const ServerSettingsString primary_index_cache_policy;
 extern const ServerSettingsUInt64 primary_index_cache_size;
 extern const ServerSettingsDouble primary_index_cache_size_ratio;
+extern const ServerSettingsString statistics_cache_policy;
+extern const ServerSettingsUInt64 statistics_cache_size;
+extern const ServerSettingsDouble statistics_cache_size_ratio;
 extern const ServerSettingsUInt64 query_cache_max_entry_size_in_bytes;
 extern const ServerSettingsUInt64 query_cache_max_entry_size_in_rows;
 extern const ServerSettingsString query_condition_cache_policy;
@@ -219,6 +223,7 @@ namespace ErrorCodes
 extern const int BAD_ARGUMENTS;
 extern const int CANNOT_LOAD_CONFIG;
 extern const int FILE_ALREADY_EXISTS;
+extern const int SUPPORT_IS_DISABLED;
 extern const int UNKNOWN_FORMAT;
 }
 
@@ -935,6 +940,15 @@ void EmbeddedServer::processConfig()
     }
     global_context->setUncompressedCache(uncompressed_cache_policy, uncompressed_cache_size, uncompressed_cache_size_ratio);
 
+    if (server_settings[ServerSetting::enable_gpu])
+    {
+#if USE_GPU
+        global_context->setGPU(server_settings);
+#else
+        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "The server setting `enable_gpu` is set, but the server is built without GPU support");
+#endif
+    }
+
     String mark_cache_policy = server_settings[ServerSetting::mark_cache_policy];
     size_t mark_cache_size = server_settings[ServerSetting::mark_cache_size];
     double mark_cache_size_ratio = server_settings[ServerSetting::mark_cache_size_ratio];
@@ -1012,6 +1026,21 @@ void EmbeddedServer::processConfig()
             formatReadableSizeWithBinarySuffix(primary_index_cache_size));
     }
     global_context->setPrimaryIndexCache(primary_index_cache_policy, primary_index_cache_size, primary_index_cache_size_ratio);
+
+    /// MergeTree reads column statistics through this cache, and system.server_settings
+    /// dereferences it, so it has to exist as it does in clickhouse-local.
+    String statistics_cache_policy = server_settings[ServerSetting::statistics_cache_policy];
+    size_t statistics_cache_size = server_settings[ServerSetting::statistics_cache_size];
+    double statistics_cache_size_ratio = server_settings[ServerSetting::statistics_cache_size_ratio];
+    if (statistics_cache_size > max_cache_size)
+    {
+        statistics_cache_size = max_cache_size;
+        LOG_INFO(
+            log,
+            "Lowered statistics cache size to {} because the system has limited RAM",
+            formatReadableSizeWithBinarySuffix(statistics_cache_size));
+    }
+    global_context->setStatisticsCache(statistics_cache_policy, statistics_cache_size, statistics_cache_size_ratio);
 
     String vector_similarity_index_cache_policy = server_settings[ServerSetting::vector_similarity_index_cache_policy];
     size_t vector_similarity_index_cache_size = server_settings[ServerSetting::vector_similarity_index_cache_size];
