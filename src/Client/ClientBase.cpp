@@ -1302,18 +1302,12 @@ try
             output_format = client_context->getOutputFormat(
                 current_format, out_file_buf ? *out_file_buf : *out_buf, block, format_settings);
 
-<<<<<<< ours
-        /// See comment above `output_format->flush();`
-        /// output_format->setAutoFlush();
-||||||| base
-        output_format->setAutoFlush();
-=======
         /// The file already starts with the prefix of the format, e.g. the header of `CSVWithNames`.
         if (!non_empty_appended_file.empty())
             output_format->doNotWritePrefix();
 
-        output_format->setAutoFlush();
->>>>>>> theirs
+        /// See comment above `output_format->flush();`
+        /// output_format->setAutoFlush();
 
         /// Replay progress that was accumulated before the output format was created
         /// (e.g. from scalar subqueries evaluated during query analysis on the server).

@@ -202,16 +202,11 @@ public:
         throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Reconnection is not implemented");
     }
 
-<<<<<<< ours
-public:
-||||||| base
-protected:
-=======
     /// The callback is called with `true` when the interactive client starts waiting for the user
     /// to type a query, and with `false` when it stops waiting to process the query.
     void setWaitingForQueryInputCallback(std::function<void(bool)> callback) { on_waiting_for_query_input = std::move(callback); }
-protected:
->>>>>>> theirs
+
+public:
     void runInteractive();
     void runNonInteractive();
 

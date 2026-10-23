@@ -1538,16 +1538,10 @@ catch (DB::Exception & e)
 }
 catch (...)
 {
-<<<<<<< ours
-    error_message_oss << DB::getCurrentExceptionMessage(true) << '\n';
-||||||| base
-    std::cerr << DB::getCurrentExceptionMessage(true) << '\n';
-=======
     if (stdout_is_broken)
         return Application::EXIT_OK;
 
-    std::cerr << DB::getCurrentExceptionMessage(true) << '\n';
->>>>>>> theirs
+    error_message_oss << DB::getCurrentExceptionMessage(true) << '\n';
     auto code = DB::getCurrentExceptionCode();
     return static_cast<UInt8>(code) ? code : 1;
 }

@@ -701,9 +701,17 @@ StorageURLSource::StorageURLSource(
                 return false;
 
             curr_uri = uri_and_buf.first;
+#if defined(OS_WASM)
+            /// ReadBufferFromWebFetch does not expose Last-Modified; the schema cache simply
+            /// treats the file as having an unknown modification time.
+            /// Without it the query condition cache is not used either, see makeQueryConditionCacheFileKey.
+            current_file_last_modified = std::nullopt;
+            current_file_response_date = std::nullopt;
+#else
             current_file_last_modified = uri_and_buf.second->tryGetLastModificationTime();
             current_file_response_date = uri_and_buf.second->tryGetResponseDateOfFileInfo();
             const ReadWriteBufferFromHTTP & http_buf = *uri_and_buf.second;
+#endif
             read_buf = std::move(uri_and_buf.second);
 
             FailPointInjection::pauseFailPoint(FailPoints::storage_url_pause_between_metadata_probes);
@@ -717,25 +725,14 @@ StorageURLSource::StorageURLSource(
 
             current_file_size = tryGetFileSizeFromReadBuffer(*read_buf);
 
-<<<<<<< ours
-        curr_uri = uri_and_buf.first;
-#if defined(OS_WASM)
-        /// ReadBufferFromWebFetch does not expose Last-Modified; the schema cache simply
-        /// treats the file as having an unknown modification time.
-        current_file_last_modified = std::nullopt;
-#else
-        current_file_last_modified = uri_and_buf.second->tryGetLastModificationTime();
-#endif
-        read_buf = std::move(uri_and_buf.second);
-||||||| base
-        curr_uri = uri_and_buf.first;
-        current_file_last_modified = uri_and_buf.second->tryGetLastModificationTime();
-        read_buf = std::move(uri_and_buf.second);
-=======
             /// With `max_http_get_redirects` the metadata above, and the data later, come from the target of the
             /// redirects, which can change between queries while `curr_uri` stays the same.
+#if defined(OS_WASM)
+            /// ReadBufferFromWebFetch does not report the target of the redirects.
+            current_file_resolved_uri = curr_uri;
+#else
             current_file_resolved_uri = http_buf.getCurrentURI();
->>>>>>> theirs
+#endif
 
             current_query_condition_cache_file_key = makeQueryConditionCacheFileKey();
 
