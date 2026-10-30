@@ -145,8 +145,16 @@ DESELECT_POLARS2="\
  --deselect datastore/tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore \
  --deselect tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore"
 
+# pandas 3.1 made the year column of dt.isocalendar() Int32 instead of UInt32
+# (pandas-dev/pandas#66851), while DataStore still casts the ISO year to UInt32, so
+# this upstream test's dtype check fails on any pandas >= 3.1. Deselect it until
+# the upstream chdb tag follows pandas.
+DESELECT_PANDAS31="\
+ --deselect datastore/tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year \
+ --deselect tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year"
+
 set +e
-${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2}
+${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31}
 TEST_EXIT_CODE=$?
 set -e
 
