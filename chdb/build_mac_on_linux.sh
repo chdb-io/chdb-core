@@ -378,8 +378,11 @@ cp -a ${PYCHDB} ${CHDB_DIR}/${CHDB_PY_MODULE}
 [ "${CHDB_LITE}" != "1" ] && cp -a ${LIBCHDB} ${PROJ_DIR}/${LIBCHDB_SO}
 
 if [ ${build_type} == "RelWithDebInfo" ] && [ "${CHDB_LITE}" != "1" ]; then
-    cp -a ${PYCHDB}.dSYM ${PROJ_DIR}/${CHDB_PY_MODULE}.dSYM
-    cp -a ${LIBCHDB}.dSYM ${PROJ_DIR}/${LIBCHDB_SO}.dSYM
+    # Moved, not copied: the two bundles are ~7 GB, nothing reads them from the build
+    # dir afterwards, and the static-lib build that follows in the same dir needs the room.
+    rm -rf ${PROJ_DIR}/${CHDB_PY_MODULE}.dSYM ${PROJ_DIR}/${LIBCHDB_SO}.dSYM
+    mv ${PYCHDB}.dSYM ${PROJ_DIR}/${CHDB_PY_MODULE}.dSYM
+    mv ${LIBCHDB}.dSYM ${PROJ_DIR}/${LIBCHDB_SO}.dSYM
 fi
 
 echo -e "\nSymbols:"

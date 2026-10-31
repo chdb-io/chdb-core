@@ -484,7 +484,9 @@ def create_static_library(obj_files, lib_files):
             return False
 
     finally:
-        pass
+        # The archive holds copies of the objects, so the extracted ones (as large
+        # as libchdb.a itself) are not needed once it is written.
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 def parse_args():
     """Parse command line arguments"""
