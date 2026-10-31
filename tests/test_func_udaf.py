@@ -1339,13 +1339,19 @@ class TestUDAFQueryShapes(UDAFTestCase):
         query runs against the query cache on disk, backed by a filesystem cache. That needs a
         filesystem cache in the configuration, which is read when the engine starts: hence the
         fresh interpreter. `signature` is the source of the arguments after the accumulator.
+
+        The cache has the default SLRU policy, whose file segment must fit whole into each of
+        its two queues (ClickHouse #125817): in 16 MiB the smaller queue is 6.4 MiB, so the
+        default 32 MiB segment is refused at startup and the segment is set to 4 MiB, the
+        default `boundary_alignment` it must not go below.
         """
         return self.run_isolated(
             "d = tempfile.mkdtemp()\n"
             "config = os.path.join(d, 'config.xml')\n"
             "with open(config, 'w') as f:\n"
             "    f.write('<clickhouse><filesystem_caches><query_results><path>' + d + '/query_results/</path>'\n"
-            "            '<max_size>16Mi</max_size></query_results></filesystem_caches></clickhouse>')\n"
+            "            '<max_size>16Mi</max_size><max_file_segment_size>4Mi</max_file_segment_size>'\n"
+            "            '</query_results></filesystem_caches></clickhouse>')\n"
             "session = Session(':memory:?config-file=' + config)\n"
             f"chdb.create_aggregate_function({name!r}, PySum{signature})\n"
             "try:\n"

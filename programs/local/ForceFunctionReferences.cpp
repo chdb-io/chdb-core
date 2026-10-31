@@ -854,7 +854,6 @@ namespace DB
     extern void registerFunctionStem(FunctionFactory & factory);
 #endif
 #if USE_NLP
-    extern void registerFunctionDetectCharset(FunctionFactory & factory);
     extern void registerFunctionDetectLanguage(FunctionFactory & factory);
     extern void registerFunctionLemmatize(FunctionFactory & factory);
     extern void registerFunctionSynonyms(FunctionFactory & factory);
@@ -864,6 +863,7 @@ namespace DB
 #endif
 #if USE_RAPIDJSON
     extern void registerFunctionJSONMergePatch(FunctionFactory & factory);
+    extern void registerFunctionJSONRemove(FunctionFactory & factory);
     extern void registerFunctionPrettyPrintJSON(FunctionFactory & factory);
 #endif
 #if USE_S2_GEOMETRY
@@ -1753,7 +1753,6 @@ namespace DB
             &registerFunctionStem,
 #endif
 #if USE_NLP
-            &registerFunctionDetectCharset,
             &registerFunctionDetectLanguage,
             &registerFunctionLemmatize,
             &registerFunctionSynonyms,
@@ -1763,6 +1762,7 @@ namespace DB
 #endif
 #if USE_RAPIDJSON
             &registerFunctionJSONMergePatch,
+            &registerFunctionJSONRemove,
             &registerFunctionPrettyPrintJSON,
 #endif
 #if USE_S2_GEOMETRY
