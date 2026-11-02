@@ -428,7 +428,6 @@ add_object_library(clickhouse_interpreters Interpreters)
 add_object_library(clickhouse_interpreters_cache Interpreters/Cache)
 add_object_library(clickhouse_interpreters_filecache Interpreters/FileCache)
 add_object_library(clickhouse_interpreters_hash_join Interpreters/HashJoin)
-<<<<<<< ours
 # Niche storage engines (Distributed/WindowView/KeeperMap) — gated in registerStorages.cpp
 # via `#if defined(CHDB_LITE) && CHDB_LITE`; the umbrella's add_compile_definitions(CHDB_LITE=1)
 # is enough, no per-trim flag needed.
@@ -444,10 +443,7 @@ if (CHDB_MINIMAL_HASH_JOIN)
     endforeach()
     add_compile_definitions(CHDB_MINIMAL_HASH_JOIN=1)
 endif()
-||||||| base
-=======
 add_object_library(clickhouse_interpreters_adaptive_aggregation Interpreters/AdaptiveAggregation)
->>>>>>> theirs
 add_object_library(clickhouse_interpreters_access Interpreters/Access)
 add_object_library(clickhouse_interpreters_mysql Interpreters/MySQL)
 add_object_library(clickhouse_interpreters_clusterproxy Interpreters/ClusterProxy)
@@ -987,26 +983,12 @@ endif()
 
 target_link_libraries (clickhouse_common_io PUBLIC ch_contrib::fast_float)
 
-<<<<<<< ours
-if (USE_ORC)
-    target_link_libraries(dbms PUBLIC ${ORC_LIBRARIES})
-    target_include_directories(dbms SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR} "${PROJECT_BINARY_DIR}/contrib/orc/c++/include")
-endif ()
-
 if (USE_UTF8PROC)
     target_link_libraries(dbms PUBLIC ch_contrib::utf8proc)
     target_include_directories (clickhouse_common_io SYSTEM BEFORE PUBLIC ${UTF8PROC_INCLUDE_DIR})
     message(STATUS "UTF8PROC_INCLUDE_DIR: ${UTF8PROC_INCLUDE_DIR}")
 endif()
 
-||||||| base
-if (USE_ORC)
-    target_link_libraries(dbms PUBLIC ${ORC_LIBRARIES})
-    target_include_directories(dbms SYSTEM BEFORE PUBLIC ${ORC_INCLUDE_DIR} "${PROJECT_BINARY_DIR}/contrib/orc/c++/include")
-endif ()
-
-=======
->>>>>>> theirs
 if (TARGET ch_contrib::rocksdb)
     target_link_libraries(dbms PUBLIC ch_contrib::rocksdb)
 endif()

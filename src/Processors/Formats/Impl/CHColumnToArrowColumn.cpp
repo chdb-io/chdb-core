@@ -1569,29 +1569,12 @@ namespace DB
                 break;
             case TypeIndex::Nothing:
             {
-                if (settings.output_nothing_as_null)
-                {
-                    /// The schema maps `Nothing` to the Arrow `Null` type (see `getArrowType`).
-                    /// A `Nothing` column has no values, so every entry of the Arrow Null array is null
-                    /// regardless of the null bytemap.
-                    arrow::NullBuilder & builder = assert_cast<arrow::NullBuilder &>(*array_builder);
-                    arrow::Status status = builder.AppendNulls(end - start);
-                    checkStatus(status, column->getName(), format_name);
-                }
-                else if (settings.output_unsupported_types == FormatSettings::ArrowUnsupportedTypes::THROW)
-                {
-                    throw Exception(
-                        ErrorCodes::UNKNOWN_TYPE,
-                        "Internal type '{}' of a column '{}' is not supported for conversion into {} data format. Set "
-                        "output_format_arrow_unsupported_types to 'text' or 'binary' to write it as an opaque column",
-                        column_type->getFamilyName(), column_name, format_name);
-                }
-                else
-                {
-                    /// `Nothing` is a type with no conversion like any other here: `getArrowType` mapped it to
-                    /// an opaque `utf8`/`binary` column, as the `default` branch below does for the rest of them.
-                    fillArrowArrayWithOpaqueColumnData(column, column_type, null_bytemap, format_name, settings, array_builder, start, end);
-                }
+                /// chdb: `getArrowType` maps `Nothing` (e.g. `SELECT NULL`) to the Arrow `Null` type whether or not
+                /// `output_nothing_as_null` is set (chdb's branch after the Variant one; the setting only also
+                /// marks the field nullable), so unlike upstream it is never rejected or written as an opaque
+                /// column here. A `Nothing` column has no values, so every entry of the Arrow Null array is
+                /// null regardless of the null bytemap.
+                checkStatus(array_builder->AppendNulls(static_cast<int64_t>(end - start)), column_name, format_name);
                 break;
             }
             case TypeIndex::Array:
@@ -1681,9 +1664,6 @@ namespace DB
                 break;
             case TypeIndex::UUID:
                 fillArrowArrayWithUUIDColumnData(column, null_bytemap, format_name, array_builder, start, end);
-                break;
-            case TypeIndex::Nothing:
-                checkStatus(array_builder->AppendNulls(static_cast<int64_t>(end - start)), column_name, format_name);
                 break;
 #define DISPATCH(CPP_NUMERIC_TYPE, ARROW_BUILDER_TYPE) \
             case TypeIndex::CPP_NUMERIC_TYPE: \

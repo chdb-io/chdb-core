@@ -183,20 +183,12 @@ endif()
 if (TARGET ch_contrib::parquet)
     set(USE_PARQUET 1)
     set(USE_ARROW 1)
-<<<<<<< ours
-    if (TARGET _orc)
-        set(USE_ORC 1)
-    endif()
-||||||| base
-endif()
-if (TARGET _orc)
-    set(USE_ORC 1)
-=======
 endif()
 # The ORC reader and writer are implemented in ClickHouse and need only the compression libraries.
-if (TARGET ch_contrib::snappy)
+# chdb: ENABLE_ORC=OFF still leaves ORC out, as it did with the `apache/orc` library;
+# cmake/target.cmake sets it for WASM.
+if (TARGET ch_contrib::snappy AND (NOT DEFINED ENABLE_ORC OR ENABLE_ORC))
     set(USE_ORC 1)
->>>>>>> theirs
 endif()
 if (TARGET ch_contrib::liburing)
     set(USE_LIBURING 1)

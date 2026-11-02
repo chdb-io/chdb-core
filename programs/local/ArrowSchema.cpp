@@ -111,16 +111,19 @@ void ArrowSchemaWrapper::convertArrowSchema(
 
     const auto format_settings = getFormatSettings(context);
 
-    /// Convert Arrow schema to ClickHouse header
+    /// Convert Arrow schema to ClickHouse header. The arguments are named because they are all bools:
+    /// upstream inserted `allow_arrow_null_type` before `allow_inferring_nullable_columns`, and the
+    /// positional call shifted silently. `false` is what the function hard-coded before.
     auto block = ArrowColumnToCHColumn::arrowSchemaToCHHeader(
         *arrow_schema,
         nullptr,
         "Arrow",
         format_settings,
-        format_settings.arrow.skip_columns_with_unsupported_types_in_schema_inference,
-        format_settings.schema_inference_make_columns_nullable != 0,
-        false,
-        format_settings.parquet.allow_geoparquet_parser);
+        /* skip_columns_with_unsupported_types */ format_settings.arrow.skip_columns_with_unsupported_types_in_schema_inference,
+        /* allow_arrow_null_type */ false,
+        /* allow_inferring_nullable_columns */ format_settings.schema_inference_make_columns_nullable != 0,
+        /* case_insensitive_matching */ false,
+        /* allow_geoparquet_parser */ format_settings.parquet.allow_geoparquet_parser);
 
     for (const auto & column : block)
     {

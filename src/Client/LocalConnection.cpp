@@ -23,11 +23,7 @@
 #include <Processors/Formats/IInputFormat.h>
 #include <Processors/Transforms/AddingDefaultsTransform.h>
 #include <QueryPipeline/Pipe.h>
-<<<<<<< ours
 #include <QueryPipeline/QueryPipeline.h>
-||||||| base
-#include <Parsers/ASTInsertQuery.h>
-=======
 #include <QueryPipeline/QueryPipelineBuilder.h>
 #include <Processors/QueryPlan/BuildQueryPipelineSettings.h>
 #include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
@@ -36,8 +32,6 @@
 #include <Storages/SelectQueryInfo.h>
 #include <Storages/StorageFile.h>
 #include <Common/getNumberOfCPUCoresToUse.h>
-#include <Parsers/ASTInsertQuery.h>
->>>>>>> theirs
 #include <Parsers/IAST.h>
 #include <Storages/IStorage.h>
 #include <Common/config_version.h>
@@ -643,7 +637,8 @@ void LocalConnection::sendQuery(
             /// The data of `INSERT ... RETURNING ... FROM INFILE` is read from the file, the same way as `ClientBase::sendData` does.
             state->input_pipeline = std::make_unique<QueryPipeline>(
                 createPipeFromInsertInfile(*insert, current_format, columns_description, sample, context));
-            state->input_pipeline_executor = std::make_unique<PullingAsyncPipelineExecutor>(*state->input_pipeline);
+            /// chdb: LocalPullingExecutor, as below - the async executor deadlocks in the single-threaded WASM build.
+            state->input_pipeline_executor = std::make_unique<LocalPullingExecutor>(*state->input_pipeline);
             return;
         }
 

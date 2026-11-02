@@ -184,9 +184,10 @@ ObjectStoragePtr StorageWasmWebConfiguration::createObjectStorage(
     /// getDataLakeSettings(); the base fallback throws, hence the guard.
     try
     {
-        const auto & lake_settings = getDataLakeSettings();
-        if (lake_settings[DataLakeStorageSetting::storage_region].changed)
-            region = lake_settings[DataLakeStorageSetting::storage_region].value;
+        /// A shared pointer since upstream made the data lake settings replaceable at run time.
+        const auto lake_settings = getDataLakeSettings();
+        if (lake_settings && (*lake_settings)[DataLakeStorageSetting::storage_region].changed)
+            region = (*lake_settings)[DataLakeStorageSetting::storage_region].value;
     }
     catch (...) /// NOLINT(bugprone-empty-catch)
     {

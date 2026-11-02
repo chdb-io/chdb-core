@@ -735,7 +735,12 @@ void LocalServer::tryInitPath()
                 " correct the --path.");
         }
     }
-    else if (getClientConfiguration().has("tmp"))
+    /// chdb: without --path the data goes to a unique temporary directory that is removed on exit, as
+    /// it did before upstream made a durable directory in the home (`$XDG_DATA_HOME/clickhouse-local`,
+    /// locked by a status file) the default of clickhouse-local. Every `pyEntryClickHouseLocal` call
+    /// runs a LocalServer, and an embedded engine must not persist data, or make the processes of a
+    /// user contend for one directory, unless asked to: --tmp is the default here, and is accepted.
+    else
     {
         /// The user requested to use a temporary path - use a unique path in the system temporary directory
         /// (or in the current dir if a temporary doesn't exist)
@@ -771,58 +776,13 @@ void LocalServer::tryInitPath()
 
         /// The directory can be created lazily during the runtime.
         temporary_directory_to_delete = default_path;
-        use_temporary_path = true;
+        /// chdb: `use_temporary_path` stays false. chdb processes its temporary directory exactly like an
+        /// explicit --path (locked, metadata and `user_defined` loaded from it), which is also why `path`
+        /// is set below: sessions used to create the directory in Python and pass it as --path (#337).
 
         path = default_path.string();
 
         LOG_DEBUG(log, "Working directory will be created as needed: {}", path);
-<<<<<<< ours
-||||||| base
-    }
-=======
-    }
-    else
-    {
-        /// By default, work with a designated directory for application data in the user's home,
-        /// like a usual desktop application does, so the data survives between runs:
-        /// - Linux and other systems: `$XDG_DATA_HOME/clickhouse-local` or `~/.local/share/clickhouse-local`;
-        /// - macOS: `~/Library/Application Support/clickhouse-local`.
-        std::filesystem::path data_home;
-
-#if defined(OS_DARWIN)
-        if (!home_path.empty())
-            data_home = home_path / "Library" / "Application Support";
-#else
-        /// The XDG Base Directory Specification tells to treat a relative $XDG_DATA_HOME as unset.
-        const char * xdg_data_home = getenv("XDG_DATA_HOME"); // NOLINT(concurrency-mt-unsafe)
-        if (xdg_data_home && *xdg_data_home && fs::path(xdg_data_home).is_absolute())
-            data_home = xdg_data_home;
-        else if (!home_path.empty())
-            data_home = home_path / ".local" / "share";
-#endif
-
-        if (data_home.empty())
-            throw Exception(ErrorCodes::BAD_ARGUMENTS,
-                "Cannot determine the default directory for data: the HOME environment variable is not set."
-                " Specify the location explicitly with the --path option,"
-                " or use the --tmp option to work with a temporary directory.");
-
-        path = (data_home / "clickhouse-local").string();
-
-        /// The directory may hold user data, so restrict it on creation, similarly to the data
-        /// directory of a server. The permissions of an already existing directory are left as is.
-        if (!fs::exists(path))
-        {
-            fs::create_directories(path);
-            fs::permissions(path, fs::perms::owner_all);
-        }
-
-        /// Let the rest of the code (loading of the metadata, the persistent storage for access
-        /// entities, the status file) treat the default directory exactly like an explicit --path.
-        getClientConfiguration().setString("path", path);
-        LOG_DEBUG(&logger(), "Using the default working directory: {}", path);
-    }
->>>>>>> theirs
 
         getClientConfiguration().setString("path", path);
     }
@@ -1407,53 +1367,12 @@ void LocalServer::setupUsers()
         users_config = loaded_config.configuration;
     }
     if (users_config)
-<<<<<<< ours
-||||||| base
-        global_context->setUsersConfig(users_config);
-    else
-        throw Exception(ErrorCodes::CANNOT_LOAD_CONFIG, "Can't load config for users");
-
-    /// Add a writeable storage for SQL-based access management.
-    /// This allows creating users, roles, row policies, etc. via SQL queries.
-    if (getClientConfiguration().has("path"))
-=======
-        global_context->setUsersConfig(users_config);
-    else
-        throw Exception(ErrorCodes::CANNOT_LOAD_CONFIG, "Can't load config for users");
-
-    /// Add a writeable storage for SQL-based access management.
-    /// This allows creating users, roles, row policies, etc. via SQL queries.
-    if (!use_temporary_path)
->>>>>>> theirs
     {
-<<<<<<< ours
         global_context->setUsersConfig(users_config);
         // NamedCollectionUtils::loadIfNot();
-||||||| base
-        /// Use disk storage for persistence when --path is specified.
-        String access_path = fs::path(global_context->getPath()) / "access" / "";
-        access_control.addDiskStorage(DiskAccessStorage::STORAGE_TYPE, access_path, /* readonly= */ false, /* allow_backup= */ false);
-=======
-        /// Use disk storage for persistence when working with a durable directory
-        /// (--path or the default designated directory in the home).
-        String access_path = fs::path(global_context->getPath()) / "access" / "";
-        access_control.addDiskStorage(DiskAccessStorage::STORAGE_TYPE, access_path, /* readonly= */ false, /* allow_backup= */ false);
->>>>>>> theirs
     }
     else
-<<<<<<< ours
         throw Exception(ErrorCodes::CANNOT_LOAD_CONFIG, "Can't load config for users");
-||||||| base
-    {
-        /// Use in-memory storage for temporary/ephemeral mode.
-        access_control.addMemoryStorage(MemoryAccessStorage::STORAGE_TYPE, /* allow_backup= */ false);
-    }
-=======
-    {
-        /// Use in-memory storage for the temporary/ephemeral mode (--tmp).
-        access_control.addMemoryStorage(MemoryAccessStorage::STORAGE_TYPE, /* allow_backup= */ false);
-    }
->>>>>>> theirs
 }
 
 void LocalServer::connect()
@@ -1571,18 +1490,12 @@ try
         }
     });
 
-<<<<<<< ours
-    SCOPE_EXIT({ if (!is_background) cleanup(); });
-||||||| base
-    SCOPE_EXIT({ cleanup(); });
-=======
     /// Registered before `processConfig`, because it can throw after scheduling the asynchronous load
     /// of the persisted tables (e.g. `--database` names a nonexistent database). Without the guard,
     /// the members would be destroyed with the load jobs still running: `status` would release the
     /// lock of the directory while the jobs still access it, and they would race with the shutdown
     /// of the context. `cleanup` copes with a partially initialized state.
-    SCOPE_EXIT({ cleanup(); });
->>>>>>> theirs
+    SCOPE_EXIT({ if (!is_background) cleanup(); });
 
     processConfig();
 
@@ -2380,23 +2293,12 @@ void LocalServer::addExtraOptions(OptionsDescription & options_description)
         ("logger.log", po::value<std::string>(), "Log file name")
         ("logger.level", po::value<std::string>(), "Log level")
 
-<<<<<<< ours
-        ("no-system-tables", "do not attach system tables (better startup time)")
-        ("path", po::value<std::string>(), "Storage path. If it was not specified, we will use a temporary directory, that is cleaned up on exit.")
-        ("only-system-tables", "attach only system tables from specified path")
-||||||| base
         ("no-system-tables", "Do not attach system tables (better startup time)")
+        /// chdb: the temporary directory stays the default, see `tryInitPath`.
         ("path", po::value<std::string>(), "Storage path. If it was not specified, we will use a temporary directory, that is cleaned up on exit.")
-        ("only-system-tables", "Attach only system tables from specified path")
-=======
-        ("no-system-tables", "Do not attach system tables (better startup time)")
-        ("path", po::value<std::string>(), "Storage path. By default, a designated directory for application data in the home directory is used"
-            " ($XDG_DATA_HOME/clickhouse-local or ~/.local/share/clickhouse-local on Linux, ~/Library/Application Support/clickhouse-local on macOS),"
-            " and the data survives between runs. See also: --tmp.")
-        ("tmp", "Use a unique temporary directory for the data, that is removed on exit (this was the default behavior in older versions)."
+        ("tmp", "Use a unique temporary directory for the data, that is removed on exit (the default in chDB)."
             " Has no effect if --path is specified.")
         ("only-system-tables", "Attach only system tables from specified path")
->>>>>>> theirs
         ("top_level_domains_path", po::value<std::string>(), "Path to lists with custom TLDs")
 
         ("listen_host", po::value<std::string>(), "Host to listen on for SYSTEM START LISTEN (default: ::1 and 127.0.0.1)")
@@ -2497,26 +2399,14 @@ void LocalServer::applyCmdOptions(ContextMutablePtr context)
 
 void LocalServer::processOptions(const OptionsDescription &, const CommandLineOptions & options, const std::vector<Arguments> &, const std::vector<Arguments> &)
 {
-<<<<<<< ours
-    if (options.count("path"))
-||||||| base
-    if (options.contains("path"))
-=======
     if (options.contains("path"))
     {
->>>>>>> theirs
         getClientConfiguration().setString("path", options["path"].as<std::string>());
-<<<<<<< ours
-    if (options.count("table"))
-||||||| base
-    if (options.contains("table"))
-=======
         path_from_command_line = true;
     }
     if (options.contains("tmp"))
         getClientConfiguration().setBool("tmp", true);
     if (options.contains("table"))
->>>>>>> theirs
         getClientConfiguration().setString("table-name", options["table"].as<std::string>());
     if (options.count("file"))
         getClientConfiguration().setString("table-file", options["file"].as<std::string>());

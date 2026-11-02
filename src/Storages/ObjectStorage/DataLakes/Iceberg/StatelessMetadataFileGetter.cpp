@@ -434,7 +434,27 @@ ManifestFilesPrefetcher::FetchPtr ManifestFilesPrefetcher::take()
 
 void ManifestFilesPrefetcher::fill()
 {
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// chdb: this build has no threads, so scheduling onto the IO pool raises CANNOT_SCHEDULE_TASK.
+    /// Fetch where the caller stands and hand back a ready future: the window keeps its shape and
+    /// its limits, it is only filled synchronously. (It replaces the same fallback chdb had in the
+    /// manifest decode loop and `ParallelManifestDecode.h`, both of which upstream removed.)
+    auto runner = [](std::function<ManifestFileCacheableInfo()> && callback, Priority) -> std::future<ManifestFileCacheableInfo>
+    {
+        std::promise<ManifestFileCacheableInfo> promise;
+        try
+        {
+            promise.set_value(callback());
+        }
+        catch (...)
+        {
+            promise.set_exception(std::current_exception());
+        }
+        return promise.get_future();
+    };
+#else
     auto runner = threadPoolCallbackRunnerUnsafe<ManifestFileCacheableInfo>(getIOThreadPool().get(), ThreadName::ICEBERG_ITERATOR);
+#endif
 
     while (next_to_fetch < manifests.size() && leased < max_manifest_files_in_flight)
     {

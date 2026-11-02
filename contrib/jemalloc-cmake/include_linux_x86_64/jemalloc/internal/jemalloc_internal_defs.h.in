@@ -145,13 +145,11 @@
  * user-space context switch (fibers migrating between OS threads).  See
  * tsd_tls_addr.h.
  */
-<<<<<<< ours
-/* #undef JEMALLOC_TLS_MODEL_INITIAL_EXEC */ /* chdb_spec: dlopen'd module uses general-dynamic TLS */
-||||||| base
-#define JEMALLOC_TLS_MODEL_INITIAL_EXEC
-=======
 #define JEMALLOC_EXPERIMENTAL_FIBER_SAFE_TLS
->>>>>>> theirs
+/* chdb_spec: the accessor takes &tlsvar inside a function, so it works with the
+ * general-dynamic TLS that the blank JEMALLOC_TLS_MODEL above gives the dlopen'd
+ * module. It replaced the initial-exec-only JEMALLOC_TLS_MODEL_INITIAL_EXEC fast
+ * path, which chdb had to leave undefined. */
 
 /*
  * JEMALLOC_DEBUG enables assertions and other sanity checks, and disables

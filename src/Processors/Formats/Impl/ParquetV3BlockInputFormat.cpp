@@ -201,16 +201,10 @@ void ParquetV3BlockInputFormat::initializeIfNeeded()
                 else
                     parser_shared_resources->parsing_runner.initThreadPool(
                         getFormatParsingThreadPool().get(), parser_shared_resources->max_parsing_threads, ThreadName::PARQUET_DECODER, CurrentThread::getGroup());
-<<<<<<< ours
 #endif
-
-||||||| base
-
-=======
             });
         parser_shared_resources->initOpaqueOnce([&]
             {
->>>>>>> theirs
                 auto ext = std::make_shared<Parquet::SharedResourcesExt>();
 
                 ext->total_memory_low_watermark = format_settings.parquet.memory_low_watermark;
