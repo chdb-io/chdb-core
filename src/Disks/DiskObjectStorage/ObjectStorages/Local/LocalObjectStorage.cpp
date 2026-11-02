@@ -64,7 +64,8 @@ namespace
 {
 
 /// Delay each enabled local object-storage operation in the synthetic-IO performance tests.
-constexpr UInt64 simulated_io_latency_ms = 20;
+/// chdb: unused when libfiu is disabled (fiu_do_on expands to nothing), e.g. the lite build.
+[[maybe_unused]] constexpr UInt64 simulated_io_latency_ms = 20;
 
 struct timespec getMTime(const struct stat & file_stat)
 {

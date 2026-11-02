@@ -483,7 +483,8 @@ void PocoHTTPClient::makeRequestInternalImpl(
     Aws::Utils::RateLimits::RateLimiterInterface *) const
 {
     LoggerPtr log = getLogger("AWSClient");
-    constexpr UInt64 simulated_network_latency_ms = 50;
+    /// chdb: unused when libfiu is disabled (fiu_do_on expands to nothing), e.g. the lite build.
+    [[maybe_unused]] constexpr UInt64 simulated_network_latency_ms = 50;
 
     auto uri = request.GetUri().GetURIString();
     auto method = getMethod(request);
