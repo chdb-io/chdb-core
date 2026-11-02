@@ -167,7 +167,8 @@ fi
 echo "Preparing cpp-example directory..."
 cd ${MY_DIR}/cpp-example
 cp ${PROJ_DIR}/programs/local/chdb.h .
-cp ${MY_DIR}/libchdb.a .
+# A hard link, not a copy: the full libchdb.a is ~9 GB and the link only reads it.
+ln -f ${MY_DIR}/libchdb.a .
 echo "Copied chdb.h and libchdb.a to cpp-example directory"
 
 # Compile example program
