@@ -248,7 +248,7 @@ jobs:
 
   test_on_macos:
     name: Test on macOS arm64
-    runs-on: macos-14-xlarge
+    runs-on: macos-15-xlarge
     needs: build_universal_wheel_on_linux
     # An explicit status check: the implicit success() would also look at the
     # nightly gate, which other events skip, and skip this job with it.
