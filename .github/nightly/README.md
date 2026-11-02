@@ -117,6 +117,9 @@ is on a newer ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `
 part so the name survives as a release asset. `N` is the commit's time as yymmddhhmm
 in UTC, e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
 pre-release itself (`upload_wheel.sh`), creating the release the first time.
+A build the runners' 06:00 UTC restart kills is rerun once after 07:10 UTC by
+`rerun_killed_jobs.yml`, which then dispatches `nightly_publish.yml` itself: a rerun
+requested with the workflow token raises no `workflow_run` event.
 `nightly_publish.yml` waits until all four runs for the commit are done and, unless a
 newer night is already out (a rerun of an older night's job), then:
 

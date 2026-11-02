@@ -1,0 +1,105 @@
+name: Rerun jobs killed by a runner restart
+
+# The self-hosted runners restart their runner service after unattended-upgrades,
+# 06:00 UTC plus up to an hour, killing whatever job runs there with "The runner has
+# received a shutdown signal". When every failed job of a run's first attempt died
+# that way, this reruns them once, after 07:10 UTC; a real failure next to them leaves
+# the run alone. See .github/scripts/rerun-killed-jobs.py.
+#
+# A rerun requested with the workflow token raises no workflow_run event when it
+# finishes, so for main's builds and release builds `follow` dispatches what that
+# event would have started: nightly_publish.yml and publish_checksums.yml.
+#
+# Only the default branch's copy of this workflow and of the script ever runs; no
+# code from the run being rerun is checked out.
+
+on:
+  workflow_run:
+    workflows:
+      - Build & Test Linux x86_64
+      - Build & Test Linux arm64
+      - Build & Test macOS x86_64
+      - Build & Test macOS arm64
+      - Build & Test Free-Threading Wheels
+      - wasm
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run whose first attempt to check'
+        required: true
+      dry_run:
+        description: 'Only report what would be done'
+        type: boolean
+        default: true
+
+concurrency:
+  group: rerun-killed-jobs-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write    # read the run's jobs and logs, rerun it, dispatch the publishers
+  contents: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+
+jobs:
+  rerun:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt == 1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      dispatch: ${{ steps.decide.outputs.dispatch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Rerun the failed jobs if a runner restart killed them
+        id: decide
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=()
+          [ "$DRY_RUN" = true ] && args+=(--dry-run)
+          python3 .github/scripts/rerun-killed-jobs.py decide --run-id "$RUN_ID" "${args[@]}"
+
+  # A GitHub-hosted job lasts at most 6 hours, and a rerun of the macOS x86_64 build
+  # (the cross build, then the macOS tests) can take longer, so a second job carries on.
+  follow:
+    needs: rerun
+    if: needs.rerun.outputs.dispatch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    outputs:
+      done: ${{ steps.follow.outputs.done }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Wait for the rerun, then dispatch what its completion would have started
+        id: follow
+        env:
+          DISPATCH: ${{ needs.rerun.outputs.dispatch }}
+        run: python3 .github/scripts/rerun-killed-jobs.py follow --run-id "$RUN_ID" --dispatch "$DISPATCH" --minutes 330
+
+  follow_on:
+    needs: [rerun, follow]
+    if: needs.follow.outputs.done == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Keep waiting for the rerun
+        env:
+          DISPATCH: ${{ needs.rerun.outputs.dispatch }}
+        run: python3 .github/scripts/rerun-killed-jobs.py follow --run-id "$RUN_ID" --dispatch "$DISPATCH" --minutes 330

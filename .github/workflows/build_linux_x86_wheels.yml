@@ -25,12 +25,15 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
-      # The daily-sync and nightly tooling cannot change what this builds.
+      # The daily-sync, nightly and rerun tooling cannot change what this builds.
       - '.agents/**'
       - '.github/nightly/**'
       - '.github/workflows/daily_sync.yml'
       - '.github/workflows/nightly_publish.yml'
       - '.github/workflows/nightly_api.yml'
+      - '.github/workflows/rerun_killed_jobs.yml'
+      - '.github/scripts/rerun-killed-jobs.py'
+      - '.github/scripts/rerun-killed-jobs-test.py'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -44,12 +47,15 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
-      # The daily-sync and nightly tooling cannot change what this builds.
+      # The daily-sync, nightly and rerun tooling cannot change what this builds.
       - '.agents/**'
       - '.github/nightly/**'
       - '.github/workflows/daily_sync.yml'
       - '.github/workflows/nightly_publish.yml'
       - '.github/workflows/nightly_api.yml'
+      - '.github/workflows/rerun_killed_jobs.yml'
+      - '.github/scripts/rerun-killed-jobs.py'
+      - '.github/scripts/rerun-killed-jobs-test.py'
 
 
 concurrency:

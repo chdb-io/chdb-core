@@ -49,6 +49,9 @@ jobs:
       - name: Daily sync and nightly tooling
         run: python3 .github/nightly/test_nightly.py
 
+      - name: Rerun of jobs killed by a runner restart
+        run: python3 .github/scripts/rerun-killed-jobs-test.py
+
       - name: Install flake8
         run: python -m pip install flake8
 
