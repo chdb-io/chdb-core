@@ -207,9 +207,9 @@ extern const ServerSettingsUInt64 prefixes_deserialization_thread_pool_thread_po
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_size;
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_free_size;
 extern const ServerSettingsUInt64 format_parsing_thread_pool_queue_size;
-extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_size;
-extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_free_size;
-extern const ServerSettingsUInt64 iceberg_manifest_decode_thread_pool_queue_size;
+extern const ServerSettingsNonZeroUInt64 ai_function_max_thread_pool_size;
+extern const ServerSettingsUInt64 ai_function_max_thread_pool_free_size;
+extern const ServerSettingsUInt64 ai_function_thread_pool_queue_size;
 extern const ServerSettingsUInt64 memory_worker_period_ms;
 extern const ServerSettingsDouble memory_worker_purge_dirty_pages_threshold_ratio;
 extern const ServerSettingsDouble memory_worker_purge_total_memory_threshold_ratio;
@@ -396,10 +396,12 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_format_parsing_thread_pool_free_size],
         server_settings[ServerSetting::format_parsing_thread_pool_queue_size]);
 
-    getIcebergManifestDecodeThreadPool().initialize(
-        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_size],
-        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_free_size],
-        server_settings[ServerSetting::iceberg_manifest_decode_thread_pool_queue_size]);
+    /// As LocalServer does: `AIRequestExecutor` uses the pool without initializing it. (The Iceberg
+    /// manifest decode pool initialized here before is gone: manifests are read on the IO pool.)
+    getAIRequestThreadPool().initialize(
+        server_settings[ServerSetting::ai_function_max_thread_pool_size],
+        server_settings[ServerSetting::ai_function_max_thread_pool_free_size],
+        server_settings[ServerSetting::ai_function_thread_pool_queue_size]);
 }
 
 static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const String & database_name)

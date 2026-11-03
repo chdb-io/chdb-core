@@ -972,7 +972,8 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
         if (!ctx->cancelled)
         {
             connection->sendData({}, "", false);
-            receiveEndOfQueryForInsert();
+            /// The parsed query lets upstream's loop route the result of `INSERT ... RETURNING`.
+            receiveEndOfQueryForInsert(ctx->parsed_query);
         }
     }
     catch (...)

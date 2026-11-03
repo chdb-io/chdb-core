@@ -140,11 +140,16 @@
 #define JEMALLOC_TLS_MODEL
 
 /*
- * Defined when the TSD thread-locals use the initial-exec (static) TLS model,
- * i.e. live at a fixed offset from the thread pointer.  Gates the fast path of
- * JEMALLOC_TLS_ADDR (see tsd_internals.h).
+ * Route TSD thread-local address computation through a noinline
+ * optimization-barrier accessor so the compiler cannot cache it across a
+ * user-space context switch (fibers migrating between OS threads).  See
+ * tsd_tls_addr.h.
  */
-/* #undef JEMALLOC_TLS_MODEL_INITIAL_EXEC */ /* chdb_spec: dlopen'd module uses general-dynamic TLS */
+#define JEMALLOC_EXPERIMENTAL_FIBER_SAFE_TLS
+/* chdb_spec: the accessor takes &tlsvar inside a function, so it works with the
+ * general-dynamic TLS that the blank JEMALLOC_TLS_MODEL above gives the dlopen'd
+ * module. It replaced the initial-exec-only JEMALLOC_TLS_MODEL_INITIAL_EXEC fast
+ * path, which chdb had to leave undefined. */
 
 /*
  * JEMALLOC_DEBUG enables assertions and other sanity checks, and disables
@@ -429,6 +434,9 @@
 
 /* Is C++ support being built? */
 /* #undef JEMALLOC_ENABLE_CXX */
+
+/* Are C++ exceptions enabled? */
+#define JEMALLOC_HAVE_CXX_EXCEPTIONS
 
 /* Performs additional size checks when defined. */
 /* #undef JEMALLOC_OPT_SIZE_CHECKS */

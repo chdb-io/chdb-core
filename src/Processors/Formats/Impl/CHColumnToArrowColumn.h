@@ -38,6 +38,12 @@ public:
         bool output_uuid_as_fixed_byte_array = false;
         /// Output Variant as Arrow String containing JSON text instead of Arrow DenseUnion.
         bool output_variant_as_string = false;
+        /// Output DateTime as Arrow TIMESTAMP with second precision instead of UInt32,
+        /// so the temporal type survives a round-trip through the format.
+        bool output_datetime_as_timestamp = false;
+        /// Output the Nothing type (e.g. `SELECT NULL`) as the Arrow Null type.
+        /// By default such columns raise an UNKNOWN_TYPE exception.
+        bool output_nothing_as_null = false;
         /// What to do with a type having no conversion: reject it, or write one serialized value per row
         /// into an Arrow `utf8`/`binary` column.
         FormatSettings::ArrowUnsupportedTypes output_unsupported_types = FormatSettings::ArrowUnsupportedTypes::THROW;

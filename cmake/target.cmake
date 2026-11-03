@@ -88,7 +88,7 @@ if (OS_WASM)
     set (ENABLE_GRPC OFF CACHE INTERNAL "")
     # Protobuf needs a `protoc` that runs on the host, and the nested native configure at the
     # bottom of the top-level `CMakeLists.txt` would be handed `emcc` as its host compiler.
-    # ORC hard-depends on it and goes with it; chdb keeps Parquet, see the format block below.
+    # Upstream turns Arrow and Parquet off with it; chdb keeps Parquet, see the format block below.
     set (ENABLE_PROTOBUF OFF CACHE INTERNAL "")
     # Its `kj` library uses `fallocate` and friends unconditionally in its POSIX branch,
     # which the Emscripten libc does not provide.
@@ -152,9 +152,11 @@ if (OS_WASM)
     # It is the gate for Iceberg/Paimon metadata reading and, together with
     # Parquet, for the DataLakeCatalog database engine.
     set (ENABLE_AVRO ON CACHE INTERNAL "")
-    # Parquet READ via a slim Arrow build: Parquet + Thrift on, ORC off (ORC is the
-    # only consumer of protobuf/protoc, which stay off) and Arrow's curl/HDFS object
-    # store paths guarded out in contrib/arrow-cmake.
+    # Parquet READ via a slim Arrow build: Parquet + Thrift on, protobuf off, and Arrow's
+    # curl/HDFS object store paths guarded out in contrib/arrow-cmake. ORC stays off: it was
+    # left out for the protobuf the `apache/orc` library needed, which the native reader that
+    # replaced it does not, and src/configure_config.cmake still honours ENABLE_ORC, so the
+    # bundle keeps its size until someone decides to ship ORC here.
     set (ENABLE_PARQUET ON CACHE INTERNAL "")
     set (ENABLE_THRIFT ON CACHE INTERNAL "")
     set (ENABLE_ORC OFF CACHE INTERNAL "")

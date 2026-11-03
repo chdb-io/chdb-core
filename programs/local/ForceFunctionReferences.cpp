@@ -293,6 +293,7 @@ namespace DB
     extern void registerFunctionGeohashDecode(FunctionFactory & factory);
     extern void registerFunctionGeohashEncode(FunctionFactory & factory);
     extern void registerFunctionGeohashesInBox(FunctionFactory & factory);
+    extern void registerFunctionGeometryLength(FunctionFactory & factory);
     extern void registerFunctionGetClientHTTPHeader(FunctionFactory & factory);
     extern void registerFunctionGetMacro(FunctionFactory & factory);
     extern void registerFunctionGetMergeTreeSetting(FunctionFactory & factory);
@@ -628,6 +629,7 @@ namespace DB
     extern void registerFunctionTimeSeriesRemoveTag(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesRemoveTags(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesReplaceTag(FunctionFactory & factory);
+    extern void registerFunctionTimeSeriesSliceSortedArray(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesStoreTags(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesTagsToGroup(FunctionFactory & factory);
     extern void registerFunctionTimeSeriesTagsToMap(FunctionFactory & factory);
@@ -1192,6 +1194,7 @@ namespace DB
             &registerFunctionGeohashDecode,
             &registerFunctionGeohashEncode,
             &registerFunctionGeohashesInBox,
+            &registerFunctionGeometryLength,
             &registerFunctionGetClientHTTPHeader,
             &registerFunctionGetMacro,
             &registerFunctionGetMergeTreeSetting,
@@ -1527,6 +1530,7 @@ namespace DB
             &registerFunctionTimeSeriesRemoveTag,
             &registerFunctionTimeSeriesRemoveTags,
             &registerFunctionTimeSeriesReplaceTag,
+            &registerFunctionTimeSeriesSliceSortedArray,
             &registerFunctionTimeSeriesStoreTags,
             &registerFunctionTimeSeriesTagsToGroup,
             &registerFunctionTimeSeriesTagsToMap,

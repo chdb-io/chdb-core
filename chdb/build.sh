@@ -281,11 +281,16 @@ if [ "${CHDB_LITE}" != "1" ]; then
         fi
     fi
 
+    # The shared objects below are linked from the `clickhouse` executable's command, so drop the
+    # executable-only flags from it: besides the undefined-symbol checks, upstream's `-z nodlopen`
+    # (CMakeLists.txt), which would make libchdb.so and _chdb.abi3.so refuse to load
+    # ("shared object cannot be dlopen()ed").
     LIBCHDB_CMD=$(grep -m 1 'clang.*-o programs/clickhouse .*' build.log \
         | sed "s/-o programs\/clickhouse/-fPIC -shared -o ${LIBCHDB_SO}/" \
         | sed 's/^[^&]*&& //' | sed 's/&&.*//' \
         | sed 's/ -Wl,-undefined,error/ -Wl,-undefined,dynamic_lookup/g' \
         | sed 's/ -Xlinker --no-undefined//g' \
+        | sed 's/ -Wl,-z,nodlopen//g' \
         | sed 's/@CMakeFiles\/clickhouse.rsp/@CMakeFiles\/libchdb.rsp/g' \
          )
 
@@ -370,6 +375,7 @@ PYCHDB_CMD=$(grep -m 1 'clang.*-o programs/clickhouse .*' build.log \
     | sed 's/^[^&]*&& //' | sed 's/&&.*//' \
     | sed 's/ -Wl,-undefined,error/ -Wl,-undefined,dynamic_lookup/g' \
     | sed 's/ -Xlinker --no-undefined//g' \
+    | sed 's/ -Wl,-z,nodlopen//g' \
     | sed 's/@CMakeFiles\/clickhouse.rsp/@CMakeFiles\/pychdb.rsp/g' \
      )
 
