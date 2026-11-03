@@ -3,9 +3,10 @@
 
 --nightly is for the builds the nightly release publishes, main's builds of
 merged ClickHouse syncs: no local version (a `+` in a wheel name does not survive
-as a GitHub release asset name), and once main has moved on to a newer ClickHouse
-line than its newest tag, the version names that line, so pip sorts the nightly
-above every release of an older one. Its dev number is HEAD's committer time as
+as a GitHub release asset name), its base is the newest release tag, not a
+release candidate, and once main has moved on to a newer ClickHouse line than that
+tag, the version names that line, so pip sorts the nightly above every release of
+an older one. Its dev number is HEAD's committer time as
 yymmddhhmm in UTC: it shows the day, the same commit always gets the same
 version, and a later commit a larger one.
 """
@@ -26,10 +27,23 @@ TAG_RE = re.compile(
 )
 
 
-def run_git(*args: str) -> str:
+def run_git(*args: str, cwd: Path = REPO_ROOT) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=REPO_ROOT, text=True
+        ["git", *args], cwd=cwd, text=True
     ).strip()
+
+
+def latest_tag(nightly: bool, cwd: Path = REPO_ROOT) -> str:
+    """The newest version tag reachable from HEAD; for the nightly, the newest release.
+
+    A release candidate never reaches PyPI, so a nightly only has to sort above the
+    releases there. Counting candidates also made a night's version depend on when a
+    job read the tags: v26.11.0-rc.1, tagged while the 2026-11-03 night was building,
+    gave its Linux wheels 26.11.0.devN and its macOS wheels, packaged later,
+    26.11.0rc1.post1.devN, and the chdb nightly pinned to the Linux one.
+    """
+    exclude = ["--exclude", "*-rc.*"] if nightly else []
+    return run_git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", *exclude, cwd=cwd)
 
 
 def normalize_tag(tag: str) -> str:
@@ -83,7 +97,7 @@ def main() -> None:
     parser.add_argument("--nightly", action="store_true", help="version for the nightly release")
     args = parser.parse_args()
 
-    tag = run_git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
+    tag = latest_tag(args.nightly)
     if args.nightly:
         header = (REPO_ROOT / "programs" / "local" / "chdb.h").read_text()
         commit_time = int(run_git("show", "-s", "--format=%ct", "HEAD"))

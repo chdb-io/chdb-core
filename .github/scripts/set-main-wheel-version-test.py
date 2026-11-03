@@ -3,6 +3,7 @@
 import datetime
 import importlib.util
 import pathlib
+import subprocess
 import tempfile
 import unittest
 
@@ -58,6 +59,17 @@ class MainWheelVersionTest(unittest.TestCase):
             MODULE.nightly_version("v26.9.2-rc.2", COMMIT_TIME, (26, 9)),
             "26.9.2rc2.post1.dev2610151617",
         )
+
+    def test_nightly_skips_release_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = pathlib.Path(directory)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run(git + ["init", "-q"], cwd=repo, check=True)
+            for tag in ("v26.9.0", "v26.11.0-rc.1"):
+                subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", tag], cwd=repo, check=True)
+                subprocess.run(git + ["tag", tag], cwd=repo, check=True)
+            self.assertEqual(MODULE.latest_tag(False, repo), "v26.11.0-rc.1")
+            self.assertEqual(MODULE.latest_tag(True, repo), "v26.9.0")
 
     def test_engine_line(self):
         self.assertEqual(MODULE.engine_line('#define CHDB_VERSION "26.11.0-dev"\n'), (26, 11))
