@@ -112,8 +112,9 @@ of its own in each, so a later push to main cannot replace its pending build, an
 its no-op runs do not cancel or replace main's. No sync
 merged, no nightly: none while a sync pull request waits for review.
 
-On a merged sync the workflows version the wheel `X.Y.Z.post1.devN` or, once `main`
-is on a newer ClickHouse line than its newest tag, `X.Y.0.devN`, with no local `+`
+On a merged sync the workflows version the wheel `X.Y.Z.post1.devN`, `X.Y.Z` being
+the newest release tag (candidates do not count: they never reach PyPI), or, once
+`main` is on a newer ClickHouse line than that tag, `X.Y.0.devN`, with no local `+`
 part so the name survives as a release asset. `N` is the commit's time as yymmddhhmm
 in UTC, e.g. `26.10.0.dev2610151617`. Each run uploads its wheel to the `nightly`
 pre-release itself (`upload_wheel.sh`), creating the release the first time.
