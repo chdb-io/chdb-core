@@ -16,6 +16,7 @@
 #endif
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
+#include <Common/EventNotifier.h>
 #include <Common/MemoryTracker.h>
 #include <Common/quoteString.h>
 #include <Common/SignalHandlers.h>
@@ -142,6 +143,16 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
     try
     {
         std::lock_guard<std::mutex> lock(CHDB_MUTEX);
+        /// chdb_spec: every call boots a LocalServer, whose global context initializes the
+        /// process-wide EventNotifier (Context::makeGlobalContext), and nothing shut it down, so
+        /// from the second call in a process on, startup threw "EventNotifier is initialized
+        /// twice". Shut it down once this call's server is gone, as EmbeddedServer::cleanup does
+        /// for a connection's engine -- unless a connection is open: then the notifier is that
+        /// engine's (and this server could not start, the catalog being taken).
+        SCOPE_EXIT({
+            if (!DB::EmbeddedServer::hasActiveClients())
+                DB::EventNotifier::shutdown();
+        });
         DB::ThreadStatus thread_status;
         DB::LocalServer app;
         app.init(argc, argv);
