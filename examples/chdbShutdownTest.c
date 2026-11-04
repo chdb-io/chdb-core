@@ -8,6 +8,8 @@
  * Verifies:
  *   1. A query starts engine thread-pool threads, and they are still running
  *      after every connection is closed — closing connections is not a shutdown.
+ *      The queries include a MergeTree table, whose background executors run
+ *      their own pool threads that chdb_shutdown() has to stop as well.
  *   2. chdb_shutdown() refuses to run while a connection is still open, and
  *      leaves the engine untouched when it refuses.
  *   3. Once the last connection is closed chdb_shutdown() succeeds and zero engine
@@ -164,6 +166,23 @@ int main(void)
     res = chdb_query(*conn, "SELECT count() FROM numbers(1000000)", "CSV");
     err = chdb_result_error(res);
     CHECK(err == NULL, "query succeeds");
+    if (err)
+        fprintf(stderr, "  query error: %s\n", err);
+    chdb_destroy_query_result(res);
+
+    /* A MergeTree table starts the MergeTree background executors. Their idle
+     * workers used to survive every connection being closed, which kept
+     * chdb_shutdown() from joining the global pool. */
+    res = chdb_query(*conn, "CREATE TABLE shutdown_mt (x UInt64) ENGINE = MergeTree ORDER BY x", "CSV");
+    err = chdb_result_error(res);
+    CHECK(err == NULL, "creating a MergeTree table succeeds");
+    if (err)
+        fprintf(stderr, "  query error: %s\n", err);
+    chdb_destroy_query_result(res);
+
+    res = chdb_query(*conn, "INSERT INTO shutdown_mt SELECT number FROM numbers(1000)", "CSV");
+    err = chdb_result_error(res);
+    CHECK(err == NULL, "inserting into the MergeTree table succeeds");
     if (err)
         fprintf(stderr, "  query error: %s\n", err);
     chdb_destroy_query_result(res);

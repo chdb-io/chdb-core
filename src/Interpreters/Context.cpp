@@ -9028,6 +9028,26 @@ void Context::shutdown() TSA_NO_THREAD_SAFETY_ANALYSIS
     });
 
     shared->shutdown();
+
+    /// chdb_spec: chdb never destroys its ContextSharedPart (SharedPtrContextHolder does
+    /// not delete it), so the MergeTree background executors that shutdown() above
+    /// stopped are never destroyed either. Each keeps its idle workers, every worker
+    /// holds a GlobalThreadPool thread, and chdb_shutdown() then refuses with
+    /// "MergeTreeBackgroundExecutorThreads" still alive. Destroy them here, as the
+    /// destructor would: the catalog is shut down, so nothing schedules on them or
+    /// looks them up any more, and destroying an executor joins its workers.
+    MergeMutateBackgroundExecutorPtr merge_mutate_executor;
+    OrdinaryBackgroundExecutorPtr moves_executor;
+    OrdinaryBackgroundExecutorPtr fetch_executor;
+    OrdinaryBackgroundExecutorPtr common_executor;
+    {
+        std::lock_guard lock(shared->background_executors_mutex);
+        merge_mutate_executor = std::move(shared->merge_mutate_executor);
+        moves_executor = std::move(shared->moves_executor);
+        fetch_executor = std::move(shared->fetch_executor);
+        common_executor = std::move(shared->common_executor);
+    }
+    /// chdb_spec: end MergeTree background executor release.
 }
 
 

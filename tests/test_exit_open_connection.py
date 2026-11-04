@@ -134,6 +134,23 @@ CHILD_VERIFY_ACTIVE_INSERT = (
     "conn.insert_append(stream, b'1\\n')\n"
 )
 
+# A MergeTree table starts the MergeTree background executors. Their idle workers
+# used to outlive the last connection, so the exit-time chdb_shutdown() could not
+# join the global thread pool: cleanup reported incomplete, and three
+# "shutdown refused/failed/incomplete" lines went to stderr on every such exit.
+CHILD_VERIFY_MERGETREE_SHUTDOWN = (
+    "import atexit, os\n"
+    "def verify_shutdown():\n"
+    "    if not chdb._chdb._python_exit_cleanup_complete():\n"
+    "        os._exit(96)\n"
+    "atexit.register(verify_shutdown)\n"
+    "import chdb\n"
+    "conn = chdb.connect(':memory:')\n"
+    "conn.query('CREATE TABLE exit_mt (x UInt64) ENGINE = MergeTree ORDER BY x')\n"
+    "conn.query('INSERT INTO exit_mt SELECT number FROM numbers(1000)')\n"
+    "assert '1000' in str(conn.query('SELECT count() FROM exit_mt', 'CSV'))\n"
+)
+
 CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN = (
     "import atexit, os\n"
     "def verify_shutdown():\n"
@@ -149,7 +166,7 @@ CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN = (
 
 
 class TestExitWithOpenConnection(unittest.TestCase):
-    def _run_child(self, child, runs):
+    def _run_child(self, child, runs, quiet=False):
         for i in range(runs):
             result = subprocess.run(
                 [sys.executable, "-c", child],
@@ -163,6 +180,8 @@ class TestExitWithOpenConnection(unittest.TestCase):
                 f"run {i}: exit {result.returncode}\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
             )
+            if quiet:
+                self.assertNotIn("shutdown", result.stderr, f"run {i}: stderr:\n{result.stderr}")
 
     def test_exit_without_close(self):
         self._run_child(CHILD_PLAIN, 5)
@@ -184,6 +203,9 @@ class TestExitWithOpenConnection(unittest.TestCase):
 
     def test_python_exit_cancels_unfinished_insert(self):
         self._run_child(CHILD_VERIFY_ACTIVE_INSERT, 3)
+
+    def test_python_exit_stops_mergetree_background_threads(self):
+        self._run_child(CHILD_VERIFY_MERGETREE_SHUTDOWN, 3, quiet=True)
 
     @unittest.skipIf(os.environ.get("CHDB_LITE") == "1", "chdb-core-lite is built without FIU failpoints")
     def test_python_exit_cleans_catalog_after_table_shutdown_error(self):
