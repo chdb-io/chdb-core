@@ -15,6 +15,9 @@
  *   3. Once the last connection is closed chdb_shutdown() succeeds and zero engine
  *      threads remain — raced by several threads at once, because the one real
  *      transition a process gets is the only chance to exercise the contention.
+ *      On Linux the process is then down to its main thread: the engine's jemalloc
+ *      background threads, which carry no name of their own, used to survive, and a
+ *      host unloading the library afterwards crashed in them.
  *   4. A further chdb_shutdown() is a successful no-op.
  *   5. chdb_connect() after a shutdown fails instead of handing back a connection
  *      on a dead engine.
@@ -28,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "chdb.h"
 
@@ -234,6 +238,14 @@ int main(void)
     }
     pool_after_shutdown = report("after chdb_shutdown");
     CHECK(pool_after_shutdown == 0, "no engine thread survives chdb_shutdown");
+#if !defined(__APPLE__)
+    /* The racers are joined, but a joined thread can stay visible for a moment. */
+    for (int i = 0; i < 100 && (count_pool_threads(&total), total) != 1; ++i) {
+        struct timespec pause = {0, 20 * 1000 * 1000};
+        nanosleep(&pause, NULL);
+    }
+    CHECK(total == 1, "no thread but the main one survives chdb_shutdown");
+#endif
 
     /* 4. Idempotent. */
     state = chdb_shutdown();

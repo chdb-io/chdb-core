@@ -35,6 +35,7 @@ void chdb_musl_compile_stub(int arg)
 #endif
 
 #if USE_JEMALLOC
+#    include <Common/Jemalloc.h>
 #    include <Common/memory.h>
 #endif
 
@@ -1617,6 +1618,15 @@ chdb_state chdb_shutdown(void)
             std::fputs("chDB shutdown failed: global thread pool did not become idle\n", stderr);
             return CHDBError;
         }
+
+#if USE_JEMALLOC
+        /// chdb_spec: the engine turns jemalloc's background purge threads on when it starts
+        /// (jemalloc_enable_background_threads), and they outlived this call. A host that unloaded
+        /// the library afterwards (dlclose, as Deno does at exit) then had them wake up in code that
+        /// was no longer mapped. Turning them off joins them.
+        shutdown_stage = "jemalloc background threads";
+        DB::Jemalloc::setBackgroundThreads(false);
+#endif
     }
     catch (const std::exception & e)
     {

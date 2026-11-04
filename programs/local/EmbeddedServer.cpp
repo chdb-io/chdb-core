@@ -348,6 +348,11 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         }
         instance_to_destroy.reset();
         GlobalThreadPool::shutdown();
+#if USE_JEMALLOC
+        /// The background purge threads the start turned on, as chdb_shutdown() does: this also
+        /// runs when the host unloads the library, and they must not outlive its code.
+        Jemalloc::setBackgroundThreads(false);
+#endif
     });
 
 #if defined(OS_LINUX)
