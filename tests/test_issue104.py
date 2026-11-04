@@ -4,10 +4,35 @@ import os
 import time
 import shutil
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 import psutil
 from chdb import session as chs
 
 tmp_dir = ".state_tmp_auxten_issue104"
+
+
+def print_thread_count(label):
+    # Thread counts are diagnostics, not assertions. macOS can fail to query
+    # THREAD_BASIC_INFO for a thread that exits during psutil's enumeration.
+    try:
+        count = len(psutil.Process().threads())
+    except (psutil.Error, RuntimeError, OSError) as exc:
+        print(f"{label}: unavailable ({exc})")
+    else:
+        print(f"{label}: {count}")
+
+
+class TestThreadCountDiagnostic(unittest.TestCase):
+    def test_thread_enumeration_error_is_only_diagnostic(self):
+        output = StringIO()
+        with patch.object(psutil, "Process") as process, redirect_stdout(output):
+            process.return_value.threads.side_effect = RuntimeError(
+                "thread_info(THREAD_BASIC_INFO) syscall failed"
+            )
+            print_thread_count("Final thread count after 3s")
+        self.assertIn("unavailable", output.getvalue())
 
 
 class TestIssue104(unittest.TestCase):
@@ -27,7 +52,7 @@ class TestIssue104(unittest.TestCase):
             sess.query("INSERT INTO test_db.test_table (x, y) VALUES ('A', 'B'), ('C', 'D');")
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             print("Original values:")
             ret = sess.query("SELECT * FROM test_db.test_table", "Debug")
@@ -35,7 +60,7 @@ class TestIssue104(unittest.TestCase):
             # self.assertEqual(str(ret), '"A","B"\n"C","D"\n')
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             print('Values after ALTER UPDATE in same query expected:')
             ret = sess.query(
@@ -45,7 +70,7 @@ class TestIssue104(unittest.TestCase):
             self.assertEqual(str(ret), '"A","updated1"\n')
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             # print("Values after UPDATE in same query (expected 'A', 'updated'):")
             # ret = sess.query(
@@ -62,7 +87,7 @@ class TestIssue104(unittest.TestCase):
             self.assertEqual(str(ret), '"A","updated3"\n')
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             print("Values after DELETE expected:")
             sess.query("ALTER TABLE test_db.test_table DELETE WHERE x = 'A'")
@@ -71,7 +96,7 @@ class TestIssue104(unittest.TestCase):
             self.assertEqual(str(ret), '"C","D"\n')
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             print("Values after ALTER then OPTIMIZE expected:")
             sess.query("ALTER TABLE test_db.test_table DELETE WHERE x = 'C'; OPTIMIZE TABLE test_db.test_table FINAL")
@@ -86,10 +111,10 @@ class TestIssue104(unittest.TestCase):
             print("Number of newline characters:", count)
 
             # show final thread count
-            print("Final thread count:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count")
 
             time.sleep(3)
-            print("Final thread count after 3s:", len(psutil.Process().threads()))
+            print_thread_count("Final thread count after 3s")
 
             # unittest will run tests in one process, but numpy and pyarrow will spawn threads like these:
             # name "python3"

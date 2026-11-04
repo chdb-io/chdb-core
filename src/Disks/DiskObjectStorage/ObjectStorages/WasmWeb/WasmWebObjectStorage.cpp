@@ -261,7 +261,7 @@ void WasmWebObjectStorage::removeObjectsIfExist(const StoredObjects &, StoredObj
     throwReadOnly();
 }
 
-String WasmWebObjectStorage::copyObject( /// NOLINT
+void WasmWebObjectStorage::copyObject( /// NOLINT
     const StoredObject &, const StoredObject &, const ReadSettings &, const WriteSettings &, std::optional<ObjectAttributes>)
 {
     throwReadOnly();

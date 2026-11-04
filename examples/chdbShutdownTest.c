@@ -125,11 +125,13 @@ static int count_pool_threads(int * total_out)
 }
 #endif
 
-static void report(const char * tag)
+/* Prints the pool thread count and returns it, so an assertion checks the value that was printed. */
+static int report(const char * tag)
 {
     int total = 0;
     int pool = count_pool_threads(&total);
     printf("  %-24s pool threads: %d, total threads: %d\n", tag, pool, total);
+    return pool;
 }
 
 /* Calls chdb_shutdown() and reports the state through the thread's argument. */
@@ -166,15 +168,15 @@ int main(void)
         fprintf(stderr, "  query error: %s\n", err);
     chdb_destroy_query_result(res);
 
-    pool_after_query = count_pool_threads(&total);
-    report("after query");
+    pool_after_query = report("after query");
     CHECK(pool_after_query > 0, "a query starts engine thread-pool threads");
 
     /* 2. Refuses to run while a connection is open, and changes nothing. */
     state = chdb_shutdown();
     CHECK(state == CHDBError, "chdb_shutdown fails while a connection is open");
-    report("after refused shutdown");
-    CHECK(count_pool_threads(&total) == pool_after_query,
+    /* Not compared with pool_after_query: a pool thread is named POOL_THREAD_NAME only while
+     * idle, so the count moves whenever a background job runs. A real shutdown takes it to 0. */
+    CHECK(report("after refused shutdown") > 0,
           "a refused chdb_shutdown leaves the engine threads running");
 
     /* The connection still works after the refusal. */
@@ -184,8 +186,7 @@ int main(void)
 
     /* 1. Closing every connection is not a shutdown. */
     chdb_close_conn(conn);
-    pool_after_close = count_pool_threads(&total);
-    report("after close_conn");
+    pool_after_close = report("after close_conn");
     CHECK(pool_after_close > 0, "closing every connection leaves the engine threads running");
 
     /* 3. Now it stops the engine — and the only real transition this process gets
@@ -212,8 +213,7 @@ int main(void)
         }
         CHECK(started == RACERS, "all racers started");
     }
-    pool_after_shutdown = count_pool_threads(&total);
-    report("after chdb_shutdown");
+    pool_after_shutdown = report("after chdb_shutdown");
     CHECK(pool_after_shutdown == 0, "no engine thread survives chdb_shutdown");
 
     /* 4. Idempotent. */

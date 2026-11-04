@@ -122,6 +122,7 @@ Use chdb_arrow_register_table() to register ArrowStreams first.
             .examples = {{"arrowstream", "SELECT * FROM arrowstream('my_data')", ""}},
             .category = FunctionDocumentation::Category::TableFunction,
         },
+        SecretArgumentsSpec{},
         {},
         TableFunctionFactory::Case::Insensitive);
 }

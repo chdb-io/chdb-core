@@ -131,7 +131,7 @@ void CallbackObjectStorage::removeObjectsIfExist(const StoredObjects & objects, 
     }
 }
 
-String CallbackObjectStorage::copyObject( /// NOLINT
+void CallbackObjectStorage::copyObject( /// NOLINT
     const StoredObject & object_from,
     const StoredObject & object_to,
     const ReadSettings & read_settings,
@@ -141,14 +141,13 @@ String CallbackObjectStorage::copyObject( /// NOLINT
     if (ops->hasCopy())
     {
         ops->copy(object_from.remote_path, object_to.remote_path);
-        return {};
+        return;
     }
 
     auto in = readObject(object_from, read_settings);
     auto out = writeObject(object_to, WriteMode::Rewrite, /* attributes= */ {}, DBMS_DEFAULT_BUFFER_SIZE, write_settings);
     copyData(*in, *out);
     out->finalize();
-    return {};
 }
 
 ObjectStorageKeyGeneratorPtr CallbackObjectStorage::createKeyGenerator() const

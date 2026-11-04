@@ -18,7 +18,7 @@ RISK_RULES = collections.OrderedDict(
         ("embedded-lifecycle", re.compile(r"^(programs/local/|src/Interpreters/Context|src/Core/ServerSettings)")),
         ("memory-allocator", re.compile(r"^(src/Common/(Allocator|AllocationInterceptors|CurrentMemoryTracker|MemoryTracker|MemoryWorker|malloc|memory|ThreadPool|SignalHandlers)|src/IO/SharedThreadPools|src/Core/BackgroundSchedulePool|contrib/jemalloc-cmake/)")),
         ("c-abi-exports", re.compile(r"^(programs/local/chdb|chdb/libchdb_export|chdb/build(_mac_on_linux)?\.sh)")),
-        ("static-archive", re.compile(r"^(programs/local/ForceFunctionReferences|chdb/build/(create_minimal_libchdb|create_static_libchdb|extract_chdb_objects|generate_force_references|check_static_lib_hermetic|test_go_example|go-example/)|contrib/libcxx|contrib/libcxxabi|contrib/libunwind)")),
+        ("static-archive", re.compile(r"^(programs/local/ForceFunctionReferences|chdb/build/(create_minimal_libchdb|create_static_libchdb|extract_chdb_objects|generate_force_references|check_static_lib_hermetic|prelink_static_lib|rename_static_lib_symbols_macos|c_library_exports|static-probe/|test_go_example|go-example/)|contrib/libcxx|contrib/libcxxabi|contrib/libunwind)")),
         ("arrow-parquet-python", re.compile(r"^(contrib/(arrow|pybind11)|src/Processors/Formats/Impl/(Arrow|CHColumnToArrow)|programs/local/(StorageArrow|Python|Pandas|ListScan)|tests/.*(arrow|parquet|python|pandas))")),
         ("lite-wasm-registration", re.compile(r"^(CMakeLists\.txt|src/(Functions|AggregateFunctions)/CMakeLists\.txt|programs/local/ForceFunctionReferences|chdb/build-wasm|\.github/workflows/wasm|tests/test_chdb_core_lite)")),
         ("toolchain-packaging", re.compile(r"^(cmake/|pyproject\.toml|chdb/vars\.sh|\.github/workflows/|contrib/corrosion-cmake/)")),
@@ -41,7 +41,10 @@ NO_OP_PREFIXES = (
 
 NO_OP_EXACT = {"programs/keeper/dashboard.html"}
 
-UPSTREAM_ADD_EXCLUDED_PREFIXES = (
+# Upstream trees chDB does not build. Upstream changes under them are never
+# imported, whether the file is new or one chDB still carries: the copies left
+# here are stale, and importing into them only produced conflicts.
+DROPPED_TREE_PREFIXES = (
     ".claude/",
     ".cursor/",
     ".github/",
@@ -51,6 +54,20 @@ UPSTREAM_ADD_EXCLUDED_PREFIXES = (
     "tests/",
     "utils/",
 )
+# Except what chDB's build runs from them: system.licenses comes from
+# utils/list-licenses/list-licenses.sh (src/Storages/System/StorageSystemLicenses.sh),
+# so that directory follows upstream. chDB's other utils/ copies date from 2024.
+FOLLOWED_UNDER_DROPPED = ("utils/list-licenses/",)
+UPSTREAM_ADD_EXCLUDED_PREFIXES = DROPPED_TREE_PREFIXES
+
+# Files at the same path in both trees where chDB keeps its own version, so an
+# upstream edit to them is not a change for chDB to take.
+CHDB_OWNED_FILES = {
+    ".gitignore",
+    "CONTRIBUTING.md",
+    "README.md",
+    "pyproject.toml",
+}
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -100,6 +117,11 @@ def scoped_candidate(status: str, paths: list[str], base_paths: set[str]) -> tup
     code = status[0]
     old_path = paths[0]
     new_path = paths[-1]
+    if old_path in CHDB_OWNED_FILES or new_path in CHDB_OWNED_FILES:
+        return False, "chDB keeps its own version"
+    if (code in {"M", "T", "D"} and old_path.startswith(DROPPED_TREE_PREFIXES)
+            and not old_path.startswith(FOLLOWED_UNDER_DROPPED)):
+        return False, "changed in a tree chDB drops"
     if code in {"M", "T"}:
         retained = new_path in base_paths
         return retained, "modified and retained" if retained else "modified but absent from chDB base"
@@ -110,7 +132,8 @@ def scoped_candidate(status: str, paths: list[str], base_paths: set[str]) -> tup
         excluded = (
             new_path in NO_OP_EXACT
             or new_path.startswith(NO_OP_PREFIXES)
-            or new_path.startswith(UPSTREAM_ADD_EXCLUDED_PREFIXES)
+            or (new_path.startswith(UPSTREAM_ADD_EXCLUDED_PREFIXES)
+                and not new_path.startswith(FOLLOWED_UNDER_DROPPED))
         )
         return not excluded, "new relevant path" if not excluded else "new path in known no-op/excluded tree"
     if code in {"R", "C"}:

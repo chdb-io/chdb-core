@@ -3,6 +3,7 @@
 #include "PyArrowTable.h"
 #include "PyBorrowGuard.h"
 #include "PybindWrapper.h"
+#include "PolarsDataFrame.h"
 #include "PythonArrowStream.h"
 #include "PythonUtils.h"
 
@@ -233,6 +234,11 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
             auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
             if (obj.is_none())
                 continue;
+
+            /// A polars LazyFrame or Series is only scannable once collected
+            /// or widened to a frame. Do it here, once per bind, so schema
+            /// inference and the scan are handed the very same object.
+            obj = PolarsDataFrame::normalize(obj);
 
             std::lock_guard lock(state_mutex);
             if (auto it = py_table_cache.find(matched); it != py_table_cache.end())

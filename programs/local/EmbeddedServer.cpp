@@ -14,9 +14,12 @@
 #include <Storages/StorageFactory.h>
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
+#include <set>
 #include <Access/AccessControl.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Core/UUID.h>
@@ -37,16 +40,20 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
+#include <Interpreters/SecretArgumentsRegistry.h>
 #include <Interpreters/SystemLog.h>
 #include <Interpreters/loadMetadata.h>
 #include <Interpreters/registerInterpreters.h>
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <Loggers/OwnSplitChannel.h>
-#include <Parsers/registerStatements.h>
+#include <Parsers/registerParsers.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Processors/QueryPlan/QueryPlanStepRegistry.h>
+#include <Storages/MergeTree/ColumnsCache.h>
+#include <Storages/MergeTree/MergeList.h>
+#include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/System/attachInformationSchemaTables.h>
 #include <Storages/System/attachSystemTables.h>
 #include <Storages/registerStorages.h>
@@ -57,6 +64,7 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
 #include <sys/resource.h>
+#include <unistd.h>
 #include <Poco/Logger.h>
 #include <Poco/NullChannel.h>
 #include <Poco/SimpleFileChannel.h>
@@ -72,6 +80,7 @@
 #include <Common/ErrorHandlers.h>
 #include <Common/EventNotifier.h>
 #include <Common/Exception.h>
+#include <Common/IMemoryReleasableCache.h>
 #include <Common/Macros.h>
 #include <Common/NamedCollections/NamedCollectionsFactory.h>
 #include <Common/PoolId.h>
@@ -114,10 +123,16 @@ namespace ServerSetting
 {
 extern const ServerSettingsUInt32 allow_feature_tier;
 extern const ServerSettingsDouble cache_size_to_ram_max_ratio;
+extern const ServerSettingsString columns_cache_policy;
+extern const ServerSettingsDouble columns_cache_free_memory_ratio;
+extern const ServerSettingsUInt64 columns_cache_history_window_ms;
+extern const ServerSettingsDouble columns_cache_size_ratio;
+extern const ServerSettingsDouble columns_cache_size_to_ram_ratio;
 extern const ServerSettingsUInt64 compiled_expression_cache_elements_size;
 extern const ServerSettingsUInt64 compiled_expression_cache_size;
 extern const ServerSettingsUInt64 database_catalog_drop_table_concurrency;
 extern const ServerSettingsString default_database;
+extern const ServerSettingsBool enable_gpu;
 extern const ServerSettingsString index_mark_cache_policy;
 extern const ServerSettingsUInt64 index_mark_cache_size;
 extern const ServerSettingsDouble index_mark_cache_size_ratio;
@@ -177,6 +192,11 @@ extern const ServerSettingsDouble uncompressed_cache_size_ratio;
 extern const ServerSettingsString primary_index_cache_policy;
 extern const ServerSettingsUInt64 primary_index_cache_size;
 extern const ServerSettingsDouble primary_index_cache_size_ratio;
+extern const ServerSettingsString statistics_cache_policy;
+extern const ServerSettingsUInt64 statistics_cache_size;
+extern const ServerSettingsDouble statistics_cache_size_ratio;
+extern const ServerSettingsUInt64 query_cache_max_entry_size_in_bytes;
+extern const ServerSettingsUInt64 query_cache_max_entry_size_in_rows;
 extern const ServerSettingsString query_condition_cache_policy;
 extern const ServerSettingsString unique_key_bitmap_cache_policy;
 extern const ServerSettingsUInt64 query_condition_cache_size;
@@ -187,9 +207,9 @@ extern const ServerSettingsUInt64 prefixes_deserialization_thread_pool_thread_po
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_size;
 extern const ServerSettingsUInt64 max_format_parsing_thread_pool_free_size;
 extern const ServerSettingsUInt64 format_parsing_thread_pool_queue_size;
-extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_size;
-extern const ServerSettingsUInt64 max_iceberg_manifest_decode_thread_pool_free_size;
-extern const ServerSettingsUInt64 iceberg_manifest_decode_thread_pool_queue_size;
+extern const ServerSettingsNonZeroUInt64 ai_function_max_thread_pool_size;
+extern const ServerSettingsUInt64 ai_function_max_thread_pool_free_size;
+extern const ServerSettingsUInt64 ai_function_thread_pool_queue_size;
 extern const ServerSettingsUInt64 memory_worker_period_ms;
 extern const ServerSettingsDouble memory_worker_purge_dirty_pages_threshold_ratio;
 extern const ServerSettingsDouble memory_worker_purge_total_memory_threshold_ratio;
@@ -203,6 +223,7 @@ namespace ErrorCodes
 extern const int BAD_ARGUMENTS;
 extern const int CANNOT_LOAD_CONFIG;
 extern const int FILE_ALREADY_EXISTS;
+extern const int SUPPORT_IS_DISABLED;
 extern const int UNKNOWN_FORMAT;
 }
 
@@ -375,10 +396,12 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_format_parsing_thread_pool_free_size],
         server_settings[ServerSetting::format_parsing_thread_pool_queue_size]);
 
-    getIcebergManifestDecodeThreadPool().initialize(
-        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_size],
-        server_settings[ServerSetting::max_iceberg_manifest_decode_thread_pool_free_size],
-        server_settings[ServerSetting::iceberg_manifest_decode_thread_pool_queue_size]);
+    /// As LocalServer does: `AIRequestExecutor` uses the pool without initializing it. (The Iceberg
+    /// manifest decode pool initialized here before is gone: manifests are read on the IO pool.)
+    getAIRequestThreadPool().initialize(
+        server_settings[ServerSetting::ai_function_max_thread_pool_size],
+        server_settings[ServerSetting::ai_function_max_thread_pool_free_size],
+        server_settings[ServerSetting::ai_function_thread_pool_queue_size]);
 }
 
 static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const String & database_name)
@@ -509,8 +532,74 @@ void EmbeddedServer::tryInitPath()
 }
 
 
+/// Shutdown cancels running merges and drops the ones not yet scheduled, so record per table what
+/// layout work is being abandoned. Must run before setShuttingDown(), which silences logging.
+void EmbeddedServer::logMergeTreeStateAtShutdown() const
+{
+    if (!global_context)
+        return;
+
+    auto log = getLogger("EmbeddedServer");
+    if (!log->is(Poco::Message::PRIO_INFORMATION))
+        return;
+
+    struct RunningMerges
+    {
+        size_t merges = 0;
+        size_t source_parts = 0;
+        UInt64 source_bytes = 0;
+    };
+    std::map<std::pair<String, String>, RunningMerges> running;
+    for (const auto & merge : global_context->getMergeList().get())
+    {
+        auto & entry = running[{merge.database, merge.table}];
+        ++entry.merges;
+        entry.source_parts += merge.num_parts;
+        entry.source_bytes += merge.total_size_bytes_compressed;
+    }
+
+    for (const auto & [database_name, database] : DatabaseCatalog::instance().getDatabases(GetDatabasesOptions{.with_datalake_catalogs = false}))
+    {
+        if (database->isExternal() || database_name == DatabaseCatalog::SYSTEM_DATABASE)
+            continue;
+
+        for (auto it = database->getTablesIterator(global_context, {}, true); it->isValid(); it->next())
+        {
+            const auto * data = dynamic_cast<const MergeTreeData *>(it->table().get());
+            if (!data)
+                continue;
+
+            const auto parts = data->getDataPartsVectorForInternalUsage();
+            std::set<String> partitions;
+            for (const auto & part : parts)
+                partitions.insert(part->info.getPartitionId());
+
+            const auto merges_it = running.find({database_name, it->name()});
+            const RunningMerges merges = merges_it == running.end() ? RunningMerges{} : merges_it->second;
+            if (parts.size() <= partitions.size() && merges.merges == 0)
+                continue;
+
+            LOG_INFO(
+                log,
+                "Shutting down {}.{} with {} active parts in {} partitions ({}), {} outdated parts, "
+                "cancelling {} running merges over {} parts ({})",
+                backQuoteIfNeed(database_name), backQuoteIfNeed(it->name()),
+                parts.size(), partitions.size(), ReadableSize(data->getTotalActiveSizeInBytes()),
+                data->getOutdatedPartsCount(),
+                merges.merges, merges.source_parts, ReadableSize(merges.source_bytes));
+        }
+    }
+}
+
 void EmbeddedServer::cleanup()
 {
+    bool context_cleaned = !global_context;
+    try
+    {
+        logMergeTreeStateAtShutdown();
+    }
+    catch (...) {}
+
     /// Mark that we're shutting down to prevent logging operations from
     /// crashing when Poco::Logger's internal data structures are destroyed
     /// (which can happen during Python interpreter exit).
@@ -536,27 +625,37 @@ void EmbeddedServer::cleanup()
     }
     catch (...) {}
 
+    /// The columns cache goes away with the context; stop resizing it.
+    setMemoryReleasableCache(nullptr);
+    if (memory_worker)
+        memory_worker->setReleasableCache(nullptr);
+
     try
     {
         if (global_context)
         {
             global_context->shutdown();
             global_context.reset();
+            context_cleaned = true;
         }
     }
     catch (const std::exception & e)
     {
-        /// During Python interpreter exit, mutexes may be in invalid state
-        /// due to static object destruction order. This is expected and harmless.
-        /// Only print error for unexpected exceptions.
-        std::string_view msg = e.what();
-        if (msg.find("mutex") == std::string_view::npos &&
-            msg.find("Invalid argument") == std::string_view::npos)
-        {
-            std::cerr << "Exception in global_context->shutdown(): " << e.what() << std::endl;
-        }
+        /// chdb_spec: A failed Context shutdown can leave the catalog alive.
+        /// Never hide it as a benign mutex error before the pool teardown.
+        /// Use raw stderr: the C++ logger/iostream statics might be gone.
+        static constexpr char prefix[] = "Exception in global_context->shutdown(): ";
+        (void)::write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
+        (void)::write(STDERR_FILENO, e.what(), std::strlen(e.what()));
+        (void)::write(STDERR_FILENO, "\n", 1);
+        /// chdb_spec: end embedded shutdown failure reporting.
     }
-    catch (...) {}
+    catch (...)
+    {
+        static constexpr char message[] = "Unknown exception in global_context->shutdown()\n";
+        (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
+    }
+    last_cleanup_succeeded.store(context_cleaned, std::memory_order_release);
 
     try
     {
@@ -694,7 +793,7 @@ try
             chdb_embedded_server_initialized = true;
 
             registerInterpreters();
-            registerStatements();
+            registerParsers();
             /// Don't initialize DateLUT
             registerFunctions();
             registerAggregateFunctions();
@@ -718,6 +817,9 @@ try
 #endif
 
             registerDictionaries();
+            /// Without a finder, formatting a query that may carry secrets (an s3() argument, a
+            /// dictionary SOURCE, ...) throws LOGICAL_ERROR, as upstream LocalServer installs it too.
+            setSecretArgumentsFinder(&SecretArgumentsRegistry::instance());
             registerDisks(/* global_skip_access_check= */ true);
             registerFormats();
             QueryPlanStepRegistry::registerPlanSteps();
@@ -762,7 +864,10 @@ void EmbeddedServer::processConfig()
         = (config().has("logger.console") || config().has("logger.level")
            || config().has("log-level") || config().has("logger.log"));
 
-    auto level = config().getString("log-level", config().getString("send_logs_level", "trace"));
+    /// An explicit log-level wins, then the <logger><level> of a config file, which used to be
+    /// overwritten with "trace".
+    auto level = config().getString(
+        "log-level", config().getString("logger.level", config().getString("send_logs_level", "trace")));
     config().setString("logger", "logger");
     config().setString("logger.level", logging ? level : "fatal");
     buildLoggers(config(), logger(), "clickhouse-embedded");
@@ -837,6 +942,15 @@ void EmbeddedServer::processConfig()
     }
     global_context->setUncompressedCache(uncompressed_cache_policy, uncompressed_cache_size, uncompressed_cache_size_ratio);
 
+    if (server_settings[ServerSetting::enable_gpu])
+    {
+#if USE_GPU
+        global_context->setGPU(server_settings);
+#else
+        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "The server setting `enable_gpu` is set, but the server is built without GPU support");
+#endif
+    }
+
     String mark_cache_policy = server_settings[ServerSetting::mark_cache_policy];
     size_t mark_cache_size = server_settings[ServerSetting::mark_cache_size];
     double mark_cache_size_ratio = server_settings[ServerSetting::mark_cache_size_ratio];
@@ -849,6 +963,31 @@ void EmbeddedServer::processConfig()
             log, "Lowered mark cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(mark_cache_size));
     }
     global_context->setMarkCache(mark_cache_policy, mark_cache_size, mark_cache_size_ratio);
+
+    /// The columns cache is only filled by queries with `use_columns_cache` enabled; set it up as
+    /// clickhouse-local does, or that setting is silently ignored.
+    String columns_cache_policy = server_settings[ServerSetting::columns_cache_policy];
+    /// Unless configured explicitly, the columns cache is sized relative to the memory of the server.
+    size_t columns_cache_size = config().getUInt64("columns_cache_size",
+        getDefaultColumnsCacheSize(physical_server_memory, server_settings[ServerSetting::columns_cache_size_to_ram_ratio]));
+    double columns_cache_size_ratio = server_settings[ServerSetting::columns_cache_size_ratio];
+    if (columns_cache_size > max_cache_size)
+    {
+        columns_cache_size = max_cache_size;
+        LOG_DEBUG(log, "Lowered columns cache size to {} because the system has limited RAM", formatReadableSizeWithBinarySuffix(columns_cache_size));
+    }
+    global_context->setColumnsCache(columns_cache_policy, columns_cache_size, columns_cache_size_ratio);
+    /// The cache counts against `max_server_memory_usage`, so it has to be able to give that memory back.
+    /// Unregistered in cleanup(), before the context that owns the cache goes away.
+    if (auto columns_cache = global_context->getColumnsCache())
+    {
+        columns_cache->setAutoResizeSettings(
+            server_settings[ServerSetting::columns_cache_free_memory_ratio],
+            server_settings[ServerSetting::columns_cache_history_window_ms]);
+        setMemoryReleasableCache(columns_cache.get());
+        if (memory_worker)
+            memory_worker->setReleasableCache(columns_cache);
+    }
 
     String index_uncompressed_cache_policy = server_settings[ServerSetting::index_uncompressed_cache_policy];
     size_t index_uncompressed_cache_size = server_settings[ServerSetting::index_uncompressed_cache_size];
@@ -889,6 +1028,21 @@ void EmbeddedServer::processConfig()
             formatReadableSizeWithBinarySuffix(primary_index_cache_size));
     }
     global_context->setPrimaryIndexCache(primary_index_cache_policy, primary_index_cache_size, primary_index_cache_size_ratio);
+
+    /// MergeTree reads column statistics through this cache, and system.server_settings
+    /// dereferences it, so it has to exist as it does in clickhouse-local.
+    String statistics_cache_policy = server_settings[ServerSetting::statistics_cache_policy];
+    size_t statistics_cache_size = server_settings[ServerSetting::statistics_cache_size];
+    double statistics_cache_size_ratio = server_settings[ServerSetting::statistics_cache_size_ratio];
+    if (statistics_cache_size > max_cache_size)
+    {
+        statistics_cache_size = max_cache_size;
+        LOG_INFO(
+            log,
+            "Lowered statistics cache size to {} because the system has limited RAM",
+            formatReadableSizeWithBinarySuffix(statistics_cache_size));
+    }
+    global_context->setStatisticsCache(statistics_cache_policy, statistics_cache_size, statistics_cache_size_ratio);
 
     String vector_similarity_index_cache_policy = server_settings[ServerSetting::vector_similarity_index_cache_policy];
     size_t vector_similarity_index_cache_size = server_settings[ServerSetting::vector_similarity_index_cache_size];
@@ -997,8 +1151,10 @@ void EmbeddedServer::processConfig()
     query_condition_cache_size = std::min(query_condition_cache_size, max_cache_size);
     global_context->setQueryConditionCache(query_condition_cache_policy, query_condition_cache_size, query_condition_cache_size_ratio);
 
-    /// Initialize a dummy query result cache.
-    global_context->setQueryResultCache(0, 0, 0, 0);
+    /// Initialize a query result cache which stores nothing in memory. The maximum entry sizes are configured as in the server: they
+    /// apply to the query result cache on disk as well, as in clickhouse-local.
+    global_context->setQueryResultCache(
+        0, 0, server_settings[ServerSetting::query_cache_max_entry_size_in_bytes], server_settings[ServerSetting::query_cache_max_entry_size_in_rows]);
 
     /// Initialize a dummy UNIQUE KEY delete-bitmap cache.
     global_context->setDeleteBitmapCache(server_settings[ServerSetting::unique_key_bitmap_cache_policy], 0, 0);
@@ -1163,6 +1319,7 @@ std::unique_ptr<EmbeddedServer> EmbeddedServer::global_instance;
 std::mutex EmbeddedServer::instance_mutex;
 size_t EmbeddedServer::client_ref_count = 0;
 bool EmbeddedServer::engine_stopped = false;
+std::atomic<bool> EmbeddedServer::last_cleanup_succeeded{true};
 
 EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 {
@@ -1201,6 +1358,7 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
         return *global_instance;
     }
 
+    last_cleanup_succeeded.store(false, std::memory_order_release);
     global_instance = std::make_unique<EmbeddedServer>();
     try
     {
@@ -1247,6 +1405,27 @@ bool EmbeddedServer::beginShutdown()
 
     engine_stopped = true;
     return true;
+}
+
+bool EmbeddedServer::hasActiveClients()
+{
+    std::lock_guard<std::mutex> lock(instance_mutex);
+    return client_ref_count != 0;
+}
+
+bool EmbeddedServer::lastCleanupSucceeded()
+{
+    return last_cleanup_succeeded.load(std::memory_order_acquire);
+}
+
+void EmbeddedServer::cancelPythonQueriesIfExclusive(size_t python_clients)
+{
+    std::lock_guard<std::mutex> lock(instance_mutex);
+    /// chdb_spec: Do not cancel a C/Go host's query when its connection shares
+    /// this embedded server with a finalizing Python interpreter.
+    if (python_clients && client_ref_count == python_clients && global_instance && global_instance->global_context)
+        global_instance->global_context->getProcessList().killAllQueries();
+    /// chdb_spec: end Python-only exit cancellation.
 }
 
 void EmbeddedServer::initializeWithArgs(int argc, char ** argv)

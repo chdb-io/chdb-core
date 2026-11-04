@@ -140,6 +140,7 @@ class Session:
                 - "Parquet" - Parquet format
                 - "DataFrame" - Pandas DataFrame
                 - "ArrowTable" - PyArrow Table
+                - "Polars" - Polars DataFrame
 
             udf_path (str, optional): Path to user-defined functions. Defaults to "".
                 If not specified, uses the UDF path from session initialization.
@@ -243,6 +244,7 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
                 - "Parquet" - Parquet format
                 - "DataFrame" - Pandas DataFrame
                 - "ArrowTable" - PyArrow Table
+                - "Polars" - Polars DataFrame
             params (dict, optional): Named parameters for ``{name:Type}`` placeholders.
                 Type mismatches or missing required parameters propagate as RuntimeError
                 when fetching from the stream.

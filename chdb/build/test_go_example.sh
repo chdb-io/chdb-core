@@ -34,10 +34,18 @@ echo "Copied library as libchdb.a and chdb.h to go-example directory"
 # cgo->ld dead-strip on static libchdb.a consumers.
 export CGO_LDFLAGS_ALLOW='-Wl,(-force_load,.*|--whole-archive|--no-whole-archive)'
 
-# Run Go test
+# Build with core dumps off, then run. Apple's ld (Xcode 15.4) segfaults in the trial
+# link cgo makes against this multi-gigabyte archive. go expects that link to fail at times
+# and carries on, but under the CI step's unlimited core limit the crash leaves a 4.5 GB
+# core behind, enough to fill the macOS runner's disk later in the job. The example itself
+# runs under the caller's core limit, so a crash in chDB still leaves its core.
+BUILD_DIR=$(mktemp -d)
+trap 'rm -rf "${BUILD_DIR}"' EXIT
+echo "Building Go example..."
+(ulimit -c 0 && go build -o "${BUILD_DIR}/chdb_go_example" .)
+
 echo "Running Go test..."
-go run .
-if [ $? -ne 0 ]; then
+if ! "${BUILD_DIR}/chdb_go_example"; then
     echo "Error: Go test failed"
     exit 1
 fi

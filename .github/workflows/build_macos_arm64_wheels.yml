@@ -25,6 +25,12 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:
@@ -38,11 +44,19 @@ on:
       # every pull request instead.
       - '.github/scripts/pypi-upload-wanted.sh'
       - '.github/scripts/pypi-upload-wanted-test.sh'
+      # The daily-sync and nightly tooling cannot change what this builds.
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
 
 concurrency:
-  # Superseded PR pushes stack multi-hour builds onto a small self-hosted pool,
-  # starving later runs. Never cancel main or release runs.
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Replace stale pull request runs. On main a newer push replaces a pending run, but
+  # a merged ClickHouse sync gets a group of its own: its build is the nightly. The
+  # merge commit's message names the sync branch (a squash or rebase merge's does
+  # not, and that build shares main's group).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}${{ contains(github.event.head_commit.message, format(' from {0}/sync/clickhouse-master', github.repository_owner)) && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -50,11 +64,33 @@ env:
   EFFECTIVE_DEBUG_MODE: 'false'
 
 jobs:
+  # Main's build of a merged ClickHouse sync pull request is the nightly: its wheel
+  # gets a nightly version and goes to the nightly release.
+  nightly_gate:
+    name: Nightly gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read   # which pull request the push merged
+    uses: ./.github/workflows/nightly_gate.yml
+
   build_universal_wheel_on_linux:
     name: Build on Linux (cross-compile for macOS arm64)
     runs-on: [self-hosted, linux, arm64, ubuntu-latest]
-    if: ${{ !github.event.pull_request.draft }}
+    needs: nightly_gate
+    outputs:
+      nightly: ${{ needs.nightly_gate.outputs.nightly }}
+    # Skip draft pull requests, and releases that are not version tags: the
+    # rolling `nightly` pre-release is created once and must not start a build.
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) }}
     timeout-minutes: 600
+    # The nightly, main's build of a merged sync, builds and tests the Python wheel
+    # only: it skips the static library, chdb-core-lite, debug symbols, the
+    # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
+    # version against one pandas line (3.14 against both). The sync pull request's own
+    # CI ran all of it on every platform. Everything else builds as before.
+    env:
+      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
     steps:
       - name: Install Python build dependencies
         run: |
@@ -88,15 +124,11 @@ jobs:
           fi
           which wasm-ld || echo "wasm-ld not found in PATH"
           ccache -s
-      - name: Update git
-        run: |
-          sudo add-apt-repository ppa:git-core/ppa -y
-          sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y git
-          git --version
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Verify Git version (install only if needed)
+        run: bash .github/scripts/ensure-ci-git.sh
       - name: Update submodules
         # Authenticated clones; see the script header.
         env:
@@ -148,7 +180,7 @@ jobs:
           fi
         continue-on-error: false
       - name: Run chdb/build/build_static_lib_mac_on_linux.sh
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 600
         env:
           # For the cctools clones in chdb/build/install_cctools.sh.
@@ -194,7 +226,7 @@ jobs:
       # libchdb.so / pybind11 dylibs are reused from the chdb-core build.
       # ---------------------------------------------------------------------
       - name: Build chdb-core-lite (cross-compile for macOS arm64)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         timeout-minutes: 600
         run: |
           source ~/.cargo/env
@@ -207,7 +239,7 @@ jobs:
           ls -lh chdb/_chdb-lite.abi3.so
         continue-on-error: false
       - name: Upload chdb-core-lite build artifact
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-build-artifacts-lite
@@ -216,10 +248,14 @@ jobs:
 
   test_on_macos:
     name: Test on macOS arm64
-    runs-on: macos-14-xlarge
+    runs-on: macos-15-xlarge
     needs: build_universal_wheel_on_linux
-    if: ${{ !github.event.pull_request.draft }}
+    # An explicit status check: the implicit success() would also look at the
+    # nightly gate, which other events skip, and skip this job with it.
+    if: ${{ !cancelled() && needs.build_universal_wheel_on_linux.result == 'success' && !github.event.pull_request.draft }}
     timeout-minutes: 600
+    env:
+      WHEEL_ONLY: ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' }}
     steps:
       # First step in the job: a cutoff recorded later is skipped when an
       # earlier step fails, and the collector then falls back to reporting
@@ -291,6 +327,8 @@ jobs:
             pyenv shell $version
             python -m pip install --upgrade pip
             python -m pip install setuptools wheel tox pandas pyarrow twine psutil deltalake wheel>=0.40.0 jupyter nbconvert "fastjsonschema<2.22"
+            if [ "$version" = "3.9" ]; then polars_spec="polars==1.10.0"; else polars_spec="polars"; fi
+            python -m pip install "$polars_spec"
             # numba (via llvmlite) bundles its own libc++; tests/test_numba_compatibility.py uses it to
             # guard against the macOS weak-symbol coalescing crash. Tolerate Python versions that have no
             # numba wheel yet -- the test auto-skips when numba is unavailable.
@@ -301,6 +339,7 @@ jobs:
         run: |
           sudo rm -f /usr/local/bin/python3
       - name: Install go for macOS
+        if: env.WHEEL_ONLY != 'true'
         run: |
           brew update
           brew install go lz4
@@ -322,6 +361,9 @@ jobs:
           bump-my-version replace --new-version $TAG_NAME
           echo "Version files updated to $TAG_NAME"
           pyenv shell --unset
+      - name: Set version for main wheel
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 .github/scripts/set-main-wheel-version.py ${{ needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && '--nightly' || '' }}
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -371,7 +413,7 @@ jobs:
           bash gen_manifest.sh
           bash -x ./chdb/test_smoke.sh cross-compile
       - name: Run chdb/build/test_go_example.sh
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 600
         run: |
           # ulimit does not survive a step boundary, so the core limit set
@@ -380,7 +422,7 @@ jobs:
           bash ./chdb/build/test_go_example.sh ${{ github.workspace }}/libchdb.a
         continue-on-error: false
       - name: Run chdb/build/check_static_lib_hermetic.sh
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 60
         run: |
           # ulimit does not survive a step boundary.
@@ -389,6 +431,7 @@ jobs:
             ${{ github.workspace }}/libchdb.a \
             ${{ github.workspace }}/programs/local/chdb.h
       - name: Run libchdb stub in examples dir
+        if: env.WHEEL_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary.
           ulimit -c unlimited
@@ -413,6 +456,7 @@ jobs:
       # here rather than after the wheel tests so an unrelated failure there
       # does not withhold the result.
       - name: ADBC validation suites
+        if: env.WHEEL_ONLY != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -461,6 +505,7 @@ jobs:
           "$VENV/bin/python" -m tests.generate_documentation \
             --output "$RUNNER_TEMP/adbc-docs"
       - uses: actions/upload-artifact@v7
+        if: env.WHEEL_ONLY != 'true'
         with:
           name: adbc-capability-matrix
           path: ${{ runner.temp }}/adbc-docs/chdb.md
@@ -527,6 +572,10 @@ jobs:
             # pandas 3.x requires Python >=3.11
             if [[ "$version" == "3.9" || "$version" == "3.10" ]]; then
               PANDAS_CONSTRAINTS=("pandas<3.0")
+            elif [[ "$WHEEL_ONLY" == "true" && "$version" != "3.14" ]]; then
+              # Nightly: every Python still runs, since each loads its own
+              # pybind11 shim from the wheel; pandas 2.x is covered on 3.14.
+              PANDAS_CONSTRAINTS=("pandas>=3.0")
             else
               PANDAS_CONSTRAINTS=("pandas<3.0" "pandas>=3.0")
             fi
@@ -571,6 +620,9 @@ jobs:
                   exit $EXIT_CODE
                 fi
               else
+                if [ "$WHEEL_ONLY" = true ]; then  # the nightly: per-test results for its dashboard
+                  export CHDB_JUNIT_DIR="$GITHUB_WORKSPACE/junit/py${version}-${PANDAS_CONSTRAINT//[!0-9A-Za-z.]/_}"
+                fi
                 make test
               fi
 
@@ -617,7 +669,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Test chdb DataStore tests against upstream chdb (latest tag)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -633,7 +685,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Run notebook tests
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary, so the core limit set
           # beside kern.corefile / core_pattern never reaches here.
@@ -647,6 +699,7 @@ jobs:
         continue-on-error: false
       # Verify+package debug must run before the lite swap (overwrites _chdb.abi3.so).
       - name: Verify debug symbols are usable
+        if: env.WHEEL_ONLY != 'true'
         run: |
           verify() {
             local so=$1 symbol=$2 dsym=$3
@@ -667,6 +720,7 @@ jobs:
           verify chdb/_chdb.abi3.so PyInit__chdb _chdb.abi3.so.dSYM
           verify libchdb.so query_stable libchdb.so.dSYM
       - name: Package debug symbols
+        if: env.WHEEL_ONLY != 'true'
         run: |
           ls *.dSYM
           tar -czvf macos-arm64-debuginfo.tar.gz *.dSYM
@@ -677,19 +731,19 @@ jobs:
       # to "chdb-core-lite" when CHDB_LITE=1 (Restore step at the end undoes it).
       # -----------------------------------------------------------------------
       - name: Download chdb-core-lite build artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && env.WHEEL_ONLY != 'true' }}
         uses: actions/download-artifact@v8
         with:
           name: macos-arm64-build-artifacts-lite
           path: ./artifacts-lite
       - name: Swap in chdb-core-lite .abi3.so and sign
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && env.WHEEL_ONLY != 'true' }}
         run: |
           mv ./artifacts-lite/_chdb-lite.abi3.so ./chdb/_chdb.abi3.so
           codesign -f -s - ./chdb/_chdb.abi3.so
           ls -lh ./chdb/_chdb.abi3.so
       - name: Build chdb-core-lite wheel
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && env.WHEEL_ONLY != 'true' }}
         run: |
           export PATH="$HOME/.pyenv/bin:$PATH"
           eval "$(pyenv init -)"
@@ -712,7 +766,7 @@ jobs:
           # fi
           # echo "OK: $(basename $WHEEL) is $SIZE bytes (${MIB} MiB), under 50 MiB"
       - name: Test chdb-core-lite wheel on Python 3.9 and 3.14
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && env.WHEEL_ONLY != 'true' }}
         run: |
           ulimit -c unlimited
           export PATH="$HOME/.pyenv/bin:$PATH"
@@ -736,7 +790,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: false
       - name: Test chdb-core-lite DataStore tests against upstream chdb (latest tag)
-        if: env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true' && !startsWith(github.ref, 'refs/tags/v')) && env.WHEEL_ONLY != 'true'
         timeout-minutes: 60
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -869,7 +923,7 @@ jobs:
           chmod 0644 chdb.h chdb.hpp
           tar -czvf macos-arm64-libchdb.tar.gz libchdb.so chdb.h chdb.hpp
       - name: Package libchdb.a
-        if: env.EFFECTIVE_DEBUG_MODE != 'true'
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
         run: |
           cp programs/local/chdb.h chdb.h
           cp programs/local/chdb.hpp chdb.hpp
@@ -894,6 +948,16 @@ jobs:
           gh release upload ${{ github.ref_name }} macos-arm64-debuginfo.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # The nightly's test results, for its dashboard, also when the tests failed; a
+      # failed upload must not keep the nightly wheel upload below from running.
+      - name: Upload test results
+        if: always() && needs.build_universal_wheel_on_linux.outputs.nightly == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-macos-arm64
+          path: junit/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         with:
           name: chdb-artifacts-macos-arm64
@@ -903,6 +967,13 @@ jobs:
             ./macos-arm64-libchdb-static.tar.gz
             ./macos-arm64-debuginfo.tar.gz
           overwrite: true
+      # The build of a merged sync feeds the nightly release directly;
+      # nightly_publish.yml finishes it once all four platforms are done.
+      - name: Upload the wheel to the nightly release
+        if: needs.build_universal_wheel_on_linux.outputs.nightly == 'true' && vars.NIGHTLY_PUBLISH_ENABLED == 'true'
+        run: .github/nightly/upload_wheel.sh dist/chdb_core-*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       # A release goes to PyPI, a candidate does not, and a release opts out by
       # saying [no-pypi] in its notes. The script owns that policy and logs
       # which way it went; see it for why the quota makes the opt-out worth

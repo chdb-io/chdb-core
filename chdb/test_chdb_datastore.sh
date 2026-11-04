@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run chdb's DataStore test suite against the freshly-built chdb-core wheel.
 #
-# This script fetches the latest chdb (chdb-io/chdb) release tag, clones the
+# This script selects a chdb (chdb-io/chdb) release tag, clones the
 # repository at that tag, layers the chdb wrapper package on top of the
 # already-installed chdb-core wheel, and executes datastore/tests/ via pytest.
 # A local ClickHouse server is started automatically by the datastore tests'
@@ -99,12 +99,15 @@ fi
 CHDB_SRC="${WORKDIR}/chdb"
 echo "Cloning chdb-io/chdb@${CHDB_TAG} into ${CHDB_SRC}..."
 git clone --depth 1 --branch "${CHDB_TAG}" https://github.com/chdb-io/chdb.git "${CHDB_SRC}"
+echo "Resolved chdb revision: $(git -C "${CHDB_SRC}" rev-parse HEAD)"
 
 echo "Installing chdb wrapper on top of chdb-core (no deps to preserve local chdb-core)..."
 ${PYTHON} -m pip install --no-deps --force-reinstall "${CHDB_SRC}"
 
 echo "Installing test dependencies (pytest, pytest-timeout, hypothesis)..."
 ${PYTHON} -m pip install --upgrade pytest pytest-timeout hypothesis
+echo "DataStore Python dependency snapshot (package versions only):"
+${PYTHON} -m pip list --format=freeze
 
 cd "${CHDB_SRC}"
 
@@ -133,8 +136,25 @@ DESELECT_FIXED_XFAILS="\
  --deselect tests/test_exploratory_batch11_advanced_indexing.py::TestAdvancedStringOperations::test_str_normalize \
  --deselect tests/test_exploratory_batch16_index_copy_edge.py::TestUnicodeAndSpecialCharacters::test_unicode_string_values"
 
+# polars 2.0 returns a Series from pl.from_arrow() on an object that only exports
+# __arrow_c_stream__ (polars 1.x returned a DataFrame; pl.DataFrame() still does), so
+# this upstream test, which calls pl.from_arrow(ds), fails on any polars 2.x. It used
+# to skip because no polars was installed. Deselect it until the upstream chdb tag
+# builds the frame with pl.DataFrame().
+DESELECT_POLARS2="\
+ --deselect datastore/tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore \
+ --deselect tests/test_arrow_interop.py::TestArrowCStream::test_polars_consumes_datastore"
+
+# pandas 3.1 made the year column of dt.isocalendar() Int32 instead of UInt32
+# (pandas-dev/pandas#66851), while DataStore still casts the ISO year to UInt32, so
+# this upstream test's dtype check fails on any pandas >= 3.1. Deselect it until
+# the upstream chdb tag follows pandas.
+DESELECT_PANDAS31="\
+ --deselect datastore/tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year \
+ --deselect tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year"
+
 set +e
-${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS}
+${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31}
 TEST_EXIT_CODE=$?
 set -e
 

@@ -44,6 +44,15 @@ TEXT_LOG_CONFIG = """<clickhouse>
 </clickhouse>
 """
 
+LOGGER_LEVEL_CONFIG = """<clickhouse>
+    <logger>
+        <log>{log_path}</log>
+        <level>information</level>
+        <async>false</async>
+    </logger>
+</clickhouse>
+"""
+
 
 def scalar(conn, sql):
     return str(conn.query(sql, "CSV")).strip()
@@ -164,6 +173,36 @@ class TestSystemLogs(unittest.TestCase):
         self.assertTrue(os.path.exists(unconfigured))
         with open(unconfigured) as f:
             self.assertEqual(f.read(), "keep me")
+
+    def test_config_file_logger_level_is_honoured(self):
+        """<logger><level> from the config file used to be overwritten with
+        trace, so every query wrote its Debug and Trace messages to the log."""
+        log_path = os.path.join(self.tmp.name, "chdb.log")
+        config = self.write_config("level.xml", LOGGER_LEVEL_CONFIG.format(log_path=log_path))
+        conn = connect(f"{self.db_path}?config-file={config}")
+        try:
+            conn.query("CREATE TABLE t (a UInt64) ENGINE = MergeTree ORDER BY a")
+            conn.query("INSERT INTO t SELECT number FROM numbers(1000)")
+            conn.query("SELECT sum(a) FROM t", "CSV")
+        finally:
+            conn.close()
+
+        with open(log_path) as f:
+            levels = {line.split("<", 1)[1].split(">", 1)[0] for line in f if "> " in line and "<" in line}
+        self.assertTrue(levels, "nothing was logged")
+        self.assertFalse(levels & {"Trace", "Debug", "Test"}, levels)
+
+    def test_explicit_log_level_wins_over_config_file(self):
+        log_path = os.path.join(self.tmp.name, "chdb.log")
+        config = self.write_config("level.xml", LOGGER_LEVEL_CONFIG.format(log_path=log_path))
+        conn = connect(f"{self.db_path}?config-file={config}&log-level=debug")
+        try:
+            conn.query("SELECT 1", "CSV")
+        finally:
+            conn.close()
+
+        with open(log_path) as f:
+            self.assertTrue(any("<Debug>" in line for line in f))
 
     def test_text_log_works_in_a_second_engine_in_the_same_process(self):
         """text_log's queue is a process-wide static; its shutdown latch and its

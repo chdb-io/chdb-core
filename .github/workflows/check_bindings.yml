@@ -39,6 +39,8 @@ permissions:
 
 jobs:
   wait_for_assets:
+    # Only version tags name a release; the rolling `nightly` pre-release does not.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     # The tarballs are uploaded by the four wheel workflows, which start from
     # this same release event and build ClickHouse from scratch. Dispatching

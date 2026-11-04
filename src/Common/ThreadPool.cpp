@@ -10,8 +10,10 @@
 #include <Common/OpenTelemetryTraceContext.h>
 #include <Common/noexcept_scope.h>
 #include <Common/logger_useful.h>
+#include <Common/saturatedDuration.h>
 #include <base/scope_guard.h>
 
+#include <cstdio>
 #include <map>
 #include <type_traits>
 #include <unordered_map>
@@ -238,6 +240,9 @@ public:
 
     DB::OpenTelemetry::TracingContextOnThread thread_trace_context;
 
+    /// Propagated like the tracing context: a job scheduled under `QueryCancellationBlocker` runs under one.
+    bool query_cancellation_blocked = false;
+
     /// Call stacks of all jobs' schedulings leading to this one
     std::vector<FramePointers> frame_pointers;
     bool enable_job_stack_trace = false;
@@ -253,11 +258,12 @@ public:
 
     JobWithPriority(
         Job job_, Priority priority_, CurrentMetrics::Metric metric,
-        const DB::OpenTelemetry::TracingContextOnThread & thread_trace_context_,
+        const DB::OpenTelemetry::TracingContextOnThread & thread_trace_context_, bool query_cancellation_blocked_,
         bool capture_frame_pointers, ScopedDecrement available_threads_decrement_)
         : job(job_), priority(priority_), metric_increment(metric),
         available_threads_decrement(std::move(available_threads_decrement_)),
-        thread_trace_context(thread_trace_context_), enable_job_stack_trace(capture_frame_pointers)
+        thread_trace_context(thread_trace_context_), query_cancellation_blocked(query_cancellation_blocked_),
+        enable_job_stack_trace(capture_frame_pointers)
     {
         if (!capture_frame_pointers)
             return;
@@ -401,7 +407,7 @@ void ThreadPoolImpl<Thread>::setQueueSize(size_t value)
 
 template <typename Thread>
 template <typename ReturnType>
-ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std::optional<uint64_t> wait_microseconds, bool propagate_opentelemetry_tracing_context)
+ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std::optional<Int64> wait_microseconds, bool propagate_opentelemetry_tracing_context)
 {
     auto on_error = [&](const std::string & reason)
     {
@@ -481,7 +487,12 @@ ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std:
         /// Wait for available threads or timeout
         if (wait_microseconds)  /// Check for optional. Condition is true if the optional is set. Even if the value is zero.
         {
-            if (!job_finished.wait_for(lock, std::chrono::microseconds(*wait_microseconds), pred))
+            /// The timeout is user-controlled: it comes from settings such as `lock_acquire_timeout`, whose
+            /// Int64 microsecond value can be negative or huge. `wait_for` turns the duration into
+            /// nanoseconds (x 1'000) on top of `steady_clock::now()`, which overflows Int64 for such a
+            /// count. Clamping keeps the wait well-defined: a negative timeout has already expired, so it
+            /// gives up at once, and a count above the cap keeps meaning "wait until a thread frees up".
+            if (!job_finished.wait_for(lock, DB::saturatedMicroseconds(*wait_microseconds), pred))
                 return on_error(fmt::format("no free thread (timeout={})", *wait_microseconds));
         }
         else
@@ -556,6 +567,8 @@ ReturnType ThreadPoolImpl<Thread>::scheduleImpl(Job job, Priority priority, std:
                     metric_scheduled_jobs,
                     /// Tracing context on this thread is used as parent context for the sub-thread that runs the job
                     propagate_opentelemetry_tracing_context ? DB::OpenTelemetry::CurrentContext() : DB::OpenTelemetry::TracingContextOnThread(),
+                    /// Not for pool worker threads (created without propagation), which outlive the scheduling scope
+                    propagate_opentelemetry_tracing_context && DB::ThreadStatus::QueryCancellationBlocker::isActive(),
                     /// capture_frame_pointers
                     DB::Exception::enable_job_stack_trace,
                     std::move(available_threads_decrement));
@@ -658,13 +671,13 @@ void ThreadPoolImpl<Thread>::scheduleOrThrowOnError(Job job, Priority priority)
 }
 
 template <typename Thread>
-bool ThreadPoolImpl<Thread>::trySchedule(Job job, Priority priority, uint64_t wait_microseconds) noexcept
+bool ThreadPoolImpl<Thread>::trySchedule(Job job, Priority priority, Int64 wait_microseconds) noexcept
 {
     return scheduleImpl<bool>(std::move(job), priority, wait_microseconds);
 }
 
 template <typename Thread>
-void ThreadPoolImpl<Thread>::scheduleOrThrow(Job job, Priority priority, uint64_t wait_microseconds, bool propagate_opentelemetry_tracing_context)
+void ThreadPoolImpl<Thread>::scheduleOrThrow(Job job, Priority priority, Int64 wait_microseconds, bool propagate_opentelemetry_tracing_context)
 {
     scheduleImpl<void>(std::move(job), priority, wait_microseconds, propagate_opentelemetry_tracing_context);
 }
@@ -741,7 +754,7 @@ void ThreadPoolImpl<Thread>::finish()
 /// Like finalize(), but gives up instead of waiting when the pool still has work.
 /// Used by chdb_shutdown() to stop the engine only when nothing is running.
 template <typename Thread>
-bool ThreadPoolImpl<Thread>::finalizeIfIdle()
+bool ThreadPoolImpl<Thread>::finalizeIfIdle(const std::atomic<size_t> & unfinished_jobs)
 {
     {
         std::lock_guard lock(mutex);
@@ -755,7 +768,11 @@ bool ThreadPoolImpl<Thread>::finalizeIfIdle()
         /// Deciding this outside the lock is what makes a plain `active() == 0`
         /// test useless: a job admitted between the test and the flag being set
         /// would still be there for the join to wait on, possibly forever.
-        if (scheduled_jobs != 0)
+        ///
+        /// Not `scheduled_jobs`: a job stays there for a moment after its owner
+        /// has joined it, until its worker gets back to this lock. Such a job has
+        /// nothing left to wait for, so joining its thread below is safe.
+        if (unfinished_jobs != 0)
             return false;
 
         finishNoLock(lock);
@@ -1158,6 +1175,11 @@ void ThreadPoolImpl<Thread>::ThreadFromThreadPool::worker()
         /// Set up tracing context for this thread by its parent context.
         DB::OpenTelemetry::TracingContextHolder thread_trace_context("ThreadPool::worker()", job_data->thread_trace_context);
 
+        /// The job may attach to the thread group of the scheduling thread and inherit its cancellation predicates.
+        std::optional<DB::ThreadStatus::QueryCancellationBlocker> cancellation_blocker;
+        if (job_data->query_cancellation_blocked)
+            cancellation_blocker.emplace();
+
         DB::Exception::enable_job_stack_trace = job_data->enable_job_stack_trace;
         if (DB::Exception::enable_job_stack_trace)
             DB::Exception::setThreadFramePointers(std::move(job_data->frame_pointers));
@@ -1332,27 +1354,50 @@ void GlobalThreadPool::shutdown()
     }
 }
 
+namespace
+{
+
+/// chdb_spec: ThreadFromGlobalPool threads whose function has not finished, queued
+/// or running. A thread leaves this count before it signals join(), unlike the
+/// pool's `scheduled_jobs`, so a thread that has been joined is never in it.
+/// Every global-pool job is such a thread: startThreadFromGlobalPool is the only
+/// caller that schedules on the global pool (threadPoolCallbackRunner forbids it).
+std::atomic<size_t> unfinished_threads_from_global_pool{0};
+
+}
+
 bool GlobalThreadPool::shutdownAndJoin()
 {
     if (!the_instance)
         return true;
 
-    /// Refuses under the same lock that shuts the pool down when a job still
-    /// occupies a thread. That job belongs to a pool we cannot reach -- one owned
-    /// by a static-lifetime object such as a filesystem cache -- and joining its
-    /// parked worker would block forever, so name the pools and leave those
-    /// threads to process exit.
-    if (!the_instance->finalizeIfIdle())
+    /// Refuses under the same lock that shuts the pool down when a thread's
+    /// function is still running or queued. That job belongs to a pool we cannot
+    /// reach -- one owned by a static-lifetime object such as a filesystem cache --
+    /// and joining its parked worker would block forever, so name the pools and
+    /// leave those threads to process exit.
+    if (!the_instance->finalizeIfIdle(unfinished_threads_from_global_pool))
     {
         try
         {
+            const auto live_local_pools = snapshotLocalThreadPools();
+            /// chdb_spec: Poco logging may no longer reach a Python child at
+            /// interpreter exit. Record this refusal on stderr as well; active()
+            /// is a post-refusal snapshot and may already have fallen to zero.
+            std::fprintf(
+                stderr,
+                "chDB global pool shutdown refused: active jobs now=%zu; live local pool workers=[%s]\n",
+                the_instance->active(),
+                live_local_pools.c_str());
+            /// chdb_spec: end Python exit failure diagnostics.
             LOG_INFO(
                 &Poco::Logger::get("GlobalThreadPool"),
                 "shutdownAndJoin(): not joining, a job still holds a pool thread; live local pool workers: [{}]",
-                snapshotLocalThreadPools());
+                live_local_pools);
         }
         catch (...) // NOLINT(bugprone-empty-catch) Ok: diagnostic must not change the outcome
         {
+            std::fputs("chDB global pool shutdown refused: snapshot unavailable\n", stderr);
         }
         return false;
     }
@@ -1374,6 +1419,9 @@ void startThreadFromGlobalPool(
     /// NOTE:
     /// - If scheduleOrThrow throws, the ThreadFromGlobalPoolImpl destructor won't be called.
     /// - `this` cannot be passed in the lambda since after detach() it is no longer valid.
+    /// chdb_spec: counted until the job signals join(), see unfinished_threads_from_global_pool.
+    ++unfinished_threads_from_global_pool;
+    scope_guard not_scheduled([] { --unfinished_threads_from_global_pool; });
     GlobalThreadPool::instance().scheduleOrThrow(
         [my_state = std::move(state),
          my_func = std::move(func),
@@ -1383,6 +1431,7 @@ void startThreadFromGlobalPool(
         {
             SCOPE_EXIT(
                 my_state->thread_id = std::thread::id();
+                --unfinished_threads_from_global_pool; /// chdb_spec: before join() can return
                 my_state->event.set();
             );
 
@@ -1403,6 +1452,7 @@ void startThreadFromGlobalPool(
         {},
         0,
         propagate_opentelemetry_context);
+    not_scheduled.release();
 }
 
 CannotAllocateThreadFaultInjector & CannotAllocateThreadFaultInjector::instance()

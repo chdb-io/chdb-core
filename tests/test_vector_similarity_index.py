@@ -197,7 +197,12 @@ class TestVectorSimilarityIndex(unittest.TestCase):
     # ---- robustness after merge ---------------------------------------
 
     def test_recall_preserved_after_merge(self):
-        self._make_table("vmerge", 12, "L2Distance")
+        # The merge rebuilds the index for all 900 rows at once, on several threads, so the
+        # HNSW graph - and the recall it gives - depends on thread scheduling. With the default
+        # build parameters recall drops on machines with few cores (0.96-0.99 on 2 cores, 0.89
+        # once on a macOS x86_64 runner). A denser graph makes it insensitive to that.
+        self._make_table("vmerge", 12, "L2Distance",
+                         index_args="'hnsw', 'L2Distance', 12, 'f32', 64, 512")
         # several inserts -> several parts, then merge into one.
         self._insert("vmerge", self._random_data(900, 12, seed=13), chunk=150)
         self.assertGreater(int(self._scalar(

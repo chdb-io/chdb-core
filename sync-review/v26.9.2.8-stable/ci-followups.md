@@ -312,3 +312,113 @@ that fails on Linux.
 precisely so non-server binaries do not have to, and adding the call is then not a no-op: it
 changes the configuration and the moment of binding. The "calls the release added to
 LocalServer" diff finds candidates, it does not decide them.
+
+## 8. DataStore subprocess reaches static destruction with a live catalog (#254)
+
+**Failure.** The v26.9.0 macOS arm64 release job failed twice in the upstream chdb v4.4.0
+`test_override_setting_via_datastore_dataframe_query` subprocess. A later `main` run at
+`d22aa2a` reproduced the intermittent `-6` with empty captured stdout/stderr. Its symbolicated
+stack is C++ static finalization -> `DatabaseCatalog` destruction -> per-database table shutdown
+-> `StaticThreadPool::get()` -> invalid free while formatting the exception. The invalid free
+does not, by itself, establish where allocator corruption began.
+
+**Root cause established locally.** A chdb import opens and closes a version-probe connection.
+That first shutdown constructs `NamedSessionsStorage`, which C++ destroys before the embedded
+server's later C++ `atexit` callback. The DataStore `Python(df)` query leaves another connection
+open. At exit the callback attempts `Session::shutdownNamedSessions()` after its function-static
+storage has been destroyed. Its mutex throws `Invalid argument`; `EmbeddedServer::cleanup()`
+previously suppressed that message. Context shutdown stops before catalog cleanup, and the
+catalog survives into static finalization. The order and retained catalog were observed 20/20
+times in a diagnostic build; macOS 26 ended with code zero on all 20, unlike intermittent
+macOS 14 CI. Skipping only named sessions revealed another destroyed static mutex, so a
+single-synchronizer guard is not a repair.
+
+**Fix.** The Python extension's existing Python-level `atexit` callback now closes only its
+registered live native connections while Python and ClickHouse statics are still valid. A
+shared holder keeps cursor owners alive; operation leases and the exit gate stop new Python
+work and drain in-flight calls. Once that callback has closed a live Python connection, it
+attempts terminal pool shutdown only after embedded Context/catalog cleanup is confirmed.
+An independent C/Go host still closes its own handles and calls `chdb_shutdown()` explicitly;
+the C API now refuses to tear pools down under a catalog left by incomplete embedded cleanup.
+The upstream parallel table-shutdown algorithm is unchanged.
+
+**Why earlier checks missed it.** The child assertion checked only exit code zero. The
+`Invalid argument` message was filtered, so a complete query followed by incomplete cleanup
+looked like a pass on macOS 26. The first failing release run did not retain a stack; #253
+added crash diagnostics that made the later static-destruction path visible.
+
+**What catches it next time.** In an isolated Python child, register a verification callback
+before importing `_chdb`; it runs after the extension's earlier-exit callback and asserts the
+engine finished closing before C++ static destructors. Include an import-time warmup,
+`Python(df)`, an unclosed connection, explicit-close controls, a live cursor and stream, and
+an in-flight query. Check the catalog-before-pool invariant instead of accepting only a zero
+exit status. Review the paired `// chdb_spec` lifetime differences against every upstream
+change to Context, catalog, static services, thread pools, and the Python binding; record the
+new call order, not merely whether Git reported a textual conflict.
+
+**Remaining validation.** Local arm64 wheel and the original DataStore settings tests pass;
+the exact macOS 14 CI image is unavailable locally. The complete DataStore integration suite
+also needs its separate remote ClickHouse test server, not installed in the isolated fixture.
+
+## 9. Python query callback closes its own connection (#284 review)
+
+**Failure.** A PR review found that calling `conn.close()` from a Python UDF or reader
+callback can hang. A local child process executing a one-row UDF query timed out after six
+seconds instead of returning or raising.
+
+**Root cause.** The #254 connection operation lease increments `active_operations` on the
+calling Python thread. Its reentrant-close guard is thread-local, but the engine invokes
+Python UDF and reader callbacks on pipeline threads. A callback on another thread does not
+see that guard; `close()` waits for the operation to finish while the operation waits for
+the callback to return.
+
+**Fix and validation.** On a thread attached to an engine query, a Python connection with
+active operations refuses `close()` instead of waiting. An idle connection may still be
+closed from a callback. Subprocess tests with a timeout exercise both UDF and PyReader
+callbacks, check that the active connection remains usable afterward, and keep ordinary
+cross-thread close/drain behavior covered by the original #254 tests.
+
+**Why the first local checks missed it.** They covered explicit close, an in-flight query
+on another Python thread, and interpreter exit, but no reentrant close from a query's
+Python callback. Include that case whenever an operation lease waits for workers that can
+call back into the public API.
+
+## 10. Lite wheel runs a shutdown test that requires FIU (#284 CI)
+
+**Failure.** The Linux x86_64/arm64 and macOS x86_64/arm64 PR jobs all failed in
+"Test chdb-core-lite wheel on Python 3.9 and 3.14". Their logs identify the same
+`test_python_exit_cleans_catalog_after_table_shutdown_error` failure: its child tries
+`SYSTEM ENABLE FAILPOINT database_catalog_throw_on_table_shutdown` and gets
+`SUPPORT_IS_DISABLED` before testing exit cleanup.
+
+**Cause and fix.** `CHDB_LITE` deliberately disables `ENABLE_LIBFIU`, so that fault
+injection cannot run in the lite wheel. Skip only this test when `CHDB_LITE=1`;
+the other exit tests still run in lite, and the failpoint test still runs in
+the full wheel.
+
+**Why local checks missed it.** The local regression run used the full macOS build,
+which includes FIU. Test both `CHDB_LITE=1` and full test selection before the next
+PR build when adding a test that requires a compile-time optional feature.
+
+## 11. Python 3.9 full-wheel exit sometimes reports incomplete shutdown (#284 CI)
+
+**Failure.** In Linux x86_64's full-wheel test on Python 3.9, run 38970588814,
+`test_python_exit_closes_engine_before_static_destructors` passed four child runs
+and returned 96 on the fifth. The child said only `chDB shutdown did not finish
+before Python exit`. The same full-wheel step passed in the previous PR run;
+100 local macOS/Python 3.11 child exits also passed. This is not the lite/FIU skip.
+
+**What is known.** The catalog-incomplete branch has its own stderr message, which
+was absent. The remaining possible paths include an exception while stopping
+static or global pools and a refusal by `GlobalThreadPool::finalizeIfIdle()` when
+jobs remain. The failure did not retain a pool snapshot in the captured child
+stderr, so the owner and root cause are still unknown.
+
+**Diagnostic change.** Report the failed shutdown stage and exception directly
+to stderr. On a global-pool refusal, include a current scheduled-job count and
+the live local-pool worker snapshot on stderr, in addition to the existing Poco
+log. Do not change the refusal, force a join, or weaken the exit assertion.
+
+**Next validation.** Use the new diagnostic in the exact Linux x86_64/Python 3.9
+full-wheel path to identify the owner. Local full-build exit tests should stay
+green; a green local run does not close the CI-only investigation.

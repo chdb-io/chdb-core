@@ -57,7 +57,7 @@ public:
     void removeObjectIfExists(const StoredObject & object) override;
     void removeObjectsIfExist(const StoredObjects & objects, StoredObjects * successful_objects = nullptr) override; /// NOLINT
 
-    String copyObject( /// NOLINT
+    void copyObject( /// NOLINT
         const StoredObject & object_from,
         const StoredObject & object_to,
         const ReadSettings & read_settings,

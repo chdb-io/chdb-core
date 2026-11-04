@@ -68,6 +68,7 @@ if (USE_PYTHON)
         PandasDataFrame.cpp
         PandasDataFrameBuilder.cpp
         PandasScan.cpp
+        PolarsDataFrame.cpp
         AIQueryProcessor.cpp
         PyArrowStreamFactory.cpp
         PyArrowTable.cpp

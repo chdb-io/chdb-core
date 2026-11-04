@@ -22,12 +22,14 @@ void registerStorageDictionary(StorageFactory & factory);
 void registerStorageSet(StorageFactory & factory);
 void registerStorageJoin(StorageFactory & factory);
 void registerStorageView(StorageFactory & factory);
+void registerStorageObfuscate(StorageFactory & factory);
 void registerStorageMaterializedView(StorageFactory & factory);
 void registerStorageGenerateRandom(StorageFactory & factory);
 void registerStorageExecutable(StorageFactory & factory);
 void registerStorageLoop(StorageFactory & factory);
 void registerStorageFuzzQuery(StorageFactory & factory);
 void registerStorageTimeSeries(StorageFactory & factory);
+void registerStorageElasticsearch(StorageFactory & factory);
 void registerStorageAlias(StorageFactory & factory);
 
 #if USE_ARROWFLIGHT
@@ -136,6 +138,7 @@ void registerStorages()
     registerStorageSet(factory);
     registerStorageJoin(factory);
     registerStorageView(factory);
+    registerStorageObfuscate(factory);
     registerStorageMaterializedView(factory);
     registerStorageGenerateRandom(factory);
 #if !defined(CHDB_LITE) || !CHDB_LITE
@@ -146,6 +149,7 @@ void registerStorages()
     registerStorageFuzzQuery(factory);
 #endif
     registerStorageTimeSeries(factory);
+    registerStorageElasticsearch(factory);
     registerStorageAlias(factory);
 
 #if USE_ARROWFLIGHT

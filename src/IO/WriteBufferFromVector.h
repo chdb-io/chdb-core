@@ -61,6 +61,7 @@ public:
         set(reinterpret_cast<Position>(vector.data()), vector.size());
         finalized = false;
         canceled = false;
+        closed = false;
         bytes = 0;
     }
 

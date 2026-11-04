@@ -14,6 +14,7 @@
 #include <IO/CompressionMethod.h>
 #include <IO/HTTPHeaderEntries.h>
 #include <IO/WasmS3Auth.h>
+#include <Storages/ObjectStorage/S3/S3SecretArguments.h>
 #include <Poco/URI.h>
 
 #include <algorithm>
@@ -221,7 +222,8 @@ StoragePtr TableFunctionS3::getStorage(
 
 void registerTableFunctionS3(TableFunctionFactory & factory)
 {
-    factory.registerFunction<TableFunctionS3>({});
+    /// The same secret arguments as the native s3(), so the credentials are masked the same way.
+    factory.registerFunction<TableFunctionS3>({}, s3TableFunctionSecretArguments(/*is_cluster_function=*/ false));
 }
 
 }

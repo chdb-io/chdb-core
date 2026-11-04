@@ -39,7 +39,8 @@ pushd ${PROJ_DIR} > /dev/null
 if [ -z "${CHDB_VERSION:-}" ]; then
     CHDB_VERSION=$(python3 -c 'import setup; print(setup.get_latest_git_tag())' 2>/dev/null) || CHDB_VERSION=""
     if [ -z "${CHDB_VERSION}" ] || [ "${CHDB_VERSION}" = "None" ]; then
-        CHDB_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+        # Version tags only, as above: `nightly` moves along main.
+        CHDB_VERSION=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')
     fi
     if [ -z "${CHDB_VERSION}" ]; then
         CHDB_VERSION="0.0.0"
@@ -60,6 +61,16 @@ if [ -n "${CHDB_VERSION}" ] && [ -f "${CHDB_HEADER}" ]; then
     chmod 0644 "${CHDB_HEADER_TMP}"
     sed -E 's|^#define CHDB_VERSION ".*"|#define CHDB_VERSION "'"${CHDB_VERSION}"'"|' \
         "${CHDB_HEADER}" > "${CHDB_HEADER_TMP}" && mv "${CHDB_HEADER_TMP}" "${CHDB_HEADER}"
+fi
+
+# NLP functions for the full and static builds, off unless CHDB_ENABLE_NLP=1. stem() and
+# system.stemmers need libstemmer, which ENABLE_NLP does not enable: WITH_LIBSTEMMER follows
+# ENABLE_LIBRARIES, and these builds turn that off. Both flags are passed either way, so
+# switching an existing build directory back takes them out of the CMake cache too.
+if [ "${CHDB_ENABLE_NLP}" == "1" ]; then
+    NLP="-DENABLE_NLP=1 -DWITH_LIBSTEMMER=1"
+else
+    NLP="-DENABLE_NLP=0 -DWITH_LIBSTEMMER=0"
 fi
 
 if [ "$1" == "cross-compile" ]; then

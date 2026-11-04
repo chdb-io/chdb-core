@@ -362,7 +362,7 @@ String DataTypeToNumpyTypeStr(const std::shared_ptr<const IDataType> & data_type
             if (const auto * interval = typeid_cast<const DataTypeInterval *>(actual_data_type.get()))
             {
                 IntervalKind kind = interval->getKind();
-                switch (kind.kind)
+                switch (kind.getKind())
                 {
                     case IntervalKind::Kind::Nanosecond:
                         return "timedelta64[ns]";
@@ -381,7 +381,7 @@ String DataTypeToNumpyTypeStr(const std::shared_ptr<const IDataType> & data_type
                     case IntervalKind::Kind::Year:
                         return "timedelta64[s]";
                     default:
-                        throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected interval kind {}", kind.kind);
+                        throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected interval kind {}", kind.getKind());
                 }
             }
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected interval type {}", actual_data_type->getName());

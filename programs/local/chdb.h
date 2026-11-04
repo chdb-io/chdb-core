@@ -12,7 +12,7 @@ extern "C" {
 
 #define CHDB_EXPORT __attribute__((visibility("default")))
 
-#define CHDB_VERSION "26.9.0"
+#define CHDB_VERSION "26.11.0-dev"
 
 /**
  * Returns the version of the linked chDB library.
@@ -1163,9 +1163,13 @@ CHDB_EXPORT void chdb_reset_signal_handlers(void);
  * chdb_connect(): callers are serialized, and a connect racing a shutdown either
  * gets in first and is counted, or arrives later and is refused.
  *
- * Skipping it stays as safe as it has always been for a process that just exits:
- * the threads left running are reaped by process exit, unless a callback
- * object storage is still registered; see the Lifetime note below.
+ * A C/C++/Go host must call this before its own runtime teardown or unloading
+ * the library. OS thread reaping is not a substitute for Context/catalog
+ * cleanup: C++ static destructors can run while those resources are still
+ * referenced. CHDBError also means embedded cleanup was incomplete; do not
+ * treat a zero connection count as proof that the engine stopped cleanly.
+ * A host with a callback object storage registered must also unregister it
+ * from its exit hook; see the Lifetime note below.
  *
  * @return CHDBSuccess once no chDB thread is left running, CHDBError if a
  *         connection is still open or some thread could not be stopped

@@ -273,7 +273,7 @@ void ClientApplicationBase::init(int argc, char ** argv)
         once,
         [this]()
         {
-            fatal_log = createLogger("ClientBase", fatal_channel_ptr.get(), Poco::Message::PRIO_FATAL);
+            fatal_log = createLogger(fatal_log_name, fatal_channel_ptr.get(), Poco::Message::PRIO_FATAL);
 #if defined(OS_HAS_SIGNAL_HANDLERS)
             /// Without signals nothing ever writes to the signal pipe, so there is nothing to listen
             /// for - and the blocking read of that pipe is all the listener thread does.

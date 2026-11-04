@@ -149,10 +149,14 @@ public:
     void scheduleOrThrowOnError(Job job, Priority priority = {});
 
     /// Similar to scheduleOrThrowOnError(...). Wait for specified amount of time and schedule a job or return false.
-    [[nodiscard]] bool trySchedule(Job job, Priority priority = {}, uint64_t wait_microseconds = 0) noexcept;
+    /// The timeout is signed, because it is fed by settings such as `lock_acquire_timeout`, whose value is an
+    /// Int64 count of microseconds and can be negative. A negative timeout means "already expired", i.e. give up
+    /// immediately if there is no free thread, the same as `wait_microseconds = 0`.
+    [[nodiscard]] bool trySchedule(Job job, Priority priority = {}, Int64 wait_microseconds = 0) noexcept;
 
     /// Similar to scheduleOrThrowOnError(...). Wait for specified amount of time and schedule a job or throw an exception.
-    void scheduleOrThrow(Job job, Priority priority = {}, uint64_t wait_microseconds = 0, bool propagate_opentelemetry_tracing_context = true);
+    /// See trySchedule() above about the sign of `wait_microseconds`.
+    void scheduleOrThrow(Job job, Priority priority = {}, Int64 wait_microseconds = 0, bool propagate_opentelemetry_tracing_context = true);
 
     /// Wait for all currently active jobs to be done.
     /// You may call schedule and wait many times in arbitrary order.
@@ -246,7 +250,7 @@ private:
     size_t idle_thread_count = 0;
 
     template <typename ReturnType>
-    ReturnType scheduleImpl(Job job, Priority priority, std::optional<uint64_t> wait_microseconds, bool propagate_opentelemetry_tracing_context = true);
+    ReturnType scheduleImpl(Job job, Priority priority, std::optional<Int64> wait_microseconds, bool propagate_opentelemetry_tracing_context = true);
 
     /// Tries to start new threads if there are scheduled jobs and the limit `max_threads` is not reached. Must be called with the mutex locked.
     void startNewThreadsNoLock();
@@ -272,12 +276,13 @@ private:
     void finishNoLock(const std::lock_guard<std::mutex> & lock);
     void finalize();
 
-    /// finalize(), but it refuses when a job still occupies a thread instead of
-    /// joining it, and it decides that under the same lock that sets `shutdown`
-    /// so no job can be admitted in between. Returns false only in that case.
+    /// finalize(), but it refuses while `unfinished_jobs` -- the jobs whose
+    /// function may still be running or waiting to run -- is not zero instead of
+    /// joining, and it decides that under the same lock that sets `shutdown` so
+    /// no job can be admitted in between. Returns false only in that case.
     /// A caller that finds the pool already shut down returns true without
     /// joining: the join runs once, on whoever set the flag.
-    bool finalizeIfIdle();
+    bool finalizeIfIdle(const std::atomic<size_t> & unfinished_jobs);
 
     void onDestroy();
 };
