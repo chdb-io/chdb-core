@@ -15,10 +15,17 @@
  * chdb_query_cmdline() works more than once in a process (the second call used to fail
  * with "EventNotifier is initialized twice") and returns its errors instead of an
  * empty result.
+ *
+ * And the exit of a process that restarted the engine and still has a connection open: the
+ * last engine's tables used to be shut down on a destroyed pool ("The
+ * ShutdownTablesThreadPool is not initialized"), which could also crash the exit.
  */
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "chdb.h"
 
 static int failures = 0;
@@ -169,6 +176,81 @@ static void test_repeated_query_cmdline(void)
 }
 
 
+/* Run by a child of test_exit_with_connection_open: restart the engine, then return from
+ * main with a connection to a MergeTree table still open, so exit() tears the engine down. */
+static int exit_with_connection_open_child(const char * dir)
+{
+    chdb_connection * first = open_memory_connection();
+    if (!first)
+        return 2;
+    chdb_close_conn(first);
+
+    char arg0[] = "clickhouse";
+    char path[64];
+    snprintf(path, sizeof(path), "--path=%s", dir);
+    char * args[] = {arg0, path};
+    chdb_connection * conn = chdb_connect(2, args);
+    if (!conn)
+        return 4;
+    const char * queries[] = {
+        "CREATE TABLE t (x UInt64) ENGINE = MergeTree ORDER BY x",
+        "INSERT INTO t SELECT number FROM numbers(1000)",
+    };
+    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++)
+    {
+        chdb_result * r = chdb_query(*conn, queries[i], "CSV");
+        int ok = r != NULL && chdb_result_error(r) == NULL;
+        chdb_destroy_query_result(r);
+        if (!ok)
+            return 5;
+    }
+    return 0;
+}
+
+static void test_exit_with_connection_open(const char * self)
+{
+    printf("test_exit_with_connection_open\n");
+    for (int i = 0; i < 3; i++)
+    {
+        char dir[] = "/tmp/chdb_exit_open_XXXXXX";
+        int err_pipe[2];
+        if (!mkdtemp(dir) || pipe(err_pipe) != 0)
+        {
+            CHECK(0, "data directory and pipe for the child");
+            return;
+        }
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid == 0)
+        {
+            dup2(err_pipe[1], STDERR_FILENO);
+            close(err_pipe[0]);
+            close(err_pipe[1]);
+            execl(self, self, "--exit-with-connection-open", dir, (char *)NULL);
+            _exit(127);
+        }
+        close(err_pipe[1]);
+        char err[4096];
+        size_t len = 0;
+        ssize_t n;
+        while ((n = read(err_pipe[0], err + len, sizeof(err) - 1 - len)) > 0 && len < sizeof(err) - 1)
+            len += (size_t)n;
+        err[len] = '\0';
+        close(err_pipe[0]);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "a process that restarted the engine exits cleanly with a connection open");
+        CHECK(strstr(err, "Exception") == NULL, "and reports no exception from the engine teardown");
+        if (len)
+            printf("       child stderr: %s\n", err);
+        char rm[64];
+        snprintf(rm, sizeof(rm), "rm -rf %s", dir);
+        (void)!system(rm);
+    }
+}
+
+
 /* Per-cycle growth of the engine. Only meaningful under AddressSanitizer, so the counter
  * is looked up at run time and the check is skipped where it is absent.
  *
@@ -221,8 +303,10 @@ static void test_engine_start_leak_budget(void)
     CHECK(per_cycle < (double)LEAK_BUDGET_PER_CYCLE, "engine start/stop stays within its leak budget");
 }
 
-int main(void)
+int main(int argc, char ** argv)
 {
+    if (argc > 2 && strcmp(argv[1], "--exit-with-connection-open") == 0)
+        return exit_with_connection_open_child(argv[2]);
     setvbuf(stdout, NULL, _IOLBF, 0);
     printf("chdb %s\n", chdb_version());
     test_repeated_connect();
@@ -230,6 +314,7 @@ int main(void)
     test_result_buffer_is_length_delimited();
     test_no_output_after_failed_query();
     test_repeated_query_cmdline();
+    test_exit_with_connection_open(argv[0]);
     test_engine_start_leak_budget();
     printf("\nfailures: %d\n", failures);
     return failures == 0 ? 0 : 1;

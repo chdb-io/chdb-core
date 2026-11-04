@@ -300,6 +300,17 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     static std::once_flag atexit_registered;
     std::call_once(atexit_registered, []
     {
+        /// chdb_spec: construct the static thread pools before registering the handler below:
+        /// a function-local static constructed after std::atexit() is destroyed before the
+        /// handler runs, and the server it destroys still uses them. The ShutdownTablesThreadPool
+        /// is first constructed when an engine closes, so with an engine restarted in the process
+        /// and a connection open at exit, the tables of the last one were shut down on a destroyed
+        /// pool ("The ShutdownTablesThreadPool is not initialized"); Context::shutdown() stopped
+        /// there, and its MergeTree background threads could crash the exit.
+#define CONSTRUCT_STATIC_THREAD_POOL(SUFFIX, NAME, METRIC) (void)get##SUFFIX##ThreadPool();
+        APPLY_FOR_STATIC_THREAD_POOLS(CONSTRUCT_STATIC_THREAD_POOL)
+#undef CONSTRUCT_STATIC_THREAD_POOL
+
         (void)std::atexit([]
         {
             g_memory_tracking_disabled.store(true, std::memory_order_relaxed);

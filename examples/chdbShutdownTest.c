@@ -173,7 +173,7 @@ int main(void)
     /* A MergeTree table starts the MergeTree background executors. Their idle
      * workers used to survive every connection being closed, which kept
      * chdb_shutdown() from joining the global pool. */
-    res = chdb_query(*conn, "CREATE TABLE shutdown_mt (x UInt64) ENGINE = MergeTree ORDER BY x", "CSV");
+    res = chdb_query(*conn, "CREATE TABLE IF NOT EXISTS shutdown_mt (x UInt64) ENGINE = MergeTree ORDER BY x", "CSV");
     err = chdb_result_error(res);
     CHECK(err == NULL, "creating a MergeTree table succeeds");
     if (err)
