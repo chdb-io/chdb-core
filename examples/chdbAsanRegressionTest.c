@@ -16,9 +16,9 @@
  * with "EventNotifier is initialized twice") and returns its errors instead of an
  * empty result.
  *
- * And the exit of a process that restarted the engine and still has a connection open: the
- * last engine's tables used to be shut down on a destroyed pool ("The
- * ShutdownTablesThreadPool is not initialized"), which could also crash the exit.
+ * And the exit of a process that still has a connection open, with and without an engine
+ * restart before: the teardown used to run on statics already destroyed (after a restart,
+ * "The ShutdownTablesThreadPool is not initialized"), which could also crash the exit.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -176,14 +176,17 @@ static void test_repeated_query_cmdline(void)
 }
 
 
-/* Run by a child of test_exit_with_connection_open: restart the engine, then return from
- * main with a connection to a MergeTree table still open, so exit() tears the engine down. */
-static int exit_with_connection_open_child(const char * dir)
+/* Run by a child of test_exit_with_connection_open: optionally restart the engine, then return
+ * from main with a connection to a MergeTree table still open, so exit() tears the engine down. */
+static int exit_with_connection_open_child(const char * dir, int restart)
 {
-    chdb_connection * first = open_memory_connection();
-    if (!first)
-        return 2;
-    chdb_close_conn(first);
+    if (restart)
+    {
+        chdb_connection * first = open_memory_connection();
+        if (!first)
+            return 2;
+        chdb_close_conn(first);
+    }
 
     char arg0[] = "clickhouse";
     char path[64];
@@ -210,8 +213,12 @@ static int exit_with_connection_open_child(const char * dir)
 static void test_exit_with_connection_open(const char * self)
 {
     printf("test_exit_with_connection_open\n");
-    for (int i = 0; i < 3; i++)
+    /* Without a restart the teardown used the singletons the start constructs after it
+     * registered the teardown, already destroyed (NamedCollectionFactory: a crash with the
+     * static library); after one, the statics the earlier engine constructed. */
+    for (int i = 0; i < 6; i++)
     {
+        const char * mode = i % 2 ? "restart" : "first";
         char dir[] = "/tmp/chdb_exit_open_XXXXXX";
         int err_pipe[2];
         if (!mkdtemp(dir) || pipe(err_pipe) != 0)
@@ -226,7 +233,7 @@ static void test_exit_with_connection_open(const char * self)
             dup2(err_pipe[1], STDERR_FILENO);
             close(err_pipe[0]);
             close(err_pipe[1]);
-            execl(self, self, "--exit-with-connection-open", dir, (char *)NULL);
+            execl(self, self, "--exit-with-connection-open", dir, mode, (char *)NULL);
             _exit(127);
         }
         close(err_pipe[1]);
@@ -240,7 +247,8 @@ static void test_exit_with_connection_open(const char * self)
         int status = 0;
         waitpid(pid, &status, 0);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "a process that restarted the engine exits cleanly with a connection open");
+              i % 2 ? "a process that restarted the engine exits cleanly with a connection open"
+                    : "a process exits cleanly with its first engine's connection open");
         CHECK(strstr(err, "Exception") == NULL, "and reports no exception from the engine teardown");
         if (len)
             printf("       child stderr: %s\n", err);
@@ -305,8 +313,8 @@ static void test_engine_start_leak_budget(void)
 
 int main(int argc, char ** argv)
 {
-    if (argc > 2 && strcmp(argv[1], "--exit-with-connection-open") == 0)
-        return exit_with_connection_open_child(argv[2]);
+    if (argc > 3 && strcmp(argv[1], "--exit-with-connection-open") == 0)
+        return exit_with_connection_open_child(argv[2], strcmp(argv[3], "restart") == 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
     printf("chdb %s\n", chdb_version());
     test_repeated_connect();

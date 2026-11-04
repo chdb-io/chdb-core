@@ -36,6 +36,8 @@
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/SharedThreadPools.h>
+#include <Common/SQLDefinedHandlers/SQLDefinedHandlersFactory.h>
+#include <Storages/StreamingStorageRegistry.h>
 #include <Interpreters/FileCache/FileCacheFactory.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
@@ -309,6 +311,15 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
 #define CONSTRUCT_STATIC_THREAD_POOL(SUFFIX, NAME, METRIC) (void)get##SUFFIX##ThreadPool();
         APPLY_FOR_STATIC_THREAD_POOLS(CONSTRUCT_STATIC_THREAD_POOL)
 #undef CONSTRUCT_STATIC_THREAD_POOL
+
+        /// The same for the singletons ContextSharedPart::shutdown() shuts down, which the start
+        /// constructs later (processConfig) or only a query does. With the static library, a
+        /// process that returned from main with a connection open crashed in the teardown, in
+        /// NamedCollectionFactory::shutdown() on the already destroyed factory.
+        (void)NamedCollectionFactory::instance();
+        (void)SQLDefinedHandlersFactory::instance();
+        (void)FileCacheFactory::instance();
+        (void)StreamingStorageRegistry::instance();
 
 #if USE_AZURE_BLOB_STORAGE
         /// See the explanation near the same line in Server.cpp
