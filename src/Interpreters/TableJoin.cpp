@@ -1249,25 +1249,6 @@ void TableJoin::resetToCross()
     this->table_join.kind = JoinKind::Cross;
 }
 
-<<<<<<< ours
-bool TableJoin::allowParallelHashJoin() const
-{
-#if defined(CHDB_WASM_SINGLE_THREADED)
-    /// ConcurrentHashJoin spawns build threads (via the global pool) regardless of
-    /// max_threads. In the single-threaded WASM build, fall back to plain HashJoin.
-    return false;
-#endif
-    return ::DB::allowParallelHashJoin(join_algorithms, kind(), isSpecialStorage(), oneDisjunct());
-}
-
-||||||| base
-bool TableJoin::allowParallelHashJoin() const
-{
-    return ::DB::allowParallelHashJoin(join_algorithms, kind(), isSpecialStorage(), oneDisjunct());
-}
-
-=======
->>>>>>> theirs
 ActionsDAG TableJoin::createJoinedBlockActions(ContextPtr context, PreparedSetsPtr prepared_sets) const
 {
     ASTPtr expression_list = rightKeysList();
@@ -1341,6 +1322,12 @@ bool allowHashJoinCacheKeys(
 bool TableJoin::preferParallelHashLayout(
     HashJoinLayout layout, std::optional<UInt64> rhs_size_estimation, UInt64 parallel_hash_join_threshold) const
 {
+#if defined(CHDB_WASM_SINGLE_THREADED)
+    /// chdb: the parallel layout builds with `max_threads` streams and frees its table on a private
+    /// ThreadPool, and the single-threaded WASM build cannot start a thread. Keep the serial layout there,
+    /// as the build used plain HashJoin instead of ConcurrentHashJoin before the unified hash join.
+    return false;
+#endif
     if (!(isInnerOrLeft(kind()) || isRightOrFull(kind())) || isSpecialStorage())
         return false;
 

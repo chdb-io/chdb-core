@@ -3,13 +3,9 @@
 #if USE_ARROW
 
 #include <Formats/FormatFactory.h>
-<<<<<<< ours
 /// chdb keeps the Apache Arrow library writer as a fallback; see output_format_arrow_use_native_writer.
 #include <Processors/Formats/Impl/ArrowBlockOutputFormat.h>
-||||||| base
-=======
 #include <Processors/Formats/Impl/ArrowBatchRowLimit.h>
->>>>>>> theirs
 #include <Processors/Formats/Impl/ArrowIPC/FlatBuffersCommon.h>
 #include <Processors/Port.h>
 #include <Core/Block.h>

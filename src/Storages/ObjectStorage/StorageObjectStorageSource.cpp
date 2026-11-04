@@ -2130,7 +2130,6 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
 
 std::future<StorageObjectStorageSource::ReaderHolder> StorageObjectStorageSource::createReaderAsync()
 {
-<<<<<<< ours
 #ifdef CHDB_WASM_SINGLE_THREADED
     /// Single-threaded WASM build: the reader-ahead pool can never run a task.
     /// Create the reader inline and hand back a ready future — callers only
@@ -2138,7 +2137,7 @@ std::future<StorageObjectStorageSource::ReaderHolder> StorageObjectStorageSource
     std::promise<ReaderHolder> reader_promise;
     try
     {
-        reader_promise.set_value(createReader());
+        reader_promise.set_value(createReader(/* prefetch_input_format */ true));
     }
     catch (...)
     {
@@ -2146,13 +2145,8 @@ std::future<StorageObjectStorageSource::ReaderHolder> StorageObjectStorageSource
     }
     return reader_promise.get_future();
 #else
-    return create_reader_scheduler([=, this] { return createReader(); }, Priority{});
-#endif
-||||||| base
-    return create_reader_scheduler([=, this] { return createReader(); }, Priority{});
-=======
     return create_reader_scheduler([=, this] { return createReader(/* prefetch_input_format */ true); }, Priority{});
->>>>>>> theirs
+#endif
 }
 
 ObjectMetadata getObjectMetadataForRead(const IObjectStorage & object_storage, const RelativePathWithMetadata & object, bool with_tags)

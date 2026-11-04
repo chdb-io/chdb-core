@@ -113,13 +113,13 @@ void RecordBatchEncoder::appendEmptyBuffer()
 Int64 RecordBatchEncoder::appendValidity(const IColumn * null_map_column, size_t begin, size_t end)
 {
     if (!null_map_column)
-        return appendValidityMap(nullptr, num_rows);
+        return appendValidityMap(nullptr, end - begin);
 
     const auto & null_map = assert_cast<const ColumnUInt8 &>(*null_map_column).getData();
-    return appendValidityMap(&null_map, num_rows);
+    return appendValidityMap(null_map.data() + begin, end - begin);
 }
 
-Int64 RecordBatchEncoder::appendValidityMap(const PaddedPODArray<UInt8> * null_map, size_t num_rows)
+Int64 RecordBatchEncoder::appendValidityMap(const UInt8 * null_map, size_t num_rows)
 {
     if (!null_map)
     {
@@ -128,29 +128,10 @@ Int64 RecordBatchEncoder::appendValidityMap(const PaddedPODArray<UInt8> * null_m
         return 0;
     }
 
-<<<<<<< ours
-||||||| base
-    const auto & null_map = assert_cast<const ColumnUInt8 &>(*null_map_column).getData();
-=======
-    const size_t num_rows = end - begin;
-    const auto & null_map = assert_cast<const ColumnUInt8 &>(*null_map_column).getData();
->>>>>>> theirs
     PODArray<char> bitmap((num_rows + 7) / 8, 0);
-<<<<<<< ours
-    packBytesToBits(null_map->data(), num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
-||||||| base
-    packBytesToBits(null_map.data(), num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
-=======
-    packBytesToBits(null_map.data() + begin, num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
->>>>>>> theirs
+    packBytesToBits(null_map, num_rows, bitmap.data(), /*invert=*/true); /// Arrow validity bit: 1 = valid.
     appendBuffer(bitmap.data(), bitmap.size());
-<<<<<<< ours
-    return countBytesInFilter(null_map->data(), 0, num_rows);
-||||||| base
-    return countBytesInFilter(null_map.data(), 0, num_rows);
-=======
-    return countBytesInFilter(null_map.data(), begin, end);
->>>>>>> theirs
+    return countBytesInFilter(null_map, 0, num_rows);
 }
 
 void RecordBatchEncoder::appendOffsets(const IColumn::Offsets & ch_offsets, size_t begin, size_t end)
@@ -513,38 +494,21 @@ void RecordBatchEncoder::encodeValues(
             appendBuffer(data.data(), data.size());
             return;
         }
-<<<<<<< ours
-        case TypeIndex::IPv4: appendFixedWidth<ColumnVector<IPv4>>(*this, column, num_rows); return;
+        case TypeIndex::IPv4: appendFixedWidth<ColumnVector<IPv4>>(*this, column, begin, end); return;
         case TypeIndex::Object:
         case TypeIndex::Dynamic:
         {
-            const auto * null_map = null_map_column ? &assert_cast<const ColumnUInt8 &>(*null_map_column).getData() : nullptr;
-            encodeAsJSONText(column, type, num_rows, null_map);
+            const UInt8 * null_map
+                = null_map_column ? assert_cast<const ColumnUInt8 &>(*null_map_column).getData().data() + begin : nullptr;
+            encodeAsJSONText(column, type, begin, end, null_map);
             return;
         }
-        case TypeIndex::Int128: appendFixedWidth<ColumnVector<Int128>>(*this, column, num_rows); return;
-        case TypeIndex::UInt128: appendFixedWidth<ColumnVector<UInt128>>(*this, column, num_rows); return;
-        case TypeIndex::Int256: appendFixedWidth<ColumnVector<Int256>>(*this, column, num_rows); return;
-        case TypeIndex::UInt256: appendFixedWidth<ColumnVector<UInt256>>(*this, column, num_rows); return;
-        case TypeIndex::IPv6: appendFixedWidth<ColumnVector<IPv6>>(*this, column, num_rows); return;
-        case TypeIndex::Interval: appendFixedWidth<ColumnVector<Int64>>(*this, column, num_rows); return;
-||||||| base
-        case TypeIndex::IPv4: appendFixedWidth<ColumnVector<IPv4>>(*this, column, num_rows); return;
-        case TypeIndex::Int128: appendFixedWidth<ColumnVector<Int128>>(*this, column, num_rows); return;
-        case TypeIndex::UInt128: appendFixedWidth<ColumnVector<UInt128>>(*this, column, num_rows); return;
-        case TypeIndex::Int256: appendFixedWidth<ColumnVector<Int256>>(*this, column, num_rows); return;
-        case TypeIndex::UInt256: appendFixedWidth<ColumnVector<UInt256>>(*this, column, num_rows); return;
-        case TypeIndex::IPv6: appendFixedWidth<ColumnVector<IPv6>>(*this, column, num_rows); return;
-        case TypeIndex::Interval: appendFixedWidth<ColumnVector<Int64>>(*this, column, num_rows); return;
-=======
-        case TypeIndex::IPv4: appendFixedWidth<ColumnVector<IPv4>>(*this, column, begin, end); return;
         case TypeIndex::Int128: appendFixedWidth<ColumnVector<Int128>>(*this, column, begin, end); return;
         case TypeIndex::UInt128: appendFixedWidth<ColumnVector<UInt128>>(*this, column, begin, end); return;
         case TypeIndex::Int256: appendFixedWidth<ColumnVector<Int256>>(*this, column, begin, end); return;
         case TypeIndex::UInt256: appendFixedWidth<ColumnVector<UInt256>>(*this, column, begin, end); return;
         case TypeIndex::IPv6: appendFixedWidth<ColumnVector<IPv6>>(*this, column, begin, end); return;
         case TypeIndex::Interval: appendFixedWidth<ColumnVector<Int64>>(*this, column, begin, end); return;
->>>>>>> theirs
         case TypeIndex::UUID:
         {
             /// fixed_size_binary(16) with the two 64-bit halves byte-reversed, matching the library writer.
@@ -670,10 +634,10 @@ void RecordBatchEncoder::encodeAsOpaque(
     appendBuffer(data.data(), data.size());
 }
 
-<<<<<<< ours
 void RecordBatchEncoder::encodeAsJSONText(
-    const IColumn & column, const DataTypePtr & type, size_t num_rows, const PaddedPODArray<UInt8> * null_map)
+    const IColumn & column, const DataTypePtr & type, size_t begin, size_t end, const UInt8 * null_map)
 {
+    const size_t num_rows = end - begin;
     PODArray<Int32> arrow_offsets(num_rows + 1);
     arrow_offsets[0] = 0;
     PODArray<char> data;
@@ -682,14 +646,15 @@ void RecordBatchEncoder::encodeAsJSONText(
     const FormatSettings json_settings;
     for (size_t i = 0; i < num_rows; ++i)
     {
-        if (!(null_map && (*null_map)[i]))
+        if (!(null_map && null_map[i]))
         {
             WriteBufferFromOwnString out;
-            serialization->serializeTextJSON(column, i, out, json_settings);
+            serialization->serializeTextJSON(column, begin + i, out, json_settings);
             const String value = out.str();
             total += value.size();
-            if (total > static_cast<size_t>(std::numeric_limits<Int32>::max()))
-                throw Exception(ErrorCodes::TOO_LARGE_ARRAY_SIZE, "Arrow IPC string offset exceeds 32 bits");
+            /// The row limit does not measure JSON text, so a batch that overflows is rejected here.
+            if (total > MAX_ARROW_BUFFER_SIZE)
+                throwValueDoesNotFitArrowBuffer(static_cast<Int64>(total));
             data.insert(data.end(), value.data(), value.data() + value.size());
         }
         arrow_offsets[i + 1] = static_cast<Int32>(total);
@@ -698,12 +663,7 @@ void RecordBatchEncoder::encodeAsJSONText(
     appendBuffer(data.data(), data.size());
 }
 
-void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr & type, size_t num_rows)
-||||||| base
-void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr & type, size_t num_rows)
-=======
 void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end)
->>>>>>> theirs
 {
     /// Materializing only the range keeps a split batch from expanding the whole chunk. `cut` is cheap for
     /// these representations: it slices indexes or resizes a constant, it does not copy values.
@@ -736,7 +696,7 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
 
     if (settings.arrow.output_variant_as_string && isVariant(removeNullable(type)))
     {
-        encodeVariantAsJSONText(column, type, num_rows);
+        encodeVariantAsJSONText(column, type, begin, end);
         return;
     }
 
@@ -749,7 +709,7 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
 
     if (isNothing(removeNullable(type)))
     {
-        nodes.emplace_back(static_cast<Int64>(num_rows), static_cast<Int64>(num_rows));
+        nodes.emplace_back(static_cast<Int64>(end - begin), static_cast<Int64>(end - begin));
         return;
     }
 
@@ -770,8 +730,7 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
     encodeValues(*nested, nested_type, begin, end, null_map_column);
 }
 
-<<<<<<< ours
-void RecordBatchEncoder::encodeVariantAsJSONText(const IColumn & column, const DataTypePtr & type, size_t num_rows)
+void RecordBatchEncoder::encodeVariantAsJSONText(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end)
 {
     const IColumn * nested = &column;
     DataTypePtr nested_type = type;
@@ -785,26 +744,24 @@ void RecordBatchEncoder::encodeVariantAsJSONText(const IColumn & column, const D
     }
 
     const auto & variant = assert_cast<const ColumnVariant &>(*nested);
+    const size_t num_rows = end - begin;
+    /// One flag per row of the range: `null_map[i]` is row `begin + i`.
     PaddedPODArray<UInt8> null_map(num_rows);
     bool has_nulls = false;
     for (size_t i = 0; i < num_rows; ++i)
     {
-        const UInt8 is_null = static_cast<UInt8>((outer_null_map && (*outer_null_map)[i]) || variant.isNullAt(i));
+        const size_t row = begin + i;
+        const UInt8 is_null = static_cast<UInt8>((outer_null_map && (*outer_null_map)[row]) || variant.isNullAt(row));
         null_map[i] = is_null;
         has_nulls |= is_null != 0;
     }
 
-    const auto * null_map_ptr = has_nulls ? &null_map : nullptr;
+    const UInt8 * null_map_ptr = has_nulls ? null_map.data() : nullptr;
     nodes.emplace_back(static_cast<Int64>(num_rows), appendValidityMap(null_map_ptr, num_rows));
-    encodeAsJSONText(variant, nested_type, num_rows, null_map_ptr);
+    encodeAsJSONText(variant, nested_type, begin, end, null_map_ptr);
 }
 
-void RecordBatchEncoder::encodeVariant(const IColumn & column, const DataTypePtr & type, size_t num_rows)
-||||||| base
-void RecordBatchEncoder::encodeVariant(const IColumn & column, const DataTypePtr & type, size_t num_rows)
-=======
 void RecordBatchEncoder::encodeVariant(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end)
->>>>>>> theirs
 {
     const auto & variant_column = assert_cast<const ColumnVariant &>(column);
     const auto & variant_type = assert_cast<const DataTypeVariant &>(*type);

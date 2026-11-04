@@ -258,13 +258,12 @@ AggregateFunctionPtr AggregateFunctionFactory::getImpl(
     if (CurrentThread::isInitialized())
         query_context = CurrentThread::get().tryGetQueryContext();
 
-<<<<<<< ours
     /// Python UDAFs are registered at runtime and live in their own lock-protected registry
     /// (see CHDB::PythonUDAFFactory). Consulting it here - after the builtin maps and before
     /// the combinator branch - is what makes `myudafIf`, `AggregateFunction(myudaf, ...)` type
     /// parsing and `arrayReduce('myudaf', ...)` work. A single lookup builds the function and
     /// fills the properties, so a concurrent drop cannot strand us between the two.
-    if (!found.creator)
+    if (!found)
     {
         AggregateFunctionProperties python_udaf_properties;
         if (auto python_udaf
@@ -288,12 +287,7 @@ AggregateFunctionPtr AggregateFunctionFactory::getImpl(
         }
     }
 
-    if (found.creator)
-||||||| base
-    if (found.creator)
-=======
     if (found)
->>>>>>> theirs
     {
         if (const auto * associated = getAssociatedFunctionByNullsAction(is_case_insensitive ? case_insensitive_name : name, action))
             found = associated;
