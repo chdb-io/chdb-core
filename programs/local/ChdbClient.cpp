@@ -408,6 +408,13 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         if (streaming_query_context && streaming_query_context->streaming_result)
             cancelStreamingQueryWithoutLock(streaming_query_context->streaming_result);
 
+        /// chdb_spec: a query that failed after its output buffer was created, e.g. on an
+        /// unknown output format, left the buffer behind, and the next statement without
+        /// output of its own (DDL, INSERT) handed it back as an empty result instead of
+        /// none. Every query starts without one; a successful query has already taken its
+        /// buffer by now (stealQueryOutputVector).
+        resetQueryOutputVector();
+
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
 #if USE_PYTHON
@@ -508,6 +515,8 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
             python_table_cache->releaseQueryableObjs(streaming_query_context->python_tables_bind_token);
 #endif
         streaming_query_context = std::make_shared<StreamingQueryContext>();
+        /// chdb_spec: start without a buffer a failed query left behind, as above.
+        resetQueryOutputVector();
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
             streaming_query_context.reset();

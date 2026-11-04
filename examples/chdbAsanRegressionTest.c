@@ -9,6 +9,12 @@
  * It also pins the result-buffer contract (buf is chdb_result_length() bytes and is not
  * NUL-terminated, so every consumer has to carry the length) and, when run under
  * AddressSanitizer, bounds what one engine start/stop cycle may leave behind.
+ *
+ * And two result regressions: a statement without output that follows a failed query
+ * returns no buffer, not an empty one the failed query left behind; and the one-shot
+ * chdb_query_cmdline() works more than once in a process (the second call used to fail
+ * with "EventNotifier is initialized twice") and returns its errors instead of an
+ * empty result.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -106,6 +112,63 @@ static void test_result_buffer_is_length_delimited(void)
 }
 
 
+/* A query that failed after creating its output buffer, here on an unknown output format,
+ * used to leave that buffer behind, and the next statement without output of its own
+ * returned it as an empty, non-NULL result instead of none. */
+static void test_no_output_after_failed_query(void)
+{
+    printf("test_no_output_after_failed_query\n");
+    chdb_connection * conn = open_memory_connection();
+    CHECK(conn != NULL, "connection opens");
+    if (!conn)
+        return;
+
+    chdb_result * r = chdb_query(*conn, "CREATE TABLE before_failure (x Int32) ENGINE = Memory", "CSV");
+    CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_buffer(r) == NULL,
+          "a statement without output returns no buffer");
+    chdb_destroy_query_result(r);
+
+    r = chdb_query(*conn, "SELECT 1", "NoSuchFormat");
+    CHECK(r != NULL && chdb_result_error(r) != NULL, "an unknown output format fails");
+    chdb_destroy_query_result(r);
+
+    r = chdb_query(*conn, "CREATE TABLE after_failure (x Int32) ENGINE = Memory", "CSV");
+    CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_buffer(r) == NULL
+              && chdb_result_length(r) == 0,
+          "the next statement without output still returns no buffer");
+    chdb_destroy_query_result(r);
+    chdb_close_conn(conn);
+}
+
+
+/* chdb_query_cmdline() boots a one-shot server per call. No connection may be open. */
+static void test_repeated_query_cmdline(void)
+{
+    printf("test_repeated_query_cmdline\n");
+    char arg0[] = "clickhouse";
+    char arg1[] = "--output-format=CSV";
+    char ok_query[] = "--query=SELECT 6 * 7";
+    char bad_query[] = "--query=SELEC 1";
+    char * ok_args[] = {arg0, arg1, ok_query};
+    char * bad_args[] = {arg0, arg1, bad_query};
+
+    for (int i = 0; i < 3; i++)
+    {
+        chdb_result * r = chdb_query_cmdline(3, ok_args);
+        const char * expected = "42\n";
+        CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_length(r) == strlen(expected)
+                  && memcmp(chdb_result_buffer(r), expected, strlen(expected)) == 0,
+              "a one-shot query succeeds, also after the first in the process");
+        chdb_destroy_query_result(r);
+    }
+
+    chdb_result * r = chdb_query_cmdline(3, bad_args);
+    const char * err = r ? chdb_result_error(r) : NULL;
+    CHECK(err != NULL && strstr(err, "Syntax error") != NULL, "a failed one-shot query returns its error");
+    chdb_destroy_query_result(r);
+}
+
+
 /* Per-cycle growth of the engine. Only meaningful under AddressSanitizer, so the counter
  * is looked up at run time and the check is skipped where it is absent.
  *
@@ -165,6 +228,8 @@ int main(void)
     test_repeated_connect();
     test_insert_stream_worker();
     test_result_buffer_is_length_delimited();
+    test_no_output_after_failed_query();
+    test_repeated_query_cmdline();
     test_engine_start_leak_budget();
     printf("\nfailures: %d\n", failures);
     return failures == 0 ? 0 : 1;
