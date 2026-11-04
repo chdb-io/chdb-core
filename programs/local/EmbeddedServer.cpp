@@ -297,43 +297,18 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
         server_settings[ServerSetting::max_thread_pool_free_size],
         server_settings[ServerSetting::thread_pool_queue_size]);
 
-    static std::once_flag atexit_registered;
-    std::call_once(atexit_registered, []
+    static std::once_flag static_thread_pools_constructed;
+    std::call_once(static_thread_pools_constructed, []
     {
-        /// chdb_spec: construct the static thread pools before registering the handler below:
-        /// a function-local static constructed after std::atexit() is destroyed before the
-        /// handler runs, and the server it destroys still uses them. The ShutdownTablesThreadPool
-        /// is first constructed when an engine closes, so with an engine restarted in the process
-        /// and a connection open at exit, the tables of the last one were shut down on a destroyed
-        /// pool ("The ShutdownTablesThreadPool is not initialized"); Context::shutdown() stopped
-        /// there, and its MergeTree background threads could crash the exit.
+        /// chdb_spec: construct the static thread pools before the exit teardown is first
+        /// registered (getInstance): a function-local static constructed after std::atexit() is
+        /// destroyed before the handler runs, and the server it destroys still uses them. The
+        /// ShutdownTablesThreadPool is otherwise first constructed when tables are shut down,
+        /// which with a connection open at exit made the teardown shut them down on a destroyed
+        /// pool ("The ShutdownTablesThreadPool is not initialized").
 #define CONSTRUCT_STATIC_THREAD_POOL(SUFFIX, NAME, METRIC) (void)get##SUFFIX##ThreadPool();
         APPLY_FOR_STATIC_THREAD_POOLS(CONSTRUCT_STATIC_THREAD_POOL)
 #undef CONSTRUCT_STATIC_THREAD_POOL
-
-        (void)std::atexit([]
-        {
-            g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
-            /// If a connection is still open at interpreter exit, destroy the server
-            /// here, before the global pool teardown, while logging and the statics
-            /// its shutdown touches are still alive. Waiting for global_instance's
-            /// static destructor is too late: it interleaves with unrelated static
-            /// teardown (cross-TU destruction order is unspecified) while worker
-            /// threads are still live - the residual SIGSEGV window seen as the
-            /// DataStore-suite subprocess crashes on v26.7.
-            /// Take ownership under the lock but destroy outside it: the
-            /// teardown must not run under instance_mutex, or a teardown
-            /// path taking the mutex would self-deadlock and a concurrent
-            /// close would block for the whole teardown.
-            std::unique_ptr<EmbeddedServer> instance_to_destroy;
-            {
-                std::lock_guard<std::mutex> lock(instance_mutex);
-                client_ref_count = 0;
-                instance_to_destroy = std::move(global_instance);
-            }
-            instance_to_destroy.reset();
-            GlobalThreadPool::shutdown();
-        });
 
 #if USE_AZURE_BLOB_STORAGE
         /// See the explanation near the same line in Server.cpp
@@ -1390,6 +1365,36 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
     }
 
     client_ref_count = 1;
+
+    /// chdb_spec: register the exit teardown again on every engine start, once the start is
+    /// done. A function-local static constructed after std::atexit() is destroyed before the
+    /// handler runs, so a handler registered only by the first start found the statics a later
+    /// engine's teardown uses already destroyed when that engine was still open at exit: those
+    /// first constructed while the start ran, or while an earlier engine ran and shut down
+    /// ("mutex lock failed: Invalid argument" on macOS). Running the handler again is harmless.
+    (void)std::atexit([]
+    {
+        g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+        /// If a connection is still open at interpreter exit, destroy the server
+        /// here, before the global pool teardown, while logging and the statics
+        /// its shutdown touches are still alive. Waiting for global_instance's
+        /// static destructor is too late: it interleaves with unrelated static
+        /// teardown (cross-TU destruction order is unspecified) while worker
+        /// threads are still live - the residual SIGSEGV window seen as the
+        /// DataStore-suite subprocess crashes on v26.7.
+        /// Take ownership under the lock but destroy outside it: the
+        /// teardown must not run under instance_mutex, or a teardown
+        /// path taking the mutex would self-deadlock and a concurrent
+        /// close would block for the whole teardown.
+        std::unique_ptr<EmbeddedServer> instance_to_destroy;
+        {
+            std::lock_guard<std::mutex> exit_lock(instance_mutex);
+            client_ref_count = 0;
+            instance_to_destroy = std::move(global_instance);
+        }
+        instance_to_destroy.reset();
+        GlobalThreadPool::shutdown();
+    });
     return *global_instance;
 }
 
