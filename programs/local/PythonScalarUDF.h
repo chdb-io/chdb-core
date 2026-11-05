@@ -24,7 +24,7 @@ public:
 
     ~PythonScalarUDF() override;
 
-    void initSignature(const py::list & arg_types_hint);
+    virtual void initSignature(const py::list & arg_types_hint);
 
     String getName() const override { return name; }
     bool isVariadic() const override { return is_variadic; }
@@ -48,7 +48,7 @@ public:
         const DB::DataTypePtr & result_type,
         size_t input_rows_count) const override;
 
-private:
+protected:
     String name;
     py::function func;
     DB::DataTypePtr return_type;

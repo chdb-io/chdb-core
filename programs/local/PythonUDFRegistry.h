@@ -25,7 +25,8 @@ public:
         DB::DataTypePtr return_type,
         const py::list & arg_types_hint,
         NullHandling null_handling,
-        ExceptionHandling exception_handling);
+        ExceptionHandling exception_handling,
+        UDFType udf_type);
 
     DB::FunctionOverloadResolverPtr tryGetFunction(const String & name) const override;
 
@@ -47,7 +48,8 @@ void registerPythonUDF(
     DB::DataTypePtr return_type,
     const py::list & arg_types_hint,
     NullHandling null_handling,
-    ExceptionHandling exception_handling);
+    ExceptionHandling exception_handling,
+    UDFType udf_type);
 
 bool removePythonUDF(const String & name);
 

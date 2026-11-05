@@ -27,6 +27,15 @@ enum class ExceptionHandling : uint8_t
     IGNORE,
 };
 
+/// How a Python scalar UDF receives its input.
+enum class UDFType : uint8_t
+{
+    /// Called once per row with Python values.
+    NATIVE,
+    /// Called once per block with one pyarrow.ChunkedArray per argument.
+    ARROW,
+};
+
 /// If the annotation is `Optional[X]` / `Union[X, None]` (or PEP 604 `X | None`),
 /// returns the inner base type `X`; any other annotation is returned unchanged.
 /// A union with more than one non-None member (e.g. `Union[int, str]`) is rejected.

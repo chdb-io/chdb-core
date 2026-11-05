@@ -97,7 +97,7 @@ void createFunction(
         auto null_handling = parseNullHandling(on_null);
         auto exception_handling = parseExceptionHandling(on_error);
 
-        registerPythonUDF(name, func, std::move(data_type), arg_types_list, null_handling, exception_handling);
+        registerPythonUDF(name, func, std::move(data_type), arg_types_list, null_handling, exception_handling, UDFType::NATIVE);
     }
     catch (const DB::Exception & e)
     {
