@@ -36,6 +36,10 @@ public:
     /// (discarding the results), which is observable for Python UDFs through side
     /// effects and exceptions (with on_error=propagate).
     bool useDefaultImplementationForNulls() const override { return false; }
+    /// A LowCardinality dictionary holds values no row has - its default value at least, and
+    /// values of rows a filter already dropped - but the function must only ever see the values
+    /// of real rows: it can raise on others, or have side effects.
+    bool canBeExecutedOnLowCardinalityDictionary() const override { return false; }
 
     DB::DataTypePtr getReturnTypeImpl(const DB::DataTypes & arguments) const override;
 
