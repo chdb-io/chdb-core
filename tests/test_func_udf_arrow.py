@@ -296,8 +296,57 @@ class TestArrowUDFResults(ArrowUDFTestCase):
             "res_some_nulls",
             lambda x: pc.if_else(pc.equal(pc.bit_wise_and(x, 1), 1), pa.scalar(None, pa.int64()), x),
             INT64, "0\n\\N\n2\n\\N")
-        # Arrow tells NULL and NaN apart, so a NaN stays a NaN.
-        self.check("res_nan", lambda x: pa.array([float("nan")] * len(x)), FLOAT64, "nan\nnan\nnan\nnan")
+        # As for the per-row UDF, a float NaN becomes NULL.
+        self.check("res_nan", lambda x: pa.array([float("nan"), 1.5, float("nan"), 2.5]), FLOAT64,
+                   "\\N\n1.5\n\\N\n2.5")
+        self.check("res_nan_float32", lambda x: np.array([np.nan, 1.5, 2.5, np.nan]), "Float32",
+                   "\\N\n1.5\n2.5\n\\N")
+        # Whatever the return type, as the per-row UDF does.
+        self.check("res_nan_int", lambda x: np.array([np.nan, 2.0, np.nan, 4.0]), INT64, "\\N\n2\n\\N\n4")
+        self.check("res_nan_string", lambda x: np.array([np.nan, 2.5, np.nan, 1.0]), STRING,
+                   '\\N\n"2.5"\n\\N\n"1"')
+
+    @unittest.skipIf(_LITE, "chdb-core-lite drops Int128/256, UInt128/256 conversions")
+    def test_python_ints_for_wide_integer_results(self):
+        # pyarrow cannot hold a Python int wider than 64 bits, so these go through their text.
+        self.check("res_wide_ints", lambda x: [1, 2**70, None, -(2**100)], "Int128",
+                   "1\n1180591620717411303424\n\\N\n-1267650600228229401496703205376")
+        self.create("res_wide_too_big", lambda x: [2**256], [INT64], "UInt256")
+        with self.assertRaisesRegex(RuntimeError, "does not fit into UInt256"):
+            self.query("SELECT res_wide_too_big(toInt64(1))")
+
+    def test_uint64_list_beyond_int64(self):
+        # pyarrow infers int64 from the first value and overflows on the second one; the
+        # return type settles it.
+        self.check("res_uint64_list", lambda x: [0, 2**64 - 1, 1, 2**63], "UInt64",
+                   "0\n18446744073709551615\n1\n9223372036854775808")
+
+    def test_naive_datetime_is_read_in_the_return_type_time_zone(self):
+        # A naive datetime names its wall clock in the time zone of the return type, as ClickHouse
+        # parses '2024-01-02 03:04:05' into a column of that type: it reads back unchanged.
+        naive = lambda x: pa.array([datetime.datetime(2024, 1, 2, 3, 4, 5, 123456)] * len(x))  # noqa: E731
+        self.check(
+            "res_naive_zoned", naive, "DateTime64(6, 'Asia/Shanghai')",
+            '"2024-01-02 03:04:05.123456","2024-01-01 19:04:05.123456"',
+            sql="SELECT toString({name}(toInt64(1))), toString({name}(toInt64(1)), 'UTC')")
+        self.check(
+            "res_naive_seconds", naive, "DateTime('Asia/Shanghai')",
+            '"2024-01-02 03:04:05","2024-01-01 19:04:05"',
+            sql="SELECT toString({name}(toInt64(1))), toString({name}(toInt64(1)), 'UTC')")
+        self.check(
+            "res_naive_implicit", naive, "DateTime64(6)",
+            '"2024-01-02 03:04:05.123456"',
+            sql="SELECT toString({name}(toInt64(1)))")
+        # Other return types take the session time zone.
+        self.session.query("SET session_timezone = 'Asia/Shanghai'")
+        self.check("res_naive_date", naive, DATE, '"2024-01-02"', sql="SELECT {name}(toInt64(1))")
+        # A time zone the datetime carries is kept.
+        self.check(
+            "res_aware",
+            lambda x: pa.array([datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)] * len(x)),
+            "DateTime",
+            '"2024-01-02 03:04:05"',
+            sql="SELECT toString({name}(toInt64(1)), 'UTC')")
 
     def test_bool_and_string_results(self):
         self.check("res_bool", lambda x: pc.greater(x, 1), BOOL, "false\nfalse\ntrue\ntrue")
