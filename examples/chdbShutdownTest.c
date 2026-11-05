@@ -8,11 +8,16 @@
  * Verifies:
  *   1. A query starts engine thread-pool threads, and they are still running
  *      after every connection is closed — closing connections is not a shutdown.
+ *      The queries include a MergeTree table, whose background executors run
+ *      their own pool threads that chdb_shutdown() has to stop as well.
  *   2. chdb_shutdown() refuses to run while a connection is still open, and
  *      leaves the engine untouched when it refuses.
  *   3. Once the last connection is closed chdb_shutdown() succeeds and zero engine
  *      threads remain — raced by several threads at once, because the one real
  *      transition a process gets is the only chance to exercise the contention.
+ *      On Linux the process is then down to its main thread: the engine's jemalloc
+ *      background threads, which carry no name of their own, used to survive, and a
+ *      host unloading the library afterwards crashed in them.
  *   4. A further chdb_shutdown() is a successful no-op.
  *   5. chdb_connect() after a shutdown fails instead of handing back a connection
  *      on a dead engine.
@@ -26,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "chdb.h"
 
@@ -168,6 +174,23 @@ int main(void)
         fprintf(stderr, "  query error: %s\n", err);
     chdb_destroy_query_result(res);
 
+    /* A MergeTree table starts the MergeTree background executors. Their idle
+     * workers used to survive every connection being closed, which kept
+     * chdb_shutdown() from joining the global pool. */
+    res = chdb_query(*conn, "CREATE TABLE IF NOT EXISTS shutdown_mt (x UInt64) ENGINE = MergeTree ORDER BY x", "CSV");
+    err = chdb_result_error(res);
+    CHECK(err == NULL, "creating a MergeTree table succeeds");
+    if (err)
+        fprintf(stderr, "  query error: %s\n", err);
+    chdb_destroy_query_result(res);
+
+    res = chdb_query(*conn, "INSERT INTO shutdown_mt SELECT number FROM numbers(1000)", "CSV");
+    err = chdb_result_error(res);
+    CHECK(err == NULL, "inserting into the MergeTree table succeeds");
+    if (err)
+        fprintf(stderr, "  query error: %s\n", err);
+    chdb_destroy_query_result(res);
+
     pool_after_query = report("after query");
     CHECK(pool_after_query > 0, "a query starts engine thread-pool threads");
 
@@ -215,6 +238,14 @@ int main(void)
     }
     pool_after_shutdown = report("after chdb_shutdown");
     CHECK(pool_after_shutdown == 0, "no engine thread survives chdb_shutdown");
+#if !defined(__APPLE__)
+    /* The racers are joined, but a joined thread can stay visible for a moment. */
+    for (int i = 0; i < 100 && (count_pool_threads(&total), total) != 1; ++i) {
+        struct timespec pause = {0, 20 * 1000 * 1000};
+        nanosleep(&pause, NULL);
+    }
+    CHECK(total == 1, "no thread but the main one survives chdb_shutdown");
+#endif
 
     /* 4. Idempotent. */
     state = chdb_shutdown();

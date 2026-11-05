@@ -1577,6 +1577,9 @@ catch (DB::Exception & e)
 
     bool need_print_stack_trace = getClientConfiguration().getBool("stacktrace", false);
     std::cerr << getExceptionMessageForLogging(e, need_print_stack_trace, true) << std::endl;
+    /// chdb_spec: the one-shot query API (chdb_query_cmdline, query_stable*) reports a failure
+    /// through getErrorMsg(); without this, a failed query came back with no data and no error.
+    error_message_oss << getExceptionMessageForLogging(e, need_print_stack_trace, true) << '\n';
     auto code = DB::getCurrentExceptionCode();
     return static_cast<UInt8>(code) ? code : 1;
 }

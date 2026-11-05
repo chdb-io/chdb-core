@@ -9,10 +9,23 @@
  * It also pins the result-buffer contract (buf is chdb_result_length() bytes and is not
  * NUL-terminated, so every consumer has to carry the length) and, when run under
  * AddressSanitizer, bounds what one engine start/stop cycle may leave behind.
+ *
+ * And two result regressions: a statement without output that follows a failed query
+ * returns no buffer, not an empty one the failed query left behind; and the one-shot
+ * chdb_query_cmdline() works more than once in a process (the second call used to fail
+ * with "EventNotifier is initialized twice") and returns its errors instead of an
+ * empty result.
+ *
+ * And the exit of a process that still has a connection open, with and without an engine
+ * restart before: the teardown used to run on statics already destroyed (after a restart,
+ * "The ShutdownTablesThreadPool is not initialized"), which could also crash the exit.
  */
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "chdb.h"
 
 static int failures = 0;
@@ -106,6 +119,146 @@ static void test_result_buffer_is_length_delimited(void)
 }
 
 
+/* A query that failed after creating its output buffer, here on an unknown output format,
+ * used to leave that buffer behind, and the next statement without output of its own
+ * returned it as an empty, non-NULL result instead of none. */
+static void test_no_output_after_failed_query(void)
+{
+    printf("test_no_output_after_failed_query\n");
+    chdb_connection * conn = open_memory_connection();
+    CHECK(conn != NULL, "connection opens");
+    if (!conn)
+        return;
+
+    chdb_result * r = chdb_query(*conn, "CREATE TABLE before_failure (x Int32) ENGINE = Memory", "CSV");
+    CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_buffer(r) == NULL,
+          "a statement without output returns no buffer");
+    chdb_destroy_query_result(r);
+
+    r = chdb_query(*conn, "SELECT 1", "NoSuchFormat");
+    CHECK(r != NULL && chdb_result_error(r) != NULL, "an unknown output format fails");
+    chdb_destroy_query_result(r);
+
+    r = chdb_query(*conn, "CREATE TABLE after_failure (x Int32) ENGINE = Memory", "CSV");
+    CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_buffer(r) == NULL
+              && chdb_result_length(r) == 0,
+          "the next statement without output still returns no buffer");
+    chdb_destroy_query_result(r);
+    chdb_close_conn(conn);
+}
+
+
+/* chdb_query_cmdline() boots a one-shot server per call. No connection may be open. */
+static void test_repeated_query_cmdline(void)
+{
+    printf("test_repeated_query_cmdline\n");
+    char arg0[] = "clickhouse";
+    char arg1[] = "--output-format=CSV";
+    char ok_query[] = "--query=SELECT 6 * 7";
+    char bad_query[] = "--query=SELEC 1";
+    char * ok_args[] = {arg0, arg1, ok_query};
+    char * bad_args[] = {arg0, arg1, bad_query};
+
+    for (int i = 0; i < 3; i++)
+    {
+        chdb_result * r = chdb_query_cmdline(3, ok_args);
+        const char * expected = "42\n";
+        CHECK(r != NULL && chdb_result_error(r) == NULL && chdb_result_length(r) == strlen(expected)
+                  && memcmp(chdb_result_buffer(r), expected, strlen(expected)) == 0,
+              "a one-shot query succeeds, also after the first in the process");
+        chdb_destroy_query_result(r);
+    }
+
+    chdb_result * r = chdb_query_cmdline(3, bad_args);
+    const char * err = r ? chdb_result_error(r) : NULL;
+    CHECK(err != NULL && strstr(err, "Syntax error") != NULL, "a failed one-shot query returns its error");
+    chdb_destroy_query_result(r);
+}
+
+
+/* Run by a child of test_exit_with_connection_open: optionally restart the engine, then return
+ * from main with a connection to a MergeTree table still open, so exit() tears the engine down. */
+static int exit_with_connection_open_child(const char * dir, int restart)
+{
+    if (restart)
+    {
+        chdb_connection * first = open_memory_connection();
+        if (!first)
+            return 2;
+        chdb_close_conn(first);
+    }
+
+    char arg0[] = "clickhouse";
+    char path[64];
+    snprintf(path, sizeof(path), "--path=%s", dir);
+    char * args[] = {arg0, path};
+    chdb_connection * conn = chdb_connect(2, args);
+    if (!conn)
+        return 4;
+    const char * queries[] = {
+        "CREATE TABLE t (x UInt64) ENGINE = MergeTree ORDER BY x",
+        "INSERT INTO t SELECT number FROM numbers(1000)",
+    };
+    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); i++)
+    {
+        chdb_result * r = chdb_query(*conn, queries[i], "CSV");
+        int ok = r != NULL && chdb_result_error(r) == NULL;
+        chdb_destroy_query_result(r);
+        if (!ok)
+            return 5;
+    }
+    return 0;
+}
+
+static void test_exit_with_connection_open(const char * self)
+{
+    printf("test_exit_with_connection_open\n");
+    /* Without a restart the teardown used the singletons the start constructs after it
+     * registered the teardown, already destroyed (NamedCollectionFactory: a crash with the
+     * static library); after one, the statics the earlier engine constructed. */
+    for (int i = 0; i < 6; i++)
+    {
+        const char * mode = i % 2 ? "restart" : "first";
+        char dir[] = "/tmp/chdb_exit_open_XXXXXX";
+        int err_pipe[2];
+        if (!mkdtemp(dir) || pipe(err_pipe) != 0)
+        {
+            CHECK(0, "data directory and pipe for the child");
+            return;
+        }
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid == 0)
+        {
+            dup2(err_pipe[1], STDERR_FILENO);
+            close(err_pipe[0]);
+            close(err_pipe[1]);
+            execl(self, self, "--exit-with-connection-open", dir, mode, (char *)NULL);
+            _exit(127);
+        }
+        close(err_pipe[1]);
+        char err[4096];
+        size_t len = 0;
+        ssize_t n;
+        while ((n = read(err_pipe[0], err + len, sizeof(err) - 1 - len)) > 0 && len < sizeof(err) - 1)
+            len += (size_t)n;
+        err[len] = '\0';
+        close(err_pipe[0]);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              i % 2 ? "a process that restarted the engine exits cleanly with a connection open"
+                    : "a process exits cleanly with its first engine's connection open");
+        CHECK(strstr(err, "Exception") == NULL, "and reports no exception from the engine teardown");
+        if (len)
+            printf("       child stderr: %s\n", err);
+        char rm[64];
+        snprintf(rm, sizeof(rm), "rm -rf %s", dir);
+        (void)!system(rm);
+    }
+}
+
+
 /* Per-cycle growth of the engine. Only meaningful under AddressSanitizer, so the counter
  * is looked up at run time and the check is skipped where it is absent.
  *
@@ -158,13 +311,18 @@ static void test_engine_start_leak_budget(void)
     CHECK(per_cycle < (double)LEAK_BUDGET_PER_CYCLE, "engine start/stop stays within its leak budget");
 }
 
-int main(void)
+int main(int argc, char ** argv)
 {
+    if (argc > 3 && strcmp(argv[1], "--exit-with-connection-open") == 0)
+        return exit_with_connection_open_child(argv[2], strcmp(argv[3], "restart") == 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
     printf("chdb %s\n", chdb_version());
     test_repeated_connect();
     test_insert_stream_worker();
     test_result_buffer_is_length_delimited();
+    test_no_output_after_failed_query();
+    test_repeated_query_cmdline();
+    test_exit_with_connection_open(argv[0]);
     test_engine_start_leak_budget();
     printf("\nfailures: %d\n", failures);
     return failures == 0 ? 0 : 1;

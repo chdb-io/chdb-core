@@ -16,6 +16,7 @@
 #endif
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
+#include <Common/EventNotifier.h>
 #include <Common/MemoryTracker.h>
 #include <Common/quoteString.h>
 #include <Common/SignalHandlers.h>
@@ -34,6 +35,7 @@ void chdb_musl_compile_stub(int arg)
 #endif
 
 #if USE_JEMALLOC
+#    include <Common/Jemalloc.h>
 #    include <Common/memory.h>
 #endif
 
@@ -142,6 +144,16 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
     try
     {
         std::lock_guard<std::mutex> lock(CHDB_MUTEX);
+        /// chdb_spec: every call boots a LocalServer, whose global context initializes the
+        /// process-wide EventNotifier (Context::makeGlobalContext), and nothing shut it down, so
+        /// from the second call in a process on, startup threw "EventNotifier is initialized
+        /// twice". Shut it down once this call's server is gone, as EmbeddedServer::cleanup does
+        /// for a connection's engine -- unless a connection is open: then the notifier is that
+        /// engine's (and this server could not start, the catalog being taken).
+        SCOPE_EXIT({
+            if (!DB::EmbeddedServer::hasActiveClients())
+                DB::EventNotifier::shutdown();
+        });
         DB::ThreadStatus thread_status;
         DB::LocalServer app;
         app.init(argc, argv);
@@ -1606,6 +1618,15 @@ chdb_state chdb_shutdown(void)
             std::fputs("chDB shutdown failed: global thread pool did not become idle\n", stderr);
             return CHDBError;
         }
+
+#if USE_JEMALLOC
+        /// chdb_spec: the engine turns jemalloc's background purge threads on when it starts
+        /// (jemalloc_enable_background_threads), and they outlived this call. A host that unloaded
+        /// the library afterwards (dlclose, as Deno does at exit) then had them wake up in code that
+        /// was no longer mapped. Turning them off joins them.
+        shutdown_stage = "jemalloc background threads";
+        DB::Jemalloc::setBackgroundThreads(false);
+#endif
     }
     catch (const std::exception & e)
     {

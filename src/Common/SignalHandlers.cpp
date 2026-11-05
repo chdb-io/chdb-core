@@ -173,7 +173,17 @@ static void signalHandler(int sig, siginfo_t * info, void * context)
     {
         /// The time that is usually enough for separate thread to print info into log.
         /// Under MSan full stack unwinding with DWARF info about inline functions takes 101 seconds in one case.
-        for (size_t i = 0; i < 300; ++i)
+#if defined(SANITIZER)
+        constexpr size_t max_wait_seconds = 300;
+#else
+        /// chdb_spec: chDB runs inside a host process, which a crash should end promptly. Outside
+        /// sanitizer builds the printing thread needs seconds at most, unless it cannot finish at
+        /// all -- e.g. a background thread crashed while the host was exiting with a connection
+        /// open and static destructors were tearing things down -- and then waiting 300 s only
+        /// kept the dying process alive for five minutes.
+        constexpr size_t max_wait_seconds = 30;
+#endif
+        for (size_t i = 0; i < max_wait_seconds; ++i)
         {
             /// We will synchronize with the thread printing the messages with an atomic variable to finish earlier.
             if (HandledSignals::instance().fatal_error_printed.test())
