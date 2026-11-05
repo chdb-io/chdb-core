@@ -48,8 +48,13 @@ def func(arg_types=None, return_type=None, *, on_null=None, on_error=None, type=
               native function, at block granularity: under ``on_null="skip"`` the
               rows with a NULL argument are left out of the arrays (and come back
               as NULL), and ``on_error="ignore"`` returns NULL for the whole block.
-              An Arrow function needs at least one argument, because the number of
-              rows it returns follows the arrays it receives.
+              As for a native function, a float NaN in the result becomes NULL. A naive
+              ``datetime`` is read in the time zone of the return type, as ClickHouse
+              parses ``'2024-01-02 03:04:05'`` into it. A String argument
+              arrives as ``pyarrow.string()`` and must be valid UTF-8, unless it is
+              declared as ``bytes`` (``pyarrow.binary()``). An Arrow function needs at
+              least one argument, because the number of rows it returns follows the
+              arrays it receives.
             - A ``chdb.UDFType`` member, ``UDFType.NATIVE`` or ``UDFType.ARROW``.
 
     Returns:
