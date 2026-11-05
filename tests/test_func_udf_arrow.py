@@ -15,6 +15,11 @@ from chdb import func
 from chdb.session import Session
 from chdb.sqltypes import BOOL, DATE, FLOAT64, INT32, INT64, STRING, UINT8
 
+try:
+    import polars as pl
+except ImportError:
+    pl = None
+
 # chdb-core-lite drops the Int128/256 and UInt128/256 conversion functions the big
 # integer test below builds its input with; see tests/test_func_udf_types.py.
 _LITE = os.environ.get("CHDB_LITE") == "1"
@@ -321,6 +326,17 @@ class TestArrowUDFResults(ArrowUDFTestCase):
         self.check("res_uint64_list", lambda x: [0, 2**64 - 1, 1, 2**63], "UInt64",
                    "0\n18446744073709551615\n1\n9223372036854775808")
 
+    def test_results_from_other_arrow_producers(self):
+        # Dictionary-encoded and 64-bit-offset strings decode like plain ones.
+        self.check("res_dictionary", lambda x: pc.cast(pc.bit_wise_and(x, 1), pa.string()).dictionary_encode(),
+                   STRING, '"0"\n"1"\n"0"\n"1"')
+        self.check("res_large_string", lambda x: pc.cast(pc.cast(x, pa.string()), pa.large_string()),
+                   STRING, '"0"\n"1"\n"2"\n"3"')
+
+    @unittest.skipIf(pl is None, "polars is not installed")
+    def test_polars_series_result(self):
+        self.check("res_polars", lambda x: pl.Series(x.to_pylist()) * 2, INT64, "0\n2\n4\n6")
+
     def test_naive_datetime_is_read_in_the_return_type_time_zone(self):
         # A naive datetime names its wall clock in the time zone of the return type, as ClickHouse
         # parses '2024-01-02 03:04:05' into a column of that type: it reads back unchanged.
@@ -467,6 +483,28 @@ class TestArrowUDFNullAndErrorHandling(ArrowUDFTestCase):
             "SETTINGS max_block_size = 1000, max_threads = 1")
         self.assertEqual(ret, f"1000,2000,{sum(range(1000)) + sum(range(2000, 3000))}")
 
+    def test_pass_with_nulls_in_different_arguments(self):
+        seen = []
+
+        def add(a, b):
+            seen.append((a.to_pylist(), b.to_pylist()))
+            return pc.add(pc.fill_null(a, 0), pc.fill_null(b, 0))
+
+        self.create("arrow_pass_add", add, [INT64, INT64], INT64, on_null="pass")
+        ret = self.query(
+            "SELECT arrow_pass_add(a, b) FROM values('a Nullable(Int64), b Nullable(Int64)', "
+            "(1, NULL), (NULL, 2), (NULL, NULL), (3, 4))")
+        self.assertEqual(ret, "1\n2\n0\n7")
+        self.assertEqual(seen, [([1, None, None, 3], [None, 2, None, 4])])
+
+    def test_pass_and_ignore(self):
+        def boom(x):
+            raise ValueError("boom")
+
+        self.create("arrow_pass_ignore", boom, [INT64], INT64, on_null="pass", on_error="ignore")
+        ret = self.query("SELECT arrow_pass_ignore(a) FROM values('a Nullable(Int64)', (1), (NULL), (3))")
+        self.assertEqual(ret, "\\N\n\\N\n\\N")
+
     def test_skip_drops_variant_and_dynamic_nulls(self):
         # A NULL inside a Variant or Dynamic column is a NULL argument too, as for the per-row UDF.
         seen = []
@@ -495,6 +533,17 @@ class TestArrowUDFNullAndErrorHandling(ArrowUDFTestCase):
 
 
 class TestArrowUDFBlocks(ArrowUDFTestCase):
+    def test_empty_block_does_not_call(self):
+        calls = []
+
+        def tracked(x):
+            calls.append(len(x))
+            return x
+
+        self.create("arrow_empty", tracked, [INT64], INT64)
+        self.assertEqual(self.query("SELECT arrow_empty(toInt64(number)) FROM numbers(10) WHERE number > 100"), "")
+        self.assertEqual(calls, [])
+
     def test_large_block_arrives_in_chunks(self):
         # A block holding more than output_format_arrow_max_record_batch_size_bytes (by default what
         # 32-bit Arrow offsets address) reaches the function as ChunkedArrays of several chunks.
@@ -514,6 +563,20 @@ class TestArrowUDFBlocks(ArrowUDFTestCase):
         self.assertGreater(text_chunks, 1)
         self.assertGreater(data_chunks, 1)
         self.assertEqual(rows, 1000)
+
+    def test_merge_tree_join_and_filter(self):
+        self.create("arrow_twice", lambda x: pc.multiply(x, 2), [FLOAT64], FLOAT64)
+        self.session.query("CREATE TABLE arrow_mt (k Int64, v Float64) ENGINE = MergeTree ORDER BY k")
+        try:
+            self.session.query("INSERT INTO arrow_mt SELECT number, number / 2 FROM numbers(100000)")
+            ret = self.query(
+                "SELECT count(), sum(arrow_twice(a.v)) FROM arrow_mt AS a JOIN arrow_mt AS b ON a.k = b.k "
+                "WHERE arrow_twice(b.v) > 10")
+        finally:
+            self.session.query("DROP TABLE arrow_mt")
+        # arrow_twice(v) = k, so the filter keeps k > 10.
+        self.assertEqual(ret, f"{100000 - 11},{sum(range(11, 100000))}")
+
 
 class TestArrowUDFArgumentTypes(ArrowUDFTestCase):
     def check_arg(self, name, declared, expr, expected_type, expected_values):
