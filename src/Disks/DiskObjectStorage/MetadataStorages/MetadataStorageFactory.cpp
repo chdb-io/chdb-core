@@ -89,6 +89,8 @@ std::string MetadataStorageFactory::getCompatibilityMetadataTypeHint(
             return "local";
         case ObjectStorageType::Web:
             return "web";
+        case ObjectStorageType::Callback:
+            return "plain_rewritable";
         default:
             return "";
     }
