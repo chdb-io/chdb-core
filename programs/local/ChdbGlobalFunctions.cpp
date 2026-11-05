@@ -71,13 +71,32 @@ ExceptionHandling parseExceptionHandling(const py::object & obj)
     throw std::runtime_error("on_error must be an ExceptionHandling instance or a string, got " + std::string(py::str(obj.get_type())));
 }
 
+UDFType parseUDFType(const py::object & obj)
+{
+    if (obj.is_none())
+        return UDFType::NATIVE;
+    if (py::isinstance<UDFType>(obj))
+        return obj.cast<UDFType>();
+    if (py::isinstance<py::str>(obj))
+    {
+        auto val = toLower(obj.cast<std::string>());
+        if (val == "native")
+            return UDFType::NATIVE;
+        if (val == "arrow")
+            return UDFType::ARROW;
+        throw std::runtime_error("type must be 'native' or 'arrow', got '" + obj.cast<std::string>() + "'");
+    }
+    throw std::runtime_error("type must be a UDFType instance or a string, got " + std::string(py::str(obj.get_type())));
+}
+
 void createFunction(
     const std::string & name,
     const py::function & func,
     const py::object & arg_types,
     const py::object & return_type,
     const py::object & on_null,
-    const py::object & on_error)
+    const py::object & on_error,
+    const py::object & type)
 {
     PythonRuntimeOperationGuard operation;
     try
@@ -96,8 +115,9 @@ void createFunction(
 
         auto null_handling = parseNullHandling(on_null);
         auto exception_handling = parseExceptionHandling(on_error);
+        auto udf_type = parseUDFType(type);
 
-        registerPythonUDF(name, func, std::move(data_type), arg_types_list, null_handling, exception_handling, UDFType::NATIVE);
+        registerPythonUDF(name, func, std::move(data_type), arg_types_list, null_handling, exception_handling, udf_type);
     }
     catch (const DB::Exception & e)
     {
@@ -175,6 +195,10 @@ void registerGlobalFunctions(py::module_ & m)
         .value("PROPAGATE", ExceptionHandling::PROPAGATE)
         .value("IGNORE", ExceptionHandling::IGNORE);
 
+    py::enum_<UDFType>(m, "UDFType")
+        .value("NATIVE", UDFType::NATIVE)
+        .value("ARROW", UDFType::ARROW);
+
     m.def(
         "create_function",
         &createFunction,
@@ -185,10 +209,12 @@ void registerGlobalFunctions(py::module_ & m)
         py::kw_only(),
         py::arg("on_null") = py::none(),
         py::arg("on_error") = py::none(),
+        py::arg("type") = py::none(),
         "Register a Python scalar UDF globally.\n\n"
         "Args:\n"
         "    name (str): Function name to use in SQL queries.\n"
-        "    func (callable): Python function to call for each row.\n"
+        "    func (callable): Python function to call for each row, or for each\n"
+        "                     block of rows with type='arrow'.\n"
         "    arg_types: List of argument types (ChdbType, str, or Python type).\n"
         "              Optional; if omitted, inferred from parameter annotations.\n"
         "              If provided, must specify types for ALL parameters.\n"
@@ -198,7 +224,14 @@ void registerGlobalFunctions(py::module_ & m)
         "                   NULL without calling the function; 'pass' converts\n"
         "                   NULL to None and calls the function.\n"
         "    on_error (str): How to handle exceptions. 'propagate' (default)\n"
-        "                    raises the error; 'ignore' returns NULL for that row.\n");
+        "                    raises the error; 'ignore' returns NULL for that row\n"
+        "                    (for the whole block with type='arrow').\n"
+        "    type (str): 'native' (default) calls func once per row with Python\n"
+        "                values. 'arrow' calls it once per block with one\n"
+        "                pyarrow.ChunkedArray per argument; it returns one value\n"
+        "                per row as a pyarrow array, a one-column pyarrow table or\n"
+        "                anything pyarrow.array() accepts. Under on_null='skip'\n"
+        "                the rows with a NULL argument are left out of the arrays.\n");
 
     m.def(
         "create_aggregate_function",

@@ -259,6 +259,7 @@ create_aggregate_function = _chdb.create_aggregate_function
 drop_aggregate_function = _chdb.drop_aggregate_function
 NullHandling = _chdb.NullHandling
 ExceptionHandling = _chdb.ExceptionHandling
+UDFType = _chdb.UDFType
 
 from . import dbapi, session, udf, utils  # noqa: E402
 from .udf import agg, func  # noqa: E402
@@ -278,6 +279,7 @@ __all__ = [
     "drop_aggregate_function",
     "NullHandling",
     "ExceptionHandling",
+    "UDFType",
     "chdb_version",
     "engine_version",
     "to_arrowTable",

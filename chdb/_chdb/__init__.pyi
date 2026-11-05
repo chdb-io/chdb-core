@@ -12,6 +12,10 @@ class ExceptionHandling(enum.Enum):
     PROPAGATE: int  # Raise the exception (default)
     IGNORE: int     # Return NULL for the row and continue
 
+class UDFType(enum.Enum):
+    NATIVE: int  # Call the UDF once per row with Python values (default)
+    ARROW: int   # Call the UDF once per block with one pyarrow.ChunkedArray per argument
+
 def create_function(
     name: str,
     func: Callable[..., object],
@@ -20,6 +24,7 @@ def create_function(
     *,
     on_null: Optional[Union[NullHandling, str]] = None,
     on_error: Optional[Union[ExceptionHandling, str]] = None,
+    type: Optional[Union[UDFType, str]] = None,
 ) -> None: ...
 
 def drop_function(name: str) -> None: ...
