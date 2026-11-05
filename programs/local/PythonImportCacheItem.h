@@ -70,4 +70,12 @@ private:
 	std::atomic<bool> loaded{false};
 };
 
+/// isinstance() against a cached class. The cache publishes a null handle for an attribute its
+/// module does not have (a stub or shadowing module on sys.path, an older version), which
+/// py::isinstance would hand to PyObject_IsInstance and crash on: no object is an instance of it.
+inline bool isInstanceOfCached(const py::handle & object, py::handle type)
+{
+	return type.ptr() != nullptr && py::isinstance(object, type);
+}
+
 } // namespace CHDB
