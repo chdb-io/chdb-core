@@ -18,9 +18,10 @@ const STATUS = {
 };
 const NOT_RUN = { cls: "none", icon: "–", label: "Not run" };
 const API_TIMEOUT_MS = 10000;
+const KEEP_NIGHTS = 20; // publish.py --keep: the nights whose wheels the nightly release keeps
 const SVG = "http://www.w3.org/2000/svg";
 
-const state = { days: 30, latest: null, history: [], source: "" };
+const state = { days: 30, latest: null, history: [], kept: new Set(), source: "" };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -50,6 +51,19 @@ function statusBadge(conclusion, url) {
   const s = STATUS[conclusion] || NOT_RUN;
   const inner = [el("span", { class: "dot", "aria-hidden": "true" }, s.icon), el("span", { class: "label" }, s.label)];
   return url ? el("a", { class: `status ${s.cls}`, href: url }, inner) : el("span", { class: `status ${s.cls}` }, inner);
+}
+
+// The versions whose wheels are still on the nightly release: those of the newest
+// KEEP_NIGHTS nights that uploaded any, ordered by dev number as publish.py orders them.
+function keptVersions(rows) {
+  const dev = (version) => Number(version.split(".dev")[1] || 0);
+  return new Set([...new Set(rows.filter((r) => r.wheel_mb > 0 && r.version).map((r) => r.version))]
+    .sort((a, b) => dev(b) - dev(a)).slice(0, KEEP_NIGHTS));
+}
+
+function releaseLink(version, content) {
+  const url = state.latest && state.latest.install.release_url;
+  return url && state.kept.has(version) ? el("a", { href: url }, content) : content;
 }
 
 function inRange(rows) {
@@ -88,7 +102,7 @@ function renderTiles() {
     : ["The commit this nightly is synced to"];
   const failing = latest.failing_tests || [];
   root.replaceChildren(
-    tile("Newest nightly", night.version || "–",
+    tile("Newest nightly", night.version ? releaseLink(night.version, night.version) : "–",
       `${night.date} · `, el("a", { href: night.commit_url }, night.head_sha.slice(0, 12))),
     tile("Platforms passing", `${passed.length} of ${latest.platforms.length}`,
       failedNames.length ? `Not passing: ${failedNames.join(", ")}` : "All platforms passed"),
@@ -114,7 +128,7 @@ function renderStatus() {
     const failed = night.reduce((sum, r) => sum + (r.tests_failed || 0), 0);
     return el("tr", {},
       el("td", {}, date),
-      el("td", {}, el("code", {}, night[0].version || "–")),
+      el("td", {}, releaseLink(night[0].version, el("code", {}, night[0].version || "–"))),
       PLATFORMS.map((p) => {
         const r = night.find((x) => x.platform === p.id);
         return el("td", {}, statusBadge(r ? r.conclusion : "", r ? r.url : ""));
@@ -290,7 +304,7 @@ function renderInstall() {
     el("pre", { class: "install" }, el("code", {},
       `pip install --pre --extra-index-url ${index} chdb-core\npip install --pre --extra-index-url ${index} chdb`)),
     el("p", { class: "caption" }, "chdb is chdb-io/chdb's main, pinned to the chdb-core of its night. ",
-      "Pin one night with chdb-core==<version> or chdb==<version>. The newest 20 nights are kept on the ",
+      `Pin one night with chdb-core==<version> or chdb==<version>. The newest ${KEEP_NIGHTS} nights are kept on the `,
       el("a", { href: latest ? latest.install.release_url : "#" }, "nightly release"), "."),
   );
   if (!latest) return;
@@ -370,6 +384,7 @@ async function main() {
   }
   state.latest = latest;
   state.history = (history && history.rows) || [];
+  state.kept = keptVersions(state.history);
   render();
   let timer;
   window.addEventListener("resize", () => {
