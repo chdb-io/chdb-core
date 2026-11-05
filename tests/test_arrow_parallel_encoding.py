@@ -203,6 +203,55 @@ class TestArrowParallelEncoding(unittest.TestCase):
             self.assertEqual(tbl.schema.field("v").type, pa.string())
             self.assertEqual(tbl.column("v").to_pylist(), ["1", '"abc"', None])
 
+    def test_record_batch_size_bytes_splits_chdb_types(self):
+        # output_format_arrow_max_record_batch_size_bytes splits a block into several
+        # record batches, so the chDB encoders (JSON/Dynamic as JSON text, Variant as
+        # string, NULL as the Arrow Null type) get row ranges that do not start at row 0.
+        # Both writers must honour the bound and produce the same values as one batch.
+        sql = (
+            "SELECT number AS n, "
+            "if(number % 7 = 0, NULL, CAST(concat('{\"a\":', toString(number), '}'), 'Nullable(JSON)')) AS j, "
+            "CAST(if(number % 3 = 0, toString(number), number), 'Dynamic') AS d, "
+            "multiIf(number % 4 = 0, CAST(NULL, 'Variant(UInt64, String)'), "
+            "number % 4 = 1, CAST(number, 'Variant(UInt64, String)'), "
+            "CAST(concat('s', toString(number)), 'Variant(UInt64, String)')) AS v, "
+            "NULL AS z, "
+            "[CAST(concat('{\"b\":', toString(number), '}'), 'JSON')] AS aj, "
+            "repeat('x', 100) AS pad "
+            "FROM numbers(5000)"
+        )
+
+        def batches_and_table(fmt, settings):
+            data = chdb.query(f"{sql} SETTINGS {settings}", fmt).bytes()
+            if fmt == "Arrow":
+                reader = pa.ipc.open_file(io.BytesIO(data))
+                batches = [reader.get_batch(i) for i in range(reader.num_record_batches)]
+            else:
+                reader = pa.ipc.open_stream(io.BytesIO(data))
+                batches = list(reader)
+            return len(batches), pa.Table.from_batches(batches, schema=reader.schema)
+
+        for native_writer in (0, 1):
+            for fmt in ("Arrow", "ArrowStream"):
+                settings = (
+                    "max_block_size = 65536, output_format_arrow_variant_as_string = 1, "
+                    f"output_format_arrow_use_native_writer = {native_writer}"
+                )
+                whole_batches, whole = batches_and_table(fmt, settings)
+                split_batches, split = batches_and_table(
+                    fmt, settings + ", output_format_arrow_max_record_batch_size_bytes = 20000"
+                )
+                label = f"native_writer={native_writer} {fmt}"
+                self.assertEqual(whole_batches, 1, label)
+                self.assertGreater(split_batches, 1, label)
+                self.assertTrue(whole.equals(split), msg=label)
+                self.assertEqual(split.column("j").null_count, 715, label)
+                self.assertEqual(split.column("v").null_count, 1250, label)
+                self.assertEqual(_json_value(split.column("j")[4999]), {"a": 4999}, label)
+                self.assertEqual(split.column("v")[4997].as_py(), "4997", label)
+                self.assertEqual(split.column("v")[4999].as_py(), '"s4999"', label)
+                self.assertEqual(_json_value(split.column("aj")[4999][0]), {"b": 4999}, label)
+
     # --- LowCardinality fallback -------------------------------------------
 
     def test_low_cardinality_dictionary_falls_back_to_serial(self):
