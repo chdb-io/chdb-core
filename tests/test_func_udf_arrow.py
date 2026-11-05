@@ -32,6 +32,14 @@ def recorder(seen):
     return identity
 
 
+def typed_recorder(seen):
+    def record(x):
+        seen.append((x.type, x.to_pylist()))
+        return pa.array(["ok"] * len(x))
+
+    return record
+
+
 class ArrowUDFTestCase(unittest.TestCase):
     def setUp(self):
         self.session = Session()
@@ -410,11 +418,53 @@ class TestArrowUDFNullAndErrorHandling(ArrowUDFTestCase):
             "SETTINGS max_block_size = 1000, max_threads = 1")
         self.assertEqual(ret, f"1000,2000,{sum(range(1000)) + sum(range(2000, 3000))}")
 
+    def test_skip_drops_variant_and_dynamic_nulls(self):
+        # A NULL inside a Variant or Dynamic column is a NULL argument too, as for the per-row UDF.
+        seen = []
+
+        def record(x):
+            seen.append(x.to_pylist())
+            return pa.array(["ok"] * len(x))
+
+        self.create("arrow_skip_variant", record, return_type=STRING)
+        ret = self.query(
+            "SELECT arrow_skip_variant(v) FROM (SELECT arrayJoin([1::UInt64::Variant(UInt64, String), NULL, "
+            "'x'::Variant(UInt64, String)]) AS v)")
+        self.assertEqual(ret, '"ok"\n\\N\n"ok"')
+        self.assertEqual(seen, [[1, "x"]])
+
+        seen.clear()
+        ret = self.query("SELECT arrow_skip_variant(v) FROM (SELECT arrayJoin([1::Dynamic, NULL::Dynamic]) AS v)")
+        self.assertEqual(ret, '"ok"\n\\N')
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen[0]), 1)
+
     def test_error_ignore_does_not_hide_conversion_errors(self):
         self.create("arrow_ignore_short", lambda x: [1], [INT64], INT64, on_error="ignore")
         with self.assertRaisesRegex(RuntimeError, "returned 1 rows for a batch of 3 rows"):
             self.query("SELECT arrow_ignore_short(toInt64(number)) FROM numbers(3)")
 
+
+class TestArrowUDFBlocks(ArrowUDFTestCase):
+    def test_large_block_arrives_in_chunks(self):
+        # A block holding more than output_format_arrow_max_record_batch_size_bytes (by default what
+        # 32-bit Arrow offsets address) reaches the function as ChunkedArrays of several chunks.
+        seen = []
+
+        def lengths(text, data):
+            seen.append((text.num_chunks, data.num_chunks, len(text)))
+            return pc.add(pc.utf8_length(text), pc.binary_length(data))
+
+        self.create("arrow_large_block", lengths, [STRING, bytes], INT64)
+        ret = self.query(
+            "SELECT sum(arrow_large_block(s, s)) FROM (SELECT repeat('x', 1000) AS s FROM numbers(1000)) "
+            "SETTINGS max_block_size = 1000, output_format_arrow_max_record_batch_size_bytes = 100000")
+        self.assertEqual(ret, str(2 * 1000 * 1000))
+        self.assertEqual(len(seen), 1)
+        text_chunks, data_chunks, rows = seen[0]
+        self.assertGreater(text_chunks, 1)
+        self.assertGreater(data_chunks, 1)
+        self.assertEqual(rows, 1000)
 
 class TestArrowUDFArgumentTypes(ArrowUDFTestCase):
     def check_arg(self, name, declared, expr, expected_type, expected_values):
@@ -491,6 +541,62 @@ class TestArrowUDFArgumentTypes(ArrowUDFTestCase):
         self.create("arrow_map_len", record, return_type=INT64)
         self.assertEqual(self.query("SELECT arrow_map_len(materialize(map('k', 1, 'l', 2)))"), "2")
         self.assertEqual(seen, [(pa.string(), pa.uint8(), [[("k", 1), ("l", 2)]])])
+
+    def test_enum_and_big_integers_convert_inside_containers(self):
+        cases = [
+            ("[CAST('b' AS Enum8('a' = 1, 'b' = 2))]", pa.list_(pa.field("item", pa.string(), nullable=False)),
+             [["b"]]),
+            ("[toLowCardinality('x'), toLowCardinality('y')]",
+             pa.list_(pa.field("item", pa.string(), nullable=False)), [["x", "y"]]),
+            ("[CAST(NULL AS Nullable(Enum8('a' = 1))), 'a']", pa.list_(pa.string()), [[None, "a"]]),
+            ("map('k', CAST('a' AS Enum8('a' = 1)))", pa.map_(pa.string(), pa.string()), [[("k", "a")]]),
+        ]
+        if not _LITE:
+            cases += [
+                ("tuple(toInt128(5), 'x')", None, [{"1": "5", "2": "x"}]),
+                ("CAST((toUInt256(7), 'y') AS Tuple(n UInt256, s String))", None, [{"n": "7", "s": "y"}]),
+            ]
+        for i, (expr, arrow_type, values) in enumerate(cases):
+            with self.subTest(expr):
+                seen = []
+                name = f"arrow_nested_{i}"
+                self.create(name, typed_recorder(seen), return_type=STRING)
+                self.assertEqual(self.query(f"SELECT {name}(materialize({expr}))"), '"ok"')
+                if arrow_type is not None and pa.types.is_map(arrow_type):
+                    self.assertEqual(seen[0][0].item_type, arrow_type.item_type)
+                elif arrow_type is not None:
+                    self.assertEqual(seen[0][0], arrow_type)
+                self.assertEqual(seen[0][1], values)
+
+    def test_bfloat16_arrives_as_float32(self):
+        self.check_arg("arrow_bfloat16", None, "toBFloat16(1.5)", pa.float32(), [1.5])
+
+    def test_invalid_utf8_is_rejected_unless_declared_as_bytes(self):
+        self.session.query("CREATE TABLE arrow_bytes_t (id Int64, s String) ENGINE = Memory")
+        self.session.query(
+            "INSERT INTO arrow_bytes_t VALUES (1, 'é'), (2, unhex('c3')), (3, unhex('a9')), (4, unhex('ff'))")
+        try:
+            self.create("arrow_utf8_len", lambda x: pc.utf8_length(x), [STRING], INT64)
+            self.assertEqual(self.query("SELECT arrow_utf8_len(s) FROM arrow_bytes_t WHERE id = 1"), "1")
+            # Each of these is invalid on its own, though 2 and 3 together spell 'é'.
+            for ids in ["(2, 3)", "(3)", "(4)"]:
+                with self.subTest(ids):
+                    with self.assertRaisesRegex(RuntimeError, "is not valid UTF-8. Declare a String argument as bytes"):
+                        self.query(f"SELECT arrow_utf8_len(s) FROM arrow_bytes_t WHERE id IN {ids} ORDER BY id")
+
+            self.create("arrow_bytes_len", lambda x: pc.binary_length(x), [bytes], INT64)
+            self.assertEqual(self.query("SELECT arrow_bytes_len(s) FROM arrow_bytes_t ORDER BY id"), "2\n1\n1\n1")
+
+            # Inside an Array or a Map too.
+            self.create("arrow_nested_len", lambda x: pa.array([0] * len(x)), return_type=INT64)
+            for expr in ["[s]", "map(s, id)"]:
+                with self.subTest(expr):
+                    with self.assertRaisesRegex(RuntimeError, "is not valid UTF-8"):
+                        self.query(f"SELECT arrow_nested_len({expr}) FROM arrow_bytes_t")
+                    self.assertEqual(
+                        self.query(f"SELECT arrow_nested_len({expr}) FROM arrow_bytes_t WHERE id = 1"), "0")
+        finally:
+            self.session.query("DROP TABLE arrow_bytes_t")
 
     def test_tuple_becomes_struct(self):
         seen = []

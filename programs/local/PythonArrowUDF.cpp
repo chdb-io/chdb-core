@@ -7,24 +7,40 @@
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnsCommon.h>
 #include <Core/Block.h>
+#include <Core/Settings.h>
+#include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeLowCardinality.h>
+#include <DataTypes/DataTypeMap.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeString.h>
+#include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypesNumber.h>
 #include <Formats/FormatSettings.h>
+#include <Interpreters/Context.h>
 #include <Interpreters/castColumn.h>
 #include <Processors/Chunk.h>
 #include <Processors/Formats/Impl/ArrowColumnToCHColumn.h>
 #include <Processors/Formats/Impl/CHColumnToArrowColumn.h>
 #include <base/defines.h>
+#include <Common/CurrentThread.h>
 #include <Common/Exception.h>
 #include <Common/assert_cast.h>
 
 #include <arrow/array.h>
 #include <arrow/c/bridge.h>
+#include <arrow/extension_type.h>
 #include <arrow/record_batch.h>
 #include <arrow/table.h>
+#include <arrow/util/utf8.h>
+
 
 namespace DB
 {
+namespace Setting
+{
+    extern const SettingsUInt64 output_format_arrow_max_record_batch_size_bytes;
+}
+
 namespace ErrorCodes
 {
     extern const int BAD_ARGUMENTS;
@@ -46,26 +62,52 @@ namespace
 
 constexpr auto ARROW_FORMAT_NAME = "Arrow";
 
-DB::CHColumnToArrowColumn::Settings argumentArrowSettings()
+const DB::CHColumnToArrowColumn::Settings & argumentArrowSettings()
 {
-    DB::CHColumnToArrowColumn::Settings settings;
-    /// pa.string(), whose values are str, as the per-row UDF hands out str.
-    settings.output_string_as_string = true;
-    settings.low_cardinality_as_dictionary = false;
-    /// pa.timestamp("s", tz) instead of the raw UInt32 seconds the Arrow format writes.
-    settings.output_datetime_as_timestamp = true;
-    /// A NULL literal under on_null="pass" (Nullable(Nothing)) becomes a pa.null() array.
-    settings.output_nothing_as_null = true;
+    static const auto settings = []
+    {
+        DB::CHColumnToArrowColumn::Settings result;
+        /// pa.string(), whose values are str, as the per-row UDF hands out str.
+        result.output_string_as_string = true;
+        result.low_cardinality_as_dictionary = false;
+        /// pa.timestamp("s", tz) instead of the raw UInt32 seconds the Arrow format writes.
+        result.output_datetime_as_timestamp = true;
+        /// A NULL literal under on_null="pass" (Nullable(Nothing)) becomes a pa.null() array.
+        result.output_nothing_as_null = true;
+        return result;
+    }();
     return settings;
 }
 
 /// The type an argument is cast to before it is converted, where the Arrow format's own mapping
-/// gives no usable value: an Enum travels as its names, which is what the per-row UDF hands out
-/// too, and a 128/256-bit integer, wider than any Arrow integer, as its decimal text instead of
-/// opaque little-endian bytes.
+/// gives no usable value - at any depth, inside an Array, a Map or a Tuple as well: an Enum travels
+/// as its names, which is what the per-row UDF hands out too, a 128/256-bit integer, wider than any
+/// Arrow integer, as its decimal text instead of opaque little-endian bytes, and a BFloat16, which
+/// Arrow does not have, as the Float32 that holds every BFloat16 exactly.
 DB::DataTypePtr argumentTypeForArrow(const DB::DataTypePtr & type)
 {
-    switch (DB::removeNullable(type)->getTypeId())
+    if (const auto * nullable = typeid_cast<const DB::DataTypeNullable *>(type.get()))
+        return DB::makeNullable(argumentTypeForArrow(nullable->getNestedType()));
+
+    if (const auto * array = typeid_cast<const DB::DataTypeArray *>(type.get()))
+        return std::make_shared<DB::DataTypeArray>(argumentTypeForArrow(array->getNestedType()));
+
+    if (const auto * map = typeid_cast<const DB::DataTypeMap *>(type.get()))
+        return std::make_shared<DB::DataTypeMap>(
+            argumentTypeForArrow(map->getKeyType()), argumentTypeForArrow(map->getValueType()));
+
+    if (const auto * tuple = typeid_cast<const DB::DataTypeTuple *>(type.get()))
+    {
+        DB::DataTypes elements;
+        elements.reserve(tuple->getElements().size());
+        for (const auto & element : tuple->getElements())
+            elements.push_back(argumentTypeForArrow(element));
+        if (tuple->hasExplicitNames())
+            return std::make_shared<DB::DataTypeTuple>(elements, tuple->getElementNames());
+        return std::make_shared<DB::DataTypeTuple>(elements);
+    }
+
+    switch (type->getTypeId())
     {
         case DB::TypeIndex::Enum8:
         case DB::TypeIndex::Enum16:
@@ -73,69 +115,137 @@ DB::DataTypePtr argumentTypeForArrow(const DB::DataTypePtr & type)
         case DB::TypeIndex::UInt128:
         case DB::TypeIndex::Int256:
         case DB::TypeIndex::UInt256:
-        {
-            DB::DataTypePtr string_type = std::make_shared<DB::DataTypeString>();
-            return type->isNullable() ? DB::makeNullable(string_type) : string_type;
-        }
+            return std::make_shared<DB::DataTypeString>();
+        case DB::TypeIndex::BFloat16:
+            return std::make_shared<DB::DataTypeFloat32>();
         default:
             return type;
     }
 }
 
-/// One block worth of arguments as a RecordBatch, one column per argument. `as_bytes` marks the
+/// Whether every value of a string array is valid UTF-8. Checking the value bytes in one go is
+/// much faster than string by string, and equivalent: valid bytes split into valid strings exactly
+/// when no string starts in the middle of a character, that is, at a continuation byte.
+template <typename StringArray>
+bool isValidUtf8Strings(const StringArray & array)
+{
+    if (array.length() == 0)
+        return true;
+
+    const uint8_t * data = array.raw_data();
+    const int64_t begin = array.value_offset(0);
+    const int64_t end = array.value_offset(array.length());
+
+    arrow::util::InitializeUTF8();
+    if (!arrow::util::ValidateUTF8(data + begin, end - begin))
+        return false;
+
+    for (int64_t i = 0; i < array.length(); ++i)
+    {
+        const int64_t offset = array.value_offset(i);
+        if (offset < end && (data[offset] & 0xC0) == 0x80)
+            return false;
+    }
+    return true;
+}
+
+/// Whether every string in the array, at any depth, is valid UTF-8.
+bool isValidUtf8(const arrow::Array & array)
+{
+    switch (array.type_id())
+    {
+        case arrow::Type::STRING:
+            return isValidUtf8Strings(static_cast<const arrow::StringArray &>(array));
+        case arrow::Type::LARGE_STRING:
+            return isValidUtf8Strings(static_cast<const arrow::LargeStringArray &>(array));
+        case arrow::Type::EXTENSION:
+            return isValidUtf8(*static_cast<const arrow::ExtensionArray &>(array).storage());
+        default:
+            for (const auto & child : array.data()->child_data)
+                if (!isValidUtf8(*arrow::MakeArray(child)))
+                    return false;
+            return true;
+    }
+}
+
+bool containsUtf8(const arrow::DataType & type)
+{
+    if (type.id() == arrow::Type::STRING || type.id() == arrow::Type::LARGE_STRING)
+        return true;
+    if (type.id() == arrow::Type::EXTENSION)
+        return containsUtf8(*static_cast<const arrow::ExtensionType &>(type).storage_type());
+    for (const auto & field : type.fields())
+        if (containsUtf8(*field->type()))
+            return true;
+    return false;
+}
+
+/// One block worth of arguments as an Arrow table, one column per argument. `as_bytes` marks the
 /// String arguments declared as bytes/bytearray, which become pa.binary() (values are bytes).
-std::shared_ptr<arrow::RecordBatch> argumentsToRecordBatch(
+std::shared_ptr<arrow::Table> argumentsToTable(
+    const String & name,
     const DB::ColumnsWithTypeAndName & arguments,
     size_t rows,
     const std::vector<bool> & as_bytes)
 {
-    static const auto settings = argumentArrowSettings();
+    auto settings = argumentArrowSettings();
+    /// Arrow string, binary and list arrays address their bytes with 32-bit offsets. A block holding
+    /// more than that, or than the query's output_format_arrow_max_record_batch_size_bytes, which
+    /// the Arrow output format follows too, is converted into several chunks.
+    if (auto context = DB::CurrentThread::tryGetQueryContext())
+        settings.output_max_record_batch_bytes = context->getSettingsRef()[DB::Setting::output_format_arrow_max_record_batch_size_bytes];
 
-    DB::Columns columns;
-    columns.reserve(arguments.size());
+    DB::Columns chunk_columns;
+    chunk_columns.reserve(arguments.size());
     for (const auto & argument : arguments)
-        columns.push_back(argument.column);
-
+        chunk_columns.push_back(argument.column);
     std::vector<DB::Chunk> chunks;
-    chunks.emplace_back(std::move(columns), rows);
+    chunks.emplace_back(std::move(chunk_columns), rows);
 
     DB::CHColumnToArrowColumn converter(arguments, ARROW_FORMAT_NAME, settings);
     std::shared_ptr<arrow::Table> table;
     converter.chChunkToArrowTable(table, chunks, arguments.size());
 
     arrow::FieldVector fields;
-    arrow::ArrayVector arrays;
+    arrow::ChunkedArrayVector columns;
     fields.reserve(arguments.size());
-    arrays.reserve(arguments.size());
+    columns.reserve(arguments.size());
     for (int i = 0; i < table->num_columns(); ++i)
     {
-        /// One chunk went in, so every column is a single array.
-        chassert(table->column(i)->num_chunks() == 1);
         auto field = table->schema()->field(i);
-        auto array = table->column(i)->chunk(0);
+        auto column = table->column(i);
 
-        if (as_bytes[static_cast<size_t>(i)] && array->type_id() == arrow::Type::STRING)
+        if (as_bytes[static_cast<size_t>(i)] && field->type()->id() == arrow::Type::STRING)
         {
             /// String and binary arrays share one layout, so this is a zero-copy view.
-            auto view = array->View(arrow::binary());
+            auto view = column->View(arrow::binary());
             if (!view.ok())
                 throw DB::Exception(DB::ErrorCodes::CANNOT_CONVERT_TYPE,
-                    "Cannot view argument {} as Arrow binary: {}", i + 1, view.status().ToString());
-            array = std::move(view).ValueOrDie();
+                    "Python Arrow UDF '{}': cannot view argument {} as Arrow binary: {}",
+                    name, i + 1, view.status().ToString());
+            column = std::move(view).ValueOrDie();
             field = field->WithType(arrow::binary());
+        }
+        else if (containsUtf8(*field->type()))
+        {
+            /// An Arrow string array must hold valid UTF-8; pyarrow takes it for granted and fails
+            /// later, and further from the cause, on anything else. The per-row UDF rejects such a
+            /// value while converting it, too.
+            for (const auto & chunk : column->chunks())
+            {
+                if (!isValidUtf8(*chunk))
+                    throw DB::Exception(DB::ErrorCodes::CANNOT_CONVERT_TYPE,
+                        "Python Arrow UDF '{}': argument {} holds a string that is not valid UTF-8. Declare a String "
+                        "argument as bytes to receive it as pyarrow.binary()",
+                        name, i + 1);
+            }
         }
 
         fields.push_back(std::move(field));
-        arrays.push_back(std::move(array));
+        columns.push_back(std::move(column));
     }
 
-    return arrow::RecordBatch::Make(arrow::schema(std::move(fields)), static_cast<int64_t>(rows), std::move(arrays));
-}
-
-bool isInstance(const py::handle & object, PythonImportCacheItem & type)
-{
-    auto type_handle = type();
-    return type_handle.ptr() != nullptr && py::isinstance(object, type_handle);
+    return arrow::Table::Make(arrow::schema(std::move(fields)), std::move(columns), static_cast<int64_t>(rows));
 }
 
 uint64_t address(const void * pointer)
@@ -197,19 +307,30 @@ DB::ColumnPtr PythonArrowUDF::executeImpl(
     size_t rows = input_rows_count;
     if (null_handling == NullHandling::SKIP)
     {
-        for (const auto & column : full_columns)
+        for (size_t i = 0; i < argc; ++i)
         {
+            const auto & column = full_columns[i];
             const auto * nullable = typeid_cast<const DB::ColumnNullable *>(column.get());
-            if (!nullable)
+            /// A Variant or a Dynamic value can be NULL without the column being Nullable.
+            if (!nullable && !DB::canContainNull(*arguments[i].type))
                 continue;
 
             if (filter.empty())
                 filter.resize_fill(input_rows_count, 1);
 
-            const auto & null_map = nullable->getNullMapData();
-            for (size_t row = 0; row < input_rows_count; ++row)
-                if (null_map[row])
-                    filter[row] = 0;
+            if (nullable)
+            {
+                const auto & null_map = nullable->getNullMapData();
+                for (size_t row = 0; row < input_rows_count; ++row)
+                    if (null_map[row])
+                        filter[row] = 0;
+            }
+            else
+            {
+                for (size_t row = 0; row < input_rows_count; ++row)
+                    if (column->isNullAt(row))
+                        filter[row] = 0;
+            }
         }
 
         if (!filter.empty())
@@ -258,7 +379,7 @@ DB::ColumnPtr PythonArrowUDF::executeImpl(
         batch_columns.push_back(std::move(column));
     }
 
-    auto batch = argumentsToRecordBatch(batch_columns, rows, as_bytes);
+    auto batch = argumentsToTable(name, batch_columns, rows, as_bytes);
 
     std::optional<arrow::ArrayVector> result_chunks;
     {
@@ -279,24 +400,23 @@ DB::ColumnPtr PythonArrowUDF::executeImpl(
     return expanded;
 }
 
-std::optional<arrow::ArrayVector> PythonArrowUDF::callFunction(const std::shared_ptr<arrow::RecordBatch> & batch) const
+std::optional<arrow::ArrayVector> PythonArrowUDF::callFunction(const std::shared_ptr<arrow::Table> & batch) const
 {
     auto & pyarrow = PythonImporter::ImportCache().pyarrow;
 
     py::tuple columns;
     try
     {
-        ArrowArrayWrapper c_array;
-        ArrowSchemaWrapper c_schema;
-        auto status = arrow::ExportRecordBatch(*batch, &c_array.arrow_array, &c_schema.arrow_schema);
+        ArrowArrayStreamWrapper stream;
+        auto status = arrow::ExportRecordBatchReader(
+            std::make_shared<arrow::TableBatchReader>(batch), &stream.arrow_array_stream);
         if (!status.ok())
             throw DB::Exception(DB::ErrorCodes::CANNOT_CONVERT_TYPE,
                 "Python Arrow UDF '{}': cannot export the arguments to Arrow: {}", name, status.ToString());
 
-        /// _import_from_c moves both structs into pyarrow, which takes over releasing them.
-        auto record_batch = pyarrow.record_batch().attr("_import_from_c")(
-            address(&c_array.arrow_array), address(&c_schema.arrow_schema));
-        columns = py::tuple(pyarrow.table().attr("from_batches")(py::make_tuple(record_batch)).attr("columns"));
+        /// _import_from_c moves the stream into pyarrow, which takes over releasing it.
+        auto reader = pyarrow.record_batch_reader().attr("_import_from_c")(address(&stream.arrow_array_stream));
+        columns = py::tuple(reader.attr("read_all")().attr("columns"));
     }
     catch (py::error_already_set & e)
     {
@@ -348,7 +468,7 @@ py::list PythonArrowUDF::resultChunks(const py::object & result) const
     auto & pyarrow = PythonImporter::ImportCache().pyarrow;
 
     py::object value = result;
-    if (isInstance(value, pyarrow.table) || isInstance(value, pyarrow.record_batch))
+    if (isInstanceOfCached(value, pyarrow.table()) || isInstanceOfCached(value, pyarrow.record_batch()))
     {
         auto num_columns = value.attr("num_columns").cast<int64_t>();
         if (num_columns != 1)
@@ -359,10 +479,10 @@ py::list PythonArrowUDF::resultChunks(const py::object & result) const
         value = value.attr("column")(0);
     }
 
-    if (isInstance(value, pyarrow.ChunkedArray))
+    if (isInstanceOfCached(value, pyarrow.ChunkedArray()))
         return value.attr("chunks").cast<py::list>();
 
-    if (!isInstance(value, pyarrow.Array))
+    if (!isInstanceOfCached(value, pyarrow.Array()))
     {
         if (value.is_none())
             throw DB::Exception(
@@ -384,7 +504,7 @@ py::list PythonArrowUDF::resultChunks(const py::object & result) const
 
         /// pyarrow.array() answers some inputs, e.g. an Arrow-backed pandas Series, with a
         /// ChunkedArray.
-        if (isInstance(value, pyarrow.ChunkedArray))
+        if (isInstanceOfCached(value, pyarrow.ChunkedArray()))
             return value.attr("chunks").cast<py::list>();
     }
 

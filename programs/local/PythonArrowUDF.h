@@ -18,6 +18,8 @@ namespace CHDB
 /// Series, ...). The result is read as the ClickHouse type its Arrow type maps to and then cast
 /// to the declared return type, where a value that does not fit is an error (an integer out of
 /// range, a fraction for an integer type) but precision lost on the way to Float32 is not.
+/// A block holding more than an Arrow string array can address, or than the query's
+/// output_format_arrow_max_record_batch_size_bytes, arrives as ChunkedArrays of several chunks.
 ///
 /// Signature inspection, type inference and type validation are those of the row-at-a-time
 /// PythonScalarUDF; on_null and on_error keep their meaning at block granularity:
@@ -41,10 +43,10 @@ public:
         size_t input_rows_count) const override;
 
 private:
-    /// Calls the function on `batch` and returns the chunks of the array it produced, imported
-    /// into chDB's Arrow. Returns no chunks at all when on_error="ignore" swallowed an exception.
-    /// Needs the GIL.
-    std::optional<arrow::ArrayVector> callFunction(const std::shared_ptr<arrow::RecordBatch> & batch) const;
+    /// Calls the function on `batch`, one column per argument, and returns the chunks of the array
+    /// it produced, imported into chDB's Arrow. Returns no chunks at all when on_error="ignore"
+    /// swallowed an exception. Needs the GIL.
+    std::optional<arrow::ArrayVector> callFunction(const std::shared_ptr<arrow::Table> & batch) const;
 
     /// The chunks of the value the function returned, as a Python list of pyarrow.Array.
     py::list resultChunks(const py::object & result) const;
