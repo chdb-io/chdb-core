@@ -19,7 +19,6 @@
 #include <Parsers/ASTDropResourceQuery.h>
 #include <Parsers/ASTDropWorkloadQuery.h>
 #include <Parsers/ASTInsertQuery.h>
-#include <Parsers/ASTHypotheticalObjectQuery.h>
 #include <Parsers/ASTKillQueryQuery.h>
 #include <Parsers/ASTParallelWithQuery.h>
 #include <Parsers/ASTQueryWithOutput.h>
@@ -30,6 +29,7 @@
 #include <Parsers/ASTSystemQuery.h>
 #include <Parsers/ASTTransactionControl.h>
 #include <Parsers/ASTUseQuery.h>
+#include <Parsers/WhatIf/ASTHypotheticalObjectQuery.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Parsers/ASTRenameQuery.h>
 #include <Parsers/ASTExpressionList.h>

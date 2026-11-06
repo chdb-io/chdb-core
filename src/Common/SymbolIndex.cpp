@@ -823,7 +823,9 @@ int collectSymbols(DynamicLinkingProgramHeaderInfo * info, size_t, void * data_p
 {
     SymbolIndex::Data & data = *reinterpret_cast<SymbolIndex::Data *>(data_ptr);
 
-<<<<<<< ours
+    const size_t initial_symbol_count = data.symbols.size();
+    const size_t initial_object_count = data.objects.size();
+
     /// Must not escape: unwinding glibc's dl_iterate_phdr frame runs its cleanup through
     /// libgcc __gcc_personality_v0, which segfaults on a bundled LLVM libunwind context,
     /// leaving dl_load_write_lock held. Elf() mmaps a whole object, throwing when address
@@ -831,25 +833,19 @@ int collectSymbols(DynamicLinkingProgramHeaderInfo * info, size_t, void * data_p
     try
     {
         collectSymbolsFromProgramHeaders(info, data);
-        collectSymbolsFromELF(info, data);
+        if (!collectSymbolsFromELF(info, data))
+        {
+            /// Offsets of different objects overlap, and only offsets inside the main executable are published.
+            if (data.objects.size() > initial_object_count)
+                data.objects.back().symbols.assign(data.symbols.begin() + initial_symbol_count, data.symbols.end());
+            data.symbols.resize(initial_symbol_count);
+        }
     }
-    catch (...) // NOLINT(bugprone-empty-catch)
+    catch (...)
     {
-||||||| base
-    collectSymbolsFromProgramHeaders(info, data);
-    collectSymbolsFromELF(info, data);
-=======
-    const size_t initial_symbol_count = data.symbols.size();
-    const size_t initial_object_count = data.objects.size();
-
-    collectSymbolsFromProgramHeaders(info, data);
-    if (!collectSymbolsFromELF(info, data))
-    {
-        /// Offsets of different objects overlap, and only offsets inside the main executable are published.
-        if (data.objects.size() > initial_object_count)
-            data.objects.back().symbols.assign(data.symbols.begin() + initial_symbol_count, data.symbols.end());
+        /// chdb: Whether this object is the main executable is unknown here, and offsets of another
+        /// object would overlap those of the main executable, so publish none of its symbols.
         data.symbols.resize(initial_symbol_count);
->>>>>>> theirs
     }
 
     /* Continue iterations */
