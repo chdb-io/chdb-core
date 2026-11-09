@@ -79,6 +79,24 @@ class TestIssue323(unittest.TestCase):
         self.assertEqual(ret["t"].tolist(), ["Nullable(String)"] * 2)
         self.assertEqual(ret["v"].tolist(), ["0.5", "1.25"])
 
+    def test_zero_with_large_exponent(self):
+        df = pd.DataFrame({"a": [Decimal("1.5"), Decimal("0E+76"), Decimal("0E-80")]})
+        ret = _query("SELECT toTypeName(a) AS t, toString(a) AS v FROM Python(df)", df)
+        self.assertEqual(ret["t"].tolist()[0], "Nullable(Decimal(2, 1))")
+        self.assertEqual(ret["v"].tolist(), ["1.5", "0", "0"])
+
+    def test_integers_sampled_before_decimals_do_not_decide_the_type(self):
+        df = pd.DataFrame({"a": pd.Series([1, 2**63, Decimal("0.5")], dtype=object)})
+        ret = _query("SELECT toTypeName(a) AS t, toString(a) AS v FROM Python(df)", df)
+        self.assertEqual(ret["t"].tolist()[0], "Nullable(Decimal(20, 1))")
+        self.assertEqual(ret["v"].tolist(), ["1", str(2**63), "0.5"])
+
+    def test_every_nan_spelling_is_missing(self):
+        df = pd.DataFrame({"a": [Decimal("1.5"), Decimal("NaN123"), Decimal("sNaN"), Decimal("-NaN")]})
+        ret = _query("SELECT toTypeName(a) AS t, a IS NULL AS n FROM Python(df)", df)
+        self.assertEqual(ret["t"].tolist()[0], "Nullable(Decimal(2, 1))")
+        self.assertEqual(ret["n"].tolist(), [0, 1, 1, 1])
+
     def test_infinity_keeps_string_fallback(self):
         df = pd.DataFrame({"a": [Decimal("1.5"), Decimal("Infinity")]})
         ret = _query("SELECT toTypeName(a) AS t FROM Python(df) LIMIT 1", df)

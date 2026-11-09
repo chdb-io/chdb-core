@@ -483,15 +483,19 @@ void PandasScan::innerScanObject(
                         "Cannot read a Python {} into a Decimal column: the column changed after its type was inferred",
                         py::str(py::type::handle_of(handle).attr("__name__")).cast<std::string>());
 
-                /// str() of a decimal.Decimal can use exponent notation (1E+2), which ClickHouse reads as well.
                 auto text = py::str(handle).cast<std::string>();
-                /// pandas treats Decimal('NaN') as a missing value.
-                if (text.ends_with("NaN"))
+                /// pandas treats Decimal('NaN') as a missing value; str() spells it NaN, -NaN, sNaN or NaN<payload>.
+                if (text.find("NaN") != std::string::npos)
                 {
                     null_map.push_back(1);
                     data_column->insertDefault();
                     continue;
                 }
+
+                /// str() switches to exponent notation for values such as 1E+2; ClickHouse cannot read a zero
+                /// with a large exponent (0E+76), so such values are written out in fixed-point notation.
+                if (text.find('E') != std::string::npos)
+                    text = py::str(handle.attr("__format__")("f")).cast<std::string>();
 
                 ReadBufferFromString buf(text);
                 serialization->deserializeWholeText(*data_column, buf, format_settings);

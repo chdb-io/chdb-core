@@ -60,14 +60,6 @@ static bool mergeAnalyzedTypes(DataTypePtr & current, const DataTypePtr & next)
     if (current_is_bool && next_is_bool)
         return true;
 
-    auto is_integer = [](TypeIndex idx) { return idx == TypeIndex::Int32 || idx == TypeIndex::Int64 || idx == TypeIndex::UInt64; };
-    if (isDecimal(current) || isDecimal(next))
-    {
-        if (isDecimal(next) && (isDecimal(current) || is_integer(current_idx)))
-            current = next;
-        return isDecimal(current) && (isDecimal(next) || is_integer(next_idx));
-    }
-
     if (current_idx == next_idx)
         return true;
 
@@ -129,7 +121,7 @@ static DataTypePtr getBestIntegerType(PyObject * obj)
 }
 
 /// Reads the digit counts from the str() of a finite decimal.Decimal, such as "-12.50", "0.00" or "1.2E-7".
-/// Returns false for "Infinity", "-Infinity", and exponents too large to matter for a ClickHouse Decimal.
+/// Returns false for "Infinity", "-Infinity", and exponents too large for any ClickHouse Decimal.
 static bool getDecimalDigits(std::string_view text, Int64 & integer_digits, Int64 & scale)
 {
 	if (!text.empty() && text[0] == '-')
@@ -161,10 +153,17 @@ static bool getDecimalDigits(std::string_view text, Int64 & integer_digits, Int6
 			break;
 	}
 
+	/// A zero, whatever its exponent (0E+76, 0E-80), fits every Decimal type.
+	if (leading_zeros == coefficient_size)
+	{
+		integer_digits = 0;
+		scale = 0;
+		return true;
+	}
+
 	exponent -= fraction_size;
-	Int64 significant_digits = std::max<Int64>(coefficient_size - leading_zeros, 1);
 	scale = std::max<Int64>(-exponent, 0);
-	integer_digits = std::max<Int64>(significant_digits + exponent, 0);
+	integer_digits = std::max<Int64>(coefficient_size - leading_zeros + exponent, 0);
 	return true;
 }
 
@@ -203,8 +202,8 @@ static DataTypePtr getExactDecimalType(py::object column)
 		case PythonObjectType::Decimal:
 			{
 				auto text = py::str(obj).cast<std::string>();
-				/// pandas treats Decimal('NaN') as a missing value.
-				if (text.ends_with("NaN"))
+				/// pandas treats Decimal('NaN') as a missing value; str() spells it NaN, -NaN, sNaN or NaN<payload>.
+				if (text.find("NaN") != std::string::npos)
 					continue;
 				Int64 value_integer_digits = 0;
 				Int64 value_scale = 0;
@@ -318,8 +317,8 @@ DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
 	case PythonObjectType::None:
 		return {};
 	case PythonObjectType::Decimal:
-		/// pandas treats Decimal('NaN') as a missing value. The scale is settled later from every row.
-		if (obj.attr("is_nan")().cast<bool>())
+		/// pandas treats Decimal('NaN') as a missing value. The type is settled later from every row.
+		if (py::str(obj).cast<std::string>().find("NaN") != std::string::npos)
 			return {};
 		return createDecimal<DataTypeDecimal>(1, 0);
 	case PythonObjectType::Tuple:
@@ -368,6 +367,10 @@ DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert, 
 		DataTypePtr next_type = getItemType(obj, can_convert);
 
 		if (!can_convert)
+			return next_type;
+
+		/// Which other values a Decimal column may hold is settled by getExactDecimalType over every row.
+		if (next_type && isDecimal(next_type))
 			return next_type;
 
 		if (!mergeAnalyzedTypes(current_type, next_type))
