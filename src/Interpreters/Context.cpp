@@ -1717,8 +1717,7 @@ ContextData::ContextData(const ContextData &o) :
     remote_write_query_throttler(o.remote_write_query_throttler),
     local_read_query_throttler(o.local_read_query_throttler),
     local_write_query_throttler(o.local_write_query_throttler),
-    backups_query_throttler(o.backups_query_throttler),
-    chdb_s3_credentials(o.chdb_s3_credentials)
+    backups_query_throttler(o.backups_query_throttler)
 {
     std::lock_guard lock(o.table_function_results_mutex);
     table_function_results = o.table_function_results;

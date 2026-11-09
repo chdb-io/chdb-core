@@ -11,6 +11,8 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <vector>
 
 namespace DB
 {
@@ -85,23 +87,24 @@ public:
     void analyzeQuery(
         const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out);
 
-    /// chdb_set(): changes one setting of this connection the way `SET key = value` run on it
-    /// would, checked against the same constraints; a null value resets it to the default, like
-    /// `SET key = DEFAULT`. The keys s3_access_key_id, s3_secret_access_key, s3_session_token and
-    /// s3_region are not settings: they are kept in the session context, where only the S3 table
-    /// functions and engines read them (see Context::ChdbS3Credentials). Throws on an unknown key
-    /// or an invalid value, leaving the connection as it was.
+    /// chdb_set(): does what `SET key = value` run on this connection would. A setting is checked
+    /// against the same constraints, and a null value resets it to the default. A `param_<name>`
+    /// key stores query parameter <name> on the connection, for every later query to use as
+    /// {name:Type}; a null value removes it. Throws on an unknown setting or an invalid value,
+    /// leaving the connection as it was.
     void setConnectionSetting(const String & key, const String * value);
 
     /// chdb_get(): the current value of `key` on this connection, as text: what getSetting(key)
-    /// returns in SQL. False when `key` names neither a setting nor an S3 credential.
+    /// returns in SQL, or the value of query parameter <name> for `param_<name>`. False when the
+    /// setting does not exist or the parameter is not set.
     bool getConnectionSetting(const String & key, String & value) const;
 
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
-    /// Set named query parameters ({name:Type} placeholders) on the underlying client context.
-    /// Used by both the Python binding (params=...) and the C ABI (chdb_query_with_params).
+    /// Set named query parameters ({name:Type} placeholders) for the next query, on top of the
+    /// connection's own; clearQueryParameters() restores what they replaced. Used by both the
+    /// Python binding (params=...) and the C ABI (chdb_query_with_params).
     void setQueryParameters(const NameToNameMap & params);
     void clearQueryParameters();
 
@@ -156,6 +159,9 @@ private:
     /// Connection settings snapshot taken before applying the streaming
     /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().
     std::unique_ptr<Settings> insert_stream_saved_settings;
+    /// What setQueryParameters() replaced: each name with its previous connection-level value,
+    /// or nullopt if the connection had none.
+    std::vector<std::pair<String, std::optional<String>>> overridden_query_parameters;
     mutable std::mutex client_mutex;
 };
 

@@ -300,18 +300,12 @@ size_t ChdbClient::getStorageBytesRead() const
 
 namespace
 {
-/// The chdb_set() keys that name a field of Context::ChdbS3Credentials, or null.
-String * findS3CredentialField(Context::ChdbS3Credentials & credentials, std::string_view key)
+/// `SET param_<name> = ...` is how ClickHouse stores a query parameter on the session; chdb_set()
+/// and chdb_get() take the same spelling. Returns <name>, or an empty view for a setting.
+std::string_view connectionParameterName(std::string_view key)
 {
-    if (key == "s3_access_key_id")
-        return &credentials.access_key_id;
-    if (key == "s3_secret_access_key")
-        return &credentials.secret_access_key;
-    if (key == "s3_session_token")
-        return &credentials.session_token;
-    if (key == "s3_region")
-        return &credentials.region;
-    return nullptr;
+    constexpr std::string_view prefix = "param_";
+    return key.starts_with(prefix) ? key.substr(prefix.size()) : std::string_view{};
 }
 }
 
@@ -323,11 +317,13 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
     if (streaming_insert_context)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot change a setting while a streaming insert is active on this connection");
 
-    auto credentials = client_context->getChdbS3Credentials();
-    if (String * field = findS3CredentialField(credentials, key))
+    if (auto name = connectionParameterName(key); !name.empty())
     {
-        *field = value ? *value : String{};
-        client_context->setChdbS3Credentials(credentials);
+        if (value)
+            query_parameters.insert_or_assign(String(name), *value);
+        else
+            query_parameters.erase(String(name));
+        client_context->setQueryParameters(query_parameters);
         return;
     }
 
@@ -356,10 +352,12 @@ bool ChdbClient::getConnectionSetting(const String & key, String & value) const
 {
     std::lock_guard<std::mutex> lock(client_mutex);
 
-    auto credentials = client_context->getChdbS3Credentials();
-    if (const String * field = findS3CredentialField(credentials, key))
+    if (auto name = connectionParameterName(key); !name.empty())
     {
-        value = *field;
+        auto it = query_parameters.find(String(name));
+        if (it == query_parameters.end())
+            return false;
+        value = it->second;
         return true;
     }
 
@@ -392,7 +390,16 @@ void ChdbClient::takeResultSchema(CHDB::QueryResult & res)
 void ChdbClient::setQueryParameters(const NameToNameMap & params)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
-    query_parameters = params;
+    /// Layered over the connection's own parameters (SET param_x, chdb_set "param_x"): remember
+    /// what each name held so clearQueryParameters() can put the connection back as it was.
+    overridden_query_parameters.clear();
+    for (const auto & [name, value] : params)
+    {
+        auto it = query_parameters.find(name);
+        overridden_query_parameters.emplace_back(
+            name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second));
+        query_parameters.insert_or_assign(name, value);
+    }
     if (client_context)
         client_context->setQueryParameters(query_parameters);
 }
@@ -400,7 +407,14 @@ void ChdbClient::setQueryParameters(const NameToNameMap & params)
 void ChdbClient::clearQueryParameters()
 {
     std::lock_guard<std::mutex> lock(client_mutex);
-    query_parameters.clear();
+    for (const auto & [name, previous] : overridden_query_parameters)
+    {
+        if (previous)
+            query_parameters.insert_or_assign(name, *previous);
+        else
+            query_parameters.erase(name);
+    }
+    overridden_query_parameters.clear();
     if (client_context)
         client_context->setQueryParameters(query_parameters);
 }

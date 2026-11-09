@@ -3,8 +3,9 @@
  *
  * Connection-level settings through the C API (chdb-io/chdb-core#17):
  * chdb_set / chdb_get change and read a setting of an open connection the way
- * `SET key = value` would, and carry S3 credentials that the s3() table
- * function signs with, so they never have to be pasted into SQL.
+ * `SET key = value` would, and store values a host wants every later query to
+ * use (credentials among them) as connection-level query parameters, so they
+ * never have to be pasted into SQL.
  *
  * Covers:
  *   - chdb_get of a default and of a value given at connect time
@@ -19,10 +20,14 @@
  *     and an active streaming insert all refused, leaving the value as it was
  *   - a change made between fetches of a streaming query surviving the stream
  *   - the chdb_get pointer outliving the connection it was read from
- *   - S3 credentials: readable through chdb_get, absent from system.settings,
- *     used to sign s3() requests (checked against a local mock endpoint that
- *     records each request's Authorization header), overridden by credentials
- *     written in the query, isolated per connection, and cleared by NULL
+ *   - param_<name> keys: a connection-level query parameter stored once and
+ *     used as {name:Type} by every later query, shared with SET param_,
+ *     isolated per connection, overridden for one call by
+ *     chdb_query_with_params() and restored after it, removed by NULL, and
+ *     absent from system.settings
+ *   - the issue's case: S3 credentials stored that way and used by s3() on
+ *     every query, checked against a local mock endpoint that records each
+ *     request's Authorization header, with the secret never sent or printed
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbConnSetGetTest.c -I./programs/local -L. -lchdb -lpthread -o examples/chdbConnSetGetTest
@@ -121,14 +126,6 @@ static int mock_saw(const char * needle)
     int found = strstr(g_mock_headers, needle) != NULL;
     pthread_mutex_unlock(&g_mock_mutex);
     return found;
-}
-
-static int mock_request_count(void)
-{
-    pthread_mutex_lock(&g_mock_mutex);
-    int n = g_mock_requests;
-    pthread_mutex_unlock(&g_mock_mutex);
-    return n;
 }
 
 static void * mock_serve(void * arg)
@@ -373,17 +370,19 @@ static void test_settings(void)
     chdb_close_conn(a);
 }
 
+/// Reads `object` from the mock with s3(), passing the credentials as the connection's
+/// {s3_key:String} / {s3_secret:String} query parameters.
 static void s3_query(chdb_connection conn, const char * object, char * buf, size_t buf_size)
 {
     char sql[512];
     snprintf(sql, sizeof(sql),
-             "SELECT * FROM s3('http://127.0.0.1:%d/bucket/%s.csv', 'CSV', 'a UInt32') "
+             "SELECT * FROM s3('http://127.0.0.1:%d/bucket/%s.csv', {s3_key:String}, {s3_secret:String}, 'CSV', 'a UInt32') "
              "SETTINGS s3_max_single_read_retries = 1, s3_retry_attempts = 0",
              g_mock_port, object);
     query_into(conn, sql, "CSV", buf, buf_size);
 }
 
-static void test_s3_credentials(void)
+static void test_connection_parameters(void)
 {
     char buf[1024];
 
@@ -396,96 +395,94 @@ static void test_s3_credentials(void)
     char * argv[] = {"clickhouse"};
     chdb_connection * a = chdb_connect(1, argv);
     chdb_connection * b = chdb_connect(1, argv);
-    CHECK(a && b, "two connections for the S3 tests");
+    CHECK(a && b, "two connections for the parameter tests");
     if (!a || !b)
         return;
 
-    /// Unset keys read as empty.
-    CHECK(get_eq(*a, "s3_access_key_id", ""), "unset s3_access_key_id reads as empty");
-    CHECK(get_eq(*a, "s3_secret_access_key", ""), "unset s3_secret_access_key reads as empty");
-    CHECK(get_eq(*a, "s3_session_token", ""), "unset s3_session_token reads as empty");
-    CHECK(get_eq(*a, "s3_region", ""), "unset s3_region reads as empty");
+    /// Any value, any name: stored once, used by every later query.
+    CHECK(chdb_get(*a, "param_tenant") == NULL, "A: unset parameter reads as NULL");
+    CHECK(chdb_set(*a, "param_tenant", "acme") == CHDBSuccess, "A: set param_tenant");
+    CHECK(get_eq(*a, "param_tenant", "acme"), "A: chdb_get reads it back");
+    query_into(*a, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
+    CHECK(strcmp(buf, "\"acme\"") == 0, "A: query uses {tenant:String}");
+    query_into(*a, "SELECT concat({tenant:String}, '-', toString({tenant:String} = 'acme'))", "TSVRaw", buf, sizeof(buf));
+    CHECK(strcmp(buf, "acme-1") == 0, "A: and again in a later query");
+    CHECK(chdb_set(*a, "param_limit", "3") == CHDBSuccess, "A: set param_limit");
+    query_into(*a, "SELECT count() FROM numbers({limit:UInt64})", "CSV", buf, sizeof(buf));
+    CHECK(strcmp(buf, "3") == 0, "A: parameter typed as UInt64 where the query needs it");
 
-    CHECK(chdb_set(*a, "s3_access_key_id", "AKIACONNECTIONA") == CHDBSuccess, "A: set access key id");
-    CHECK(chdb_set(*a, "s3_secret_access_key", "secretOfConnectionA") == CHDBSuccess, "A: set secret");
-    CHECK(chdb_set(*a, "s3_session_token", "tokenOfConnectionA") == CHDBSuccess, "A: set session token");
-    CHECK(chdb_set(*a, "s3_region", "eu-west-3") == CHDBSuccess, "A: set region");
-    CHECK(get_eq(*a, "s3_access_key_id", "AKIACONNECTIONA"), "A: chdb_get access key id");
-    CHECK(get_eq(*a, "s3_secret_access_key", "secretOfConnectionA"), "A: chdb_get secret");
-    CHECK(get_eq(*a, "s3_session_token", "tokenOfConnectionA"), "A: chdb_get session token");
-    CHECK(get_eq(*a, "s3_region", "eu-west-3"), "A: chdb_get region");
-    CHECK(get_eq(*b, "s3_access_key_id", ""), "B: credentials of A not visible");
+    /// Not a setting: system.settings does not list it.
+    query_into(*a, "SELECT count() FROM system.settings WHERE name LIKE '%tenant%' OR value = 'acme'", "CSV", buf, sizeof(buf));
+    CHECK(strcmp(buf, "0") == 0, "A: parameter absent from system.settings");
 
-    /// Not settings: SQL cannot see them.
-    query_into(*a, "SELECT count() FROM system.settings WHERE name LIKE 's3_access_key%' OR name LIKE 's3_secret%' "
-                   "OR value LIKE '%ConnectionA%' OR value LIKE '%CONNECTIONA%'", "CSV", buf, sizeof(buf));
-    CHECK(strcmp(buf, "0") == 0, "A: credentials absent from system.settings");
-    query_into(*a, "SELECT getSetting('s3_access_key_id')", "CSV", buf, sizeof(buf));
-    CHECK(is_error(buf), "A: getSetting cannot read a credential");
+    /// SET param_x and chdb_set "param_x" are the same store.
+    query_into(*a, "SET param_region = 'eu-west-3'", "CSV", buf, sizeof(buf));
+    CHECK(!is_error(buf), "A: SET param_region accepted");
+    CHECK(get_eq(*a, "param_region", "eu-west-3"), "A: chdb_get sees a SET param_");
 
-    /// A bare URL is signed with the connection's credentials, and the read succeeds.
-    mock_reset();
-    s3_query(*a, "data", buf, sizeof(buf));
-    CHECK(strcmp(buf, "7") == 0, "A: s3() read through the mock returns the object");
-    if (strcmp(buf, "7") != 0)
-        fprintf(stderr, "    got: %s\n", buf);
-    CHECK(mock_request_count() > 0, "A: the mock was reached");
-    CHECK(mock_saw("Credential=AKIACONNECTIONA/"), "A: request signed with the connection's access key");
-    CHECK(mock_saw("/eu-west-3/s3/aws4_request"), "A: signature scoped to the connection's region");
-    CHECK(mock_saw("tokenOfConnectionA"), "A: session token sent");
-    CHECK(!mock_saw("secretOfConnectionA"), "A: the secret itself is never sent");
+    /// Isolation.
+    CHECK(chdb_get(*b, "param_tenant") == NULL, "B: A's parameter not visible");
+    query_into(*b, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
+    CHECK(is_error(buf), "B: query using A's parameter fails");
 
-    /// The error path does not print credentials either.
-    query_into(*a, "SELECT * FROM s3('http://127.0.0.1:1/bucket/x.csv', 'CSV', 'a UInt32') "
+    /// chdb_query_with_params overrides for one query, then the connection's value is back,
+    /// and a parameter only the call supplied does not stay behind.
+    const char * pnames[] = {"tenant", "extra"};
+    const char * pvalues[] = {"other", "x"};
+    chdb_result * r = chdb_query_with_params(*a, "SELECT {tenant:String}, {extra:String}", "CSV", pnames, pvalues, 2);
+    CHECK(r && !chdb_result_error(r) && chdb_result_length(r) == 12 && memcmp(chdb_result_buffer(r), "\"other\",\"x\"\n", 12) == 0,
+          "A: with_params overrides the connection's parameter for its query");
+    chdb_destroy_query_result(r);
+    CHECK(get_eq(*a, "param_tenant", "acme"), "A: connection value restored after with_params");
+    CHECK(chdb_get(*a, "param_extra") == NULL, "A: per-query parameter does not stay behind");
+    CHECK(get_eq(*a, "param_region", "eu-west-3"), "A: SET param_ survives a with_params call");
+    query_into(*a, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
+    CHECK(strcmp(buf, "\"acme\"") == 0, "A: next plain query sees the connection value");
+
+    /// NULL removes.
+    CHECK(chdb_set(*a, "param_tenant", NULL) == CHDBSuccess, "A: remove param_tenant");
+    CHECK(chdb_get(*a, "param_tenant") == NULL, "A: removed parameter reads as NULL");
+    query_into(*a, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
+    CHECK(is_error(buf), "A: query using a removed parameter fails");
+
+    /// The issue's case: S3 credentials set once, used by s3() on every query, never in the SQL.
+    CHECK(chdb_set(*a, "param_s3_key", "AKIACONNECTIONA") == CHDBSuccess, "A: set param_s3_key");
+    CHECK(chdb_set(*a, "param_s3_secret", "secretOfConnectionA") == CHDBSuccess, "A: set param_s3_secret");
+    for (int i = 0; i < 2; ++i)
+    {
+        mock_reset();
+        s3_query(*a, i == 0 ? "first" : "second", buf, sizeof(buf));
+        CHECK(strcmp(buf, "7") == 0, "A: s3() read through the mock returns the object");
+        if (strcmp(buf, "7") != 0)
+            fprintf(stderr, "    got: %s\n", buf);
+        CHECK(mock_saw("Credential=AKIACONNECTIONA/"), "A: request signed with the stored key");
+        CHECK(!mock_saw("secretOfConnectionA"), "A: the secret itself is never sent");
+    }
+
+    /// An error does not print the stored secret.
+    query_into(*a, "SELECT * FROM s3('http://127.0.0.1:1/bucket/x.csv', {s3_key:String}, {s3_secret:String}, 'CSV', 'a UInt32') "
                    "SETTINGS s3_max_single_read_retries = 0, s3_retry_attempts = 0", "CSV", buf, sizeof(buf));
     CHECK(is_error(buf), "A: unreachable endpoint fails");
-    CHECK(!strstr(buf, "secretOfConnectionA") && !strstr(buf, "tokenOfConnectionA"), "A: error message carries no secret");
+    CHECK(!strstr(buf, "secretOfConnectionA"), "A: error message carries no secret");
 
-    /// Credentials in the query win.
-    mock_reset();
-    char sql[512];
-    snprintf(sql, sizeof(sql),
-             "SELECT * FROM s3('http://127.0.0.1:%d/bucket/inline.csv', 'AKIAINLINEKEY', 'inlineSecret', 'CSV', 'a UInt32')",
-             g_mock_port);
-    query_into(*a, sql, "CSV", buf, sizeof(buf));
-    CHECK(strcmp(buf, "7") == 0, "A: s3() with inline credentials reads");
-    CHECK(mock_saw("Credential=AKIAINLINEKEY/"), "A: inline key used");
-    CHECK(!mock_saw("Credential=AKIACONNECTIONA/"), "A: connection key not used when the query has its own");
-    CHECK(!mock_saw("tokenOfConnectionA"), "A: connection token not paired with the query's keys");
-
-    /// Another connection does not borrow them.
-    mock_reset();
-    s3_query(*b, "other", buf, sizeof(buf));
-    CHECK(mock_request_count() > 0, "B: the mock was reached");
-    CHECK(!mock_saw("AKIACONNECTIONA"), "B: not signed with A's key");
-    CHECK(!mock_saw("tokenOfConnectionA"), "B: A's token not sent");
-
-    /// B sets its own.
-    CHECK(chdb_set(*b, "s3_access_key_id", "AKIACONNECTIONB") == CHDBSuccess, "B: set its own key");
-    CHECK(chdb_set(*b, "s3_secret_access_key", "secretOfConnectionB") == CHDBSuccess, "B: set its own secret");
+    /// B has none and cannot borrow A's; once it sets its own, each signs with its own.
+    s3_query(*b, "b", buf, sizeof(buf));
+    CHECK(is_error(buf), "B: s3() with unset parameters fails");
+    CHECK(chdb_set(*b, "param_s3_key", "AKIACONNECTIONB") == CHDBSuccess, "B: set its own key");
+    CHECK(chdb_set(*b, "param_s3_secret", "secretOfConnectionB") == CHDBSuccess, "B: set its own secret");
     mock_reset();
     s3_query(*b, "b", buf, sizeof(buf));
     CHECK(strcmp(buf, "7") == 0, "B: read with its own credentials");
-    CHECK(mock_saw("Credential=AKIACONNECTIONB/"), "B: signed with B's key");
+    CHECK(mock_saw("Credential=AKIACONNECTIONB/") && !mock_saw("AKIACONNECTIONA"), "B: signed with B's key only");
     mock_reset();
     s3_query(*a, "a_again", buf, sizeof(buf));
-    CHECK(mock_saw("Credential=AKIACONNECTIONA/"), "A: still signed with A's key after B set its own");
+    CHECK(mock_saw("Credential=AKIACONNECTIONA/"), "A: still signed with A's key");
 
-    /// Changing the key between queries takes effect on the next one.
-    CHECK(chdb_set(*a, "s3_access_key_id", "AKIAROTATEDKEY") == CHDBSuccess, "A: rotate key");
+    /// Rotating the value takes effect on the next query.
+    CHECK(chdb_set(*a, "param_s3_key", "AKIAROTATEDKEY") == CHDBSuccess, "A: rotate key");
     mock_reset();
     s3_query(*a, "rotated", buf, sizeof(buf));
     CHECK(mock_saw("Credential=AKIAROTATEDKEY/"), "A: next query signs with the rotated key");
-
-    /// NULL clears.
-    CHECK(chdb_set(*a, "s3_access_key_id", NULL) == CHDBSuccess, "A: clear key");
-    CHECK(chdb_set(*a, "s3_secret_access_key", NULL) == CHDBSuccess, "A: clear secret");
-    CHECK(chdb_set(*a, "s3_session_token", NULL) == CHDBSuccess, "A: clear token");
-    CHECK(get_eq(*a, "s3_access_key_id", ""), "A: cleared key reads as empty");
-    mock_reset();
-    s3_query(*a, "cleared", buf, sizeof(buf));
-    CHECK(mock_request_count() > 0, "A: the mock was reached after clearing");
-    CHECK(!mock_saw("AKIAROTATEDKEY") && !mock_saw("AKIACONNECTIONA"), "A: no longer signed with a cleared key");
 
     chdb_close_conn(b);
     chdb_close_conn(a);
@@ -502,7 +499,7 @@ int main(void)
     unsetenv("AWS_SESSION_TOKEN");
 
     test_settings();
-    test_s3_credentials();
+    test_connection_parameters();
 
     if (g_failed)
     {

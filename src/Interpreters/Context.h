@@ -850,21 +850,6 @@ protected:
     /// Python headers; null shared_ptr destruction never dereferences the pointed-to type.
     bool is_json_supported = true;
     std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
-
-public:
-    /// chdb_spec: S3 credentials a chDB connection set with chdb_set(). They are not settings, so
-    /// they never appear in system.settings, the query log or an error message, and SQL cannot
-    /// read them back. Query contexts copy them from the session context like everything else.
-    struct ChdbS3Credentials
-    {
-        String access_key_id;
-        String secret_access_key;
-        String session_token;
-        String region;
-    };
-
-protected:
-    ChdbS3Credentials chdb_s3_credentials;
 };
 
 /** A set of known objects that can be used in the query.
@@ -1007,9 +992,6 @@ public:
     /// Global application configuration settings.
     void setConfig(const ConfigurationPtr & config);
     const Poco::Util::AbstractConfiguration & getConfigRef() const;
-    const ChdbS3Credentials & getChdbS3Credentials() const { return chdb_s3_credentials; }
-    void setChdbS3Credentials(const ChdbS3Credentials & credentials) { chdb_s3_credentials = credentials; }
-
 #if defined(USE_PYTHON) && USE_PYTHON
     bool isJSONSupported() const { return is_json_supported; }
     void setJSONSupport(bool support) { is_json_supported = support; }

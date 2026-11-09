@@ -1148,58 +1148,58 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
 //===--------------------------------------------------------------------===//
 
 /**
- * Changes a setting of an open connection.
+ * Changes a setting, or stores a variable, on an open connection.
  *
- * key is a ClickHouse setting (max_threads, s3_max_connections,
- * input_format_parquet_*, ...) and value its text form. The effect is that of
- * running `SET key = value` on the connection, without writing SQL: the value
- * is checked against the same constraints (a --readonly=1 connection refuses
- * every change), it lasts until the connection closes or the setting is set
- * again, it applies to every later query on this connection only, and a
- * query's own SETTINGS clause still overrides it for that query. A NULL value
- * resets the setting to its default, like `SET key = DEFAULT`.
+ * Does what `SET key = value` run on the connection would, without writing
+ * SQL. The change lasts until the connection closes or the key is set again,
+ * and no other connection sees it.
  *
- * Four keys are not ClickHouse settings but S3 credentials of the connection:
+ * A key naming a ClickHouse setting (max_threads, s3_max_connections,
+ * input_format_parquet_*, ...) changes that setting. The value is checked
+ * against the same constraints as SET, so a --readonly=1 connection refuses
+ * every change, and a query's own SETTINGS clause still overrides it for that
+ * query. A NULL value resets the setting to its default.
  *
- *   s3_access_key_id, s3_secret_access_key, s3_session_token, s3_region
+ * A key of the form param_<name> stores <name> as a query parameter of the
+ * connection, as `SET param_<name> = value` does. Every later query on the
+ * connection can use it as {<name>:Type}, anywhere a query parameter is
+ * allowed, and the parameters of chdb_query_with_params() override it for
+ * their query only. A NULL value removes it. This is how to hand the engine a
+ * value once and reuse it, e.g. credentials:
  *
- * The s3() family of table functions and the S3 table engine sign their
- * requests with them when given a bare URL, so credentials need not be pasted
- * into the SQL. Credentials written in the query itself still take precedence,
- * and the connection's take precedence over the server <s3> configuration and
- * the environment. They are kept apart from the settings, so they do not show
- * in system.settings, the query log or error messages, and no SQL can read
- * them back. A table created with ENGINE = S3 signs with the credentials of
- * the connection that created or attached it; they are not stored with the
- * table. A NULL value clears the key.
+ *   chdb_set(conn, "param_s3_key", "AKIAIOSFODNN7EXAMPLE");
+ *   chdb_set(conn, "param_s3_secret", "wJalrXUtnFEMI...");
+ *   chdb_query(conn, "SELECT * FROM s3('https://bucket.s3.amazonaws.com/f.parquet',"
+ *                    " {s3_key:String}, {s3_secret:String})", "Arrow");
+ *
+ * The values are substituted into the parsed query, not into its text, so
+ * they never appear in the SQL the host submits or logs.
  *
  * Fails while a streaming insert is active on the connection.
  *
  * @param conn Connection to change
- * @param key Null-terminated setting name
- * @param value Null-terminated value, or NULL to reset the setting
+ * @param key Null-terminated setting name, or param_<name>
+ * @param value Null-terminated value, or NULL to reset or remove
  * @return CHDBSuccess, or CHDBError if conn or key is NULL, the connection is
- *         closed, key names neither a setting nor one of the keys above, or
- *         the value is invalid or not allowed -- the connection is then left
- *         as it was
+ *         closed, key names no setting, or the value is invalid or not
+ *         allowed -- the connection is then left as it was
  */
 CHDB_EXPORT chdb_state chdb_set(chdb_connection conn, const char * key, const char * value);
 
 /**
- * Gets the current value of a setting of an open connection: the value
- * chdb_set(), a SET statement or a connect argument gave it, or else its
- * default, as text: the value getSetting(key) returns in SQL (so max_threads
- * reads "8" where system.settings shows "auto(8)"). Also answers the S3
- * credential keys chdb_set() accepts, with "" when the key is unset on this
- * connection. Only what was set on the connection is reported: credentials
- * the S3 functions would fall back to -- the server <s3> configuration, the
- * environment, an instance role -- are not settings and are never returned.
+ * Gets the current value of a setting, or of a variable stored with
+ * chdb_set(), on an open connection.
+ *
+ * For a setting: the value chdb_set(), a SET statement or a connect argument
+ * gave it, or else its default, as text -- what getSetting(key) returns in
+ * SQL (so max_threads reads "8" where system.settings shows "auto(8)").
+ * For param_<name>: the value of that query parameter, however it was set.
  *
  * @param conn Connection to read
- * @param key Null-terminated setting name
+ * @param key Null-terminated setting name, or param_<name>
  * @return Null-terminated value, valid until the next chdb_get() on the same
- *         thread; NULL if conn or key is NULL, the connection is closed, or
- *         key names neither a setting nor an S3 credential key
+ *         thread; NULL if conn or key is NULL, the connection is closed, key
+ *         names no setting, or the parameter is not set
  */
 CHDB_EXPORT const char * chdb_get(chdb_connection conn, const char * key);
 

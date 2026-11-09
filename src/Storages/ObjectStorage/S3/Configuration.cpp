@@ -54,7 +54,6 @@ namespace S3AuthSetting
     extern const S3AuthSettingsString access_key_id;
     extern const S3AuthSettingsUInt64 expiration_window_seconds;
     extern const S3AuthSettingsBool no_sign_request;
-    extern const S3AuthSettingsString region;
     extern const S3AuthSettingsString secret_access_key;
     extern const S3AuthSettingsString session_token;
     extern const S3AuthSettingsBool use_environment_credentials;
@@ -781,17 +780,6 @@ void S3StorageParsedArguments::fromAST(ASTs & args, ContextPtr context, bool wit
         context->getSettingsRef(),
         /* if_changed */ true,
         context->getSettingsRef()[Setting::s3_validate_request_settings]);
-
-    /// chdb_spec: credentials the connection set with chdb_set() stand in for the ones a query could pass
-    /// inline. They beat the server `<s3>` config, and the query's own arguments below still beat them.
-    if (const auto & connection_credentials = context->getChdbS3Credentials(); !connection_credentials.access_key_id.empty())
-    {
-        s3_settings->auth_settings[S3AuthSetting::access_key_id] = connection_credentials.access_key_id;
-        s3_settings->auth_settings[S3AuthSetting::secret_access_key] = connection_credentials.secret_access_key;
-        s3_settings->auth_settings[S3AuthSetting::session_token] = connection_credentials.session_token;
-    }
-    if (const auto & connection_region = context->getChdbS3Credentials().region; !connection_region.empty())
-        s3_settings->auth_settings[S3AuthSetting::region] = connection_region;
 
     if (auto format_value = getFromPositionOrKeyValue<String>("format", args, engine_args_to_idx, key_value_args);
         format_value.has_value())
