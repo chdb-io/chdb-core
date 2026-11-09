@@ -1,5 +1,6 @@
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #include <Client/Connection.h>
@@ -311,10 +312,6 @@ std::string_view connectionParameterName(std::string_view key)
 void ChdbClient::setConnectionSetting(const String & key, const String * value)
 {
     auto name = connectionParameterName(key);
-    /// Waits out a chdb_query_with_params call, whose restore would overwrite this.
-    std::unique_lock<std::mutex> params_lock(query_parameters_mutex, std::defer_lock);
-    if (!name.empty())
-        params_lock.lock();
     std::lock_guard<std::mutex> lock(client_mutex);
 
     /// The insert restores its settings snapshot when it ends, undoing this.
@@ -389,34 +386,49 @@ void ChdbClient::takeResultSchema(CHDB::QueryResult & res)
     result_header.reset();
 }
 
-void ChdbClient::setQueryParameters(const NameToNameMap & params)
+namespace
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    overridden_query_parameters.clear();
-    for (const auto & [name, value] : params)
-    {
-        auto it = query_parameters.find(name);
-        overridden_query_parameters.emplace_back(
-            name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second));
-        query_parameters.insert_or_assign(name, value);
-    }
-    if (client_context)
-        client_context->setQueryParameters(query_parameters);
+/// Per-call parameters for the queries this thread runs; see setCallQueryParameters().
+thread_local ChdbClient::CallQueryParameters call_query_parameters{nullptr, nullptr};
 }
 
-void ChdbClient::clearQueryParameters()
+ChdbClient::CallQueryParameters ChdbClient::setCallQueryParameters(CallQueryParameters call)
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    for (const auto & [name, previous] : overridden_query_parameters)
+    return std::exchange(call_query_parameters, call);
+}
+
+ChdbClient::ReplacedQueryParameters ChdbClient::applyCallQueryParameters()
+{
+    ReplacedQueryParameters replaced;
+    const auto [client, params] = call_query_parameters;
+    if (client != this || !params)
+        return replaced;
+    for (const auto & [name, value] : *params)
     {
-        if (previous)
-            query_parameters.insert_or_assign(name, *previous);
-        else
-            query_parameters.erase(name);
+        auto it = query_parameters.find(name);
+        replaced.push_back({name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second), value});
+        query_parameters.insert_or_assign(name, value);
     }
-    overridden_query_parameters.clear();
-    if (client_context)
-        client_context->setQueryParameters(query_parameters);
+    client_context->setQueryParameters(query_parameters);
+    return replaced;
+}
+
+void ChdbClient::restoreCallQueryParameters(const ReplacedQueryParameters & replaced)
+{
+    if (replaced.empty())
+        return;
+    for (const auto & r : replaced)
+    {
+        auto it = query_parameters.find(r.name);
+        /// Keep a value the query itself set (SET param_x) over ours.
+        if (it != query_parameters.end() && it->second != r.applied)
+            continue;
+        if (r.previous)
+            query_parameters.insert_or_assign(r.name, *r.previous);
+        else if (it != query_parameters.end())
+            query_parameters.erase(it);
+    }
+    client_context->setQueryParameters(query_parameters);
 }
 
 #if USE_PYTHON
@@ -484,6 +496,8 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);
@@ -599,6 +613,8 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);
@@ -858,6 +874,8 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     const char * query, size_t query_len, const char * format, size_t format_len)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);

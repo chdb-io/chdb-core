@@ -4,7 +4,6 @@
 #include "QueryResult.h"
 
 #include <memory>
-#include <mutex>
 #include <string>
 #include <arrow/c/abi.h>
 
@@ -66,15 +65,15 @@ DB::NameToNameMap buildParameterMap(
 class CApiQueryParameterGuard
 {
 public:
-    CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params);
+    CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params);
     ~CApiQueryParameterGuard();
 
     CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
     CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
 
 private:
-    DB::ChdbClient * client = nullptr;
-    std::unique_lock<std::mutex> lock;
+    const DB::ChdbClient * previous_client = nullptr;
+    const DB::NameToNameMap * previous_params = nullptr;
     bool applied = false;
 };
 }

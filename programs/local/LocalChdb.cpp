@@ -157,29 +157,23 @@ DB::NameToNameMap parseParametersDict(const py::dict & params)
 class QueryParameterGuard
 {
 public:
-    QueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params) : client(client_)
+    QueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params)
     {
         if (client && !params.empty())
         {
-            {
-                /// The holder may need the GIL to finish its query.
-                py::gil_scoped_release release;
-                lock = std::unique_lock<std::mutex>(client->getQueryParametersMutex());
-            }
-            client->setQueryParameters(params);
+            previous = DB::ChdbClient::setCallQueryParameters({client, &params});
             applied = true;
         }
     }
 
     ~QueryParameterGuard()
     {
-        if (client && applied)
-            client->clearQueryParameters();
+        if (applied)
+            DB::ChdbClient::setCallQueryParameters(previous);
     }
 
 private:
-    DB::ChdbClient * client;
-    std::unique_lock<std::mutex> lock;
+    DB::ChdbClient::CallQueryParameters previous{nullptr, nullptr};
     bool applied = false;
 };
 

@@ -370,21 +370,24 @@ static void s3_query(chdb_connection conn, const char * object, char * buf, size
 struct overrider_args
 {
     chdb_connection conn;
-    const char * value;
+    const char * value; /// passed with chdb_query_with_params, or NULL for a plain query
+    const char * want;
     int mismatches;
 };
 
-/// Runs SELECT {tenant:String} with its own tenant many times, counting answers that are not its own.
+/// Runs SELECT {tenant:String} many times, counting answers other than `want`.
 static void * overrider(void * p)
 {
     struct overrider_args * args = p;
     const char * names[] = {"tenant"};
     const char * values[] = {args->value};
     char want[32];
-    snprintf(want, sizeof(want), "%s\n", args->value);
+    snprintf(want, sizeof(want), "%s\n", args->want);
     for (int i = 0; i < 100; ++i)
     {
-        chdb_result * r = chdb_query_with_params(args->conn, "SELECT {tenant:String}", "TSVRaw", names, values, 1);
+        chdb_result * r = args->value
+            ? chdb_query_with_params(args->conn, "SELECT {tenant:String}", "TSVRaw", names, values, 1)
+            : chdb_query(args->conn, "SELECT {tenant:String}", "TSVRaw");
         if (!r || chdb_result_error(r) || chdb_result_length(r) != strlen(want)
             || memcmp(chdb_result_buffer(r), want, strlen(want)) != 0)
             ++args->mismatches;
@@ -450,15 +453,17 @@ static void test_connection_parameters(void)
     query_into(*a, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
     CHECK(strcmp(buf, "\"acme\"") == 0, "A: next plain query sees the connection value");
 
-    /// Concurrent with_params calls each see their own value and leave the connection's intact.
+    /// Concurrent with_params calls each see their own value, a plain query beside them sees the
+    /// connection's, and the connection's is intact afterwards.
     {
-        struct overrider_args args[2] = {{*a, "t1", 0}, {*a, "t2", 0}};
-        pthread_t threads[2];
-        for (int i = 0; i < 2; ++i)
+        struct overrider_args args[3] = {{*a, "t1", "t1", 0}, {*a, "t2", "t2", 0}, {*a, NULL, "acme", 0}};
+        pthread_t threads[3];
+        for (int i = 0; i < 3; ++i)
             pthread_create(&threads[i], NULL, overrider, &args[i]);
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < 3; ++i)
             pthread_join(threads[i], NULL);
         CHECK(args[0].mismatches == 0 && args[1].mismatches == 0, "A: each concurrent with_params call saw its own value");
+        CHECK(args[2].mismatches == 0, "A: a concurrent plain query saw the connection's value");
         CHECK(get_eq(*a, "param_tenant", "acme"), "A: connection value intact after concurrent with_params calls");
     }
 

@@ -97,11 +97,11 @@ public:
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
-    /// Per-call parameters over the connection's own; clear puts back what set replaced.
-    /// Hold getQueryParametersMutex() from set to clear.
-    void setQueryParameters(const NameToNameMap & params);
-    void clearQueryParameters();
-    std::mutex & getQueryParametersMutex() { return query_parameters_mutex; }
+    /// Binds per-call parameters ({name:Type}) to the queries this thread runs on `client`; returns
+    /// the previous binding. Each execute applies them over the connection's own under client_mutex
+    /// and restores them before releasing it, so no other call sees them.
+    using CallQueryParameters = std::pair<const ChdbClient *, const NameToNameMap *>;
+    static CallQueryParameters setCallQueryParameters(CallQueryParameters call);
 
 #if USE_PYTHON
     /// Prefill Python(name) bindings for a query issued on this thread; the
@@ -128,6 +128,16 @@ private:
     void cleanup();
     void applyCmdSettings(int argc, char ** argv);
     void takeResultSchema(CHDB::QueryResult & res);
+
+    struct ReplacedQueryParameter
+    {
+        String name;
+        std::optional<String> previous;
+        String applied;
+    };
+    using ReplacedQueryParameters = std::vector<ReplacedQueryParameter>;
+    ReplacedQueryParameters applyCallQueryParameters();
+    void restoreCallQueryParameters(const ReplacedQueryParameters & replaced);
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
     void cancelStreamingQueryWithoutLock(void * streaming_result);
 
@@ -154,9 +164,6 @@ private:
     /// Connection settings snapshot taken before applying the streaming
     /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().
     std::unique_ptr<Settings> insert_stream_saved_settings;
-    /// What setQueryParameters() replaced (nullopt: was unset).
-    std::vector<std::pair<String, std::optional<String>>> overridden_query_parameters;
-    std::mutex query_parameters_mutex;
     mutable std::mutex client_mutex;
 };
 

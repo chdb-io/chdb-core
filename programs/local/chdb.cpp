@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <tuple>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -738,21 +739,19 @@ DB::NameToNameMap buildParameterMap(
     return params;
 }
 
-CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params)
-    : client(client_)
+CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params)
 {
     if (client && !params.empty())
     {
-        lock = std::unique_lock<std::mutex>(client->getQueryParametersMutex());
-        client->setQueryParameters(params);
+        std::tie(previous_client, previous_params) = DB::ChdbClient::setCallQueryParameters({client, &params});
         applied = true;
     }
 }
 
 CApiQueryParameterGuard::~CApiQueryParameterGuard()
 {
-    if (client && applied)
-        client->clearQueryParameters();
+    if (applied)
+        DB::ChdbClient::setCallQueryParameters({previous_client, previous_params});
 }
 
 } // namespace CHDB
