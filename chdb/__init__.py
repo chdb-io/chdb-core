@@ -24,12 +24,7 @@ g_udf_path = ""
 
 __version__ = "0.0.1b1"
 if sys.version_info[:2] >= (3, 7):
-    # get the path of the current file
     current_path = os.path.dirname(os.path.abspath(__file__))
-    # change the current working directory to the path of the current file
-    # and import _chdb then change the working directory back
-    cwd = os.getcwd()
-    os.chdir(current_path)
     # Pre-load _chdb.abi3.so with RTLD_DEEPBIND so that its DT_NEEDED
     # dependency (pybind11 stubs) resolves weak operator new/delete from
     # _chdb's jemalloc rather than from a global libstdc++ (e.g. ray, torch).
@@ -45,7 +40,6 @@ if sys.version_info[:2] >= (3, 7):
             pass
     from . import _chdb  # noqa
 
-    os.chdir(cwd)
     conn = _chdb.connect()
     engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
     conn.close()
