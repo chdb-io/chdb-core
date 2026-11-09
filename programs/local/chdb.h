@@ -1140,6 +1140,9 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
 /**
  * Does what `SET key = value` would on this connection only, without SQL.
  *
+ * Prefer one connection per thread; calls sharing a connection run one at a
+ * time, and per-call parameters never leak between them.
+ *
  * A setting key goes through SET's constraint checks; NULL resets it.
  * A param_<name> key stores query parameter <name> for every later query to
  * use as {name:Type}; NULL removes it. chdb_query_with_params() overrides it

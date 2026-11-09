@@ -467,6 +467,19 @@ static void test_connection_parameters(void)
         CHECK(get_eq(*a, "param_tenant", "acme"), "A: connection value intact after concurrent with_params calls");
     }
 
+    /// A SET param_ run by the call itself persists, even when it writes the call's own value.
+    {
+        const char * n[] = {"tenant", "fresh"};
+        const char * v[] = {"same", "same"};
+        chdb_result * r = chdb_query_with_params(*a, "SET param_tenant = 'same', param_fresh = 'same'", "CSV", n, v, 2);
+        CHECK(r && !chdb_result_error(r), "A: SET param_ through with_params succeeds");
+        chdb_destroy_query_result(r);
+        CHECK(get_eq(*a, "param_tenant", "same"), "A: SET of an overridden name to the override value persists");
+        CHECK(get_eq(*a, "param_fresh", "same"), "A: SET of a call-only name persists");
+        CHECK(chdb_set(*a, "param_tenant", "acme") == CHDBSuccess, "A: put param_tenant back");
+        CHECK(chdb_set(*a, "param_fresh", NULL) == CHDBSuccess, "A: drop param_fresh");
+    }
+
     /// NULL removes.
     CHECK(chdb_set(*a, "param_tenant", NULL) == CHDBSuccess, "A: remove param_tenant");
     CHECK(chdb_get(*a, "param_tenant") == NULL, "A: removed parameter reads as NULL");

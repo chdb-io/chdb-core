@@ -133,7 +133,6 @@ private:
     {
         String name;
         std::optional<String> previous;
-        String applied;
     };
     using ReplacedQueryParameters = std::vector<ReplacedQueryParameter>;
     ReplacedQueryParameters applyCallQueryParameters();

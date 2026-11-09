@@ -403,10 +403,11 @@ ChdbClient::ReplacedQueryParameters ChdbClient::applyCallQueryParameters()
     const auto [client, params] = call_query_parameters;
     if (client != this || !params)
         return replaced;
+    query_parameters_set_by_query.clear();
     for (const auto & [name, value] : *params)
     {
         auto it = query_parameters.find(name);
-        replaced.push_back({name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second), value});
+        replaced.push_back({name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second)});
         query_parameters.insert_or_assign(name, value);
     }
     client_context->setQueryParameters(query_parameters);
@@ -419,14 +420,13 @@ void ChdbClient::restoreCallQueryParameters(const ReplacedQueryParameters & repl
         return;
     for (const auto & r : replaced)
     {
-        auto it = query_parameters.find(r.name);
-        /// Keep a value the query itself set (SET param_x) over ours.
-        if (it != query_parameters.end() && it->second != r.applied)
+        /// Keep what the query itself SET.
+        if (query_parameters_set_by_query.contains(r.name))
             continue;
         if (r.previous)
             query_parameters.insert_or_assign(r.name, *r.previous);
-        else if (it != query_parameters.end())
-            query_parameters.erase(it);
+        else
+            query_parameters.erase(r.name);
     }
     client_context->setQueryParameters(query_parameters);
 }
