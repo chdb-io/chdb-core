@@ -1,5 +1,6 @@
 #!python3
 
+import decimal
 import unittest
 from decimal import Decimal
 
@@ -84,6 +85,18 @@ class TestIssue323(unittest.TestCase):
         ret = _query("SELECT toTypeName(a) AS t, toString(a) AS v FROM Python(df)", df)
         self.assertEqual(ret["t"].tolist()[0], "Nullable(Decimal(2, 1))")
         self.assertEqual(ret["v"].tolist(), ["1.5", "0", "0"])
+
+    def test_lowercase_exponent(self):
+        # With Context.capitals = 0, str() writes 0e+76 and 1.5e+3.
+        saved = decimal.getcontext().capitals, decimal.DefaultContext.capitals
+        decimal.getcontext().capitals = decimal.DefaultContext.capitals = 0
+        try:
+            df = pd.DataFrame({"a": [Decimal("1.5"), Decimal("0E+76"), Decimal("1.5E+3")]})
+            ret = _query("SELECT toTypeName(a) AS t, toString(a) AS v FROM Python(df)", df)
+        finally:
+            decimal.getcontext().capitals, decimal.DefaultContext.capitals = saved
+        self.assertEqual(ret["t"].tolist()[0], "Nullable(Decimal(5, 1))")
+        self.assertEqual(ret["v"].tolist(), ["1.5", "0", "1500"])
 
     def test_integers_sampled_before_decimals_do_not_decide_the_type(self):
         df = pd.DataFrame({"a": pd.Series([1, 2**63, Decimal("0.5")], dtype=object)})

@@ -492,9 +492,10 @@ void PandasScan::innerScanObject(
                     continue;
                 }
 
-                /// str() switches to exponent notation for values such as 1E+2; ClickHouse cannot read a zero
+                /// str() switches to exponent notation for values such as 1E+2 (1e+2 with Context.capitals = 0);
+                /// ClickHouse cannot read a zero
                 /// with a large exponent (0E+76), so such values are written out in fixed-point notation.
-                if (text.find('E') != std::string::npos)
+                if (text.find_first_of("eE") != std::string::npos)
                     text = py::str(handle.attr("__format__")("f")).cast<std::string>();
 
                 ReadBufferFromString buf(text);
