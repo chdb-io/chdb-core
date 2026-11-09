@@ -24,6 +24,8 @@ Everything a binding can wrap. A binding need not implement all of it — this i
 | 11  | Version                     | `chdb_version`                                                                                                                                                                              | v26.7.0                                  |
 | 12  | Backup / restore / analysis | `chdb_backup_database_n`, `chdb_restore_database_n`, `chdb_classify_query_n`                                                                                                                | v26.7.2-rc.2                             |
 | 13  | Shutdown                    | `chdb_shutdown`                                                                                                                                                                             | v26.7.2-rc.2                             |
+| 14  | Result schema               | `chdb_result_column_{count,name,type}`                                                                                                                                                      | unreleased                               |
+| 15  | Connection settings         | `chdb_set`, `chdb_get` (settings, plus S3 credential keys `s3_{access_key_id,secret_access_key,session_token,region}`)                                                                     | unreleased                               |
 
 
 ### Feature matrix

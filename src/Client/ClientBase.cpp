@@ -1038,6 +1038,8 @@ try
 {
     if (!output_format)
     {
+        result_header = std::make_shared<const Block>(block.cloneEmpty());
+
         if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
         {
             auto creator = getDataFrameFormatCreator();

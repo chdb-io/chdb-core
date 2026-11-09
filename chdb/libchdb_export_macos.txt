@@ -48,6 +48,9 @@ _chdb_result_storage_bytes_read
 _chdb_result_rows_written
 _chdb_result_bytes_written
 _chdb_result_error
+_chdb_result_column_count
+_chdb_result_column_name
+_chdb_result_column_type
 _chdb_version
 
 _chdb_arrow_scan
@@ -68,6 +71,8 @@ _AdbcDriverInit
 _chdb_backup_database_n
 _chdb_restore_database_n
 _chdb_classify_query_n
+_chdb_set
+_chdb_get
 
 _chdb_set_signal_handlers_enabled
 _chdb_reset_signal_handlers

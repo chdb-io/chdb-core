@@ -784,6 +784,41 @@ CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
  */
 CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
 
+/**
+ * Gets the number of columns in the result set
+ *
+ * The schema comes from the engine, not from parsing the output, so it is the
+ * same whatever the output format. A query returning no rows still reports its
+ * columns. When the text holds several statements, the schema is that of the
+ * last one that produced a result set. For a streaming query it is carried by
+ * each result chdb_stream_fetch_result() returns, not by the stream handle.
+ *
+ * @param result The query result handle
+ * @return Number of columns; 0 when the statement produced no result set
+ *         (DDL, INSERT), the query failed, or result is NULL
+ */
+CHDB_EXPORT int chdb_result_column_count(chdb_result * result);
+
+/**
+ * Gets the name of a result column
+ * @param result The query result handle
+ * @param col 0-based column index, below chdb_result_column_count()
+ * @return Null-terminated column name owned by the result (valid until
+ *         chdb_destroy_query_result()), or NULL if col is out of range
+ */
+CHDB_EXPORT const char * chdb_result_column_name(chdb_result * result, int col);
+
+/**
+ * Gets the ClickHouse type of a result column
+ * @param result The query result handle
+ * @param col 0-based column index, below chdb_result_column_count()
+ * @return Null-terminated ClickHouse type name, e.g. "UInt64",
+ *         "Nullable(String)", "DateTime64(3)", "LowCardinality(String)",
+ *         owned by the result (valid until chdb_destroy_query_result()), or
+ *         NULL if col is out of range
+ */
+CHDB_EXPORT const char * chdb_result_column_type(chdb_result * result, int col);
+
 //===--------------------------------------------------------------------===//
 // Arrow Integration
 //===--------------------------------------------------------------------===//
@@ -1107,6 +1142,66 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
     const char * target_database,
     size_t target_database_len,
     chdb_query_analysis_v1 * out_analysis);
+
+//===--------------------------------------------------------------------===//
+// Connection Settings
+//===--------------------------------------------------------------------===//
+
+/**
+ * Changes a setting of an open connection.
+ *
+ * key is a ClickHouse setting (max_threads, s3_max_connections,
+ * input_format_parquet_*, ...) and value its text form. The effect is that of
+ * running `SET key = value` on the connection, without writing SQL: the value
+ * is checked against the same constraints (a --readonly=1 connection refuses
+ * every change), it lasts until the connection closes or the setting is set
+ * again, it applies to every later query on this connection only, and a
+ * query's own SETTINGS clause still overrides it for that query. A NULL value
+ * resets the setting to its default, like `SET key = DEFAULT`.
+ *
+ * Four keys are not ClickHouse settings but S3 credentials of the connection:
+ *
+ *   s3_access_key_id, s3_secret_access_key, s3_session_token, s3_region
+ *
+ * The s3() family of table functions and the S3 table engine sign their
+ * requests with them when given a bare URL, so credentials need not be pasted
+ * into the SQL. Credentials written in the query itself still take precedence,
+ * and the connection's take precedence over the server <s3> configuration and
+ * the environment. They are kept apart from the settings, so they do not show
+ * in system.settings, the query log or error messages, and no SQL can read
+ * them back. A table created with ENGINE = S3 signs with the credentials of
+ * the connection that created or attached it; they are not stored with the
+ * table. A NULL value clears the key.
+ *
+ * Fails while a streaming insert is active on the connection.
+ *
+ * @param conn Connection to change
+ * @param key Null-terminated setting name
+ * @param value Null-terminated value, or NULL to reset the setting
+ * @return CHDBSuccess, or CHDBError if conn or key is NULL, the connection is
+ *         closed, key names neither a setting nor one of the keys above, or
+ *         the value is invalid or not allowed -- the connection is then left
+ *         as it was
+ */
+CHDB_EXPORT chdb_state chdb_set(chdb_connection conn, const char * key, const char * value);
+
+/**
+ * Gets the current value of a setting of an open connection: the value
+ * chdb_set(), a SET statement or a connect argument gave it, or else its
+ * default, as text: the value getSetting(key) returns in SQL (so max_threads
+ * reads "8" where system.settings shows "auto(8)"). Also answers the S3
+ * credential keys chdb_set() accepts, with "" when the key is unset on this
+ * connection. Only what was set on the connection is reported: credentials
+ * the S3 functions would fall back to -- the server <s3> configuration, the
+ * environment, an instance role -- are not settings and are never returned.
+ *
+ * @param conn Connection to read
+ * @param key Null-terminated setting name
+ * @return Null-terminated value, valid until the next chdb_get() on the same
+ *         thread; NULL if conn or key is NULL, the connection is closed, or
+ *         key names neither a setting nor an S3 credential key
+ */
+CHDB_EXPORT const char * chdb_get(chdb_connection conn, const char * key);
 
 //===--------------------------------------------------------------------===//
 // Signal Handler Control

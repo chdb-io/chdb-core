@@ -85,6 +85,18 @@ public:
     void analyzeQuery(
         const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out);
 
+    /// chdb_set(): changes one setting of this connection the way `SET key = value` run on it
+    /// would, checked against the same constraints; a null value resets it to the default, like
+    /// `SET key = DEFAULT`. The keys s3_access_key_id, s3_secret_access_key, s3_session_token and
+    /// s3_region are not settings: they are kept in the session context, where only the S3 table
+    /// functions and engines read them (see Context::ChdbS3Credentials). Throws on an unknown key
+    /// or an invalid value, leaving the connection as it was.
+    void setConnectionSetting(const String & key, const String * value);
+
+    /// chdb_get(): the current value of `key` on this connection, as text: what getSetting(key)
+    /// returns in SQL. False when `key` names neither a setting nor an S3 credential.
+    bool getConnectionSetting(const String & key, String & value) const;
+
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
@@ -117,6 +129,7 @@ protected:
 private:
     void cleanup();
     void applyCmdSettings(int argc, char ** argv);
+    void takeResultSchema(CHDB::QueryResult & res);
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
     void cancelStreamingQueryWithoutLock(void * streaming_result);
 

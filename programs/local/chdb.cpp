@@ -1381,6 +1381,39 @@ const char * chdb_result_error(chdb_result * result)
     return query_result->getError().c_str();
 }
 
+namespace
+{
+const std::vector<std::string> * resultColumnField(chdb_result * result, int col, bool names)
+{
+    if (!result || col < 0)
+        return nullptr;
+    auto * query_result = reinterpret_cast<QueryResult *>(result);
+    const auto & field = names ? query_result->column_names : query_result->column_types;
+    return static_cast<size_t>(col) < field.size() ? &field : nullptr;
+}
+}
+
+int chdb_result_column_count(chdb_result * result)
+{
+    if (!result)
+        return 0;
+
+    auto * query_result = reinterpret_cast<QueryResult *>(result);
+    return static_cast<int>(query_result->column_names.size());
+}
+
+const char * chdb_result_column_name(chdb_result * result, int col)
+{
+    const auto * names = resultColumnField(result, col, /*names=*/true);
+    return names ? (*names)[col].c_str() : nullptr;
+}
+
+const char * chdb_result_column_type(chdb_result * result, int col)
+{
+    const auto * types = resultColumnField(result, col, /*names=*/false);
+    return types ? (*types)[col].c_str() : nullptr;
+}
+
 const char * chdb_version(void)
 {
     return CHDB_VERSION;
@@ -1560,6 +1593,52 @@ chdb_state chdb_classify_query_n(
     }
 }
 
+chdb_state chdb_set(chdb_connection conn, const char * key, const char * value)
+{
+    if (!conn || !key)
+        return CHDBError;
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return CHDBError;
+
+    try
+    {
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        const std::string value_str = value ? value : "";
+        client->setConnectionSetting(key, value ? &value_str : nullptr);
+        return CHDBSuccess;
+    }
+    catch (...)
+    {
+        return CHDBError;
+    }
+}
+
+const char * chdb_get(chdb_connection conn, const char * key)
+{
+    if (!conn || !key)
+        return nullptr;
+
+    auto * connection = reinterpret_cast<chdb_conn *>(conn);
+    if (!checkConnectionValidity(connection))
+        return nullptr;
+
+    try
+    {
+        /// Per thread rather than per connection, so the pointer survives the connection and
+        /// two threads reading one connection do not overwrite each other's answer.
+        thread_local std::string value;
+        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        if (!client->getConnectionSetting(key, value))
+            return nullptr;
+        return value.c_str();
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
 
 void chdb_set_signal_handlers_enabled(int enabled)
 {

@@ -48,6 +48,12 @@ public:
     /// base class so the C ABI can test any handle without downcasting.
     std::atomic<bool> stream_exhausted{false};
 
+    /// Names and ClickHouse type names of the result set's columns, for
+    /// chdb_result_column_{count,name,type}. Empty when the statement
+    /// produced no result set (DDL, INSERT) or failed.
+    std::vector<String> column_names;
+    std::vector<String> column_types;
+
 protected:
     QueryResultType result_type;
     String error_message;

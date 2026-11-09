@@ -298,6 +298,97 @@ size_t ChdbClient::getStorageBytesRead() const
     return 0;
 }
 
+namespace
+{
+/// The chdb_set() keys that name a field of Context::ChdbS3Credentials, or null.
+String * findS3CredentialField(Context::ChdbS3Credentials & credentials, std::string_view key)
+{
+    if (key == "s3_access_key_id")
+        return &credentials.access_key_id;
+    if (key == "s3_secret_access_key")
+        return &credentials.secret_access_key;
+    if (key == "s3_session_token")
+        return &credentials.session_token;
+    if (key == "s3_region")
+        return &credentials.region;
+    return nullptr;
+}
+}
+
+void ChdbClient::setConnectionSetting(const String & key, const String * value)
+{
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    /// The stream restores the settings it snapshotted when it finishes, which would undo this.
+    if (streaming_insert_context)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot change a setting while a streaming insert is active on this connection");
+
+    auto credentials = client_context->getChdbS3Credentials();
+    if (String * field = findS3CredentialField(credentials, key))
+    {
+        *field = value ? *value : String{};
+        client_context->setChdbS3Credentials(credentials);
+        return;
+    }
+
+    if (value)
+    {
+        SettingChange change(key, Field(*value));
+        client_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        client_context->applySettingChange(change);
+    }
+    else
+    {
+        if (!client_context->getSettingsRef().has(key))
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown setting '{}'", key);
+        SettingChange change(key, Field(client_context->getSettingsRef().getDefaultValueString(key)));
+        client_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        client_context->resetSettingsToDefaultValue({key});
+    }
+
+    /// client_context is the session context queries copy, so the change already applies to the
+    /// next query; the connection only caches the format settings derived from it.
+    if (connection)
+        connection->setFormatSettings(getFormatSettings(client_context));
+}
+
+bool ChdbClient::getConnectionSetting(const String & key, String & value) const
+{
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    auto credentials = client_context->getChdbS3Credentials();
+    if (const String * field = findS3CredentialField(credentials, key))
+    {
+        value = *field;
+        return true;
+    }
+
+    Field field;
+    if (!client_context->getSettingsRef().tryGet(key, field))
+        return false;
+    if (Settings::hasBuiltin(key))
+        value = Settings::valueToStringUtil(key, field);
+    else if (field.getType() == Field::Types::String)
+        value = field.safeGet<String>();
+    else
+        value = field.dump();
+    return true;
+}
+
+void ChdbClient::takeResultSchema(CHDB::QueryResult & res)
+{
+    if (!result_header)
+        return;
+    res.column_names.reserve(result_header->columns());
+    res.column_types.reserve(result_header->columns());
+    for (const auto & column : *result_header)
+    {
+        res.column_names.push_back(column.name);
+        res.column_types.push_back(column.type->getName());
+    }
+    result_header.reset();
+}
+
 void ChdbClient::setQueryParameters(const NameToNameMap & params)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
@@ -414,6 +505,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         /// none. Every query starts without one; a successful query has already taken its
         /// buffer by now (stealQueryOutputVector).
         resetQueryOutputVector();
+        result_header.reset();
 
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
@@ -441,6 +533,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 storage_bytes_read,
                 rows_written,
                 bytes_written);
+            takeResultSchema(*res);
 #if USE_PYTHON
             (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
             python_table_cache->releaseQueryableObjs(py_tables_token);
@@ -457,6 +550,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
             storage_bytes_read,
             rows_written,
             bytes_written);
+        takeResultSchema(*res);
 #if USE_PYTHON
         (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
         python_table_cache->releaseQueryableObjs(py_tables_token);
@@ -580,6 +674,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         size_t old_rows_written = local_connection->getCHDBProgress().written_rows;
         size_t old_bytes_written = local_connection->getCHDBProgress().written_bytes;
         const auto old_elapsed_time = getElapsedTime();
+        result_header.reset();
 
         CHDB::QueryResultPtr res;
         if (!processStreamingQuery(streaming_result, is_canceled))
@@ -650,6 +745,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     res = std::make_unique<CHDB::MaterializedQueryResult>(nullptr, 0.0, 0, 0, 0, 0);
                 }
             }
+            takeResultSchema(*res);
         }
 
         /// Check if query should end based on result type

@@ -73,6 +73,15 @@
         chdb_adbc_init;
         AdbcDriverInit;
 
+        /* Result Schema */
+        chdb_result_column_count;
+        chdb_result_column_name;
+        chdb_result_column_type;
+
+        /* Connection Settings */
+        chdb_set;
+        chdb_get;
+
         /* Backup, Restore and Statement Classification */
         chdb_backup_database_n;
         chdb_restore_database_n;
