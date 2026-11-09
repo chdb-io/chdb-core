@@ -48,6 +48,10 @@ public:
     /// base class so the C ABI can test any handle without downcasting.
     std::atomic<bool> stream_exhausted{false};
 
+    /// For chdb_result_column_*; empty without a result set.
+    std::vector<String> column_names;
+    std::vector<String> column_types;
+
 protected:
     QueryResultType result_type;
     String error_message;

@@ -769,6 +769,11 @@ public:
     /// Chunk and SharedHeader are core types available in all builds.
     std::vector<Chunk> collected_chunks;
     SharedHeader collected_chunks_header;
+
+    /// chdb_spec: header of the last result set, for chdb_result_column_*. Reset by ChdbClient per query.
+    SharedHeader result_header;
+    /// chdb_spec: names a SET param_<name> wrote, so ChdbClient keeps them when restoring per-call parameters.
+    NameSet query_parameters_set_by_query;
 };
 
 }

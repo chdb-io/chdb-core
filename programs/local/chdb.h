@@ -784,6 +784,31 @@ CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
  */
 CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
 
+/**
+ * Gets the number of columns in the result set, the same for every output
+ * format. With several statements, counts the last result set; for a stream,
+ * each fetched result carries it.
+ * @param result The query result handle
+ * @return Column count; 0 for DDL, INSERT, a failed query or NULL
+ */
+CHDB_EXPORT int chdb_result_column_count(chdb_result * result);
+
+/**
+ * Gets the name of a result column
+ * @param result The query result handle
+ * @param col 0-based column index
+ * @return Column name owned by the result, or NULL if col is out of range
+ */
+CHDB_EXPORT const char * chdb_result_column_name(chdb_result * result, int col);
+
+/**
+ * Gets the ClickHouse type of a result column, e.g. "Nullable(String)"
+ * @param result The query result handle
+ * @param col 0-based column index
+ * @return Type name owned by the result, or NULL if col is out of range
+ */
+CHDB_EXPORT const char * chdb_result_column_type(chdb_result * result, int col);
+
 //===--------------------------------------------------------------------===//
 // Arrow Integration
 //===--------------------------------------------------------------------===//
@@ -1107,6 +1132,46 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
     const char * target_database,
     size_t target_database_len,
     chdb_query_analysis_v1 * out_analysis);
+
+//===--------------------------------------------------------------------===//
+// Connection Settings
+//===--------------------------------------------------------------------===//
+
+/**
+ * Does what `SET key = value` would on this connection only, without SQL.
+ *
+ * Prefer one connection per thread; calls sharing a connection run one at a
+ * time, and per-call parameters never leak between them.
+ *
+ * A setting key goes through SET's constraint checks; NULL resets it.
+ * A param_<name> key stores query parameter <name> for every later query to
+ * use as {name:Type}; NULL removes it. chdb_query_with_params() overrides it
+ * for one call. Credentials passed this way never appear in the SQL text:
+ *
+ *   chdb_set(conn, "param_s3_key", "AKIA...");
+ *   chdb_set(conn, "param_s3_secret", "wJal...");
+ *   chdb_query(conn, "SELECT * FROM s3('https://b.s3.amazonaws.com/f.parquet',"
+ *                    " {s3_key:String}, {s3_secret:String})", "Arrow");
+ *
+ * @param conn Connection to change
+ * @param key Setting name, or param_<name>
+ * @param value Value, or NULL to reset or remove
+ * @return CHDBError on a NULL argument, a closed connection, an unknown
+ *         setting, a rejected value, or an active streaming insert; the
+ *         connection is then unchanged
+ */
+CHDB_EXPORT chdb_state chdb_set(chdb_connection conn, const char * key, const char * value);
+
+/**
+ * Gets a setting's current value as getSetting() returns it, or the value of
+ * param_<name>.
+ * @param conn Connection to read
+ * @param key Setting name, or param_<name>
+ * @return Value valid until the next chdb_get() on this thread; NULL on a NULL
+ *         argument, a closed connection, an unknown setting or an unset
+ *         parameter
+ */
+CHDB_EXPORT const char * chdb_get(chdb_connection conn, const char * key);
 
 //===--------------------------------------------------------------------===//
 // Signal Handler Control

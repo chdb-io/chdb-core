@@ -157,23 +157,23 @@ DB::NameToNameMap parseParametersDict(const py::dict & params)
 class QueryParameterGuard
 {
 public:
-    QueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params) : client(client_)
+    QueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params)
     {
         if (client && !params.empty())
         {
-            client->setQueryParameters(params);
+            previous = DB::ChdbClient::setCallQueryParameters({client, &params});
             applied = true;
         }
     }
 
     ~QueryParameterGuard()
     {
-        if (client && applied)
-            client->clearQueryParameters();
+        if (applied)
+            DB::ChdbClient::setCallQueryParameters(previous);
     }
 
 private:
-    DB::ChdbClient * client;
+    DB::ChdbClient::CallQueryParameters previous{nullptr, nullptr};
     bool applied = false;
 };
 

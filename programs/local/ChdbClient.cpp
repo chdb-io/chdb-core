@@ -1,5 +1,6 @@
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #include <Client/Connection.h>
@@ -298,20 +299,136 @@ size_t ChdbClient::getStorageBytesRead() const
     return 0;
 }
 
-void ChdbClient::setQueryParameters(const NameToNameMap & params)
+namespace
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
-    query_parameters = params;
-    if (client_context)
-        client_context->setQueryParameters(query_parameters);
+/// "param_<name>" -> "<name>", as in `SET param_<name> = ...`; empty for a setting.
+std::string_view connectionParameterName(std::string_view key)
+{
+    constexpr std::string_view prefix = "param_";
+    return key.starts_with(prefix) ? key.substr(prefix.size()) : std::string_view{};
+}
 }
 
-void ChdbClient::clearQueryParameters()
+void ChdbClient::setConnectionSetting(const String & key, const String * value)
+{
+    auto name = connectionParameterName(key);
+    std::lock_guard<std::mutex> lock(client_mutex);
+
+    /// The insert restores its settings snapshot when it ends, undoing this.
+    if (streaming_insert_context)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot change a setting while a streaming insert is active on this connection");
+
+    if (!name.empty())
+    {
+        if (value)
+            query_parameters.insert_or_assign(String(name), *value);
+        else
+            query_parameters.erase(String(name));
+        client_context->setQueryParameters(query_parameters);
+        return;
+    }
+
+    if (value)
+    {
+        SettingChange change(key, Field(*value));
+        client_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        client_context->applySettingChange(change);
+    }
+    else
+    {
+        if (!client_context->getSettingsRef().has(key))
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown setting '{}'", key);
+        client_context->checkSettingsConstraintsForSettingsReset({key}, SettingSource::QUERY);
+        client_context->resetSettingsToDefaultValue({key});
+    }
+
+    /// Queries copy client_context; refresh the connection's cached format settings.
+    if (connection)
+        connection->setFormatSettings(getFormatSettings(client_context));
+}
+
+bool ChdbClient::getConnectionSetting(const String & key, String & value) const
 {
     std::lock_guard<std::mutex> lock(client_mutex);
-    query_parameters.clear();
-    if (client_context)
-        client_context->setQueryParameters(query_parameters);
+
+    if (auto name = connectionParameterName(key); !name.empty())
+    {
+        auto it = query_parameters.find(String(name));
+        if (it == query_parameters.end())
+            return false;
+        value = it->second;
+        return true;
+    }
+
+    Field field;
+    if (!client_context->getSettingsRef().tryGet(key, field))
+        return false;
+    if (Settings::hasBuiltin(key))
+        value = Settings::valueToStringUtil(key, field);
+    else if (field.getType() == Field::Types::String)
+        value = field.safeGet<String>();
+    else
+        value = field.dump();
+    return true;
+}
+
+void ChdbClient::takeResultSchema(CHDB::QueryResult & res)
+{
+    if (!result_header)
+        return;
+    res.column_names.reserve(result_header->columns());
+    res.column_types.reserve(result_header->columns());
+    for (const auto & column : *result_header)
+    {
+        res.column_names.push_back(column.name);
+        res.column_types.push_back(column.type->getName());
+    }
+    result_header.reset();
+}
+
+namespace
+{
+/// Per-call parameters for the queries this thread runs; see setCallQueryParameters().
+thread_local ChdbClient::CallQueryParameters call_query_parameters{nullptr, nullptr};
+}
+
+ChdbClient::CallQueryParameters ChdbClient::setCallQueryParameters(CallQueryParameters call)
+{
+    return std::exchange(call_query_parameters, call);
+}
+
+ChdbClient::ReplacedQueryParameters ChdbClient::applyCallQueryParameters()
+{
+    ReplacedQueryParameters replaced;
+    const auto [client, params] = call_query_parameters;
+    if (client != this || !params)
+        return replaced;
+    query_parameters_set_by_query.clear();
+    for (const auto & [name, value] : *params)
+    {
+        auto it = query_parameters.find(name);
+        replaced.push_back({name, it == query_parameters.end() ? std::nullopt : std::optional<String>(it->second)});
+        query_parameters.insert_or_assign(name, value);
+    }
+    client_context->setQueryParameters(query_parameters);
+    return replaced;
+}
+
+void ChdbClient::restoreCallQueryParameters(const ReplacedQueryParameters & replaced)
+{
+    if (replaced.empty())
+        return;
+    for (const auto & r : replaced)
+    {
+        /// Keep what the query itself SET.
+        if (query_parameters_set_by_query.contains(r.name))
+            continue;
+        if (r.previous)
+            query_parameters.insert_or_assign(r.name, *r.previous);
+        else
+            query_parameters.erase(r.name);
+    }
+    client_context->setQueryParameters(query_parameters);
 }
 
 #if USE_PYTHON
@@ -379,6 +496,8 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);
@@ -414,6 +533,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
         /// none. Every query starts without one; a successful query has already taken its
         /// buffer by now (stealQueryOutputVector).
         resetQueryOutputVector();
+        result_header.reset();
 
         if (!parseQueryTextWithOutputFormat(query_str, format_str))
         {
@@ -441,6 +561,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
                 storage_bytes_read,
                 rows_written,
                 bytes_written);
+            takeResultSchema(*res);
 #if USE_PYTHON
             (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
             python_table_cache->releaseQueryableObjs(py_tables_token);
@@ -457,6 +578,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
             storage_bytes_read,
             rows_written,
             bytes_written);
+        takeResultSchema(*res);
 #if USE_PYTHON
         (static_cast<LocalConnection *>(connection.get()))->resetQueryContext();
         python_table_cache->releaseQueryableObjs(py_tables_token);
@@ -491,6 +613,8 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);
@@ -580,6 +704,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
         size_t old_rows_written = local_connection->getCHDBProgress().written_rows;
         size_t old_bytes_written = local_connection->getCHDBProgress().written_bytes;
         const auto old_elapsed_time = getElapsedTime();
+        result_header.reset();
 
         CHDB::QueryResultPtr res;
         if (!processStreamingQuery(streaming_result, is_canceled))
@@ -650,6 +775,7 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     res = std::make_unique<CHDB::MaterializedQueryResult>(nullptr, 0.0, 0, 0, 0, 0);
                 }
             }
+            takeResultSchema(*res);
         }
 
         /// Check if query should end based on result type
@@ -748,6 +874,8 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     const char * query, size_t query_len, const char * format, size_t format_len)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
+    const auto replaced_parameters = applyCallQueryParameters();
+    SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
     String query_str(query, query_len);
     String format_str(format, format_len);

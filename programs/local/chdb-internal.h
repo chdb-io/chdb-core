@@ -60,21 +60,20 @@ DB::NameToNameMap buildParameterMap(
     const size_t * param_value_lens,
     size_t param_count);
 
-/// RAII guard mirroring the Python binding's QueryParameterGuard (see LocalChdb.cpp): sets named
-/// parameters on the client for the duration of one query, then unconditionally clears them.
-/// This matches Python `chdb.query(..., params=...)` semantics — including for streaming, where
-/// parameters only need to be present during the streaming init (the engine captures values then).
+/// Applies named parameters for one query and restores the connection's own afterwards, like the
+/// Python binding's QueryParameterGuard. Streaming only needs them during init.
 class CApiQueryParameterGuard
 {
 public:
-    CApiQueryParameterGuard(DB::ChdbClient * client_, const DB::NameToNameMap & params);
+    CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params);
     ~CApiQueryParameterGuard();
 
     CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
     CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
 
 private:
-    DB::ChdbClient * client = nullptr;
+    const DB::ChdbClient * previous_client = nullptr;
+    const DB::NameToNameMap * previous_params = nullptr;
     bool applied = false;
 };
 }

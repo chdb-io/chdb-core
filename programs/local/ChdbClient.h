@@ -11,6 +11,8 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <vector>
 
 namespace DB
 {
@@ -85,13 +87,21 @@ public:
     void analyzeQuery(
         const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out);
 
+    /// chdb_set(): `SET key = value` on this connection; null resets a setting or removes a
+    /// param_<name>. Throws, leaving the connection unchanged, if the key or value is rejected.
+    void setConnectionSetting(const String & key, const String * value);
+
+    /// chdb_get(): the value getSetting(key) returns, or that of param_<name>; false if none.
+    bool getConnectionSetting(const String & key, String & value) const;
+
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
-    /// Set named query parameters ({name:Type} placeholders) on the underlying client context.
-    /// Used by both the Python binding (params=...) and the C ABI (chdb_query_with_params).
-    void setQueryParameters(const NameToNameMap & params);
-    void clearQueryParameters();
+    /// Binds per-call parameters ({name:Type}) to the queries this thread runs on `client`; returns
+    /// the previous binding. Each execute applies them over the connection's own under client_mutex
+    /// and restores them before releasing it, so no other call sees them.
+    using CallQueryParameters = std::pair<const ChdbClient *, const NameToNameMap *>;
+    static CallQueryParameters setCallQueryParameters(CallQueryParameters call);
 
 #if USE_PYTHON
     /// Prefill Python(name) bindings for a query issued on this thread; the
@@ -117,6 +127,16 @@ protected:
 private:
     void cleanup();
     void applyCmdSettings(int argc, char ** argv);
+    void takeResultSchema(CHDB::QueryResult & res);
+
+    struct ReplacedQueryParameter
+    {
+        String name;
+        std::optional<String> previous;
+    };
+    using ReplacedQueryParameters = std::vector<ReplacedQueryParameter>;
+    ReplacedQueryParameters applyCallQueryParameters();
+    void restoreCallQueryParameters(const ReplacedQueryParameters & replaced);
     bool parseQueryTextWithOutputFormat(const String & query, const String & format);
     void cancelStreamingQueryWithoutLock(void * streaming_result);
 

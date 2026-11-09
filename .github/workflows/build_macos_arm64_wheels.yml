@@ -445,6 +445,8 @@ jobs:
           bash -x ./examples/runVersionHeaderTest.sh
           bash -x ./examples/runVersionTest.sh
           bash -x ./examples/runConnSettingsTest.sh
+          bash -x ./examples/runConnSetGetTest.sh
+          bash -x ./examples/runResultSchemaTest.sh
           bash -x ./examples/runStackTraceTest.sh
           bash -x ./examples/runStreamErrorTest.sh
           bash -x ./examples/runQueryParamsTest.sh

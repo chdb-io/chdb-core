@@ -1038,6 +1038,8 @@ try
 {
     if (!output_format)
     {
+        result_header = std::make_shared<const Block>(block.cloneEmpty());
+
         if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
         {
             auto creator = getDataFrameFormatCreator();
@@ -3450,7 +3452,10 @@ void ClientBase::processParsedSingleQuery(
             ///  to override their previous definitions set with --param_* arguments
             ///  and for substitutions to work inside INSERT ... VALUES queries
             for (const auto & [name, value] : set_query->query_parameters)
+            {
                 query_parameters.insert_or_assign(name, value);
+                query_parameters_set_by_query.insert(name);
+            }
 
             client_context->addQueryParameters(NameToNameMap{set_query->query_parameters.begin(), set_query->query_parameters.end()});
         }
