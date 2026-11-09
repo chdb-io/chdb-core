@@ -19,6 +19,7 @@
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/IDataType.h>
 #include <DataTypes/Serializations/SerializationJSON.h>
+#include <IO/ReadBufferFromString.h>
 #include <IO/WriteHelpers.h>
 #include <base/defines.h>
 #include <Common/assert_cast.h>
@@ -29,6 +30,7 @@ namespace DB
 namespace ErrorCodes
 {
     extern const int BAD_ARGUMENTS;
+    extern const int TYPE_MISMATCH;
     extern const int PY_EXCEPTION_OCCURED;
 }
 
@@ -156,7 +158,7 @@ ColumnPtr PandasScan::scanColumn(
     if (col_wrap.is_object_type)
     {
         SerializationPtr serialization;
-        if (which.idx == TypeIndex::Object)
+        if (which.idx == TypeIndex::Object || which.isDecimal())
             serialization = real_type->getDefaultSerialization();
 
         auto * object_array = static_cast<PyObject **>(col_wrap.buf);
@@ -449,6 +451,51 @@ void PandasScan::innerScanObject(
                 }
                 null_map.push_back(0);
                 container.push_back(result ? 1 : 0);
+            }
+            break;
+        }
+    case TypeIndex::Decimal32:
+    case TypeIndex::Decimal64:
+    case TypeIndex::Decimal128:
+    case TypeIndex::Decimal256:
+        {
+            /// The analyzer derived the type from every row, so each value fits it exactly.
+            py::gil_scoped_acquire acquire;
+            auto & nullable_column = typeid_cast<ColumnNullable &>(*column);
+            auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
+            auto & null_map = nullable_column.getNullMapData();
+
+            for (size_t i = cursor; i < cursor + count; ++i)
+            {
+                auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
+                auto handle = py::handle(obj_ptr);
+
+                if (isNone(handle) || (isFloat(handle) && std::isnan(PyFloat_AsDouble(obj_ptr))))
+                {
+                    null_map.push_back(1);
+                    data_column->insertDefault();
+                    continue;
+                }
+
+                if (!isDecimal(handle) && !(PyLong_Check(obj_ptr) && !PyBool_Check(obj_ptr)))
+                    throw Exception(
+                        ErrorCodes::TYPE_MISMATCH,
+                        "Cannot read a Python {} into a Decimal column: the column changed after its type was inferred",
+                        py::str(py::type::handle_of(handle).attr("__name__")).cast<std::string>());
+
+                /// str() of a decimal.Decimal can use exponent notation (1E+2), which ClickHouse reads as well.
+                auto text = py::str(handle).cast<std::string>();
+                /// pandas treats Decimal('NaN') as a missing value.
+                if (text.ends_with("NaN"))
+                {
+                    null_map.push_back(1);
+                    data_column->insertDefault();
+                    continue;
+                }
+
+                ReadBufferFromString buf(text);
+                serialization->deserializeWholeText(*data_column, buf, format_settings);
+                null_map.push_back(0);
             }
             break;
         }
