@@ -10,6 +10,7 @@ if (OS_WASM)
         ChdbSettingsOverrides.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
+        InstancePaths.cpp
         ChdbClient.cpp
         QueryClassifier.cpp
     )
@@ -23,6 +24,7 @@ else()
         ChdbSettingsOverrides.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
+        InstancePaths.cpp
         ChdbClient.cpp
         QueryClassifier.cpp
     )
@@ -58,6 +60,7 @@ if (USE_PYTHON)
         LocalChdb.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
+        InstancePaths.cpp
         ChdbClient.cpp
         NumpyArray.cpp
         NumpyNestedTypes.cpp

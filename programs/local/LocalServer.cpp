@@ -1,4 +1,5 @@
 #include "LocalServer.h"
+#include "InstancePaths.h"
 #include "ChdbSettingsOverrides.h"
 #include "chdb-internal.h"
 #include "ChunkCollectorOutputFormat.h"
@@ -813,38 +814,16 @@ void LocalServer::tryInitPath()
         }
     }
 
-    global_context->setPath(fs::path(path) / "");
-    DatabaseCatalog::instance().fixPath(global_context->getPath());
-
     /// clickhouse-local keeps a generous default limit on temporary data to guard against
     /// runaway queries filling up the disk. It can be raised, or lifted entirely with a value of 0,
     /// via the `max_temporary_data_on_disk_size` server setting.
     const auto & max_temporary_data_on_disk_size = server_settings[ServerSetting::max_temporary_data_on_disk_size];
-    global_context->setTemporaryStoragePath(
-        fs::path(path) / "tmp" / "", max_temporary_data_on_disk_size.changed ? max_temporary_data_on_disk_size.value : 1_TiB);
-    global_context->setFlagsPath(fs::path(path) / "flags" / "");
-
-    global_context->setUserFilesPath(""); /// user's files are everywhere
-
-    std::string user_scripts_path = getClientConfiguration().getString("user_scripts_path", fs::path(path) / "user_scripts" / "");
-    global_context->setUserScriptsPath(user_scripts_path);
-
-    std::string dynamic_udf_path = getClientConfiguration().getString(
-        "dynamic_user_defined_executable_functions_path",
-        fs::path(path) / "dynamic_user_defined_executable_functions" / "");
-    global_context->setDynamicUserDefinedExecutableFunctionsPath(dynamic_udf_path);
-    fs::create_directories(dynamic_udf_path);
-
-    /// Set path for filesystem caches
-    String filesystem_caches_path(getClientConfiguration().getString("filesystem_caches_path", fs::path(path) / "cache" / ""));
-    if (!filesystem_caches_path.empty())
-        global_context->setFilesystemCachesPath(filesystem_caches_path);
-
-    /// top_level_domains_lists
-    const std::string & top_level_domains_path
-        = getClientConfiguration().getString("top_level_domains_path", fs::path(path) / "top_level_domains/");
-    if (!top_level_domains_path.empty())
-        TLDListsHolder::getInstance().parseConfig(fs::path(top_level_domains_path) / "", getClientConfiguration());
+    setupInstancePaths(
+        global_context,
+        getClientConfiguration(),
+        path,
+        max_temporary_data_on_disk_size.changed ? max_temporary_data_on_disk_size.value : 1_TiB);
+    fs::create_directories(global_context->getDynamicUserDefinedExecutableFunctionsPath());
 }
 
 
