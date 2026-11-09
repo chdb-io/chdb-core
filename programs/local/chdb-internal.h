@@ -4,6 +4,7 @@
 #include "QueryResult.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <arrow/c/abi.h>
 
@@ -60,10 +61,8 @@ DB::NameToNameMap buildParameterMap(
     const size_t * param_value_lens,
     size_t param_count);
 
-/// RAII guard mirroring the Python binding's QueryParameterGuard (see LocalChdb.cpp): sets named
-/// parameters on the client for the duration of one query, then unconditionally clears them.
-/// This matches Python `chdb.query(..., params=...)` semantics — including for streaming, where
-/// parameters only need to be present during the streaming init (the engine captures values then).
+/// Applies named parameters for one query and restores the connection's own afterwards, like the
+/// Python binding's QueryParameterGuard. Streaming only needs them during init.
 class CApiQueryParameterGuard
 {
 public:
@@ -75,6 +74,7 @@ public:
 
 private:
     DB::ChdbClient * client = nullptr;
+    std::unique_lock<std::mutex> lock;
     bool applied = false;
 };
 }

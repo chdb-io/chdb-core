@@ -1,33 +1,9 @@
 /**
  * chdbConnSetGetTest.c
  *
- * Connection-level settings through the C API (chdb-io/chdb-core#17):
- * chdb_set / chdb_get change and read a setting of an open connection the way
- * `SET key = value` would, and store values a host wants every later query to
- * use (credentials among them) as connection-level query parameters, so they
- * never have to be pasted into SQL.
- *
- * Covers:
- *   - chdb_get of a default and of a value given at connect time
- *   - chdb_set before the first query and after queries have run, observed
- *     through chdb_get, getSetting(), system.settings and query behavior
- *     (including a format setting)
- *   - isolation between two connections on the same path
- *   - a query's SETTINGS clause overriding the value without changing it
- *   - a SET statement observed by chdb_get
- *   - NULL value resetting to the default
- *   - unknown keys, invalid values, NULL arguments, a --readonly=1 connection
- *     and an active streaming insert all refused, leaving the value as it was
- *   - a change made between fetches of a streaming query surviving the stream
- *   - the chdb_get pointer outliving the connection it was read from
- *   - param_<name> keys: a connection-level query parameter stored once and
- *     used as {name:Type} by every later query, shared with SET param_,
- *     isolated per connection, overridden for one call by
- *     chdb_query_with_params() and restored after it, removed by NULL, and
- *     absent from system.settings
- *   - the issue's case: S3 credentials stored that way and used by s3() on
- *     every query, checked against a local mock endpoint that records each
- *     request's Authorization header, with the secret never sent or printed
+ * chdb_set / chdb_get (chdb-io/chdb-core#17): settings and param_<name>
+ * connection parameters, incl. S3 credentials checked against a local mock
+ * endpoint that records each request's Authorization header.
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbConnSetGetTest.c -I./programs/local -L. -lchdb -lpthread -o examples/chdbConnSetGetTest
@@ -302,6 +278,15 @@ static void test_settings(void)
     CHECK(chdb_set(*a, "custom_tenant", "acme") == CHDBError, "A: chdb_set custom_tenant refused like SET");
     CHECK(chdb_get(*a, "custom_tenant") == NULL, "A: chdb_get custom_tenant is NULL");
 
+    /// A merge_tree_ key is a MergeTree setting kept as a custom one; NULL must reset it too.
+    CHECK(chdb_set(*a, "merge_tree_allow_nullable_key", "1") == CHDBSuccess, "A: set a merge_tree_ setting");
+    CHECK(get_eq(*a, "merge_tree_allow_nullable_key", "1"), "A: merge_tree_ setting reads back");
+    CHECK(chdb_set(*a, "merge_tree_allow_nullable_key", NULL) == CHDBSuccess, "A: reset a merge_tree_ setting");
+    {
+        const char * v = chdb_get(*a, "merge_tree_allow_nullable_key");
+        CHECK(!v || strcmp(v, "1") != 0, "A: merge_tree_ setting no longer 1 after reset");
+    }
+
     /// NULL resets to the default.
     CHECK(chdb_set(*a, "max_threads", NULL) == CHDBSuccess, "A: chdb_set NULL resets");
     CHECK(get_eq(*a, "max_threads", default_threads), "A: back to the default");
@@ -382,6 +367,32 @@ static void s3_query(chdb_connection conn, const char * object, char * buf, size
     query_into(conn, sql, "CSV", buf, buf_size);
 }
 
+struct overrider_args
+{
+    chdb_connection conn;
+    const char * value;
+    int mismatches;
+};
+
+/// Runs SELECT {tenant:String} with its own tenant many times, counting answers that are not its own.
+static void * overrider(void * p)
+{
+    struct overrider_args * args = p;
+    const char * names[] = {"tenant"};
+    const char * values[] = {args->value};
+    char want[32];
+    snprintf(want, sizeof(want), "%s\n", args->value);
+    for (int i = 0; i < 100; ++i)
+    {
+        chdb_result * r = chdb_query_with_params(args->conn, "SELECT {tenant:String}", "TSVRaw", names, values, 1);
+        if (!r || chdb_result_error(r) || chdb_result_length(r) != strlen(want)
+            || memcmp(chdb_result_buffer(r), want, strlen(want)) != 0)
+            ++args->mismatches;
+        chdb_destroy_query_result(r);
+    }
+    return NULL;
+}
+
 static void test_connection_parameters(void)
 {
     char buf[1024];
@@ -438,6 +449,18 @@ static void test_connection_parameters(void)
     CHECK(get_eq(*a, "param_region", "eu-west-3"), "A: SET param_ survives a with_params call");
     query_into(*a, "SELECT {tenant:String}", "CSV", buf, sizeof(buf));
     CHECK(strcmp(buf, "\"acme\"") == 0, "A: next plain query sees the connection value");
+
+    /// Concurrent with_params calls each see their own value and leave the connection's intact.
+    {
+        struct overrider_args args[2] = {{*a, "t1", 0}, {*a, "t2", 0}};
+        pthread_t threads[2];
+        for (int i = 0; i < 2; ++i)
+            pthread_create(&threads[i], NULL, overrider, &args[i]);
+        for (int i = 0; i < 2; ++i)
+            pthread_join(threads[i], NULL);
+        CHECK(args[0].mismatches == 0 && args[1].mismatches == 0, "A: each concurrent with_params call saw its own value");
+        CHECK(get_eq(*a, "param_tenant", "acme"), "A: connection value intact after concurrent with_params calls");
+    }
 
     /// NULL removes.
     CHECK(chdb_set(*a, "param_tenant", NULL) == CHDBSuccess, "A: remove param_tenant");

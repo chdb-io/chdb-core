@@ -300,8 +300,7 @@ size_t ChdbClient::getStorageBytesRead() const
 
 namespace
 {
-/// `SET param_<name> = ...` is how ClickHouse stores a query parameter on the session; chdb_set()
-/// and chdb_get() take the same spelling. Returns <name>, or an empty view for a setting.
+/// "param_<name>" -> "<name>", as in `SET param_<name> = ...`; empty for a setting.
 std::string_view connectionParameterName(std::string_view key)
 {
     constexpr std::string_view prefix = "param_";
@@ -311,13 +310,18 @@ std::string_view connectionParameterName(std::string_view key)
 
 void ChdbClient::setConnectionSetting(const String & key, const String * value)
 {
+    auto name = connectionParameterName(key);
+    /// Waits out a chdb_query_with_params call, whose restore would overwrite this.
+    std::unique_lock<std::mutex> params_lock(query_parameters_mutex, std::defer_lock);
+    if (!name.empty())
+        params_lock.lock();
     std::lock_guard<std::mutex> lock(client_mutex);
 
-    /// The stream restores the settings it snapshotted when it finishes, which would undo this.
+    /// The insert restores its settings snapshot when it ends, undoing this.
     if (streaming_insert_context)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot change a setting while a streaming insert is active on this connection");
 
-    if (auto name = connectionParameterName(key); !name.empty())
+    if (!name.empty())
     {
         if (value)
             query_parameters.insert_or_assign(String(name), *value);
@@ -337,13 +341,11 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
     {
         if (!client_context->getSettingsRef().has(key))
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown setting '{}'", key);
-        SettingChange change(key, Field(client_context->getSettingsRef().getDefaultValueString(key)));
-        client_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        client_context->checkSettingsConstraintsForSettingsReset({key}, SettingSource::QUERY);
         client_context->resetSettingsToDefaultValue({key});
     }
 
-    /// client_context is the session context queries copy, so the change already applies to the
-    /// next query; the connection only caches the format settings derived from it.
+    /// Queries copy client_context; refresh the connection's cached format settings.
     if (connection)
         connection->setFormatSettings(getFormatSettings(client_context));
 }
@@ -390,8 +392,6 @@ void ChdbClient::takeResultSchema(CHDB::QueryResult & res)
 void ChdbClient::setQueryParameters(const NameToNameMap & params)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
-    /// Layered over the connection's own parameters (SET param_x, chdb_set "param_x"): remember
-    /// what each name held so clearQueryParameters() can put the connection back as it was.
     overridden_query_parameters.clear();
     for (const auto & [name, value] : params)
     {

@@ -87,26 +87,21 @@ public:
     void analyzeQuery(
         const char * sql, size_t sql_len, std::string_view target_database, chdb_query_analysis_v1 & out);
 
-    /// chdb_set(): does what `SET key = value` run on this connection would. A setting is checked
-    /// against the same constraints, and a null value resets it to the default. A `param_<name>`
-    /// key stores query parameter <name> on the connection, for every later query to use as
-    /// {name:Type}; a null value removes it. Throws on an unknown setting or an invalid value,
-    /// leaving the connection as it was.
+    /// chdb_set(): `SET key = value` on this connection; null resets a setting or removes a
+    /// param_<name>. Throws, leaving the connection unchanged, if the key or value is rejected.
     void setConnectionSetting(const String & key, const String * value);
 
-    /// chdb_get(): the current value of `key` on this connection, as text: what getSetting(key)
-    /// returns in SQL, or the value of query parameter <name> for `param_<name>`. False when the
-    /// setting does not exist or the parameter is not set.
+    /// chdb_get(): the value getSetting(key) returns, or that of param_<name>; false if none.
     bool getConnectionSetting(const String & key, String & value) const;
 
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
-    /// Set named query parameters ({name:Type} placeholders) for the next query, on top of the
-    /// connection's own; clearQueryParameters() restores what they replaced. Used by both the
-    /// Python binding (params=...) and the C ABI (chdb_query_with_params).
+    /// Per-call parameters over the connection's own; clear puts back what set replaced.
+    /// Hold getQueryParametersMutex() from set to clear.
     void setQueryParameters(const NameToNameMap & params);
     void clearQueryParameters();
+    std::mutex & getQueryParametersMutex() { return query_parameters_mutex; }
 
 #if USE_PYTHON
     /// Prefill Python(name) bindings for a query issued on this thread; the
@@ -159,9 +154,9 @@ private:
     /// Connection settings snapshot taken before applying the streaming
     /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().
     std::unique_ptr<Settings> insert_stream_saved_settings;
-    /// What setQueryParameters() replaced: each name with its previous connection-level value,
-    /// or nullopt if the connection had none.
+    /// What setQueryParameters() replaced (nullopt: was unset).
     std::vector<std::pair<String, std::optional<String>>> overridden_query_parameters;
+    std::mutex query_parameters_mutex;
     mutable std::mutex client_mutex;
 };
 

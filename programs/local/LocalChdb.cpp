@@ -161,6 +161,11 @@ public:
     {
         if (client && !params.empty())
         {
+            {
+                /// The holder may need the GIL to finish its query.
+                py::gil_scoped_release release;
+                lock = std::unique_lock<std::mutex>(client->getQueryParametersMutex());
+            }
             client->setQueryParameters(params);
             applied = true;
         }
@@ -174,6 +179,7 @@ public:
 
 private:
     DB::ChdbClient * client;
+    std::unique_lock<std::mutex> lock;
     bool applied = false;
 };
 

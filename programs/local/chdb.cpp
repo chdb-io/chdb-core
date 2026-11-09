@@ -743,6 +743,7 @@ CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client_, const
 {
     if (client && !params.empty())
     {
+        lock = std::unique_lock<std::mutex>(client->getQueryParametersMutex());
         client->setQueryParameters(params);
         applied = true;
     }
@@ -1626,8 +1627,7 @@ const char * chdb_get(chdb_connection conn, const char * key)
 
     try
     {
-        /// Per thread rather than per connection, so the pointer survives the connection and
-        /// two threads reading one connection do not overwrite each other's answer.
+        /// Per thread, so the pointer outlives the connection and threads don't clobber it.
         thread_local std::string value;
         auto * client = static_cast<DB::ChdbClient *>(connection->server);
         if (!client->getConnectionSetting(key, value))

@@ -785,37 +785,27 @@ CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
 CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
 
 /**
- * Gets the number of columns in the result set
- *
- * The schema comes from the engine, not from parsing the output, so it is the
- * same whatever the output format. A query returning no rows still reports its
- * columns. When the text holds several statements, the schema is that of the
- * last one that produced a result set. For a streaming query it is carried by
- * each result chdb_stream_fetch_result() returns, not by the stream handle.
- *
+ * Gets the number of columns in the result set, the same for every output
+ * format. With several statements, counts the last result set; for a stream,
+ * each fetched result carries it.
  * @param result The query result handle
- * @return Number of columns; 0 when the statement produced no result set
- *         (DDL, INSERT), the query failed, or result is NULL
+ * @return Column count; 0 for DDL, INSERT, a failed query or NULL
  */
 CHDB_EXPORT int chdb_result_column_count(chdb_result * result);
 
 /**
  * Gets the name of a result column
  * @param result The query result handle
- * @param col 0-based column index, below chdb_result_column_count()
- * @return Null-terminated column name owned by the result (valid until
- *         chdb_destroy_query_result()), or NULL if col is out of range
+ * @param col 0-based column index
+ * @return Column name owned by the result, or NULL if col is out of range
  */
 CHDB_EXPORT const char * chdb_result_column_name(chdb_result * result, int col);
 
 /**
- * Gets the ClickHouse type of a result column
+ * Gets the ClickHouse type of a result column, e.g. "Nullable(String)"
  * @param result The query result handle
- * @param col 0-based column index, below chdb_result_column_count()
- * @return Null-terminated ClickHouse type name, e.g. "UInt64",
- *         "Nullable(String)", "DateTime64(3)", "LowCardinality(String)",
- *         owned by the result (valid until chdb_destroy_query_result()), or
- *         NULL if col is out of range
+ * @param col 0-based column index
+ * @return Type name owned by the result, or NULL if col is out of range
  */
 CHDB_EXPORT const char * chdb_result_column_type(chdb_result * result, int col);
 
@@ -1148,58 +1138,35 @@ CHDB_EXPORT chdb_state chdb_classify_query_n(
 //===--------------------------------------------------------------------===//
 
 /**
- * Changes a setting, or stores a variable, on an open connection.
+ * Does what `SET key = value` would on this connection only, without SQL.
  *
- * Does what `SET key = value` run on the connection would, without writing
- * SQL. The change lasts until the connection closes or the key is set again,
- * and no other connection sees it.
+ * A setting key goes through SET's constraint checks; NULL resets it.
+ * A param_<name> key stores query parameter <name> for every later query to
+ * use as {name:Type}; NULL removes it. chdb_query_with_params() overrides it
+ * for one call. Credentials passed this way never appear in the SQL text:
  *
- * A key naming a ClickHouse setting (max_threads, s3_max_connections,
- * input_format_parquet_*, ...) changes that setting. The value is checked
- * against the same constraints as SET, so a --readonly=1 connection refuses
- * every change, and a query's own SETTINGS clause still overrides it for that
- * query. A NULL value resets the setting to its default.
- *
- * A key of the form param_<name> stores <name> as a query parameter of the
- * connection, as `SET param_<name> = value` does. Every later query on the
- * connection can use it as {<name>:Type}, anywhere a query parameter is
- * allowed, and the parameters of chdb_query_with_params() override it for
- * their query only. A NULL value removes it. This is how to hand the engine a
- * value once and reuse it, e.g. credentials:
- *
- *   chdb_set(conn, "param_s3_key", "AKIAIOSFODNN7EXAMPLE");
- *   chdb_set(conn, "param_s3_secret", "wJalrXUtnFEMI...");
- *   chdb_query(conn, "SELECT * FROM s3('https://bucket.s3.amazonaws.com/f.parquet',"
+ *   chdb_set(conn, "param_s3_key", "AKIA...");
+ *   chdb_set(conn, "param_s3_secret", "wJal...");
+ *   chdb_query(conn, "SELECT * FROM s3('https://b.s3.amazonaws.com/f.parquet',"
  *                    " {s3_key:String}, {s3_secret:String})", "Arrow");
  *
- * The values are substituted into the parsed query, not into its text, so
- * they never appear in the SQL the host submits or logs.
- *
- * Fails while a streaming insert is active on the connection.
- *
  * @param conn Connection to change
- * @param key Null-terminated setting name, or param_<name>
- * @param value Null-terminated value, or NULL to reset or remove
- * @return CHDBSuccess, or CHDBError if conn or key is NULL, the connection is
- *         closed, key names no setting, or the value is invalid or not
- *         allowed -- the connection is then left as it was
+ * @param key Setting name, or param_<name>
+ * @param value Value, or NULL to reset or remove
+ * @return CHDBError on a NULL argument, a closed connection, an unknown
+ *         setting, a rejected value, or an active streaming insert; the
+ *         connection is then unchanged
  */
 CHDB_EXPORT chdb_state chdb_set(chdb_connection conn, const char * key, const char * value);
 
 /**
- * Gets the current value of a setting, or of a variable stored with
- * chdb_set(), on an open connection.
- *
- * For a setting: the value chdb_set(), a SET statement or a connect argument
- * gave it, or else its default, as text -- what getSetting(key) returns in
- * SQL (so max_threads reads "8" where system.settings shows "auto(8)").
- * For param_<name>: the value of that query parameter, however it was set.
- *
+ * Gets a setting's current value as getSetting() returns it, or the value of
+ * param_<name>.
  * @param conn Connection to read
- * @param key Null-terminated setting name, or param_<name>
- * @return Null-terminated value, valid until the next chdb_get() on the same
- *         thread; NULL if conn or key is NULL, the connection is closed, key
- *         names no setting, or the parameter is not set
+ * @param key Setting name, or param_<name>
+ * @return Value valid until the next chdb_get() on this thread; NULL on a NULL
+ *         argument, a closed connection, an unknown setting or an unset
+ *         parameter
  */
 CHDB_EXPORT const char * chdb_get(chdb_connection conn, const char * key);
 

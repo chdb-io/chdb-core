@@ -1,22 +1,9 @@
 /**
  * chdbResultSchemaTest.c
  *
- * Result schema metadata through the C API (chdb-io/chdb-core#16):
- * chdb_result_column_count / chdb_result_column_name / chdb_result_column_type
- * report the engine's own column names and ClickHouse type strings, so a host
- * never parses DESCRIBE output or a TabSeparatedWithNamesAndTypes header.
- *
- * Covers:
- *   - exact names and type strings for scalar, Nullable, Decimal, DateTime64,
- *     LowCardinality, Array, Tuple and Map columns
- *   - the same schema whatever the output format (text, Arrow, Parquet, Native)
- *   - a result with zero rows still reporting its columns
- *   - schema inference from a Parquet file agreeing with DESCRIBE, the
- *     pg_clickhouse use case from the issue
- *   - DDL, INSERT, failed queries and NULL handles reporting no columns
- *   - out-of-range indexes returning NULL
- *   - multi-statement text reporting the last result set
- *   - parameterized queries and every fetched batch of a streaming query
+ * chdb_result_column_count / _name / _type (chdb-io/chdb-core#16), compared
+ * with DESCRIBE across output formats, empty results, DDL, errors, Parquet
+ * inference, multi-statement, parameterized and streaming queries.
  *
  * Build (against an already-built libchdb.so):
  *   clang examples/chdbResultSchemaTest.c -I./programs/local -L. -lchdb -o examples/chdbResultSchemaTest
