@@ -882,7 +882,9 @@ try
 catch (DB::Exception & e)
 {
     bool need_print_stack_trace = config().getBool("stacktrace", false);
-    std::cerr << getExceptionMessageForLogging(e, need_print_stack_trace, true) << std::endl;
+    auto message = getExceptionMessageForLogging(e, need_print_stack_trace, true);
+    std::cerr << message << std::endl;
+    error_message_oss << message << '\n';
     auto code = DB::getCurrentExceptionCode();
     return static_cast<UInt8>(code) ? code : 1;
 }
