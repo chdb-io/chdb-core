@@ -393,7 +393,43 @@ Key features:
 - **NULL handling**: `on_null=NullHandling.SKIP` (default) skips the function call and returns NULL; `NullHandling.PASS` passes `None` to the function.
 - **Exception handling**: `on_error=ExceptionHandling.PROPAGATE` (default) raises the error to the caller; `ExceptionHandling.IGNORE` returns NULL for that row and continues.
 
-See also: [test_func_udf.py](tests/test_func_udf.py), [test_func_udf_types.py](tests/test_func_udf_types.py).
+**Arrow (vectorized) UDFs**: with `type="arrow"`, the function is called once per block of rows
+instead of once per row. Every argument arrives as a `pyarrow.ChunkedArray`, and the function
+returns one value per input row: a pyarrow array, a one-column pyarrow table, or anything
+`pyarrow.array()` accepts (a list, a NumPy array, a pandas Series).
+
+```python
+import numpy as np
+import pyarrow.compute as pc
+from chdb.sqltypes import FLOAT64, INT64
+
+@chdb.func([INT64, INT64], INT64, type="arrow")
+def add_arrow(a, b):
+    return pc.add(a, b)
+
+@chdb.func([FLOAT64], FLOAT64, type="arrow")
+def log1p_arrow(x):
+    return np.log1p(x.to_numpy())
+
+print(sess.query("SELECT add_arrow(toInt64(number), 1), log1p_arrow(toFloat64(number)) FROM numbers(5)"))
+```
+
+- Types, annotations, `on_null` and `on_error` work as for a per-row UDF, at block granularity:
+  `on_null="skip"` leaves the rows with a NULL argument out of the arrays (they come back as
+  NULL); `on_null="pass"` hands them over as nulls; `on_error="ignore"` returns NULL for the
+  whole block.
+- The result is cast to `return_type`; a value that does not fit (an integer out of range, a
+  fraction for an integer type) is an error. As for a per-row UDF, a float NaN becomes NULL. A
+  naive `datetime` is read in the time zone of the return type, as ClickHouse parses
+  `'2024-01-02 03:04:05'` into it.
+- Strings arrive as `pyarrow.string()`, which must be valid UTF-8; declare a String argument as
+  `bytes` to receive arbitrary bytes as `pyarrow.binary()`.
+- Vectorized compute (`pyarrow.compute`, NumPy) is where the speedup comes from, typically
+  5-45x over the per-row UDF; see [bench_udf_arrow.py](tests/benchmarks/bench_udf_arrow.py).
+  A per-value Python loop inside an Arrow UDF gains little, and should iterate over
+  `x.to_numpy().tolist()` rather than the much slower `x.to_pylist()`.
+
+See also: [test_func_udf.py](tests/test_func_udf.py), [test_func_udf_types.py](tests/test_func_udf_types.py), [test_func_udf_arrow.py](tests/test_func_udf_arrow.py).
 
 </details>
 

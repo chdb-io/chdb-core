@@ -615,6 +615,40 @@ class TestUDFBulkAndComplexSQL(unittest.TestCase):
         chdb.drop_function("upper_if_long")
 
 
+class TestUDFLowCardinality(unittest.TestCase):
+    """A LowCardinality argument must reach the function as the values of its rows only,
+    never as the column's dictionary, which holds values no row has."""
+
+    def setUp(self):
+        self.session = Session()
+
+    def tearDown(self):
+        self.session.close()
+
+    def test_only_row_values_are_passed(self):
+        calls = []
+
+        def parse(s):
+            calls.append(s)
+            return int(s)
+
+        chdb.create_function("udf_lc_parse", parse, arg_types=[STRING], return_type=INT64)
+        try:
+            ret = self.session.query(
+                "SELECT udf_lc_parse(x) FROM "
+                "(SELECT toLowCardinality(toString(number % 3)) AS x FROM numbers(6))", "CSV")
+            self.assertEqual(str(ret).strip(), "0\n1\n2\n0\n1\n2")
+            self.assertEqual(sorted(calls), ["0", "0", "1", "1", "2", "2"])
+
+            # The dictionary keeps the values a filter drops.
+            ret = self.session.query(
+                "SELECT udf_lc_parse(x) FROM "
+                "(SELECT toLowCardinality(arrayJoin(['1', 'bad', '2'])) AS x) WHERE x != 'bad'", "CSV")
+            self.assertEqual(str(ret).strip(), "1\n2")
+        finally:
+            chdb.drop_function("udf_lc_parse")
+
+
 class TestUDFPythonNativeTypes(unittest.TestCase):
     """Verify that arg_types and return_type accept Python native types,
     and that annotation-based inference produces identical results."""

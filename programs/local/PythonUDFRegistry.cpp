@@ -1,5 +1,6 @@
 #include "PythonUDFRegistry.h"
 #include <PybindWrapper.h>
+#include "PythonArrowUDF.h"
 #include "PythonScalarUDF.h"
 
 #include <AggregateFunctions/PythonUDAFFactory.h>
@@ -33,7 +34,8 @@ void PythonUDFRegistry::registerUDF(
     DB::DataTypePtr return_type,
     const py::list & arg_types_hint,
     NullHandling null_handling,
-    ExceptionHandling exception_handling)
+    ExceptionHandling exception_handling,
+    UDFType udf_type)
 {
     py::gil_assert();
 
@@ -61,7 +63,11 @@ void PythonUDFRegistry::registerUDF(
     /// stop-the-world deadlock class as issue #131: the blocked waiters never
     /// reach a safepoint, so a GC stop-the-world issued during the signature
     /// inspection could never complete.
-    auto udf = std::make_shared<PythonScalarUDF>(name, std::move(func), std::move(return_type), null_handling, exception_handling);
+    std::shared_ptr<PythonScalarUDF> udf;
+    if (udf_type == UDFType::ARROW)
+        udf = std::make_shared<PythonArrowUDF>(name, std::move(func), std::move(return_type), null_handling, exception_handling);
+    else
+        udf = std::make_shared<PythonScalarUDF>(name, std::move(func), std::move(return_type), null_handling, exception_handling);
     udf->initSignature(arg_types_hint);
 
     std::unique_lock lock(mutex);
@@ -114,10 +120,11 @@ void registerPythonUDF(
     DB::DataTypePtr return_type,
     const py::list & arg_types_hint,
     NullHandling null_handling,
-    ExceptionHandling exception_handling)
+    ExceptionHandling exception_handling,
+    UDFType udf_type)
 {
     PythonUDFRegistry::instance().registerUDF(
-        name, std::move(func), std::move(return_type), arg_types_hint, null_handling, exception_handling);
+        name, std::move(func), std::move(return_type), arg_types_hint, null_handling, exception_handling, udf_type);
 }
 
 bool removePythonUDF(const String & name)

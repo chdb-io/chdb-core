@@ -10,7 +10,7 @@ from xml.etree import ElementTree as ET
 import chdb
 
 
-def func(arg_types=None, return_type=None, *, on_null=None, on_error=None):
+def func(arg_types=None, return_type=None, *, on_null=None, on_error=None, type=None):
     """Decorator to register a Python function as a chDB SQL function.
 
     Uses the native Python UDF mechanism (create_function) for direct
@@ -36,6 +36,26 @@ def func(arg_types=None, return_type=None, *, on_null=None, on_error=None):
         on_error (str): How to handle exceptions. Keyword-only. Accepts:
             - ``"propagate"`` (default): raise the error.
             - ``"ignore"``: return NULL for that row.
+        type (str): How the function receives its input. Keyword-only. Accepts:
+            - ``"native"`` (default): called once per row with Python values.
+            - ``"arrow"``: called once per block of rows, with one
+              ``pyarrow.ChunkedArray`` per argument. It returns one value per input
+              row, as a ``pyarrow.Array`` / ``pyarrow.ChunkedArray``, a one-column
+              ``pyarrow.Table`` / ``pyarrow.RecordBatch``, or anything
+              ``pyarrow.array()`` accepts (a list, a NumPy array, a pandas Series).
+              The result is cast to ``return_type``, failing on values that do not
+              fit. Types, annotations, ``on_null`` and ``on_error`` work as for a
+              native function, at block granularity: under ``on_null="skip"`` the
+              rows with a NULL argument are left out of the arrays (and come back
+              as NULL), and ``on_error="ignore"`` returns NULL for the whole block.
+              As for a native function, a float NaN in the result becomes NULL. A naive
+              ``datetime`` is read in the time zone of the return type, as ClickHouse
+              parses ``'2024-01-02 03:04:05'`` into it. A String argument
+              arrives as ``pyarrow.string()`` and must be valid UTF-8, unless it is
+              declared as ``bytes`` (``pyarrow.binary()``). An Arrow function needs at
+              least one argument, because the number of rows it returns follows the
+              arrays it receives.
+            - A ``chdb.UDFType`` member, ``UDFType.NATIVE`` or ``UDFType.ARROW``.
 
     Returns:
         The original function, unchanged. It remains callable as normal Python
@@ -65,12 +85,19 @@ def func(arg_types=None, return_type=None, *, on_null=None, on_error=None):
             def null_safe(x):
                 return 0 if x is None else x + 1
 
+            # Vectorized: one call per block, with pyarrow arrays in and out:
+            import pyarrow.compute as pc
+
+            @func([INT64, INT64], INT64, type="arrow")
+            def add_arrow(a, b):
+                return pc.add(a, b)
+
     To remove a registered function, use ``chdb.drop_function(name)``.
     """
 
     def decorator(fn):
         chdb.create_function(fn.__name__, fn, arg_types, return_type,
-                             on_null=on_null, on_error=on_error)
+                             on_null=on_null, on_error=on_error, type=type)
 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):

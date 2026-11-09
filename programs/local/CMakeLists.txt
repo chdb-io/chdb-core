@@ -78,6 +78,7 @@ if (USE_PYTHON)
         ChdbGlobalFunctions.cpp
         ChdbPyType.cpp
         PythonAggregateUDF.cpp
+        PythonArrowUDF.cpp
         PythonScalarUDF.cpp
         PythonUDAFRegistry.cpp
         PythonUDFCommon.cpp
