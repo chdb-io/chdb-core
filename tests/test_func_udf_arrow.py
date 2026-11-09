@@ -20,8 +20,8 @@ try:
 except ImportError:
     pl = None
 
-# chdb-core-lite drops the Int128/256 and UInt128/256 conversion functions the big
-# integer test below builds its input with; see tests/test_func_udf_types.py.
+# chdb-core-lite drops the Int128/256, UInt128/256 and BFloat16 conversion functions
+# some tests below build their input with; see tests/test_chdb_core_lite.py.
 _LITE = os.environ.get("CHDB_LITE") == "1"
 
 
@@ -680,6 +680,7 @@ class TestArrowUDFArgumentTypes(ArrowUDFTestCase):
                     self.assertEqual(seen[0][0], arrow_type)
                 self.assertEqual(seen[0][1], values)
 
+    @unittest.skipIf(_LITE, "chdb-core-lite drops toBFloat16 and the BFloat16 conversions")
     def test_bfloat16_arrives_as_float32(self):
         self.check_arg("arrow_bfloat16", None, "toBFloat16(1.5)", pa.float32(), [1.5])
 
