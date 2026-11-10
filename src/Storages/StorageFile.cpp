@@ -491,8 +491,13 @@ Strings getPathsList(const String & path_with_globs, const String & user_files_p
         return {path_with_globs};
     }
 #endif
-    fs::path user_files_absolute_path = fs::weakly_canonical(user_files_path);
     fs::path fs_pattern(path_with_globs);
+    /// chdb_spec: chDB's user_files_path is empty, so resolving it needs the working directory, which the
+    /// process may have removed. Outside the server the result only resolves a relative pattern; an
+    /// absolute one does not need it.
+    fs::path user_files_absolute_path;
+    if (fs_pattern.is_relative() || context->getApplicationType() == Context::ApplicationType::SERVER)
+        user_files_absolute_path = fs::weakly_canonical(user_files_path);
     if (fs_pattern.is_relative())
         fs_pattern = user_files_absolute_path / fs_pattern;
 
