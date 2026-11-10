@@ -9,7 +9,8 @@
 /// glibc's free aborts on it.
 ///
 /// These hidden definitions take every function from the main program's handle, which searches the
-/// global scope, the same scope that resolves glibc's own calls and Python's.
+/// global scope, the same scope that resolves glibc's own calls and Python's. In a dlmopen() namespace,
+/// which has a libc of its own that dlopen(NULL) does not return, they keep what RTLD_NEXT finds.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -30,12 +31,25 @@ HIDDEN void * memalign(size_t alignment, size_t size);
 HIDDEN void * valloc(size_t size);
 HIDDEN size_t malloc_usable_size(void * ptr);
 
+static int in_default_namespace(void)
+{
+    Dl_info info;
+    void * self = NULL; /// glibc's dlopen handles are link_map pointers
+    Lmid_t namespace_id = LM_ID_BASE;
+    if (dladdr1((void *)&in_default_namespace, &info, &self, RTLD_DL_LINKMAP) && self)
+        dlinfo(self, RTLD_DI_LMID, &namespace_id);
+    return namespace_id == LM_ID_BASE;
+}
+
 static void * resolve(const char * name)
 {
     void * function = NULL;
-    void * main_program = dlopen(NULL, RTLD_LAZY);
-    if (main_program)
-        function = dlsym(main_program, name);
+    if (in_default_namespace())
+    {
+        void * main_program = dlopen(NULL, RTLD_LAZY);
+        if (main_program)
+            function = dlsym(main_program, name);
+    }
     if (!function)
         function = dlsym(RTLD_NEXT, name);
     if (!function)

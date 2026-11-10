@@ -27,6 +27,22 @@ namespace
 
 using FreeFunction = void (*)(void *);
 
+/// dlopen(nullptr) returns the main program even to a library that dlmopen() put in another link-map
+/// namespace, and such a namespace has a libc of its own.
+bool inDefaultNamespace()
+{
+#if defined(__GLIBC__)
+    Dl_info info;
+    void * self = nullptr; /// glibc's dlopen handles are link_map pointers
+    Lmid_t namespace_id = LM_ID_BASE;
+    if (dladdr1(reinterpret_cast<void *>(&inDefaultNamespace), &info, &self, RTLD_DL_LINKMAP) && self)
+        dlinfo(self, RTLD_DI_LMID, &namespace_id);
+    return namespace_id == LM_ID_BASE;
+#else
+    return true;
+#endif
+}
+
 /// The free() for pointers jemalloc does not own.
 ///
 /// When chdb is a shared library (_chdb.abi3.so, libchdb.so) the export map hides the functions below,
@@ -37,12 +53,14 @@ using FreeFunction = void (*)(void *);
 /// only the library's own dependencies and finds glibc's free, and so does RTLD_DEFAULT under
 /// RTLD_DEEPBIND (chdb/__init__.py loads the Python module that way).
 ///
-/// When this file is linked into the executable, the main program's free is this one; keep RTLD_NEXT.
+/// Keep RTLD_NEXT when this file is linked into the executable, whose free is this one, and in a
+/// dlmopen() namespace, where it finds that namespace's libc.
 FreeFunction resolveForeignFree()
 {
     FreeFunction process_free = nullptr;
-    if (void * main_program = dlopen(nullptr, RTLD_LAZY))
-        process_free = reinterpret_cast<FreeFunction>(dlsym(main_program, "free"));
+    if (inDefaultNamespace())
+        if (void * main_program = dlopen(nullptr, RTLD_LAZY))
+            process_free = reinterpret_cast<FreeFunction>(dlsym(main_program, "free"));
     if (process_free == nullptr || process_free == &free)
         process_free = reinterpret_cast<FreeFunction>(dlsym(RTLD_NEXT, "free"));
     return process_free;
