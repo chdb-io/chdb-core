@@ -84,8 +84,16 @@ set(STUBS_SOURCES
     "${LIBRARY_DIR}/source/non_limited_api/non_limited_api_stubs.cpp"
 )
 
+# chdb_spec: on glibc both shared libraries are loaded with RTLD_DEEPBIND, which binds their malloc
+# and free to glibc's even when the process allocator is another one; process_allocator.c gives them
+# hidden definitions that call the process allocator.
+if (OS_LINUX AND NOT USE_MUSL)
+    set(CHDB_PYBIND11_PROCESS_ALLOCATOR "${CMAKE_CURRENT_SOURCE_DIR}/process_allocator.c")
+    set_source_files_properties("${CHDB_PYBIND11_PROCESS_ALLOCATOR}" PROPERTIES COMPILE_FLAGS "-fno-builtin")
+endif()
+
 if (NOT USE_MUSL)
-    add_library(pybind11_stubs SHARED ${STUBS_SOURCES})
+    add_library(pybind11_stubs SHARED ${STUBS_SOURCES} ${CHDB_PYBIND11_PROCESS_ALLOCATOR})
 else()
     add_library(pybind11_stubs STATIC ${STUBS_SOURCES})
 endif()
@@ -128,7 +136,7 @@ add_library(ch_contrib::pybind11_stubs ALIAS pybind11_stubs)
 set(PYBIND11_NONLIMITEDAPI_LIBNAME
     "pybind11nonlimitedapi_${PYBIND11_LIB_SUFFIX}_${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}")
 
-add_library(${PYBIND11_NONLIMITEDAPI_LIBNAME} SHARED ${LIBRARY_DIR}/source/non_limited_api/non_limited_api.cpp)
+add_library(${PYBIND11_NONLIMITEDAPI_LIBNAME} SHARED ${LIBRARY_DIR}/source/non_limited_api/non_limited_api.cpp ${CHDB_PYBIND11_PROCESS_ALLOCATOR})
 
 if (OS_LINUX AND Python_VERSION_MAJOR EQUAL 3 AND Python_VERSION_MINOR EQUAL 8)
     target_compile_options(${PYBIND11_NONLIMITEDAPI_LIBNAME} PRIVATE -w -idirafter /usr/include -include crypt.h)
