@@ -1,4 +1,5 @@
 #include "EmbeddedServer.h"
+#include "InstancePaths.h"
 #include "ChdbSettingsOverrides.h"
 
 #include "ChunkCollectorOutputFormat.h"
@@ -545,26 +546,8 @@ void EmbeddedServer::tryInitPath()
     }
     fs::create_directories(path);
 
-    global_context->setPath(fs::path(path) / "");
-    DatabaseCatalog::instance().fixPath(global_context->getPath());
-
-    global_context->setTemporaryStoragePath(fs::path(path) / "tmp" / "", 0);
-    global_context->setFlagsPath(fs::path(path) / "flags" / "");
-
-    global_context->setUserFilesPath(""); /// user's files are everywhere
-
-    std::string user_scripts_path = config().getString("user_scripts_path", fs::path(path) / "user_scripts" / "");
-    global_context->setUserScriptsPath(user_scripts_path);
-
-    /// Set path for filesystem caches
-    String filesystem_caches_path(config().getString("filesystem_caches_path", fs::path(path) / "cache" / ""));
-    if (!filesystem_caches_path.empty())
-        global_context->setFilesystemCachesPath(filesystem_caches_path);
-
-    /// top_level_domains_lists
-    const std::string & top_level_domains_path = config().getString("top_level_domains_path", fs::path(path) / "top_level_domains/");
-    if (!top_level_domains_path.empty())
-        TLDListsHolder::getInstance().parseConfig(fs::path(top_level_domains_path) / "", config());
+    /// No limit on temporary data here, unlike clickhouse-local: the engine runs inside the caller's process.
+    setupInstancePaths(global_context, config(), path, 0);
 }
 
 
@@ -882,7 +865,9 @@ try
 catch (DB::Exception & e)
 {
     bool need_print_stack_trace = config().getBool("stacktrace", false);
-    std::cerr << getExceptionMessageForLogging(e, need_print_stack_trace, true) << std::endl;
+    auto message = getExceptionMessageForLogging(e, need_print_stack_trace, true);
+    std::cerr << message << std::endl;
+    error_message_oss << message << '\n';
     auto code = DB::getCurrentExceptionCode();
     return static_cast<UInt8>(code) ? code : 1;
 }

@@ -73,10 +73,10 @@ FormatSchemaInfo::FormatSchemaInfo(
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "format_schema_message_name is specified {} when not required", message_name);
     }
 
+    /// Not cached in a static: one chDB process can open connections with different `format_schema_path` values.
     auto default_schema_directory = [&format_schema_path]()
     {
-        static const String str = fs::canonical(format_schema_path) / "";
-        return str;
+        return String(fs::canonical(format_schema_path) / "");
     };
 
     if (format_schema_source == FormatSettings::FORMAT_SCHEMA_SOURCE_FILE)
