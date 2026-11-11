@@ -5,6 +5,8 @@
 #include <arrow/c/abi.h>
 #include <base/defines.h>
 
+#include <memory>
+
 namespace CHDB
 {
 
@@ -93,36 +95,26 @@ static chdb_state chdb_inner_arrow_scan(
         return CHDBError;
 
     auto * stream = reinterpret_cast<ArrowArrayStream *>(arrow_stream);
-
-    ArrowSchema schema;
-    if (stream->get_schema(stream, &schema) == CHDBError)
+    if (!stream->release || !stream->get_schema)
         return CHDBError;
 
-    using ReleaseFunction = void (*)(ArrowSchema *);
-    std::vector<ReleaseFunction> releases(static_cast<size_t>(schema.n_children));
-    for (size_t i = 0; i < static_cast<size_t>(schema.n_children); i++)
-    {
-        auto * child = schema.children[i];
-        releases[i] = child->release;
-        child->release = CHDB::EmptySchemaRelease;
-    }
+    /// Only validates the stream; the schema is fetched again when the table is read.
+    /// get_schema hands us a schema we own, so release it here.
+    ArrowSchema schema{};
+    if (stream->get_schema(stream, &schema) != 0)
+        return CHDBError;
+    if (schema.release)
+        schema.release(&schema);
 
-    bool success = false;
     try
     {
-        success = CHDB::ArrowStreamRegistry::instance().registerArrowStream(String(table_name), stream, is_owner);
+        return CHDB::ArrowStreamRegistry::instance().registerArrowStream(String(table_name), stream, is_owner)
+            ? CHDBSuccess : CHDBError;
     }
     catch (...)
     {
         return CHDBError;
     }
-
-    for (size_t i = 0; i < static_cast<size_t>(schema.n_children); ++i)
-    {
-        schema.children[i]->release = releases[i];
-    }
-
-    return success ? CHDBSuccess : CHDBError;
 }
 
 chdb_state chdb_arrow_scan(
@@ -136,19 +128,33 @@ chdb_state chdb_arrow_array_scan(
     chdb_connection conn, const char * table_name,
     chdb_arrow_schema arrow_schema, chdb_arrow_array arrow_array)
 {
-    auto * private_data = new CHDB::PrivateData();
-	private_data->schema = reinterpret_cast<ArrowSchema *>(arrow_schema);
-	private_data->array = reinterpret_cast<ArrowArray *>(arrow_array);
-	private_data->done = false;
+    if (!arrow_schema || !arrow_array)
+        return CHDBError;
 
-	auto * stream = new ArrowArrayStream();
-	stream->get_schema = CHDB::GetSchema;
-	stream->get_next = CHDB::GetNext;
-	stream->get_last_error = CHDB::GetLastError;
-	stream->release = CHDB::Release;
-	stream->private_data = private_data;
+    ArrowArrayStream * stream = nullptr;
+    try
+    {
+        auto private_data = std::make_unique<CHDB::PrivateData>();
+        private_data->schema = reinterpret_cast<ArrowSchema *>(arrow_schema);
+        private_data->array = reinterpret_cast<ArrowArray *>(arrow_array);
 
-	return chdb_inner_arrow_scan(conn, table_name, reinterpret_cast<chdb_arrow_stream>(stream), true);
+        stream = new ArrowArrayStream();
+        stream->get_schema = CHDB::GetSchema;
+        stream->get_next = CHDB::GetNext;
+        stream->get_last_error = CHDB::GetLastError;
+        stream->release = CHDB::Release;
+        stream->private_data = private_data.release();
+    }
+    catch (...)
+    {
+        return CHDBError;
+    }
+
+    /// The registry takes the wrapper only on success; otherwise it is ours to free.
+    chdb_state state = chdb_inner_arrow_scan(conn, table_name, reinterpret_cast<chdb_arrow_stream>(stream), true);
+    if (state != CHDBSuccess)
+        CHDB::chdb_destroy_arrow_stream(stream);
+    return state;
 }
 
 chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name)
