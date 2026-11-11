@@ -22,6 +22,52 @@
 /// jemalloc with je_ prefix does not export valloc/memalign/pvalloc,
 /// so we implement them via je_posix_memalign / je_aligned_alloc.
 
+namespace
+{
+
+using FreeFunction = void (*)(void *);
+
+/// dlopen(nullptr) returns the main program even to a library that dlmopen() put in another link-map
+/// namespace, and such a namespace has a libc of its own.
+bool inDefaultNamespace()
+{
+#if defined(__GLIBC__)
+    Dl_info info;
+    void * self = nullptr; /// glibc's dlopen handles are link_map pointers
+    Lmid_t namespace_id = LM_ID_BASE;
+    if (dladdr1(reinterpret_cast<void *>(&inDefaultNamespace), &info, &self, RTLD_DL_LINKMAP) && self)
+        dlinfo(self, RTLD_DI_LMID, &namespace_id);
+    return namespace_id == LM_ID_BASE;
+#else
+    return true;
+#endif
+}
+
+/// The free() for pointers jemalloc does not own.
+///
+/// When chdb is a shared library (_chdb.abi3.so, libchdb.so) the export map hides the functions below,
+/// so they serve only chdb's own code. glibc functions such as realpath(), getcwd() and strdup(), and
+/// Python itself, allocate from the process allocator: the malloc of the global scope, which is not
+/// glibc's when jemalloc is linked into the interpreter or LD_PRELOAD'ed. Look free up in the main
+/// program's handle, which searches that scope. dlsym(RTLD_NEXT) from a dlopen'ed library searches
+/// only the library's own dependencies and finds glibc's free, and so does RTLD_DEFAULT under
+/// RTLD_DEEPBIND (chdb/__init__.py loads the Python module that way).
+///
+/// Keep RTLD_NEXT when this file is linked into the executable, whose free is this one, and in a
+/// dlmopen() namespace, where it finds that namespace's libc.
+FreeFunction resolveForeignFree()
+{
+    FreeFunction process_free = nullptr;
+    if (inDefaultNamespace())
+        if (void * main_program = dlopen(nullptr, RTLD_LAZY))
+            process_free = reinterpret_cast<FreeFunction>(dlsym(main_program, "free"));
+    if (process_free == nullptr || process_free == &free)
+        process_free = reinterpret_cast<FreeFunction>(dlsym(RTLD_NEXT, "free"));
+    return process_free;
+}
+
+}
+
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreserved-identifier"
 
@@ -47,8 +93,7 @@ void free(void * ptr)
     if (!ptr)
         return;
 
-    /// glibc functions such as realpath() and getcwd() use __libc_malloc@GLIBC_PRIVATE
-    /// which bypasses our malloc override, returning pointers not known to jemalloc.
+    /// Pointers from the process allocator (see resolveForeignFree) are not known to jemalloc.
     /// je_vsallocx() safely returns 0 for such foreign pointers (uses rtree dependent=false),
     /// whereas je_sallocx / je_free crash in jemalloc's rtree lookup.
     /// For jemalloc-owned pointers it returns the usable size, the same value je_sallocx()
@@ -56,10 +101,9 @@ void free(void * ptr)
     size_t actual_size = je_vsallocx(ptr, 0);
     if (unlikely(actual_size == 0))
     {
-        static void (* libc_free_ptr)(void *) =
-            reinterpret_cast<void (*)(void *)>(dlsym(RTLD_NEXT, "free"));
-        if (libc_free_ptr)
-            libc_free_ptr(ptr);
+        static FreeFunction foreign_free = resolveForeignFree();
+        if (foreign_free)
+            foreign_free(ptr);
         return;
     }
 
