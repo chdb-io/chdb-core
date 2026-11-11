@@ -205,9 +205,11 @@ class TestQueryJSON(unittest.TestCase):
         self.assertEqual(str(ret), EXPECTED1)
 
     def test_query_dict1(self):
-        ret = self.sess.query("SELECT c4.tags, c3.deep.level2.level3, c3.mixed_list[].a FROM Python(dict1) WHERE c1 <= 2 ORDER BY c1")
-
-        self.assertEqual(str(ret), EXPECTED1)
+        # c3 and c4 mix dicts with other values (1, 'a', a date). Like any object column,
+        # they read as String, keeping every value, unless pandas_analyze_sample < 0 asks
+        # for JSON (test_query_df2).
+        ret = self.sess.query("SELECT toTypeName(c3), toTypeName(c4), c3, c4 FROM Python(dict1) WHERE c1 >= 7 ORDER BY c1")
+        self.assertEqual(str(ret), '"Nullable(String)","Nullable(String)","1",\\N\n"Nullable(String)","Nullable(String)","a","2023-05-15"\n')
 
     def test_query_df1(self):
         data = {
