@@ -14,6 +14,8 @@ declare -A VERSION_MAP=(
     ["3.12"]="3.12.10:3.12:3.12"
     ["3.13"]="3.13.9:3.13:3.13"
     ["3.14"]="3.14.0:3.14:3.14"
+    # 3.15.0 final is due 2026-10-01; bump to it once python.org ships the installer.
+    ["3.15"]="3.15.0rc2:3.15:3.15"
     ["3.13t"]="3.13.9:3.13t:3.13"
     ["3.14t"]="3.14.0:3.14t:3.14"
 )
@@ -37,6 +39,7 @@ else
         "${VERSION_MAP[3.12]}"
         "${VERSION_MAP[3.13]}"
         "${VERSION_MAP[3.14]}"
+        "${VERSION_MAP[3.15]}"
     )
 fi
 
@@ -66,7 +69,10 @@ for entry in "${VERSIONS[@]}"; do
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR"
 
-    PKG_URL="https://www.python.org/ftp/python/${FULL_VER}/python-${FULL_VER}-macos11.pkg"
+    # python.org keeps pre-releases under the final version's directory
+    # (e.g. .../3.15.0/python-3.15.0rc2-macos11.pkg).
+    DIR_VER="$(sed -E 's/(a|b|rc)[0-9]+$//' <<< "$FULL_VER")"
+    PKG_URL="https://www.python.org/ftp/python/${DIR_VER}/python-${FULL_VER}-macos11.pkg"
 
     echo "Downloading: $PKG_URL"
     if wget -q --spider "$PKG_URL" 2>/dev/null; then
