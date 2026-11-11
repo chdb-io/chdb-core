@@ -21,6 +21,7 @@
 #include <pybind11/detail/non_limited_api.h>
 #endif
 #include <pybind11/pybind11.h>
+#include <arrow/c/abi.h>
 #include <IO/Progress.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Common/CurrentThread.h>
@@ -152,6 +153,35 @@ DB::NameToNameMap parseParametersDict(const py::dict & params)
         parsed.emplace(key, paramValueToString(value));
     }
     return parsed;
+}
+
+chdb_arrow_options parseArrowOptions(const py::dict & options)
+{
+    chdb_arrow_options parsed{0, 0, 1};
+    for (const auto & item : options)
+    {
+        const auto key = py::cast<std::string>(item.first);
+        if (!py::isinstance<py::bool_>(item.second))
+            throw std::invalid_argument("Arrow option '" + key + "' must be a bool");
+        const int value = py::cast<bool>(item.second) ? 1 : 0;
+        if (key == "unsupported_as_binary")
+            parsed.unsupported_as_binary = value;
+        else if (key == "low_cardinality_as_dictionary")
+            parsed.low_cardinality_as_dictionary = value;
+        else if (key == "string_as_string")
+            parsed.string_as_string = value;
+        else
+            throw std::invalid_argument("Unknown Arrow option '" + key + "'");
+    }
+    return parsed;
+}
+
+/// PyArrow moves the C stream into its reader, clearing the source release
+/// callback. The caller retains responsibility if the import raises.
+py::object importArrowReader(ArrowArrayStream & stream)
+{
+    auto reader_type = py::module_::import("pyarrow").attr("RecordBatchReader");
+    return reader_type.attr("_import_from_c")(py::int_(reinterpret_cast<uintptr_t>(&stream)));
 }
 
 class QueryParameterGuard
@@ -788,6 +818,88 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     return df;
 }
 
+py::object connection_wrapper::query_arrow_reader(const std::string & query_str, const py::dict & params, const py::dict & options)
+{
+    auto operation = startOperation();
+    auto * conn = operation.cell();
+    const auto parsed_params = parseParametersDict(params);
+    const auto arrow_options = parseArrowOptions(options);
+    QueryParameterGuard guard(getChdbClient(*conn), parsed_params);
+    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+
+    ArrowArrayStream stream{};
+    chdb_result * result = nullptr;
+    SCOPE_EXIT({
+        if (stream.release)
+            stream.release(&stream);
+        if (result)
+            chdb_destroy_query_result(result);
+        CHDB::drainPyBorrowGuardQueue();
+    });
+    {
+        py::gil_scoped_release release;
+        result = chdb_query_arrow_n(
+            *conn, query_str.data(), query_str.size(), reinterpret_cast<chdb_arrow_stream>(&stream), &arrow_options);
+        if (!result)
+            throw std::runtime_error("Arrow query returned no result handle");
+        const auto & error = CHDB::chdb_result_error_string(result);
+        if (!error.empty())
+            throw std::runtime_error(std::string(error));
+    }
+    return importArrowReader(stream);
+}
+
+streaming_query_result * connection_wrapper::send_query_arrow(const std::string & query_str, const py::dict & params, const py::dict & options)
+{
+    auto operation = startOperation();
+    auto * conn = operation.cell();
+    const auto parsed_params = parseParametersDict(params);
+    const auto arrow_options = parseArrowOptions(options);
+    QueryParameterGuard guard(getChdbClient(*conn), parsed_params);
+    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+
+    py::gil_scoped_release release;
+    auto * result = chdb_stream_query_arrow_n(*conn, query_str.data(), query_str.size(), &arrow_options);
+    if (!result)
+        throw std::runtime_error("Arrow streaming query returned no result handle");
+    const auto & error = CHDB::chdb_result_error_string(result);
+    if (!error.empty())
+    {
+        std::string message(error);
+        chdb_destroy_query_result(result);
+        throw std::runtime_error(message);
+    }
+    return new streaming_query_result(result);
+}
+
+py::object connection_wrapper::streaming_fetch_arrow(streaming_query_result * streaming_result)
+{
+    auto operation = startOperation();
+    auto * conn = operation.cell();
+    if (!streaming_result || !streaming_result->get_result())
+        throw std::invalid_argument("Arrow streaming result is closed");
+
+    ArrowArrayStream batch{};
+    SCOPE_EXIT({
+        if (batch.release)
+            batch.release(&batch);
+    });
+    chdb_state status;
+    {
+        py::gil_scoped_release release;
+        status = chdb_stream_fetch_arrow(
+            *conn, streaming_result->get_result(), reinterpret_cast<chdb_arrow_stream>(&batch));
+    }
+    if (status != CHDBSuccess)
+    {
+        const char * error = chdb_result_error(streaming_result->get_result());
+        throw std::runtime_error(error ? error : "Arrow streaming fetch failed");
+    }
+    /// Even at EOF the one-batch stream carries the query's Arrow schema.
+    /// The Python iterator sees StopIteration when it reads that stream.
+    return importArrowReader(batch);
+}
+
 std::string connection_wrapper::generate_sql(const std::string & prompt)
 {
     auto operation = startOperation();
@@ -1421,6 +1533,27 @@ PYBIND11_MODULE(_chdb, m)
             py::kw_only(),
             py::arg("params") = py::dict(),
             "Execute a query and return a DataFrame")
+        .def(
+            "query_arrow_reader",
+            &connection_wrapper::query_arrow_reader,
+            py::arg("query_str"),
+            py::kw_only(),
+            py::arg("params") = py::dict(),
+            py::arg("options") = py::dict(),
+            "Execute a query as a materialized Arrow C stream and return a PyArrow RecordBatchReader (no IPC)")
+        .def(
+            "send_query_arrow",
+            &connection_wrapper::send_query_arrow,
+            py::arg("query_str"),
+            py::kw_only(),
+            py::arg("params") = py::dict(),
+            py::arg("options") = py::dict(),
+            "Begin an incremental Arrow C Data query (no IPC)")
+        .def(
+            "streaming_fetch_arrow",
+            &connection_wrapper::streaming_fetch_arrow,
+            py::arg("streaming_result"),
+            "Fetch one Arrow batch as a PyArrow RecordBatchReader; an empty reader signals EOF")
 #if USE_CLIENT_AI
         .def(
             "generate_sql",
