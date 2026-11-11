@@ -72,6 +72,13 @@ DatabaseFilesystem::DatabaseFilesystem(
     : IDatabase(name_), WithContext(context_->getGlobalContext()), path(path_), log(getLogger("DatabaseFileSystem(" + name_ + ")"))
 {
     bool is_local = context_->getApplicationType() == Context::ApplicationType::LOCAL;
+
+    /// chdb_spec: in clickhouse-local an empty path is the working directory at the time a table is read, so a
+    /// relative table name resolves the way file() resolves a relative path. Resolving it here pinned the directory
+    /// the engine started in, and failed the startup when that directory had been removed.
+    if (is_local && path.empty())
+        return;
+
     fs::path user_files_path = is_local ? "" : fs::canonical(getContext()->getUserFilesPath());
 
     if (fs::path(path).is_relative())
@@ -115,6 +122,15 @@ DatabaseFilesystem::DatabaseFilesystem(
 std::string DatabaseFilesystem::getTablePath(const std::string & table_name) const
 {
     fs::path table_path = fs::path(path) / table_name;
+    /// chdb_spec: with an empty path (the working directory, see the constructor) a relative name resolves against
+    /// the directory the process is in now. Left relative when that directory is gone: no such table exists then.
+    if (path.empty() && table_path.is_relative())
+    {
+        std::error_code ec;
+        auto working_directory = fs::current_path(ec);
+        if (!ec)
+            table_path = working_directory / table_path;
+    }
     return table_path.lexically_normal().string();
 }
 
@@ -184,10 +200,13 @@ std::string DatabaseFilesystem::getCacheKey(const std::string & table_name, cons
     /// succeeds in both modes, so the two interpretations must not share a cache entry, or a query
     /// would read the source the previous query resolved. A file name cannot contain a zero byte,
     /// so the marker cannot collide with the name of another table.
+    /// chdb_spec: a relative name in the working-directory database names a different file after a chdir, so the
+    /// entry is keyed by the path it resolved to.
+    const std::string name_key = path.empty() ? getTablePath(table_name) : table_name;
     if (getPathToArchive(getTablePath(table_name), context_).empty())
-        return table_name;
+        return name_key;
 
-    return table_name + String(1, '\0') + "archive";
+    return name_key + String(1, '\0') + "archive";
 }
 
 StoragePtr DatabaseFilesystem::tryGetTableFromCache(const std::string & name, const ContextPtr & context_) const

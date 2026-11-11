@@ -94,7 +94,15 @@ void Application::setup()
 	addSubsystem(new LoggingSubsystem);
 
 #if defined(POCO_OS_FAMILY_UNIX) && !defined(POCO_VXWORKS)
-	_workingDirAtLaunch = Path::current();
+	/// chdb_spec: the working directory can be gone by the time a process embedding the engine starts it (chDB in a
+	/// long-running process whose directory was removed). It only serves as a base for a relative command path.
+	try
+	{
+		_workingDirAtLaunch = Path::current();
+	}
+	catch (const SystemException &)
+	{
+	}
 
 	/// Poco::SignalHandler::install() is deliberately not called here. It sigactions
 	/// SIGILL/SIGBUS/SIGSEGV/SIGSYS process-wide from this constructor, so constructing

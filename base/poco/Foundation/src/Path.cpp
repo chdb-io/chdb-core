@@ -295,6 +295,9 @@ Path& Path::makeFile()
 
 Path& Path::makeAbsolute()
 {
+	/// chdb_spec: an absolute path needs no base, and the working directory may not exist (Glob calls this for every pattern).
+	if (_absolute)
+		return *this;
 	return makeAbsolute(current());
 }
 

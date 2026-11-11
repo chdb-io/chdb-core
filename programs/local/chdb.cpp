@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <Poco/Exception.h>
 #include <tuple>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
@@ -252,6 +253,11 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
     catch (const DB::Exception & e)
     {
         throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create connection: {}", DB::getExceptionMessage(e, false));
+    }
+    catch (const Poco::Exception & e)
+    {
+        /// what() is only the class name ("System exception"); the reason is in displayText().
+        throw std::domain_error(std::string("Connection failed: ") + e.displayText());
     }
     catch (const std::exception & e)
     {

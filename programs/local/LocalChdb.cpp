@@ -366,11 +366,12 @@ std::pair<std::string, std::map<std::string, std::string>> connection_wrapper::p
     if (!path.empty() && path[0] != '/' && path != ":memory:")
     {
         std::error_code ec;
-        path = std::filesystem::absolute(path, ec).string();
+        auto absolute_path = std::filesystem::absolute(path, ec);
         if (ec)
         {
-            throw std::runtime_error("Failed to resolve path: " + path);
+            throw std::runtime_error("Failed to resolve path '" + path + "': " + ec.message());
         }
+        path = absolute_path.string();
     }
 
     return {path, params};

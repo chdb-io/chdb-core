@@ -491,10 +491,27 @@ Strings getPathsList(const String & path_with_globs, const String & user_files_p
         return {path_with_globs};
     }
 #endif
-    fs::path user_files_absolute_path = fs::weakly_canonical(user_files_path);
+    /// chdb_spec: an empty user_files_path (clickhouse-local: "user's files are everywhere") means the working
+    /// directory, which only a relative pattern needs. Canonicalizing the empty path read it for every pattern, so an
+    /// absolute path failed in a process whose working directory had been removed.
+    fs::path user_files_absolute_path = user_files_path.empty() ? fs::path() : fs::weakly_canonical(user_files_path);
     fs::path fs_pattern(path_with_globs);
     if (fs_pattern.is_relative())
-        fs_pattern = user_files_absolute_path / fs_pattern;
+    {
+        fs::path base = user_files_absolute_path;
+        if (user_files_path.empty())
+        {
+            std::error_code ec;
+            base = fs::current_path(ec);
+            if (ec)
+                throw Exception(
+                    ErrorCodes::BAD_ARGUMENTS,
+                    "Cannot resolve the relative path '{}': the working directory is not accessible ({})",
+                    path_with_globs,
+                    ec.message());
+        }
+        fs_pattern = base / fs_pattern;
+    }
 
     Strings paths;
 
