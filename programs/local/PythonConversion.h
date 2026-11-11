@@ -47,6 +47,11 @@ bool isBoolean(const py::handle & obj);
 
 bool isDecimal(const py::handle & obj);
 
+/// The values pandas treats as missing in an object column: None, pd.NA, pd.NaT, float NaN and Decimal('NaN').
+/// The analyzer skips them and the scan of a column it typed writes them as NULL, so both have to agree on this.
+/// A String column (no type could be inferred) keeps the text of every value that is not None or float NaN.
+bool isMissingValue(const py::handle & obj);
+
 bool isString(const py::handle & obj);
 
 bool isByteArray(const py::handle & obj);
