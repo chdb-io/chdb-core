@@ -1,5 +1,6 @@
 #include "EmbeddedServer.h"
 #include "InstancePaths.h"
+#include <Core/Settings.h>
 #include "ChdbSettingsOverrides.h"
 
 #include "ChunkCollectorOutputFormat.h"
@@ -15,6 +16,11 @@
 #include <Storages/StorageFactory.h>
 
 #include <algorithm>
+#include <utility>
+#include <Common/FieldVisitorToString.h>
+#include <Poco/Util/MapConfiguration.h>
+#include <unordered_set>
+#include <fmt/ranges.h>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1342,9 +1348,206 @@ size_t EmbeddedServer::client_ref_count = 0;
 bool EmbeddedServer::engine_stopped = false;
 std::atomic<bool> EmbeddedServer::last_cleanup_succeeded{true};
 
+std::vector<std::pair<std::string, std::string>> EmbeddedServer::parseOptions(int argc, char ** argv)
+{
+    if (argc <= 1 || !argv)
+        return {};
+
+    std::vector<std::pair<std::string, std::string>> options;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!argv[i])
+            continue;
+        std::string_view arg = argv[i];
+        if (!arg.starts_with("--") || arg.size() <= 2)
+            continue;
+        arg.remove_prefix(2);
+
+        String key;
+        String value;
+        if (auto pos = arg.find('='); pos != std::string_view::npos)
+        {
+            key = String(arg.substr(0, pos));
+            value = String(arg.substr(pos + 1));
+        }
+        else
+        {
+            key = String(arg);
+            /// Space-separated value; do not advance i — the value token is
+            /// harmless to re-scan since it does not start with "--".
+            /// A dash-leading token counts as the value only when it is a
+            /// negative number (e.g. --max_partitions_to_read -1); any other
+            /// dash-leading token is the next option, making this key a bare
+            /// boolean flag.
+            if (i + 1 < argc && argv[i + 1]
+                && (argv[i + 1][0] != '-'
+                    || (argv[i + 1][1] >= '0' && argv[i + 1][1] <= '9')
+                    || argv[i + 1][1] == '.'))
+                value = argv[i + 1];
+            else
+                value = "1";
+        }
+
+        if (!key.empty())
+            options.emplace_back(std::move(key), std::move(value));
+    }
+    return options;
+}
+
+namespace
+{
+
+thread_local std::string connect_warning;
+
+/// The paths of executable UDFs: a connection that names other ones gets them, reloaded into the running instance.
+bool isFunctionPathOption(std::string_view key)
+{
+    return key == "user_scripts_path" || key == "dynamic_user_defined_executable_functions_path"
+        || key == "user_defined_executable_functions_config";
+}
+
+/// Paths that decide what a query reads (schema files, domain lists): a connection whose value the running instance
+/// would ignore is refused, since its queries would silently read other files.
+bool isResultPathOption(std::string_view key)
+{
+    return key == "format_schema_path" || key == "google_protos_path" || key == "top_level_domains_path";
+}
+
+String normalizePath(const String & value)
+{
+    if (value.empty())
+        return value;
+    std::error_code ec;
+    auto path = fs::weakly_canonical(value, ec);
+    String result = ec ? fs::path(value).lexically_normal().string() : path.lexically_normal().string();
+    while (result.size() > 1 && result.ends_with('/'))
+        result.pop_back();
+    return result;
+}
+
+}
+
+std::string EmbeddedServer::takeConnectWarning()
+{
+    return std::exchange(connect_warning, {});
+}
+
+void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
+{
+    static const std::unordered_set<std::string> server_setting_names = []
+    {
+        std::unordered_set<std::string> names;
+        for (auto name : ServerSettings().getAllRegisteredNames())
+            names.emplace(name);
+        return names;
+    }();
+
+    auto running_path = [&](const std::string & key) -> String
+    {
+        if (key == "user_scripts_path")
+            return global_context->getUserScriptsPath();
+        if (key == "dynamic_user_defined_executable_functions_path")
+            return global_context->getDynamicUserDefinedExecutableFunctionsPath();
+        if (key == "filesystem_caches_path")
+            return global_context->getFilesystemCachesPath();
+        if (key == "format_schema_path")
+            return global_context->getFormatSchemaPath();
+        if (key == "google_protos_path")
+            return global_context->getGoogleProtosPath();
+        if (key == "top_level_domains_path")
+            return config().getString(key, fs::path(global_context->getPath()) / "top_level_domains/");
+        return config().getString(key, "");
+    };
+
+    std::vector<std::string> refused;
+    std::vector<std::string> ignored;
+    std::vector<std::string> server_level_ignored;
+    std::vector<std::string> replaced;
+    std::vector<std::pair<std::string, std::string>> function_paths;
+
+    for (const auto & [key, value] : parseOptions(argc, argv))
+    {
+        const bool is_path = std::ranges::find(instance_path_options, key) != std::end(instance_path_options);
+        if (is_path)
+        {
+            String running = running_path(key);
+            if (normalizePath(value) == normalizePath(running))
+                continue;
+            if (isFunctionPathOption(key))
+            {
+                function_paths.emplace_back(key, value);
+                /// The executable UDFs of a path an earlier connection named are replaced, not added to.
+                if (config().has(key))
+                    replaced.push_back(fmt::format("{}={} (was: {})", key, value, running));
+            }
+            else
+                (isResultPathOption(key) ? refused : ignored).push_back(fmt::format("{}={} (running: {})", key, value, running));
+            continue;
+        }
+
+        if (!server_setting_names.contains(key))
+            continue;
+
+        /// Parsed the way the instance parsed its own configuration, so equal values compare equal however they are
+        /// written, and an option at its default matches an instance that does not set it.
+        Poco::AutoPtr<Poco::Util::MapConfiguration> requested_config = new Poco::Util::MapConfiguration;
+        requested_config->setString(key, value);
+        ServerSettings requested;
+        requested.loadSettingsFromConfig(*requested_config);
+        Field running = server_settings.get(key);
+        if (requested.get(key) == running)
+            continue;
+        auto entry = fmt::format("{}={} (running: {})", key, value, applyVisitor(FieldVisitorToString(), running));
+        /// A name that is also a query setting applies to this connection's queries (ChdbClient::applyCmdSettings);
+        /// only its server-level use keeps the running value.
+        (Settings::hasBuiltin(key) ? server_level_ignored : ignored).push_back(std::move(entry));
+    }
+
+    if (!refused.empty())
+        throw DB::Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot connect with {}: another connection to this process's chDB engine is open, and the engine reads these "
+            "options only when it starts. Close the other connections first, or connect with the same values",
+            fmt::join(refused, ", "));
+
+    if (!function_paths.empty())
+    {
+        for (const auto & [key, value] : function_paths)
+            config().setString(key, value);
+        global_context->setUserScriptsPath(config().getString("user_scripts_path", global_context->getUserScriptsPath()));
+        global_context->setDynamicUserDefinedExecutableFunctionsPath(config().getString(
+            "dynamic_user_defined_executable_functions_path", global_context->getDynamicUserDefinedExecutableFunctionsPath()));
+        global_context->loadOrReloadUserDefinedExecutableFunctions(config());
+    }
+
+    std::vector<std::string> warnings;
+    if (!ignored.empty())
+        warnings.push_back(fmt::format(
+            "Ignoring startup options {}: another connection to this process's chDB engine is open, and the engine reads them "
+            "only when it starts. Close the other connections first for them to take effect",
+            fmt::join(ignored, ", ")));
+    if (!server_level_ignored.empty())
+        warnings.push_back(fmt::format(
+            "Startup options {} apply to this connection's queries, but their server-level values stay as the running engine "
+            "started with them",
+            fmt::join(server_level_ignored, ", ")));
+    if (!replaced.empty())
+        warnings.push_back(fmt::format(
+            "Replaced the executable UDF paths of the running engine: {}. The functions loaded from the previous paths are no "
+            "longer available to any connection",
+            fmt::join(replaced, ", ")));
+    if (!warnings.empty())
+    {
+        connect_warning = fmt::format("{}", fmt::join(warnings, ". "));
+        LOG_WARNING(&logger(), "{}", connect_warning);
+    }
+}
+
 EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
+    /// A warning belongs to the connection that is being made, not to an earlier one that failed after leaving it.
+    connect_warning.clear();
 
     /// The pools this instance needs have been joined and cannot be rebuilt, so a
     /// new client would run on a dead engine. Refusing here is also what makes the
@@ -1374,6 +1577,8 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
                     global_instance->db_path,
                     path);
             }
+
+            global_instance->reconcileStartupOptions(argc, argv);
         }
         ++client_ref_count;
         return *global_instance;
