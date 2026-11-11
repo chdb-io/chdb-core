@@ -396,7 +396,7 @@ String DataTypeToNumpyTypeStr(const std::shared_ptr<const IDataType> & data_type
     case TypeIndex::Decimal64:
     case TypeIndex::Decimal128:
     case TypeIndex::Decimal256:
-        return "float64";
+        return "object";
 
     case TypeIndex::Array:
     case TypeIndex::Tuple:
