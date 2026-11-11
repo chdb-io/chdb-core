@@ -367,19 +367,6 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
 #endif
     });
 
-#if defined(OS_LINUX)
-    MemoryWorkerConfig memory_worker_config{
-        .rss_update_period_ms = server_settings[ServerSetting::memory_worker_period_ms],
-        .purge_dirty_pages_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_dirty_pages_threshold_ratio],
-        .purge_total_memory_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_total_memory_threshold_ratio],
-        .correct_tracker = server_settings[ServerSetting::memory_worker_correct_memory_tracker],
-        .decay_adjustment_period_ms = server_settings[ServerSetting::memory_worker_decay_adjustment_period_ms],
-        .use_cgroup = server_settings[ServerSetting::memory_worker_use_cgroup],
-    };
-    memory_worker = std::make_unique<MemoryWorker>(memory_worker_config, nullptr);
-    memory_worker->start();
-#endif
-
     getIOThreadPool().initialize(
         server_settings[ServerSetting::max_io_thread_pool_size],
         server_settings[ServerSetting::max_io_thread_pool_free_size],
@@ -892,6 +879,23 @@ void EmbeddedServer::processConfig()
     config().setString("logger", "logger");
     config().setString("logger.level", logging ? level : "fatal");
     buildLoggers(config(), logger(), "clickhouse-embedded");
+
+#if defined(OS_LINUX)
+    /// Not in initialize(): buildLoggers() replaces the channel of every existing logger without
+    /// synchronization, so a MemoryWorker thread already logging through the old channel could
+    /// use it after it is freed. Its constructor also logs, which must respect the configured level.
+    MemoryWorkerConfig memory_worker_config{
+        .rss_update_period_ms = server_settings[ServerSetting::memory_worker_period_ms],
+        .purge_dirty_pages_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_dirty_pages_threshold_ratio],
+        .purge_total_memory_threshold_ratio = server_settings[ServerSetting::memory_worker_purge_total_memory_threshold_ratio],
+        .correct_tracker = server_settings[ServerSetting::memory_worker_correct_memory_tracker],
+        .decay_adjustment_period_ms = server_settings[ServerSetting::memory_worker_decay_adjustment_period_ms],
+        .use_cgroup = server_settings[ServerSetting::memory_worker_use_cgroup],
+    };
+    memory_worker = std::make_unique<MemoryWorker>(memory_worker_config, nullptr);
+    memory_worker->start();
+#endif
+
     shared_context = Context::createSharedHolder();
     global_context = Context::createGlobal(shared_context.get());
     global_context->makeGlobalContext();
