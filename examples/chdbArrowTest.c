@@ -973,6 +973,142 @@ void test_arrow_array_scan(chdb_connection conn)
     if (schema3.release) schema3.release(&schema3);
 }
 
+// A producer whose get_schema hands out a fresh schema each call and counts the live ones
+static int live_counted_schemas = 0;
+
+static void release_counted_schema(struct ArrowSchema * s)
+{
+    release_schema_main(s);
+    live_counted_schemas--;
+}
+
+static int counted_get_schema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
+{
+    (void)stream;
+    create_schema(out);
+    out->release = release_counted_schema;
+    live_counted_schemas++;
+    return 0;
+}
+
+static int einval_get_schema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
+{
+    (void)stream;
+    (void)out;
+    return EINVAL;
+}
+
+void test_arrow_scan_releases_schema(chdb_connection conn)
+{
+    struct ArrowArrayStream stream;
+    struct ArrowArrayStream failing_stream;
+    CustomStreamData * stream_data;
+    const char * table_name = "test_arrow_schema_release";
+    chdb_state result;
+    chdb_result * count_result;
+
+    printf("\n=== Testing schema release during ArrowArrayStream registration ===\n");
+
+    memset(&stream, 0, sizeof(stream));
+    stream_data = (CustomStreamData *)malloc(sizeof(CustomStreamData));
+    init_custom_stream_data(stream_data);
+    stream_data->total_rows = 1000;
+    stream_data->batch_size = 100;
+    stream.get_schema = counted_get_schema;
+    stream.get_next = custom_get_next;
+    stream.get_last_error = custom_get_last_error;
+    stream.release = custom_release;
+    stream.private_data = stream_data;
+
+    result = chdb_arrow_scan(conn, table_name, (chdb_arrow_stream)&stream);
+    test_assert_chdb_state(result, "Register counted ArrowArrayStream");
+    test_assert(live_counted_schemas == 0, "Registration releases the schema from get_schema",
+        "a schema returned by get_schema is still alive after chdb_arrow_scan");
+
+    result = chdb_arrow_scan(conn, table_name, (chdb_arrow_stream)&stream);
+    test_assert(result == CHDBError, "Duplicate registration of the counted stream fails",
+        "chdb_arrow_scan accepted a name that is already registered");
+    test_assert(live_counted_schemas == 0, "Failed registration releases the schema from get_schema",
+        "a schema returned by get_schema is still alive after a failed chdb_arrow_scan");
+
+    count_result = chdb_query(conn, "SELECT COUNT(*) FROM arrowstream(test_arrow_schema_release)", "CSV");
+    test_assert_row_count(count_result, 1000, "Counted stream row count");
+    chdb_destroy_query_result(count_result);
+    test_assert(live_counted_schemas == 0, "Query releases the schemas it fetched",
+        "a schema returned by get_schema is still alive after the query");
+
+    result = chdb_arrow_unregister_table(conn, table_name);
+    test_assert_chdb_state(result, "Unregister counted ArrowArrayStream");
+    stream.release(&stream);
+
+    // get_schema reports errors as errno codes, not as chdb_state values
+    memset(&failing_stream, 0, sizeof(failing_stream));
+    failing_stream.get_schema = einval_get_schema;
+    failing_stream.get_next = custom_get_next;
+    failing_stream.get_last_error = custom_get_last_error;
+    failing_stream.release = custom_release;
+    result = chdb_arrow_scan(conn, "test_arrow_einval_schema", (chdb_arrow_stream)&failing_stream);
+    test_assert(result == CHDBError, "Registration fails when get_schema returns EINVAL",
+        "chdb_arrow_scan registered a stream whose get_schema failed");
+    result = chdb_arrow_unregister_table(conn, "test_arrow_einval_schema");
+    test_assert_chdb_state(result, "Unregister of a never-registered EINVAL stream");
+}
+
+void test_arrow_array_scan_failed_registration(chdb_connection conn)
+{
+    struct ArrowSchema schema;
+    struct ArrowArray array;
+    struct ArrowSchema other_schema;
+    struct ArrowArray other_array;
+    const char * table_name = "test_arrow_array_dup";
+    chdb_state result;
+    chdb_result * count_result;
+    int i;
+
+    printf("\n=== Testing failed ArrowArray registration ===\n");
+
+    create_schema(&schema);
+    memset(&array, 0, sizeof(array));
+    create_arrow_array(&array, 1000);
+    create_schema(&other_schema);
+    memset(&other_array, 0, sizeof(other_array));
+    create_arrow_array(&other_array, 10);
+
+    result = chdb_arrow_array_scan(conn, table_name, (chdb_arrow_schema)&schema, (chdb_arrow_array)&array);
+    test_assert_chdb_state(result, "Register ArrowArray: test_arrow_array_dup");
+
+    // Every failed call hands its stream wrapper back to be freed, not to the registry
+    for (i = 0; i < 1000; i++)
+    {
+        result = chdb_arrow_array_scan(conn, table_name, (chdb_arrow_schema)&other_schema, (chdb_arrow_array)&other_array);
+        if (result != CHDBError)
+            break;
+    }
+    test_assert(result == CHDBError, "Duplicate ArrowArray registration fails",
+        "chdb_arrow_array_scan accepted a name that is already registered");
+    test_assert(other_schema.release != NULL && other_array.release != NULL,
+        "Failed ArrowArray registration leaves the caller's schema and array alone",
+        "a failed chdb_arrow_array_scan released caller-owned data");
+
+    result = chdb_arrow_array_scan(conn, NULL, (chdb_arrow_schema)&other_schema, (chdb_arrow_array)&other_array);
+    test_assert(result == CHDBError, "ArrowArray registration without a name fails", "NULL table name was accepted");
+    result = chdb_arrow_array_scan(conn, "test_arrow_array_null", NULL, (chdb_arrow_array)&other_array);
+    test_assert(result == CHDBError, "ArrowArray registration without a schema fails", "NULL schema was accepted");
+
+    // The first registration is untouched by the failed ones
+    count_result = chdb_query(conn, "SELECT COUNT(*) FROM arrowstream(test_arrow_array_dup)", "CSV");
+    test_assert_row_count(count_result, 1000, "Original ArrowArray still registered with its own data");
+    chdb_destroy_query_result(count_result);
+
+    result = chdb_arrow_unregister_table(conn, table_name);
+    test_assert_chdb_state(result, "Unregister test_arrow_array_dup");
+
+    array.release(&array);
+    schema.release(&schema);
+    other_array.release(&other_array);
+    other_schema.release(&other_schema);
+}
+
 void test_arrow_insert(chdb_connection conn)
 {
     struct ArrowSchema schema;
@@ -1077,6 +1213,8 @@ int main(void)
     /* Run test suites */
     test_arrow_scan(conn);
     test_arrow_array_scan(conn);
+    test_arrow_scan_releases_schema(conn);
+    test_arrow_array_scan_failed_registration(conn);
     test_arrow_insert(conn);
 
     /* Clean up */
