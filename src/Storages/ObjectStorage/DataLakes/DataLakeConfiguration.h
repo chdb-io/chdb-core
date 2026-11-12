@@ -34,6 +34,7 @@
 
 #include <Common/ErrorCodes.h>
 #include <Common/filesystemHelpers.h>
+#include <base/pathToString.h>
 #include <Disks/DiskType.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/IObjectStorage.h>
 #include <Storages/ObjectStorage/StorageObjectStorageConfiguration.h>

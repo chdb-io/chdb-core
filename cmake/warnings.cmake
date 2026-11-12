@@ -114,3 +114,12 @@ if (OS_WASM)
     no_warning (c++11-narrowing-const-reference)
     no_warning (constant-conversion)
 endif ()
+
+if (OS_WINDOWS)
+    # In C - but not in C++ - mingw-w64 declares its CRT overrides (`strtod`, `strtof`,
+    # `snprintf`, ...) as `static __attribute__((__unused__)) __inline__`; see `__mingw_ovr` in
+    # its `_mingw_mac.h`. Calling any of them from C therefore warns that a symbol marked
+    # unused was used, which no change on our side can address. Scoped to C, since in C++
+    # `__mingw_ovr` is a plain `inline` and the warning remains useful there.
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-used-but-marked-unused")
+endif ()

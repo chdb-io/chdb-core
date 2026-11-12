@@ -60,15 +60,24 @@ if (APPLE)
 endif()
 
 macro(clickhouse_program_alias alias)
-    message(STATUS "Adding alias ${alias}")
-    add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse ${alias})
-    install (FILES "${CMAKE_CURRENT_BINARY_DIR}/${alias}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    if (NOT OS_WINDOWS)
+        message(STATUS "Adding alias ${alias}")
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse ${alias})
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/${alias}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    endif ()
 endmacro()
 
 function(clickhouse_program_install name lib_name)
     clickhouse_target_link_split_lib(clickhouse ${lib_name})
-    add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse ${name})
-    install (FILES "${CMAKE_CURRENT_BINARY_DIR}/${name}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    # On Windows the symlink aliases are skipped: a symlink to bare `clickhouse` does not resolve
+    # (the binary is `clickhouse.exe`), and an extensionless file is not executable there anyway.
+    # The Windows entry points are `clickhouse.exe <mode>`, or a copy of the binary named
+    # `clickhouse-<mode>.exe` - `main.cpp` reads the mode from `argv[0]` with the directory and
+    # the `.exe` suffix stripped.
+    if (NOT OS_WINDOWS)
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse ${name})
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/${name}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    endif ()
 
     foreach(alias ${ARGN})
         clickhouse_program_alias(${alias})
@@ -77,5 +86,12 @@ endfunction()
 
 # chdb_spec
 clickhouse_program_install(clickhouse-local local chl ch)
-clickhouse_program_install(clickhouse-server server)
+if (OS_WINDOWS)
+    # The server does not run on Windows (its startup goes through `BaseDaemon`, which needs POSIX
+    # signals and `fork`), so only link `clickhouse-server-lib` (`clickhouse-local` needs it) without
+    # installing the alias.
+    clickhouse_target_link_split_lib(clickhouse server)
+else ()
+    clickhouse_program_install(clickhouse-server server)
+endif ()
 # chdb_spec
