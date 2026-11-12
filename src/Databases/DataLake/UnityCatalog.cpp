@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include <Databases/DataLake/UnityCatalog.h>
 #include <Interpreters/StorageID.h>
 #include <Core/UUID.h>
@@ -82,7 +83,7 @@ static UnityCatalogFullSchemaName parseFullSchemaName(const std::string & full_n
 std::pair<Poco::Dynamic::Var, std::string> UnityCatalog::getJSONRequest(const std::string & route, const Poco::URI::QueryParameters & params) const
 {
     const auto & context = getContext();
-    return makeHTTPRequestAndReadJSON(base_url / route, context, bearer_token, params);
+    return makeHTTPRequestAndReadJSON(pathToGenericString(base_url / route), context, bearer_token, params);
 }
 
 std::pair<Poco::Dynamic::Var, std::string> UnityCatalog::postJSONRequest(const std::string & route, std::function<void(DB::WriteBuffer &)> out_stream_callaback) const
@@ -91,7 +92,7 @@ std::pair<Poco::Dynamic::Var, std::string> UnityCatalog::postJSONRequest(const s
     /// Some Unity servers reject a POST whose body has no explicit `Content-Type: application/json`
     /// (they respond with HTTP 500), so set it explicitly.
     DB::HTTPHeaderEntries headers{{"Content-Type", "application/json"}};
-    return makeHTTPRequestAndReadJSON(base_url / route, context, bearer_token, {}, headers, Poco::Net::HTTPRequest::HTTP_POST, out_stream_callaback);
+    return makeHTTPRequestAndReadJSON(pathToGenericString(base_url / route), context, bearer_token, {}, headers, Poco::Net::HTTPRequest::HTTP_POST, out_stream_callaback);
 }
 
 bool UnityCatalog::empty() const
@@ -212,7 +213,7 @@ bool UnityCatalog::tryGetTableMetadata(
     std::string json_str;
     try
     {
-        std::tie(json, json_str) = getJSONRequest(std::filesystem::path{TABLES_ENDPOINT} / full_table_name);
+        std::tie(json, json_str) = getJSONRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / full_table_name));
         const Poco::JSON::Object::Ptr & object = json.extract<Poco::JSON::Object::Ptr>();
         if (hasValueAndItsNotNone("name", object) && object->get("name").extract<String>() == table_name)
         {
@@ -368,7 +369,7 @@ bool UnityCatalog::existsTable(const std::string & schema_name, const std::strin
     Poco::Dynamic::Var json;
     try
     {
-        std::tie(json, json_str) = getJSONRequest(std::filesystem::path{TABLES_ENDPOINT} / (warehouse + "." + schema_name + "." + table_name));
+        std::tie(json, json_str) = getJSONRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / (warehouse + "." + schema_name + "." + table_name)));
         const Poco::JSON::Object::Ptr & object = json.extract<Poco::JSON::Object::Ptr>();
         if (hasValueAndItsNotNone("name", object) && object->get("name").extract<String>() == table_name)
             return true;
@@ -403,7 +404,7 @@ std::optional<std::string> UnityCatalog::getDefaultTableLocation(
 {
     checkNamespaceExists(namespace_name);
 
-    auto [json, json_str] = getJSONRequest(std::filesystem::path{SCHEMAS_ENDPOINT} / (warehouse + "." + namespace_name));
+    auto [json, json_str] = getJSONRequest(pathToGenericString(std::filesystem::path{SCHEMAS_ENDPOINT} / (warehouse + "." + namespace_name)));
     const Poco::JSON::Object::Ptr & object = json.extract<Poco::JSON::Object::Ptr>();
 
     /// Only Unity on Databricks reports a location for a schema; the open-source server does not,
@@ -414,7 +415,7 @@ std::optional<std::string> UnityCatalog::getDefaultTableLocation(
         return std::nullopt;
     }
 
-    return std::string(std::filesystem::path(object->get("storage_location").extract<String>()) / table_name);
+    return pathToGenericString(std::filesystem::path(object->get("storage_location").extract<String>()) / table_name);
 }
 
 void UnityCatalog::createNamespaceIfNotExists(const String & namespace_name) const
@@ -426,7 +427,7 @@ void UnityCatalog::checkNamespaceExists(const std::string & schema_name) const
 {
     try
     {
-        getJSONRequest(std::filesystem::path{SCHEMAS_ENDPOINT} / (warehouse + "." + schema_name));
+        getJSONRequest(pathToGenericString(std::filesystem::path{SCHEMAS_ENDPOINT} / (warehouse + "." + schema_name)));
     }
     catch (const DB::HTTPException & e)
     {

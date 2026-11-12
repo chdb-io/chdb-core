@@ -7570,7 +7570,7 @@ std::pair<bool, MergeTreeData::MutableDataPartPtr> MergeTreeData::loadDataPartFo
 {
     const auto volume = std::make_shared<SingleDiskVolume>("volume_" + name, getDisks()[0]);
 
-    if (!volume->getDisk()->existsFileOrDirectory(fs::path(relative_data_path) / name))
+    if (!volume->getDisk()->existsFileOrDirectory(pathToGenericString(fs::path(relative_data_path) / name)))
     {
         LOG_DEBUG(log, "Part {} doesn't exist on disk, probably it was already removed", name);
         return std::pair{false, nullptr};

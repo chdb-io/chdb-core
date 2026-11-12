@@ -60,6 +60,11 @@ elseif (CMAKE_SYSTEM_NAME MATCHES "Windows")
     # and claiming POSIX conformance on a platform that does not have it makes third-party
     # feature detection pick branches that then fail to link - OpenSSL, for instance,
     # switches `CRYPTO_aligned_alloc` to `posix_memalign`, which mingw-w64 does not provide.
+    #
+    # chdb_spec: Arrow, Parquet and utf8proc are linked statically, but on Windows their headers
+    # mark every declaration `__declspec(dllimport)` unless told otherwise. Set it globally rather
+    # than on the targets: utf8proc's include directory is used without linking the target.
+    add_definitions(-D ARROW_STATIC -D PARQUET_STATIC -D UTF8PROC_STATIC)
 elseif (CMAKE_SYSTEM_NAME MATCHES "Emscripten")
     # WebAssembly, through the Emscripten toolchain. Configure with `emcmake cmake ...`, which
     # sets CMAKE_SYSTEM_NAME and points CMAKE_TOOLCHAIN_FILE at Emscripten's own toolchain file.

@@ -47,6 +47,56 @@ set(thriftcpp_threads_SOURCES
         "${LIBRARY_DIR}/src/thrift/concurrency/Mutex.cpp"
         )
 
+if (OS_WINDOWS)
+    # chdb_spec: Windows (MinGW). Parquet only needs the protocols and the in-memory transports;
+    # the socket, HTTP, server and thread sources are POSIX-only and are left out, and thrift's
+    # own windows/ helpers stand in for the few POSIX calls the rest makes.
+    set(thriftcpp_SOURCES
+        "${LIBRARY_DIR}/src/thrift/TApplicationException.cpp"
+        "${LIBRARY_DIR}/src/thrift/TOutput.cpp"
+        "${LIBRARY_DIR}/src/thrift/protocol/TBase64Utils.cpp"
+        "${LIBRARY_DIR}/src/thrift/protocol/TDebugProtocol.cpp"
+        "${LIBRARY_DIR}/src/thrift/protocol/TJSONProtocol.cpp"
+        "${LIBRARY_DIR}/src/thrift/protocol/TProtocol.cpp"
+        "${LIBRARY_DIR}/src/thrift/transport/TTransportException.cpp"
+        "${LIBRARY_DIR}/src/thrift/transport/TBufferTransports.cpp"
+        "${LIBRARY_DIR}/src/thrift/transport/TTransportUtils.cpp"
+        "${LIBRARY_DIR}/src/thrift/windows/GetTimeOfDay.cpp"
+        "${LIBRARY_DIR}/src/thrift/windows/WinFcntl.cpp"
+        "${LIBRARY_DIR}/src/thrift/windows/SocketPair.cpp"
+        "${LIBRARY_DIR}/src/thrift/windows/TWinsockSingleton.cpp"
+        )
+    set(thriftcpp_threads_SOURCES)
+
+    # thrift-config.h includes both windows/config.h and the generated thrift/config.h, so only
+    # the headers mingw-w64 has may be claimed here.
+    set (HAVE_FCNTL_H 1)
+    set (HAVE_GETOPT_H 1)
+    set (HAVE_INTTYPES_H 1)
+    set (HAVE_SIGNAL_H 1)
+    set (HAVE_STDINT_H 1)
+    set (HAVE_UNISTD_H 1)
+    set (HAVE_SYS_STAT_H 1)
+    set (HAVE_SYS_TIME_H 1)
+    set (HAVE_SCHED_H 1)
+    set (HAVE_STRING_H 1)
+    set (HAVE_STRINGS_H 1)
+
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/build/cmake/config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/thrift/config.h")
+    # windows/config.h pulls in winsock2.h and windows.h, whose macros (DELETE, IN, OUT, ERROR,
+    # TRUE, FALSE, ...) would then reach every ClickHouse translation unit that includes the
+    # generated Parquet headers. Undo them the way the rest of the tree does.
+    file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/thrift/config.h"
+        "\n#include \"${ClickHouse_SOURCE_DIR}/base/poco/Foundation/include/Poco/UnWindows.h\"\n")
+
+    include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+    add_library(_thrift ${thriftcpp_SOURCES})
+    add_library(ch_contrib::thrift ALIAS _thrift)
+    target_include_directories(_thrift SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/thrift/lib/cpp/src" ${CMAKE_CURRENT_BINARY_DIR})
+    target_link_libraries (_thrift PUBLIC boost::headers_only)
+    return()
+endif()
+
 set (HAVE_ARPA_INET_H 1)
 set (HAVE_FCNTL_H 1)
 set (HAVE_GETOPT_H 1)
