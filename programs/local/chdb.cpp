@@ -256,6 +256,11 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
     {
         throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create connection: {}", DB::getExceptionMessage(e, false));
     }
+    catch (const Poco::Exception & e)
+    {
+        /// what() of a Poco exception is only its class name ("System exception"); the message is in displayText().
+        throw std::domain_error(std::string("Connection failed: ") + e.displayText());
+    }
     catch (const std::exception & e)
     {
         throw std::domain_error(std::string("Connection failed: ") + e.what());

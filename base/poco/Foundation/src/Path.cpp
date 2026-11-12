@@ -307,6 +307,9 @@ Path& Path::makeFile()
 
 Path& Path::makeAbsolute()
 {
+	/// current() throws if the working directory has been removed, and an absolute path does not need it.
+	if (_absolute)
+		return *this;
 	return makeAbsolute(current());
 }
 

@@ -81,6 +81,20 @@ DatabaseFilesystem::DatabaseFilesystem(
         path_as_fs = user_files_path / path_as_fs;
     }
 
+    /// chdb_spec: in local mode an empty path is the working directory, which the process may have
+    /// removed. The default database overlays such a database on every engine start, so resolving it
+    /// here would stop the engine from starting. Leave the path empty: absolute table names still
+    /// resolve, relative ones are looked up in whatever the working directory is at the time.
+    if (is_local && path_as_fs.empty())
+    {
+        std::error_code cwd_ec;
+        if (fs::current_path(cwd_ec).empty())
+        {
+            LOG_WARNING(log, "Cannot get the working directory: {}. Relative table names will not resolve", cwd_ec.message());
+            return;
+        }
+    }
+
     path_as_fs = fs::absolute(path_as_fs).lexically_normal();
 
     /// `ec` is set only if stat fails for a reason other than a missing path, e.g. a symlink loop.

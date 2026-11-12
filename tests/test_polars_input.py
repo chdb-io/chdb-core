@@ -57,7 +57,7 @@ class TestPolarsLazyFrameInput(unittest.TestCase):
 
     def test_failing_lazyframe_surfaces_the_polars_error(self):
         lazy = pl.DataFrame({"a": [1]}).lazy().select(pl.col("missing"))
-        with self.assertRaises(Exception) as ctx:
+        with self.assertRaises(pl.exceptions.ColumnNotFoundError) as ctx:
             chdb.query("SELECT count() FROM Python(lazy)")
         self.assertIn("missing", str(ctx.exception))
 
@@ -114,9 +114,7 @@ class TestPolarsWithoutPyCapsuleExport(unittest.TestCase):
         try:
             for name in ("frame", "lazy", "series"):
                 with self.subTest(obj=name):
-                    # The ImportError reaches Python as such on most platforms; on some it crosses
-                    # the abi3 stub boundary as a RuntimeError, which chdb.query raises as ChdbError.
-                    with self.assertRaisesRegex((ImportError, chdb.ChdbError), r"polars>=1\.3\.0, found "):
+                    with self.assertRaisesRegex(ImportError, r"polars>=1\.3\.0, found "):
                         chdb.query(f"SELECT count() FROM Python({name})")
             # Only polars objects are affected by the check.
             self.assertEqual(csv(chdb.query("SELECT sum(a) FROM Python(plain)")), "6")

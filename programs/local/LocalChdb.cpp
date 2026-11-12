@@ -1289,10 +1289,36 @@ static void initChdbModule(py::module_ & m)
 {
     m.doc() = "chDB module for query function";
 
+#ifndef CHDB_FREE_THREADING
+    /// pybind11 translates its own exception types (py::error_already_set and the
+    /// py::*_error family) with catch clauses compiled into the nonlimitedapi shim,
+    /// against the shim's copy of their type_info. _chdb exports none of its own, so
+    /// where libc++ compares type_info by address (Linux, macOS x86_64) an exception
+    /// thrown here misses those clauses and reaches Python as RuntimeError. Catch
+    /// them on this side, where the type_info is the thrower's.
+    py::register_local_exception_translator([](std::exception_ptr p)
+    {
+        try
+        {
+            if (p)
+                std::rethrow_exception(p);
+        }
+        catch (py::error_already_set & e)
+        {
+            e.restore();
+        }
+        catch (const py::builtin_exception & e)
+        {
+            e.set_error();
+        }
+    });
+#endif
+
     /// A C++ exception from a bound function becomes a Python exception with what() as its text,
     /// decoded as strict UTF-8. Leave valid UTF-8 to pybind11's own translators, which pick the
     /// Python type; otherwise report the same error with the text made valid (messageForPython),
-    /// instead of a UnicodeDecodeError that hides it.
+    /// instead of a UnicodeDecodeError that hides it. pybind11 tries the local translator above
+    /// first, so its own exception types never get here where it is registered.
     py::register_exception_translator([](std::exception_ptr exception)
     {
         try
