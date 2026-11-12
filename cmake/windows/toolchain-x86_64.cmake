@@ -20,6 +20,9 @@ set (CMAKE_ASM_COMPILER_TARGET "x86_64-w64-windows-gnu")
 # `cmake/toolchain`, mingw-w64 is a distribution package, so we consume it from its
 # install location. The CI image installs it, see `ci/docker/binary-builder/Dockerfile`.
 set (MINGW_SYSROOT "/usr/x86_64-w64-mingw32" CACHE PATH "Path to the mingw-w64 sysroot")
+# chdb_spec: try_compile projects (the compiler checks) load this file again but see only the
+# variables listed here; without it they fall back to the default path above.
+list (APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES MINGW_SYSROOT)
 
 if (NOT EXISTS "${MINGW_SYSROOT}/include/windows.h")
     message (FATAL_ERROR
