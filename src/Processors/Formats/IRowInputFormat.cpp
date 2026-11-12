@@ -87,6 +87,7 @@ Chunk IRowInputFormat::read()
 
     size_t num_rows = 0;
     size_t total_rows_before_read = total_rows;
+    size_t num_errors_before_read = num_errors;
     size_t chunk_start_offset = getDataOffsetMaybeCompressed(getReadBuffer());
     try
     {
@@ -100,6 +101,7 @@ Chunk IRowInputFormat::read()
                 return {};
             }
             total_rows += num_rows;
+            rows_read += num_rows;
             approx_bytes_read_for_chunk = getDataOffsetMaybeCompressed(getReadBuffer()) - chunk_start_offset;
             auto chunk = getChunkForCount(num_rows);
             chunk.getChunkInfos().add(std::make_shared<ChunkInfoRowNumbers>(total_rows_before_read));
@@ -276,6 +278,8 @@ Chunk IRowInputFormat::read()
 
     }
 
+    rows_read += num_rows + (num_errors - num_errors_before_read);
+
     if (columns.empty() || columns[0]->empty())
     {
         if (num_errors && (params.allow_errors_num > 0 || params.allow_errors_ratio > 0))
@@ -308,6 +312,7 @@ void IRowInputFormat::resetParser()
 {
     IInputFormat::resetParser();
     total_rows = 0;
+    rows_read = 0;
     num_errors = 0;
     got_connection_exception = false;
     block_missing_values.clear();
