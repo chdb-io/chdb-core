@@ -6,20 +6,10 @@ import unittest
 
 import pandas as pd
 from chdb.dataframe import Table, pandas_read_parquet
+from hits_dataset import ensure_hits_parquet
 from utils import current_dir
 
-# if hits_0.parquet is not available, download it:
-# https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet
-if not os.path.exists(os.path.join(current_dir, "hits_0.parquet")):
-    import urllib.request
-
-    opener = urllib.request.URLopener()
-    opener.addheader(
-        "User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-    opener.retrieve("https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_0.parquet",
-                    os.path.join(current_dir, "hits_0.parquet"))
-
-# 122MB parquet file
+# 122MB parquet file, fetched by setUpClass if it is not there yet.
 hits_0 = os.path.join(current_dir, "hits_0.parquet")
 sql = """SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID)
                         FROM __table__ GROUP BY RegionID ORDER BY c DESC LIMIT 10"""
@@ -44,6 +34,12 @@ pd.set_option("display.max_columns", 10)
 pd.set_option("display.width", 200)
 
 class TestRunOnDf(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        # Through the shared helper: urllib.request.URLopener, which this module used to download
+        # with at import, is gone in Python 3.14.
+        ensure_hits_parquet(hits_0)
 
     def setUp(self) -> None:
         self.maxDiff = None
