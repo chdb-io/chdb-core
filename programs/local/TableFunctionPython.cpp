@@ -36,8 +36,9 @@ namespace
 
 /// The lists of a dict become object arrays holding the same Python objects, without pandas' own inference
 /// (which turns bytes into their repr and rounds integers beyond 64 bits), so the analyzer decides every type as it
-/// does for an object column. Arrays and Series are kept as they are.
-pybind11::dict listsToObjectArrays(const pybind11::dict & columns)
+/// does for an object column. Arrays and Series are kept as they are. The lists holding a str go to `string_columns`.
+pybind11::dict listsToObjectArrays(
+    const pybind11::dict & columns, std::vector<std::pair<pybind11::object, pybind11::array>> & string_columns)
 {
     pybind11::dict result;
     for (auto item : columns)
@@ -52,6 +53,7 @@ pybind11::dict listsToObjectArrays(const pybind11::dict & columns)
         const auto rows = static_cast<pybind11::ssize_t>(values.size());
         pybind11::array array(pybind11::dtype("O"), std::vector<pybind11::ssize_t>{rows});
         auto ** data = static_cast<PyObject **>(array.mutable_data());
+        bool has_string = false;
         for (pybind11::ssize_t i = 0; i < rows; ++i)
         {
 #ifdef Py_GIL_DISABLED
@@ -65,7 +67,10 @@ pybind11::dict listsToObjectArrays(const pybind11::dict & columns)
 #endif
             Py_XDECREF(data[i]);
             data[i] = value;
+            has_string = has_string || PyUnicode_Check(value);
         }
+        if (has_string)
+            string_columns.emplace_back(pybind11::reinterpret_borrow<pybind11::object>(item.first), array);
         result[item.first] = std::move(array);
     }
     return result;
@@ -140,9 +145,20 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
         /// rules. Without pandas it keeps its own, narrower path.
         if (PythonDict::isPythonDict(reader))
         {
-            auto data_frame = PythonImporter::ImportCache().pandas.DataFrame();
+            auto & pandas = PythonImporter::ImportCache().pandas;
+            auto data_frame = pandas.DataFrame();
             if (data_frame)
-                reader = data_frame(listsToObjectArrays(reader.cast<py::dict>()), py::arg("copy") = false);
+            {
+                std::vector<std::pair<py::object, py::array>> string_columns;
+                reader = data_frame(listsToObjectArrays(reader.cast<py::dict>(), string_columns), py::arg("copy") = false);
+                /// pandas 3 turns an object array of strings into its str dtype; such a list stays an object column.
+                for (const auto & [name, array] : string_columns)
+                {
+                    if (py::str(reader[name].attr("dtype")).cast<std::string>() != "object")
+                        reader[name] = pandas.Series()(
+                            array, py::arg("index") = reader.attr("index"), py::arg("dtype") = "object", py::arg("copy") = false);
+                }
+            }
         }
         data_source_wrapper = std::make_shared<DataSourceWrapper>(reader);
         is_pandas_df = PandasDataFrame::isPandasDataframe(reader);
