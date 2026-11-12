@@ -25,11 +25,13 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Common/CurrentThread.h>
 #include <Poco/Exception.h>
+#include <base/pathToString.h>
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -315,6 +317,12 @@ std::pair<std::string, std::map<std::string, std::string>> connection_wrapper::p
         {
             working_str = working_str.substr(2); // Remove two slashes, keep one
         }
+#if defined(OS_WINDOWS)
+        /// file:///C:/data/db is the Windows form (what pathlib's as_uri() gives): no slash before the drive.
+        if (working_str.size() >= 3 && working_str[0] == '/' && std::isalpha(static_cast<unsigned char>(working_str[1]))
+            && working_str[2] == ':')
+            working_str.erase(0, 1);
+#endif
     }
 
     // Split path and parameters
@@ -363,14 +371,21 @@ std::pair<std::string, std::map<std::string, std::string>> connection_wrapper::p
         path = working_str;
     }
 
-    // Convert relative paths to absolute
-    if (!path.empty() && path[0] != '/' && path != ":memory:")
+    // Convert relative paths to absolute. The path is UTF-8: pathFromString/pathToString keep it so
+    // on Windows, where std::filesystem would go through the ANSI code page (on POSIX they are the
+    // identity), and is_absolute() knows drive letters and UNC paths.
+    if (!path.empty() && path != ":memory:")
     {
-        std::error_code ec;
-        path = std::filesystem::absolute(path, ec).string();
-        if (ec)
+        const auto fs_path = pathFromString(path);
+        if (!fs_path.is_absolute())
         {
-            throw std::runtime_error("Failed to resolve path: " + path);
+            std::error_code ec;
+            auto absolute_path = std::filesystem::absolute(fs_path, ec);
+            if (ec)
+            {
+                throw std::runtime_error("Failed to resolve path: " + path);
+            }
+            path = pathToString(absolute_path);
         }
     }
 

@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ChunkCollectorOutputFormat.h"
@@ -1448,7 +1449,7 @@ void checkArchivePath(std::string_view what, std::string_view file_path, bool mu
     if (file_path.find('\0') != std::string_view::npos)
         throw std::invalid_argument(std::string(what) + " must not contain a null byte");
 
-    const std::filesystem::path path{std::string(file_path)};
+    const std::filesystem::path path = pathFromString(file_path);
     if (!path.is_absolute())
         throw std::invalid_argument(
             std::string(what) + " must be absolute: a relative path resolves against backups.allowed_path, "
@@ -1458,11 +1459,11 @@ void checkArchivePath(std::string_view what, std::string_view file_path, bool mu
     std::error_code ec;
     if (!std::filesystem::is_directory(parent, ec))
         throw std::invalid_argument(
-            "Directory '" + parent.string() + "' does not exist; create it, or point " + std::string(what)
+            "Directory '" + pathToString(parent) + "' does not exist; create it, or point " + std::string(what)
             + " somewhere that does. It must also be covered by backups.allowed_path");
 
     if (must_exist && !std::filesystem::is_regular_file(path, ec))
-        throw std::invalid_argument("Backup archive '" + path.string() + "' does not exist");
+        throw std::invalid_argument("Backup archive '" + pathToString(path) + "' does not exist");
 }
 
 String buildBackupOrRestoreQuery(
