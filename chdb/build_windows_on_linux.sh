@@ -51,8 +51,9 @@ bash "${DIR}/build/download_windows_deps.sh" "${DEPS_DIR}"
 MINGW_SYSROOT="${DEPS_DIR}/mingw/usr/x86_64-w64-mingw32ucrt"
 
 # Windows v1 feature set: the engine with the formats the Python API relies on (Arrow, Parquet,
-# JSON), the sqids and ULID functions, and no network-backed storage. ENABLE_LIBRARIES=0 turns
-# every optional contrib off; the ones the module needs are enabled explicitly.
+# JSON), the sqids and ULID functions, vector similarity indexes (usearch), and no network-backed
+# storage. ENABLE_LIBRARIES=0 turns every optional contrib off; the ones the module needs are enabled
+# explicitly.
 CMAKE_ARGS=(
     -G Ninja
     -DCMAKE_TOOLCHAIN_FILE="${PROJ_DIR}/cmake/windows/toolchain-x86_64.cmake"
@@ -63,7 +64,7 @@ CMAKE_ARGS=(
     -DENABLE_LIBRARIES=0
     -DENABLE_PARQUET=1 -DENABLE_THRIFT=1 -DENABLE_BROTLI=1
     -DENABLE_RAPIDJSON=1 -DENABLE_SIMDJSON=1 -DENABLE_SIMDUTF=1 -DENABLE_UTF8PROC=1
-    -DENABLE_SQIDS=1 -DENABLE_ULID=1
+    -DENABLE_SQIDS=1 -DENABLE_ULID=1 -DENABLE_USEARCH=1 -DENABLE_SIMSIMD=1
     -DENABLE_ARROW_FLIGHT=0 -DENABLE_ICU=0 -DENABLE_PROTOBUF=0 -DENABLE_AVRO=0
     -DENABLE_AWS_S3=0 -DENABLE_AZURE_BLOB_STORAGE=0 -DENABLE_HDFS=0
     -DENABLE_JEMALLOC=0 -DENABLE_RUST=0 -DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0

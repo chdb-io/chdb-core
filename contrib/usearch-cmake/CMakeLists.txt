@@ -2,6 +2,10 @@ set(USEARCH_PROJECT_DIR "${ClickHouse_SOURCE_DIR}/contrib/usearch")
 
 add_library(_usearch INTERFACE)
 target_include_directories(_usearch SYSTEM INTERFACE ${USEARCH_PROJECT_DIR}/include)
+if (OS_WINDOWS)
+    # usearch spells the header <Windows.h>; see windows/Windows.h.
+    target_include_directories(_usearch SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/windows)
+endif ()
 
 target_link_libraries(_usearch INTERFACE _fp16)
 target_compile_definitions(_usearch INTERFACE USEARCH_USE_FP16LIB)
