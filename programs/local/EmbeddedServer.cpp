@@ -103,6 +103,9 @@
 #if defined(OS_WINDOWS)
 #include <Poco/Net/Net.h>
 #include <mutex>
+#include <Databases/DatabaseOnDisk.h>
+#include <Databases/DatabasesCommon.h>
+#include <Parsers/ASTCreateQuery.h>
 #endif
 
 #include "config.h"
@@ -127,6 +130,9 @@ namespace DB
 namespace Setting
 {
 extern const SettingsBool allow_introspection_functions;
+#if defined(OS_WINDOWS)
+extern const SettingsBool fsync_metadata;
+#endif
 extern const SettingsBool implicit_select;
 extern const SettingsLocalFSReadMethod storage_file_read_method;
 }
@@ -471,6 +477,52 @@ static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const Str
     return system_database;
 }
 
+#if defined(OS_WINDOWS)
+/// chdb_spec: the default database's UUID is normally recovered on reopen from the metadata/default
+/// symlink DatabaseAtomic creates. On Windows creating a symbolic link needs Developer Mode or an
+/// elevated process; without it the link silently goes missing, and every reopen of a persistent path
+/// picked a new UUID - its tables then looked gone. So, as LocalServer does on every platform, record
+/// the database in metadata/<name>.sql and read the UUID back from there. Only on Windows for now, so
+/// that the layout of existing Linux and macOS paths does not change.
+
+/// The UUID from `metadata/<name>.sql` if it defines an `Atomic` database, otherwise Nil.
+static UUID tryReadAtomicDatabaseUUID(const String & name, ContextPtr context)
+{
+    auto db_disk = context->getDatabaseDisk();
+    auto metadata_file_path = pathToGenericString(DatabaseCatalog::getMetadataFilePath(name));
+    if (!db_disk->existsFile(metadata_file_path))
+        return UUIDHelpers::Nil;
+
+    auto ast = DatabaseOnDisk::parseQueryFromMetadata(nullptr, context, db_disk, metadata_file_path);
+    const auto & create = ast->as<const ASTCreateQuery &>();
+    if (!create.storage || !create.storage->engine || create.storage->engine->name != "Atomic")
+        return UUIDHelpers::Nil;
+    return create.uuid;
+}
+
+/// Records the database like `CREATE DATABASE` does.
+static void writeMissingDatabaseMetadataFile(const IDatabase & database, ContextPtr context)
+{
+    auto db_disk = context->getDatabaseDisk();
+    const String database_name = database.getDatabaseName();
+    auto metadata_file_path = pathToGenericString(DatabaseCatalog::getMetadataFilePath(database_name));
+    if (db_disk->existsFile(metadata_file_path))
+        return;
+
+    String statement = fmt::format(
+        "ATTACH DATABASE {} UUID '{}'\nENGINE = Atomic\n", TABLE_WITH_UUID_NAME_PLACEHOLDER, toString(database.getUUID()));
+    auto metadata_tmp_file_path = pathToGenericString(DatabaseCatalog::getMetadataTmpFilePath(database_name));
+    db_disk->createDirectories(pathToGenericString(DatabaseCatalog::getMetadataDirPath()));
+    db_disk->removeFileIfExists(metadata_tmp_file_path);
+    writeMetadataFile(
+        db_disk,
+        /*file_path=*/metadata_tmp_file_path,
+        /*content=*/statement,
+        /*fsync_metadata=*/context->getSettingsRef()[Setting::fsync_metadata]);
+    db_disk->moveFile(metadata_tmp_file_path, metadata_file_path);
+}
+#endif
+
 static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPtr context)
 {
     auto overlay = std::make_shared<DatabaseOverlay>(name_, context);
@@ -481,6 +533,10 @@ static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, Co
     fs::path existing_path_symlink = fs::weakly_canonical(context_path) / "metadata" / "default";
     if (FS::isSymlinkNoThrow(existing_path_symlink))
         default_database_uuid = parse<UUID>(pathToGenericString(FS::readSymlink(existing_path_symlink).filename()));
+#if defined(OS_WINDOWS)
+    else if (UUID uuid_from_metadata_file = tryReadAtomicDatabaseUUID(name_, context); uuid_from_metadata_file != UUIDHelpers::Nil)
+        default_database_uuid = uuid_from_metadata_file;
+#endif
     else
         default_database_uuid = UUIDHelpers::generateV4();
 
@@ -1255,6 +1311,12 @@ void EmbeddedServer::processConfig()
         /// Lock path directory before read
         fs::create_directories(pathFromString(path));
         status.emplace(pathToGenericString(pathFromString(path) / "status"), StatusFile::write_full_info);
+
+#if defined(OS_WINDOWS)
+        /// See tryReadAtomicDatabaseUUID. With `only-system-tables` the directory is only inspected.
+        if (!server_default_database.empty() && !config().has("only-system-tables"))
+            writeMissingDatabaseMetadataFile(*DatabaseCatalog::instance().getDatabase(server_default_database), global_context);
+#endif
 
         const bool metadata_exists = fs::exists(pathFromString(path) / "metadata");
         if (metadata_exists)
