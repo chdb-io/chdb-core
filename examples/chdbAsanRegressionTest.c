@@ -19,6 +19,9 @@
  * And the exit of a process that still has a connection open, with and without an engine
  * restart before: the teardown used to run on statics already destroyed (after a restart,
  * "The ShutdownTablesThreadPool is not initialized"), which could also crash the exit.
+ *
+ * And a chdb_arrow_array_scan() that fails (here: on a duplicate name) frees the stream
+ * wrapper it allocated instead of leaking it.
  */
 #include <dlfcn.h>
 #include <stdio.h>
@@ -27,6 +30,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "chdb.h"
+#include "arrow_c_abi.h"
 
 static int failures = 0;
 
@@ -311,6 +315,58 @@ static void test_engine_start_leak_budget(void)
     CHECK(per_cycle < (double)LEAK_BUDGET_PER_CYCLE, "engine start/stop stays within its leak budget");
 }
 
+static void noop_schema_release(struct ArrowSchema * s) { s->release = NULL; }
+static void noop_array_release(struct ArrowArray * a) { a->release = NULL; }
+
+/* A failed chdb_arrow_array_scan() used to leak the stream wrapper it allocated
+ * (ArrowArrayStream + its private data, ~64 bytes). Only measurable under AddressSanitizer. */
+static void test_failed_arrow_array_scan_leak(void)
+{
+    size_t (*live_bytes)(void) = (size_t (*)(void))dlsym(RTLD_DEFAULT, "__sanitizer_get_current_allocated_bytes");
+
+    printf("test_failed_arrow_array_scan_leak\n");
+    if (!live_bytes)
+    {
+        printf("  skip (not an AddressSanitizer build)\n");
+        return;
+    }
+
+    chdb_connection * conn = open_memory_connection();
+    CHECK(conn != NULL, "connection opens");
+    if (!conn)
+        return;
+
+    struct ArrowSchema schema;
+    struct ArrowArray array;
+    memset(&schema, 0, sizeof(schema));
+    memset(&array, 0, sizeof(array));
+    schema.format = "+s";
+    schema.release = noop_schema_release;
+    array.release = noop_array_release;
+
+    CHECK(chdb_arrow_array_scan(*conn, "asan_dup_array", (chdb_arrow_schema)&schema, (chdb_arrow_array)&array) == CHDBSuccess,
+        "first registration succeeds");
+
+    /* Warm up, then measure: every call fails on the duplicate name. */
+    for (int i = 0; i < 100; i++)
+        chdb_arrow_array_scan(*conn, "asan_dup_array", (chdb_arrow_schema)&schema, (chdb_arrow_array)&array);
+
+    const int calls = 10000;
+    int failed = 0;
+    size_t before = live_bytes();
+    for (int i = 0; i < calls; i++)
+        failed += chdb_arrow_array_scan(*conn, "asan_dup_array", (chdb_arrow_schema)&schema, (chdb_arrow_array)&array) == CHDBError;
+    size_t after = live_bytes();
+
+    CHECK(failed == calls, "every duplicate registration fails");
+    double per_call = ((double)after - (double)before) / (double)calls;
+    printf("  %.1f bytes retained per failed registration\n", per_call);
+    CHECK(per_call < 8.0, "a failed chdb_arrow_array_scan frees its stream wrapper");
+
+    CHECK(chdb_arrow_unregister_table(*conn, "asan_dup_array") == CHDBSuccess, "unregister succeeds");
+    chdb_close_conn(conn);
+}
+
 int main(int argc, char ** argv)
 {
     if (argc > 3 && strcmp(argv[1], "--exit-with-connection-open") == 0)
@@ -324,6 +380,7 @@ int main(int argc, char ** argv)
     test_repeated_query_cmdline();
     test_exit_with_connection_open(argv[0]);
     test_engine_start_leak_budget();
+    test_failed_arrow_array_scan_leak();
     printf("\nfailures: %d\n", failures);
     return failures == 0 ? 0 : 1;
 }
