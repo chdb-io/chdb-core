@@ -5,6 +5,7 @@
 #include "chdb.h"
 #include "ChdbPyType.h"
 #include "PybindWrapper.h"
+#include "PythonMessage.h"
 #include "config.h"
 
 #include <filesystem>
@@ -192,7 +193,7 @@ public:
         auto error_message = chdb_result_error(result);
         if (error_message)
         {
-            return py::str(error_message);
+            return py::str(CHDB::messageForPython(error_message));
         }
         return py::str();
     }
@@ -247,7 +248,7 @@ public:
         auto error_message = chdb_result_error(result);
         if (error_message)
         {
-            return py::str(error_message);
+            return py::str(CHDB::messageForPython(error_message));
         }
         return py::str();
     }
@@ -273,7 +274,7 @@ public:
         auto msg = chdb_stream_insert_error(stream);
         if (msg)
         {
-            return py::str(msg);
+            return py::str(CHDB::messageForPython(msg));
         }
         return py::str();
     }
@@ -406,7 +407,7 @@ public:
         auto error_message = chdb_result_error(current_result);
         if (error_message)
         {
-            return py::str(error_message);
+            return py::str(CHDB::messageForPython(error_message));
         }
         return py::str();
     }
