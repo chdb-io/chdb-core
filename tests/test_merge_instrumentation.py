@@ -3,8 +3,6 @@
 import importlib.util
 import json
 import os
-import shutil
-import sys
 import tempfile
 import types
 import unittest
@@ -50,20 +48,14 @@ def scalar(conn, sql):
 class TestMergeInstrumentation(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.log_dir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmp.name, "db")
-        self.log_path = os.path.join(self.log_dir, "chdb.log")
+        self.log_path = os.path.join(self.tmp.name, "chdb.log")
         self.config = os.path.join(self.tmp.name, "config.xml")
         with open(self.config, "w") as f:
             f.write(LOGS_CONFIG.format(log_path=self.log_path))
 
     def tearDown(self):
         self.tmp.cleanup()
-        # Closing the connection shuts the engine down but leaves its logger
-        # holding chdb.log open until the engine starts again, and Windows
-        # cannot delete an open file. No assertion depends on removing the
-        # log, so only its own directory may be left behind there.
-        shutil.rmtree(self.log_dir, ignore_errors=sys.platform == "win32")
 
     def connect_with_logs(self):
         return connect(f"{self.db_path}?config-file={self.config}")

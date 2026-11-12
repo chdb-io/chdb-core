@@ -754,6 +754,22 @@ void EmbeddedServer::cleanup()
     }
     catch (...) {}
 
+#if defined(OS_WINDOWS)
+    /// chdb_spec: release the log files. The logger channels outlive the engine (the next start reuses
+    /// or rebuilds them, and a FileChannel reopens its file on the next message), so on POSIX the file
+    /// just stays open; Windows does not let anyone delete a file that is open, nor the directory that
+    /// holds it, which is often a temporary directory of the caller's. Nothing logs from here on:
+    /// setShuttingDown() above silences LOG_*.
+    if (config().has("logger.log") || config().has("logger.errorlog"))
+    {
+        try
+        {
+            closeLogs(logger());
+        }
+        catch (...) {}
+    }
+#endif
+
     // Delete the temporary directory if needed.
     try
     {
