@@ -346,10 +346,12 @@ class TestParallelDistinctDefault(unittest.TestCase):
         path = os.path.join(self.tmp.name, "people.csv")
         with open(path, "w") as f:
             f.write("name,age\nAlice,25\nBob,30\nAlice,25\nCharlie,35\nBob,30\nAlice,25\n")
+        # ClickHouse unescapes backslashes in the SQL literal, so pass a Windows path with forward slashes.
+        sql_path = path.replace(os.sep, "/")
         # With allow_parallel_distinct = 1 the order changes from run to run, so repeat.
         for _ in range(20):
             self.assertEqual(
-                rows(self.conn, f"SELECT DISTINCT * FROM file('{path}', 'CSVWithNames')"),
+                rows(self.conn, f"SELECT DISTINCT * FROM file('{sql_path}', 'CSVWithNames')"),
                 [["Alice", "25"], ["Bob", "30"], ["Charlie", "35"]],
             )
 

@@ -151,6 +151,8 @@ CHILD_VERIFY_MERGETREE_SHUTDOWN = (
     "assert '1000' in str(conn.query('SELECT count() FROM exit_mt', 'CSV'))\n"
 )
 
+TABLE_SHUTDOWN_FAILPOINT = "database_catalog_throw_on_table_shutdown"
+
 CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN = (
     "import atexit, os\n"
     "def verify_shutdown():\n"
@@ -161,19 +163,37 @@ CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN = (
     "conn = chdb._chdb.connect()\n"
     "conn.query('CREATE DATABASE issue254 ENGINE = Atomic')\n"
     "conn.query('CREATE TABLE issue254.t (x UInt64) ENGINE = Memory')\n"
-    "conn.query('SYSTEM ENABLE FAILPOINT database_catalog_throw_on_table_shutdown')\n"
+    f"conn.query('SYSTEM ENABLE FAILPOINT {TABLE_SHUTDOWN_FAILPOINT}')\n"
 )
+
+# Whether the build has fail points at all: one without libfiu lists none, and
+# SYSTEM ENABLE FAILPOINT fails there with SUPPORT_IS_DISABLED. Deliberately not
+# the one fail point the test uses, so that a renamed or removed fail point still
+# fails the test instead of skipping it. Asked in a child so this process never
+# starts the engine.
+CHILD_COUNT_FAIL_POINTS = (
+    "import chdb\n"
+    "print(chdb.query('SELECT count() FROM system.fail_points', 'CSV'))\n"
+)
+
+
+def _run_python(child):
+    # The child's own output is UTF-8 whatever the console code page is; the
+    # engine's may not be, so undecodable bytes are replaced rather than raised.
+    return subprocess.run(
+        [sys.executable, "-c", child],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        timeout=120,
+    )
 
 
 class TestExitWithOpenConnection(unittest.TestCase):
     def _run_child(self, child, runs, quiet=False):
         for i in range(runs):
-            result = subprocess.run(
-                [sys.executable, "-c", child],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            result = _run_python(child)
             self.assertEqual(
                 result.returncode,
                 0,
@@ -209,6 +229,10 @@ class TestExitWithOpenConnection(unittest.TestCase):
 
     @unittest.skipIf(os.environ.get("CHDB_LITE") == "1", "chdb-core-lite is built without FIU failpoints")
     def test_python_exit_cleans_catalog_after_table_shutdown_error(self):
+        probe = _run_python(CHILD_COUNT_FAIL_POINTS)
+        self.assertEqual(probe.returncode, 0, f"stdout:\n{probe.stdout}\nstderr:\n{probe.stderr}")
+        if probe.stdout.strip() == "0":
+            self.skipTest("this build has no fail points (built without libfiu)")
         self._run_child(CHILD_VERIFY_RECOVERABLE_TABLE_SHUTDOWN, 3)
 
 

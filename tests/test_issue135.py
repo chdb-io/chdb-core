@@ -36,10 +36,18 @@ class TestReplaceTable(unittest.TestCase):
             self.assertRegex(parts[2], r"\d{4}-\d{2}-\d{2}")
 
             # replace table
-            sess.query(
-                "CREATE OR REPLACE TABLE a.test (id UInt64, updated_at DateTime DEFAULT now(),updated_at_date Date DEFAULT toDate(updated_at)) "
-                "ENGINE = MergeTree ORDER BY id;"
-            )
+            try:
+                sess.query(
+                    "CREATE OR REPLACE TABLE a.test (id UInt64, updated_at DateTime DEFAULT now(),updated_at_date Date DEFAULT toDate(updated_at)) "
+                    "ENGINE = MergeTree ORDER BY id;"
+                )
+            except RuntimeError as e:
+                # Replacing an existing table in an Atomic database swaps it in
+                # with RENAME EXCHANGE, which needs an atomic exchange of two
+                # paths; the engine has one only on Linux and macOS.
+                if "(NOT_IMPLEMENTED)" in str(e) and "RENAME EXCHANGE is not supported" in str(e):
+                    self.skipTest(f"this OS has no atomic file exchange: {e}")
+                raise
             ret = sess.query("SELECT * FROM a.test;", "CSV")
             self.assertEqual(str(ret), "")
 

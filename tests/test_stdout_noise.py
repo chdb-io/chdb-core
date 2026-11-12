@@ -112,10 +112,13 @@ class TestStdoutNoise(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
             f.write("a,b\n1,x\n2,y\n3,z\n")
             csv_path = f.name
+        # ClickHouse unescapes backslashes in string literals, and the query
+        # text is itself a Python literal in the child's source.
+        sql = f"SELECT count() FROM file('{csv_path.replace(os.sep, '/')}', 'CSVWithNames')"
         try:
             proc = _run(
                 f"import chdb\n"
-                f"sys.stdout.write(str(chdb.query(\"SELECT count() FROM file('{csv_path}', 'CSVWithNames')\", 'CSV')))\n"
+                f"sys.stdout.write(str(chdb.query({sql!r}, 'CSV')))\n"
             )
             self._assert_clean(proc, "3\n", "file_query")
         finally:
