@@ -30,9 +30,10 @@ fi
 # PreLoad.cmake refuses to configure with these set.
 unset CFLAGS CXXFLAGS LDFLAGS
 
-set +u
+# vars.sh expects neither nounset nor pipefail (its git-describe fallback fails without a tag).
+set +uo pipefail
 . "${DIR}/vars.sh" cross-compile
-set -u
+set -uo pipefail
 
 DEPS_DIR=${CHDB_WINDOWS_DEPS_DIR:-${HOME}/.cache/chdb-windows-deps}
 BUILD_DIR=${CHDB_WINDOWS_BUILD_DIR:-${PROJ_DIR}/build-windows-x86_64}
@@ -92,7 +93,9 @@ done
 ninja -C "${BUILD_DIR}" "${TARGETS[@]}"
 
 # Stage the module and its DLLs next to the Python sources, where setup.py picks them up.
-rm -f "${CHDB_DIR}"/*.so "${CHDB_DIR}"/*.dylib "${CHDB_DIR}"/*.pyd "${CHDB_DIR}"/*.dll
+# Only the Windows outputs: a Linux build in the same checkout keeps its .so files, and setup.py
+# packages by CHDB_TARGET_OS.
+rm -f "${CHDB_DIR}"/*.pyd "${CHDB_DIR}"/*.dll
 cp -a "${BUILD_DIR}/_chdb.pyd" "${CHDB_DIR}/_chdb.pyd"
 cp -a "${BUILD_DIR}/contrib/pybind11-cmake/pybind11nonlimitedapi_stubs.dll" "${CHDB_DIR}/"
 for v in ${PYTHON_VERSIONS}; do

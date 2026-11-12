@@ -6,7 +6,8 @@
 #   python/X.Y/                        Windows Python.h & co. plus python3.lib and python3XY.lib,
 #                                      from the python.org NuGet package of each version
 #
-# Every download is pinned by SHA-256. The script is idempotent: what is already unpacked is kept.
+# Every download is pinned by SHA-256. The script is idempotent: each unpacked tree records the pins it
+# came from and is redone when they change; a tree is moved into place only once complete.
 # Usage: download_windows_deps.sh [DEST]   (default: $CHDB_WINDOWS_DEPS_DIR or ~/.cache/chdb-windows-deps)
 
 set -euo pipefail
@@ -56,16 +57,20 @@ fetch() {
 }
 
 MINGW_ROOT="${DEST}/mingw"
-if [ ! -f "${MINGW_ROOT}/usr/x86_64-w64-mingw32ucrt/include/_mingw.h" ]; then
-    rm -rf "${MINGW_ROOT}"
-    mkdir -p "${MINGW_ROOT}"
+mingw_pins="$(printf '%s\n' "${MINGW_DEBS[@]}")"
+if [ "$(cat "${MINGW_ROOT}/.pins" 2>/dev/null)" != "${mingw_pins}" ]; then
+    rm -rf "${MINGW_ROOT}.tmp"
+    mkdir -p "${MINGW_ROOT}.tmp"
     for entry in "${MINGW_DEBS[@]}"; do
         read -r deb sha <<< "${entry}"
         urls=()
         for mirror in "${MINGW_MIRRORS[@]}"; do urls+=("${mirror}/${deb}"); done
         fetch "${DEST}/downloads/${deb}" "${sha}" "${urls[@]}"
-        dpkg-deb -x "${DEST}/downloads/${deb}" "${MINGW_ROOT}"
+        dpkg-deb -x "${DEST}/downloads/${deb}" "${MINGW_ROOT}.tmp"
     done
+    printf '%s\n' "${mingw_pins}" > "${MINGW_ROOT}.tmp/.pins"
+    rm -rf "${MINGW_ROOT}"
+    mv "${MINGW_ROOT}.tmp" "${MINGW_ROOT}"
 fi
 grep -q 'define __MSVCRT_VERSION__ 0xE00' "${MINGW_ROOT}/usr/x86_64-w64-mingw32ucrt/include/_mingw.h"
 
@@ -74,7 +79,7 @@ for entry in "${PYTHON_NUGETS[@]}"; do
     xy=${version%.*}
     nodot=${xy//./}
     dir="${DEST}/python/${xy}"
-    if [ -f "${dir}/Python.h" ] && [ -f "${dir}/python3.lib" ] && [ -f "${dir}/python${nodot}.lib" ]; then
+    if [ "$(cat "${dir}/.pin" 2>/dev/null)" = "${version} ${sha}" ]; then
         continue
     fi
     pkg="${DEST}/downloads/python.${version}.nupkg"
@@ -87,11 +92,14 @@ import sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as z:
     z.extractall(sys.argv[2], [n for n in z.namelist() if n.startswith(('tools/include/', 'tools/libs/'))])
 EOF
-    rm -rf "${dir}"
-    mkdir -p "${dir}"
-    cp -a "${tmp}/tools/include/." "${dir}/"
-    cp -a "${tmp}/tools/libs/python3.lib" "${tmp}/tools/libs/python${nodot}.lib" "${dir}/"
+    rm -rf "${dir}.tmp"
+    mkdir -p "${dir}.tmp"
+    cp -a "${tmp}/tools/include/." "${dir}.tmp/"
+    cp -a "${tmp}/tools/libs/python3.lib" "${tmp}/tools/libs/python${nodot}.lib" "${dir}.tmp/"
     rm -rf "${tmp}"
+    echo "${version} ${sha}" > "${dir}.tmp/.pin"
+    rm -rf "${dir}"
+    mv "${dir}.tmp" "${dir}"
 done
 
 echo "Windows build dependencies are in ${DEST}"
