@@ -153,8 +153,16 @@ DESELECT_PANDAS31="\
  --deselect datastore/tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year \
  --deselect tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year"
 
+# chdb-core returns Decimal columns as object columns of decimal.Decimal, not float64
+# (chdb-io/chdb#673), so this upstream test's dtype check fails. Deselect it until
+# the upstream chdb tag includes chdb-io/chdb#748.
+DESELECT_EXACT_DECIMAL="\
+ --deselect datastore/tests/test_clickhouse_type_roundtrip.py::TestClickHouseTypeRoundTrip::test_decimal_maps_to_float64 \
+ --deselect tests/test_clickhouse_type_roundtrip.py::TestClickHouseTypeRoundTrip::test_decimal_maps_to_float64"
+
 set +e
-${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31}
+${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31} \
+    ${DESELECT_EXACT_DECIMAL}
 TEST_EXIT_CODE=$?
 set -e
 
