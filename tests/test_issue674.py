@@ -113,6 +113,20 @@ class TestIssue674(unittest.TestCase):
         self.assertEqual(ret["t"].tolist(), ["Nullable(String)"] * 2)
         self.assertEqual(ret["a"].tolist(), ["-1", str(2**63 + 1)])
 
+    def test_non_negative_integers_above_int64_read_as_uint64(self):
+        for values in ([1, 2**63], [2**64 - 1, 0], [None, 5, 2**63 + 1]):
+            df = pd.DataFrame({"a": pd.Series(values, dtype=object)})
+            ret = _query("SELECT toTypeName(a) AS t, a FROM Python(df)", df, sample=1)
+            self.assertEqual(ret["t"].tolist(), ["Nullable(UInt64)"] * len(values), values)
+            self.assertEqual([None if pd.isna(v) else int(v) for v in ret["a"].tolist()], values)
+
+    def test_sampled_integers_that_do_not_merge_leave_a_decimal_readable(self):
+        # A sample of rows 0 and 2 holds -1 and 2**63, which no integer type holds together.
+        df = pd.DataFrame({"a": pd.Series([-1, 0, 2**63, Decimal("0.5")], dtype=object)})
+        ret = _query("SELECT toTypeName(a) AS t, toString(a) AS v FROM Python(df)", df, sample=2)
+        self.assertEqual(ret["t"].tolist(), ["Nullable(Decimal(20, 1))"] * 4)
+        self.assertEqual(ret["v"].tolist(), ["-1", "0", str(2**63), "0.5"])
+
     def test_integers_beyond_64_bits_before_a_decimal(self):
         for values, expected in (
             ([2**70, Decimal("1")], "Nullable(Decimal(22, 0))"),

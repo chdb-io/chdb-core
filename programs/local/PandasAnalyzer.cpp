@@ -86,9 +86,12 @@ static bool mergeAnalyzedTypes(DataTypePtr & current, const DataTypePtr & next)
         return true;
     }
 
-    /// A negative value and one above Int64's range fit no integer type, and Float64 would round them.
+    /// innerAnalyze rejects the UInt64 column when one of its values is negative.
     if ((is_signed_int(current_idx) && next_idx == TypeIndex::UInt64) || (current_idx == TypeIndex::UInt64 && is_signed_int(next_idx)))
-        return false;
+    {
+        current = uint64Type();
+        return true;
+    }
 
     auto is_expected_numeric = [](TypeIndex idx) {
         return idx == TypeIndex::Int32 || idx == TypeIndex::Int64
@@ -102,7 +105,7 @@ static bool mergeAnalyzedTypes(DataTypePtr & current, const DataTypePtr & next)
 }
 
 /// Returns nullptr for an integer outside both Int64 and UInt64: Float64 would round it.
-static DataTypePtr getBestIntegerType(PyObject * obj)
+static DataTypePtr getBestIntegerType(PyObject * obj, bool & negative)
 {
 	chassert(obj);
 
@@ -110,7 +113,10 @@ static DataTypePtr getBestIntegerType(PyObject * obj)
     int64_t val = PyLong_AsLongLongAndOverflow(obj, &overflow);
 
 	if (overflow == -1)
+	{
+		negative = true;
 		return nullptr;
+	}
 	if (overflow == 1)
 	{
 		PyLong_AsUnsignedLongLong(obj);
@@ -127,15 +133,17 @@ static DataTypePtr getBestIntegerType(PyObject * obj)
 		return nullptr;
 	}
 
+	if (val < 0)
+		negative = true;
 	if (val < static_cast<Int64>(std::numeric_limits<int32_t>::min()) || val > static_cast<Int64>(std::numeric_limits<int32_t>::max()))
 		return int64Type();
 	return int32Type();
 }
 
-/// Calls `f` with every `increment`-th value of `column` until it returns false. A pandas Series is read
-/// through its numpy array; an object array is walked over its buffer, without a Python call per value.
+/// Calls `f` with every value of `column` until it returns false. A pandas Series is read through its
+/// numpy array; an object array is walked over its buffer, without a Python call per value.
 template <typename F>
-static void forEachValue(py::object column, size_t increment, F && f)
+static void forEachValue(py::object column, F && f)
 {
 	auto & import_cache = PythonImporter::ImportCache();
 	auto pandas_series = import_cache.pandas.Series();
@@ -150,7 +158,7 @@ static void forEachValue(py::object column, size_t increment, F && f)
 		{
 			const auto * data = static_cast<const char *>(array.data());
 			auto stride = array.strides(0);
-			for (size_t i = 0; i < rows; i += increment)
+			for (size_t i = 0; i < rows; ++i)
 			{
 				auto * obj = *reinterpret_cast<PyObject * const *>(data + static_cast<ssize_t>(i) * stride);
 				if (!f(py::reinterpret_borrow<py::object>(obj)))
@@ -161,7 +169,7 @@ static void forEachValue(py::object column, size_t increment, F && f)
 	}
 
 	auto row = column.attr("__getitem__");
-	for (size_t i = 0; i < rows; i += increment)
+	for (size_t i = 0; i < rows; ++i)
 		if (!f(row(i)))
 			return;
 }
@@ -222,7 +230,7 @@ static DataTypePtr getExactDecimalType(py::object column)
 	Int64 integer_digits = 0;
 	bool fits = true;
 
-	forEachValue(column, 1, [&](const py::object & obj)
+	forEachValue(column, [&](const py::object & obj)
 	{
 		switch (GetPythonObjectType(obj))
 		{
@@ -293,14 +301,10 @@ bool PandasAnalyzer::Analyze(py::object column) {
 	if (!pandas)
 		return false;
 
+	/// Every row is read: the scan cannot widen a column once it reads it, so a value outside a sample that did
+	/// not fit would be lost. Reading stops at the first value that rules out every type but String.
 	bool can_convert = true;
-	auto increment = getSampleIncrement(py::len(column));
-	auto type = innerAnalyze(column, can_convert, increment);
-
-	/// The sample only proposes a type. The scan cannot widen a column once it reads it, so a value outside
-	/// the sample that did not fit would be lost; check every row against the same rules first.
-	if (can_convert && increment > 1)
-		type = innerAnalyze(column, can_convert, 1);
+	auto type = innerAnalyze(column, can_convert);
 
 	if (can_convert && type && isDecimal(type))
 	{
@@ -318,19 +322,7 @@ bool PandasAnalyzer::Analyze(py::object column) {
 	return can_convert;
 }
 
-size_t PandasAnalyzer::getSampleIncrement(size_t rows)
-{
-	auto sample = static_cast<uint64_t>(sample_size);
-	if (sample > rows)
-		sample = rows;
-
-	if (sample == 0)
-		return rows;
-
-	return rows / sample;
-}
-
-DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
+DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert, bool & negative_integer)
 {
 	/// Exactly the values the scan writes as NULL.
 	if (isMissingValue(obj))
@@ -347,7 +339,7 @@ DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
 			/// An integer beyond 64 bits reads as String unless a later Decimal makes the column a Decimal one, which
 			/// holds it exactly: String merges with no number, so innerAnalyze keeps looking instead of stopping here.
 			static const DataTypePtr string_type = std::make_shared<DataTypeString>();
-			auto best_type = getBestIntegerType(obj.ptr());
+			auto best_type = getBestIntegerType(obj.ptr(), negative_integer);
 			return best_type ? best_type : string_type;
 		}
 	case PythonObjectType::Float:
@@ -383,15 +375,16 @@ DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
 	}
 }
 
-DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert, size_t increment) {
+DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert) {
 	can_convert = true;
 
 	DataTypePtr current_type = {};
 	DataTypePtr result;
 	DataTypePtr unmergeable;
-	forEachValue(column, increment, [&](const py::object & obj)
+	bool negative_integer = false;
+	forEachValue(column, [&](const py::object & obj)
 	{
-		DataTypePtr next_type = getItemType(obj, can_convert);
+		DataTypePtr next_type = getItemType(obj, can_convert, negative_integer);
 
 		if (!can_convert)
 		{
@@ -419,6 +412,9 @@ DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert, 
 		can_convert = false;
 		return unmergeable;
 	}
+	/// A negative value and one above Int64's range fit no integer type, and Float64 would round them.
+	if (negative_integer && getTypeIndex(current_type) == TypeIndex::UInt64)
+		can_convert = false;
 	return current_type;
 }
 
