@@ -4,6 +4,7 @@ import unittest
 import os
 import shutil
 import signal
+import sys
 import threading
 import time
 from chdb import session
@@ -28,7 +29,12 @@ class TestSignalHandler(unittest.TestCase):
     def background_sender(self, delay):
         time.sleep(delay)
         print(f"send signal after {delay} seconds")
-        os.kill(os.getpid(), signal.SIGINT)
+        if sys.platform == "win32":
+            # os.kill there terminates the process for anything but the console control events;
+            # raise_signal runs the SIGINT handler, which is what Ctrl+C does.
+            signal.raise_signal(signal.SIGINT)
+        else:
+            os.kill(os.getpid(), signal.SIGINT)
 
     def test_signal_response(self):
         sender_thread = threading.Thread(
