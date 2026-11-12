@@ -138,6 +138,15 @@ set(SRCS
     "${LIBRARY_DIR}/libarchive/xxhash.c"
 )
 
+if (OS_WINDOWS)
+    # chdb_spec: the Windows counterpart of archive_read_disk_posix.c, which compiles to nothing
+    # there, so that the archive_read_disk_* functions archive.h declares exist on Windows too.
+    list (APPEND SRCS "${LIBRARY_DIR}/libarchive/archive_read_disk_windows.c")
+    # chdb_spec: no external programs on Windows; see windows/filter_fork_disabled.c.
+    list (REMOVE_ITEM SRCS "${LIBRARY_DIR}/libarchive/filter_fork_windows.c")
+    list (APPEND SRCS "${CMAKE_CURRENT_SOURCE_DIR}/windows/filter_fork_disabled.c")
+endif ()
+
 add_library(_libarchive ${SRCS})
 if (OS_SUNOS)
     target_include_directories(_libarchive PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/illumos)
@@ -189,6 +198,18 @@ if (OS_LINUX)
             HAVE_FUTIMESAT=1
             HAVE_ICONV=1
     )
+endif()
+
+if (OS_WINDOWS)
+    # chdb_spec: config.h describes a Linux host. config_windows.h is what libarchive's own CMake
+    # configure produces for mingw-w64 (see the comment at its top); archive_platform.h includes
+    # PLATFORM_CONFIG_H in place of config.h when it is defined.
+    target_compile_definitions(_libarchive PRIVATE "PLATFORM_CONFIG_H=\"config_windows.h\"")
+    # Without it, archive.h declares every entry point dllexport while the library is built, and
+    # the module would export all of them. PUBLIC, as the header asks of users of a static build.
+    target_compile_definitions(_libarchive PUBLIC LIBARCHIVE_STATIC)
+    # archive_random.c, and archive_util.c for temporary file names, call BCryptGenRandom.
+    target_link_libraries(_libarchive PRIVATE bcrypt)
 endif()
 
 add_library(ch_contrib::libarchive ALIAS _libarchive)

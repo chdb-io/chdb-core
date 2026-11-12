@@ -4,6 +4,9 @@
 #include <IO/WriteBufferFromFileBase.h>
 #include <Common/quoteString.h>
 #include <Common/scope_guard_safe.h>
+#if defined(OS_WINDOWS)
+#include <base/pathToString.h>
+#endif
 
 #include <mutex>
 
@@ -151,7 +154,13 @@ private:
     {
         expected_size = getSize();
         entry = archive_entry_new();
+#if defined(OS_WINDOWS)
+        /// chdb_spec: the name is UTF-8. On Windows `archive_entry_set_pathname` takes it in the code page of the CRT
+        /// locale, and the pax header would get it converted from that code page, i.e. encoded twice.
+        archive_entry_set_pathname_utf8(entry, filename.c_str());
+#else
         archive_entry_set_pathname(entry, filename.c_str());
+#endif
         archive_entry_set_size(entry, expected_size);
         archive_entry_set_filetype(entry, static_cast<__LA_MODE_T>(0100000));
         archive_entry_set_perm(entry, 0644);
@@ -256,7 +265,12 @@ void LibArchiveWriter::createArchive()
         archive_write_open2(archive, stream_info.get(), nullptr, &StreamInfo::memory_write, nullptr, nullptr);
     }
     else
+#if defined(OS_WINDOWS)
+        /// chdb_spec: as in LibArchiveReader, the narrow-char variant would take the UTF-8 path in the ANSI code page.
+        archive_write_open_filename_w(archive, pathFromString(path_to_archive).c_str());
+#else
         archive_write_open_filename(archive, path_to_archive.c_str());
+#endif
 }
 
 LibArchiveWriter::~LibArchiveWriter()
