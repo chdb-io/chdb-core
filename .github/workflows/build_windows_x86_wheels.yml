@@ -49,8 +49,10 @@ jobs:
       - name: Install the toolchain
         run: |
           sudo apt-get -o DPkg::Lock::Timeout=600 update
+          # yasm, gawk, make: the native host build that bootstraps flatc configures the default
+          # (Linux) feature set, as in the Linux wheel workflow.
           sudo apt-get -o DPkg::Lock::Timeout=600 install -y cmake ninja-build ccache wget curl \
-            python3 python3-venv python3-pip xz-utils
+            yasm gawk make python3 python3-venv python3-pip xz-utils
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 21
