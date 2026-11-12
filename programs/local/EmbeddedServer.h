@@ -7,6 +7,7 @@
 #include <Interpreters/Context_fwd.h>
 #include <Loggers/Loggers.h>
 #include <Common/MemoryWorker.h>
+#include <Common/SettingsChanges.h>
 #include <Common/StatusFile.h>
 
 #include <filesystem>
@@ -49,6 +50,9 @@ public:
     /// The --key=value, --key value and bare --key (meaning "1") options of a connection, in order, as
     /// clickhouse-local reads them. A dash-leading token is a value only when it is a negative number.
     static std::vector<std::pair<std::string, std::string>> parseOptions(int argc, char ** argv);
+
+    /// The options of a connection that are query settings, applied to each of its sessions.
+    static SettingsChanges parseQuerySettingChanges(int argc, char ** argv);
 
     /// The warning of the last getInstance() on this thread that joined a running instance whose startup options
     /// differed from the connection's, and clears it. Empty when there was none.

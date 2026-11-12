@@ -132,11 +132,7 @@ void ChdbClient::applyCmdSettings(int argc, char ** argv)
     if (argc <= 1 || !argv)
         return;
 
-    SettingsChanges changes;
-    for (const auto & [key, value] : EmbeddedServer::parseOptions(argc, argv))
-        if (Settings::hasBuiltin(key))
-            changes.emplace_back(key, value);
-
+    auto changes = EmbeddedServer::parseQuerySettingChanges(argc, argv);
     if (!changes.empty())
         global_context->applySettingsChanges(changes);
 }

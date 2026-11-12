@@ -38,6 +38,7 @@
 #include <Dictionaries/registerDictionaries.h>
 #include <Disks/registerDisks.h>
 #include <Formats/registerFormats.h>
+#include <Functions/UserDefined/ExternalUserDefinedExecutableFunctionsLoader.h>
 #include <Functions/UserDefined/IUserDefinedSQLObjectsStorage.h>
 #include <Functions/registerFunctions.h>
 #include <IO/ReadBufferFromFile.h>
@@ -1394,6 +1395,15 @@ std::vector<std::pair<std::string, std::string>> EmbeddedServer::parseOptions(in
     return options;
 }
 
+SettingsChanges EmbeddedServer::parseQuerySettingChanges(int argc, char ** argv)
+{
+    SettingsChanges changes;
+    for (const auto & [key, value] : parseOptions(argc, argv))
+        if (Settings::hasBuiltin(key))
+            changes.emplace_back(key, value);
+    return changes;
+}
+
 namespace
 {
 
@@ -1434,14 +1444,6 @@ std::string EmbeddedServer::takeConnectWarning()
 
 void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
 {
-    static const std::unordered_set<std::string> server_setting_names = []
-    {
-        std::unordered_set<std::string> names;
-        for (auto name : ServerSettings().getAllRegisteredNames())
-            names.emplace(name);
-        return names;
-    }();
-
     auto running_path = [&](const std::string & key) -> String
     {
         if (key == "user_scripts_path")
@@ -1464,6 +1466,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
     std::vector<std::string> server_level_ignored;
     std::vector<std::string> replaced;
     std::vector<std::pair<std::string, std::string>> function_paths;
+    Poco::AutoPtr<Poco::Util::MapConfiguration> requested_config = new Poco::Util::MapConfiguration;
 
     for (const auto & [key, value] : parseOptions(argc, argv))
     {
@@ -1485,22 +1488,28 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
             continue;
         }
 
-        if (!server_setting_names.contains(key))
-            continue;
-
-        /// Parsed the way the instance parsed its own configuration, so equal values compare equal however they are
-        /// written, and an option at its default matches an instance that does not set it.
-        Poco::AutoPtr<Poco::Util::MapConfiguration> requested_config = new Poco::Util::MapConfiguration;
         requested_config->setString(key, value);
-        ServerSettings requested;
-        requested.loadSettingsFromConfig(*requested_config);
-        Field running = server_settings.get(key);
-        if (requested.get(key) == running)
+    }
+
+    /// Read over the running values the way the instance read its own configuration, so a setting is found under its
+    /// name, its alias or its configuration path (query_cache.max_entries), and equal values compare equal however
+    /// they are written.
+    ServerSettings requested(server_settings);
+    requested.loadSettingsFromConfig(*requested_config);
+    std::unordered_set<std::string> query_setting_names;
+    for (const auto & change : parseQuerySettingChanges(argc, argv))
+        query_setting_names.insert(change.name);
+    for (auto name : server_settings.getAllRegisteredNames())
+    {
+        Field running = server_settings.get(name);
+        Field value = requested.get(name);
+        if (value == running)
             continue;
-        auto entry = fmt::format("{}={} (running: {})", key, value, applyVisitor(FieldVisitorToString(), running));
-        /// A name that is also a query setting applies to this connection's queries (ChdbClient::applyCmdSettings);
-        /// only its server-level use keeps the running value.
-        (Settings::hasBuiltin(key) ? server_level_ignored : ignored).push_back(std::move(entry));
+        auto entry = fmt::format(
+            "{}={} (running: {})", name, applyVisitor(FieldVisitorToString(), value), applyVisitor(FieldVisitorToString(), running));
+        /// An option given under a query setting's name applies to this connection's queries
+        /// (ChdbClient::applyCmdSettings); only its server-level use keeps the running value.
+        (query_setting_names.contains(String(name)) ? server_level_ignored : ignored).push_back(std::move(entry));
     }
 
     if (!refused.empty())
@@ -1512,12 +1521,19 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
 
     if (!function_paths.empty())
     {
+        /// The functions are shared by every connection: a connection that is going to fail must not replace them.
+        if (auto changes = parseQuerySettingChanges(argc, argv); !changes.empty())
+            global_context->getSettingsCopy().applyChanges(changes);
+
         for (const auto & [key, value] : function_paths)
             config().setString(key, value);
         global_context->setUserScriptsPath(config().getString("user_scripts_path", global_context->getUserScriptsPath()));
         global_context->setDynamicUserDefinedExecutableFunctionsPath(config().getString(
             "dynamic_user_defined_executable_functions_path", global_context->getDynamicUserDefinedExecutableFunctionsPath()));
         global_context->loadOrReloadUserDefinedExecutableFunctions(config());
+        /// A function whose configuration did not change keeps its process pool, which runs the command it was
+        /// created with, so one from the previous scripts directory would still answer.
+        global_context->getExternalUserDefinedExecutableFunctionsLoader().reloadAllTriedToLoad();
     }
 
     std::vector<std::string> warnings;
