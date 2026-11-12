@@ -357,7 +357,8 @@ void MergeTreeDataPartWriterOnDisk::calculateAndSerializeSkipIndices(const Block
                     /// Actually this numbers is redundant, but we have to store them
                     /// to be compatible with the normal .mrk2 file format
                     if (settings.can_use_adaptive_granularity)
-                        writeBinaryLittleEndian(1UL, marks_out);
+                        /// UInt64: the mark format has 8 bytes of rows here, and `1UL` is 4 bytes on Windows (LLP64).
+                        writeBinaryLittleEndian(UInt64{1}, marks_out);
 
                     if (auto it = cached_index_marks.find(stream->escaped_column_name); it != cached_index_marks.end())
                         it->second->push_back(mark);

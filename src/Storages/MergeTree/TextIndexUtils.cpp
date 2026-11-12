@@ -111,7 +111,8 @@ void writeMarks(MergeTreeIndexOutputStreams & streams, bool can_use_adaptive_gra
         writeBinaryLittleEndian(stream->plain_hashing.count(), marks_out);
         writeBinaryLittleEndian(stream->compressed_hashing.offset(), marks_out);
         if (can_use_adaptive_granularity)
-            writeBinaryLittleEndian(1UL, marks_out);
+            /// UInt64: the mark format has 8 bytes of rows here, and `1UL` is 4 bytes on Windows (LLP64).
+            writeBinaryLittleEndian(UInt64{1}, marks_out);
     }
 }
 
