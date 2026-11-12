@@ -140,8 +140,10 @@ class TestIssue674(unittest.TestCase):
             self.assertEqual(ret["t"].tolist(), [expected], values)
 
     def test_columns_of_a_two_dimensional_object_array(self):
-        # Each column is a strided view into the same object array.
-        df = pd.DataFrame(np.array([[1, "a", 0.5], [2, "b", None], [3, "c", 1.5]], dtype=object), columns=["i", "s", "f"])
+        # Each column is a strided view into the same object array. pandas 3 would
+        # otherwise copy the array and infer the string column as str.
+        arr = np.array([[1, "a", 0.5], [2, "b", None], [3, "c", 1.5]], dtype=object)
+        df = pd.DataFrame(arr, columns=["i", "s", "f"], dtype=object, copy=False)
         ret = _query("SELECT toTypeName(i) AS ti, i, toTypeName(s) AS ts, s, f FROM Python(df)", df, sample=1)
         self.assertEqual(ret["ti"].tolist(), ["Nullable(Int32)"] * 3)
         self.assertEqual(ret["i"].tolist(), [1, 2, 3])
