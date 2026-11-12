@@ -7,6 +7,7 @@ CHDB_LIB_PATH overrides discovery. Skips when dependencies are missing."""
 import contextlib
 import json
 import os
+import pathlib
 import shutil
 import tempfile
 import unittest
@@ -200,6 +201,12 @@ def _json_value(value):
     if isinstance(value, bytes):
         value = value.decode()
     return json.loads(value) if isinstance(value, str) else value
+
+
+def _uri_path(path):
+    """An absolute path as the path part of a file: URI: /tmp/x on POSIX, /C:/x on Windows."""
+    posix = pathlib.PurePath(path).as_posix()
+    return posix if posix.startswith("/") else "/" + posix
 
 
 @unittest.skipUnless(_ENABLED, _SKIP_REASON)
@@ -1139,11 +1146,12 @@ class TestAdbcUri(unittest.TestCase):
 
     def test_file_uri_forms(self):
         base = tempfile.mkdtemp(prefix="chdb_uri_")
+        uri_base = _uri_path(base)
         try:
-            self._roundtrip(f"file:{base}/u1", f"{base}/u1")
-            self._roundtrip(f"file://{base}/u2", f"{base}/u2")
-            self._roundtrip(f"file://localhost{base}/u3", f"{base}/u3")
-            self._roundtrip(f"file:{base}/my%20db", f"{base}/my db")
+            self._roundtrip(f"file:{uri_base}/u1", f"{base}/u1")
+            self._roundtrip(f"file://{uri_base}/u2", f"{base}/u2")
+            self._roundtrip(f"file://localhost{uri_base}/u3", f"{base}/u3")
+            self._roundtrip(f"file:{uri_base}/my%20db", f"{base}/my db")
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
@@ -1157,11 +1165,12 @@ class TestAdbcUri(unittest.TestCase):
     def test_chdb_uri_path_forms(self):
         # Path handling mirrors file: (relative/absolute/authority/percent).
         base = tempfile.mkdtemp(prefix="chdb_scheme_")
+        uri_base = _uri_path(base)
         try:
-            self._roundtrip(f"chdb:{base}/c1", f"{base}/c1")
-            self._roundtrip(f"chdb://{base}/c2", f"{base}/c2")  # //empty-authority -> abs
-            self._roundtrip(f"chdb://localhost{base}/c3", f"{base}/c3")
-            self._roundtrip(f"chdb:{base}/my%20db", f"{base}/my db")  # percent decode
+            self._roundtrip(f"chdb:{uri_base}/c1", f"{base}/c1")
+            self._roundtrip(f"chdb://{uri_base}/c2", f"{base}/c2")  # //empty-authority -> abs
+            self._roundtrip(f"chdb://localhost{uri_base}/c3", f"{base}/c3")
+            self._roundtrip(f"chdb:{uri_base}/my%20db", f"{base}/my db")  # percent decode
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
