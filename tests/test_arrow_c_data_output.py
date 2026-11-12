@@ -15,9 +15,15 @@ import ctypes
 import json
 import os
 import shutil
+import sys
 import unittest
 
 import pyarrow as pa
+
+
+# Only this platform's library: on Windows, a Linux libchdb.so left in the tree
+# by a local build is not loadable, and the Windows library is libchdb.dll.
+_LIB_NAMES = ["libchdb.dll"] if sys.platform == "win32" else ["libchdb.so", "libchdb.dylib"]
 
 
 def _candidate_libchdb_paths():
@@ -25,12 +31,16 @@ def _candidate_libchdb_paths():
         yield os.environ["CHDB_LIB_PATH"]
     here = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(here)
-    names = ["libchdb.so", "libchdb.dylib"]
-    yield from (os.path.join(project_root, n) for n in names)
-    yield from (os.path.join(project_root, "buildlib", n) for n in names)
-    on_path = shutil.which("libchdb.so")
-    if on_path:
-        yield on_path
+    yield from (os.path.join(project_root, n) for n in _LIB_NAMES)
+    yield from (os.path.join(project_root, "buildlib", n) for n in _LIB_NAMES)
+    if sys.platform == "win32":
+        # shutil.which only matches program (PATHEXT) extensions on Windows, not .dll.
+        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+        yield from (os.path.join(d, "libchdb.dll") for d in path_dirs if d)
+    else:
+        on_path = shutil.which("libchdb.so")
+        if on_path:
+            yield on_path
 
 
 def _find_libchdb_path():
@@ -126,9 +136,15 @@ if _LIBCHDB_PATH is not None:
         _bind(LIBCHDB)
 
 
-@unittest.skipUnless(LIBCHDB is not None,
-                     f"libchdb.so with chdb_query_arrow not found "
-                     f"(searched {_LIBCHDB_PATH!r})")
+if sys.platform == "win32" and _LIBCHDB_PATH is None:
+    _MISSING_REASON = ("the Windows port does not build libchdb.dll, the C ABI library; "
+                       "set CHDB_LIB_PATH to one")
+else:
+    _MISSING_REASON = (f"libchdb.so with chdb_query_arrow not found "
+                       f"(searched {_LIBCHDB_PATH!r})")
+
+
+@unittest.skipUnless(LIBCHDB is not None, _MISSING_REASON)
 class TestArrowCDataOutput(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

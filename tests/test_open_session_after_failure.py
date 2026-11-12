@@ -3,11 +3,17 @@
 import unittest
 import shutil
 import os
+import sys
 from chdb import session
 
 
 test_dir1 = ".test_open_session_after_failure"
-test_dir2 = "/usr/bin"
+if sys.platform == "win32":
+    # An administrator can write almost anywhere on Windows (the CI runners' "/usr/bin" is a
+    # directory they may create), but no one can create a directory below a regular file.
+    test_dir2 = os.path.join(sys.executable, "db")
+else:
+    test_dir2 = "/usr/bin"
 
 
 class TestStateful(unittest.TestCase):
