@@ -338,11 +338,23 @@ jobs:
       - name: Remove /usr/local/bin/python3
         run: |
           sudo rm -f /usr/local/bin/python3
+      # Pin an exact Go patch release. go1.27.4 and go1.26.11 added a cgo
+      # linker-input check that accepts only __.SYMDEF / __.SYMDEF SORTED as an
+      # archive symbol table and rejects libchdb.a, whose cctools-built index
+      # is __.SYMDEF_64 ("unrecognized binary format"). A minor-line spec such
+      # as '1.27' or 'stable' resolves to those releases, so it cannot be used
+      # until Go accepts __.SYMDEF_64.
       - name: Install go for macOS
+        if: env.WHEEL_ONLY != 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Install lz4 for macOS
         if: env.WHEEL_ONLY != 'true'
         run: |
           brew update
-          brew install go lz4
+          brew install lz4
           go version
       - uses: actions/checkout@v7
         id: checkout

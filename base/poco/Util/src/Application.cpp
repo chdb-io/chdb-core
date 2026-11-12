@@ -94,7 +94,17 @@ void Application::setup()
 	addSubsystem(new LoggingSubsystem);
 
 #if defined(POCO_OS_FAMILY_UNIX) && !defined(POCO_VXWORKS)
-	_workingDirAtLaunch = Path::current();
+	/// The working directory may have been removed (a long-running process, a test runner's
+	/// temporary directory). Nothing needs it to start, so leave _workingDirAtLaunch empty
+	/// rather than failing every Application -- including libchdb's engine -- with a bare
+	/// "System exception".
+	try
+	{
+		_workingDirAtLaunch = Path::current();
+	}
+	catch (const SystemException &)
+	{
+	}
 
 	/// Poco::SignalHandler::install() is deliberately not called here. It sigactions
 	/// SIGILL/SIGBUS/SIGSEGV/SIGSYS process-wide from this constructor, so constructing
@@ -417,7 +427,9 @@ void Application::getApplicationPath(Poco::Path& appPath) const
 	{
 		if (!Path::find(Environment::get("PATH"), _command, appPath))
 			appPath = Path(_workingDirAtLaunch, _command);
-		appPath.makeAbsolute();
+		/// Without a working directory there is nothing to resolve a relative path against.
+		if (!_workingDirAtLaunch.empty())
+			appPath.makeAbsolute();
 	}
 #else
 	appPath = _command;
