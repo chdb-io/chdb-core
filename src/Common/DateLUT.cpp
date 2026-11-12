@@ -113,6 +113,12 @@ std::string determineDefaultTimeZone()
     }
     else
     {
+#if defined(OS_WINDOWS)
+        /// chdb_spec: no /etc/localtime on Windows. Without a drive letter that path means the root
+        /// of the current drive (C:\etc\localtime), which any local user can create, so do not
+        /// probe it: use the same default as a host without tzdata.
+        return "UTC";
+#endif
         error_prefix = "Could not determine local time zone: ";
         tz_file_path = "/etc/localtime";
 

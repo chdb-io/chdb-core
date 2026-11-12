@@ -22,7 +22,12 @@ std::optional<std::string> getLocalConfigPath(const std::string & home_path)
     if (!home_path.empty())
         names.emplace_back(pathFromString(home_path) / ".clickhouse-local" / "config");
 
+#if !defined(OS_WINDOWS)
+    /// chdb_spec: not on Windows, where a path without a drive letter means the root of the current
+    /// drive (C:\etc\clickhouse-local), a place any local user can create, so another user could
+    /// hand chDB its configuration.
     names.emplace_back("/etc/clickhouse-local/config");
+#endif
 
     for (const auto & name : names)
         if (auto config_path = tryGetConfigPath(pathToString(name)))
