@@ -143,6 +143,10 @@
 #include <Common/Config/getConfigPath.h>
 #include <Common/Config/getLocalConfigPath.h>
 #include <Common/getUserHomePath.h>
+#if defined(OS_WINDOWS)
+#include <Poco/Net/Net.h>
+#include <mutex>
+#endif
 #include <Common/CurrentMemoryTracker.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/ErrorHandlers.h>
@@ -461,6 +465,13 @@ void LocalServer::processError(std::string_view query) const
 
 void LocalServer::initialize(Poco::Util::Application & self)
 {
+#if defined(OS_WINDOWS)
+    /// chdb_spec: Winsock needs WSAStartup before any socket call (gethostname included). The
+    /// executable does it in main(); the Python module never runs main(), so do it here, once.
+    /// It is reference-counted and never undone, which also keeps it alive through teardown.
+    static std::once_flag winsock_started;
+    std::call_once(winsock_started, [] { Poco::Net::initializeNetwork(); });
+#endif
     Poco::Util::Application::initialize(self);
 
     /// Not the raw `HOME`: on Windows the home directory lives in `USERPROFILE`
@@ -1407,7 +1418,10 @@ try
 
     /// Re-install ClickHouse signal handlers (SA_SIGINFO) after Poco::Application::initialize()
     /// which overwrites them with its own non-SA_SIGINFO handlers.
+    /// None on Windows, where faults are reported through SEH (see Common/SignalHandlers.h).
+#if !defined(OS_WINDOWS)
     HandledSignals::instance().setupCommonDeadlySignalHandlers();
+#endif
 
     std::cout << std::fixed << std::setprecision(3);
     std::cerr << std::fixed << std::setprecision(3);

@@ -112,12 +112,10 @@ std::string AIQueryProcessor::generateSQL(const std::string & prompt)
 
 #else
 
-#if defined(CHDB_LITE) && CHDB_LITE
-// chdb-core-lite has ENABLE_CLIENT_AI=0; without this empty definition of
-// AISQLGenerator, std::unique_ptr<AISQLGenerator>'s synthesized destructor
-// can't be generated (incomplete-type deleter is UB).
+// Builds without the client AI library (chdb-core-lite, Windows) have ENABLE_CLIENT_AI=0;
+// without this empty definition of AISQLGenerator, std::unique_ptr<AISQLGenerator>'s
+// synthesized destructor can't be generated (incomplete-type deleter is UB).
 namespace DB { class AISQLGenerator { }; }
-#endif
 
 AIQueryProcessor::AIQueryProcessor(chdb_connection *, const DB::AIConfiguration &) : connection(nullptr) { }
 AIQueryProcessor::~AIQueryProcessor() = default;

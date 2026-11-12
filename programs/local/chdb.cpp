@@ -163,7 +163,9 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
         /// on SIGSEGV/SIGILL/etc.  This is a no-op when the caller has opted out via
         /// chdb_set_signal_handlers_enabled(0), and it is safe to call on every query
         /// because addSignalHandler() is idempotent with respect to the OS handler.
+#if !defined(OS_WINDOWS)
         HandledSignals::instance().setupCommonDeadlySignalHandlers();
+#endif
 
         int ret = app.run();
         std::unique_ptr<MaterializedQueryResult> result;
@@ -1641,10 +1643,16 @@ const char * chdb_get(chdb_connection conn, const char * key)
 
 void chdb_set_signal_handlers_enabled(int enabled)
 {
+#if defined(OS_WINDOWS)
+    /// Windows reports faults through SEH, and chDB installs no signal handlers there,
+    /// so there is nothing to enable or take back. Kept as a no-op for the C ABI.
+    (void)enabled;
+#else
     HandledSignals::disable_signal_handlers.store(!enabled, std::memory_order_relaxed);
 
     if (!enabled)
         chdb_reset_signal_handlers();
+#endif
 }
 
 chdb_state chdb_shutdown(void)
@@ -1728,6 +1736,7 @@ chdb_state chdb_shutdown(void)
 
 void chdb_reset_signal_handlers(void)
 {
+#if !defined(OS_WINDOWS)
     /// No instance means chDB never installed a handler, so there is nothing of ours
     /// to take back. Do not construct the singleton just to find that out.
     auto * instance = HandledSignals::tryGetInstance();
@@ -1765,4 +1774,5 @@ void chdb_reset_signal_handlers(void)
     }
 
     instance->handled_signals.clear();
+#endif
 }

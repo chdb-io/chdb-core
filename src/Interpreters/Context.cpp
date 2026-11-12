@@ -4976,7 +4976,7 @@ const IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
     String udf_path;
     if (getConfigRef().has("path"))
     {
-        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
+        udf_path = pathToGenericString(pathFromString(getConfigRef().getString("path")) / "user_defined" / "");
     }
 
     SharedLockGuard lock(shared->mutex);
@@ -5003,7 +5003,7 @@ IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
     String udf_path;
     if (getConfigRef().has("path"))
     {
-        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
+        udf_path = pathToGenericString(pathFromString(getConfigRef().getString("path")) / "user_defined" / "");
     }
 
     std::lock_guard lock(shared->mutex);

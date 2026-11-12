@@ -2766,6 +2766,27 @@ bool isStdinNotEmptyAndValid(ReadBuffer & std_in)
         if (auto * fd_buffer = typeid_cast<ReadBufferFromFileDescriptor *>(&std_in))
         {
             int fd = fd_buffer->getFD();
+#if defined(OS_WINDOWS)
+            /// chdb_spec: there is no O_NONBLOCK for a CRT descriptor. Ask the handle instead:
+            /// a console (an interactive stdin) or an empty pipe has nothing to insert, and
+            /// reading either would block.
+            if (fd == STDIN_FILENO)
+            {
+                HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+                if (handle == INVALID_HANDLE_VALUE)
+                    return false;
+                const DWORD type = GetFileType(handle);
+                if (type == FILE_TYPE_CHAR)
+                    return false;
+                if (type == FILE_TYPE_PIPE)
+                {
+                    DWORD available = 0;
+                    if (!PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr) || available == 0)
+                        return false;
+                }
+                return !std_in.eof();
+            }
+#else
             if (fd == STDIN_FILENO)
             {
                 int flags = fcntl(fd, F_GETFL);
@@ -2776,6 +2797,7 @@ bool isStdinNotEmptyAndValid(ReadBuffer & std_in)
                     return !std_in.eof();
                 }
             }
+#endif
         }
         return !std_in.eof();
     }

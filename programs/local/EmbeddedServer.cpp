@@ -66,7 +66,11 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
+#if !defined(OS_WINDOWS)
 #include <sys/resource.h>
+#endif
+#include <base/pathToString.h>
+#include <Common/getUserHomePath.h>
 #include <unistd.h>
 #include <Poco/Logger.h>
 #include <Poco/NullChannel.h>
@@ -95,6 +99,11 @@
 #include <Common/logger_useful.h>
 #include <Common/quoteString.h>
 #include <Common/SignalHandlers.h>
+#include <Common/StackTrace.h>
+#if defined(OS_WINDOWS)
+#include <Poco/Net/Net.h>
+#include <mutex>
+#endif
 
 #include "config.h"
 
@@ -249,12 +258,18 @@ EmbeddedServer::~EmbeddedServer()
 void EmbeddedServer::initialize(Poco::Util::Application & self)
 {
     setShuttingDown(false);
+#if defined(OS_WINDOWS)
+    /// chdb_spec: Winsock needs WSAStartup before any socket call (gethostname included). The
+    /// executable does it in main(); the Python module never runs main(), so do it here, once.
+    /// It is reference-counted and never undone, which also keeps it alive through teardown.
+    static std::once_flag winsock_started;
+    std::call_once(winsock_started, [] { Poco::Net::initializeNetwork(); });
+#endif
 
     Poco::Util::Application::initialize(self);
 
-    const char * home_path_cstr = getenv("HOME"); // NOLINT(concurrency-mt-unsafe)
-    if (home_path_cstr)
-        home_path = home_path_cstr;
+    /// Not the raw `HOME`: on Windows the home directory lives in `USERPROFILE` (see getUserHomePath).
+    home_path = getUserHomePath();
 
     /// Load config files if exists
     std::string config_path;
@@ -268,10 +283,10 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     else if (config_path.empty())
         config_path = getLocalConfigPath(home_path).value_or("");
 
-    if (fs::exists(config_path))
+    if (fs::exists(pathFromString(config_path)))
     {
         ConfigProcessor config_processor(config_path);
-        ConfigProcessor::setConfigPath(fs::path(config_path).parent_path());
+        ConfigProcessor::setConfigPath(pathToGenericString(pathFromString(config_path).parent_path()));
         auto loaded_config = config_processor.loadConfig();
         config().add(loaded_config.configuration.duplicate(), PRIO_DEFAULT, false);
     }
@@ -462,16 +477,17 @@ static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, Co
 
     UUID default_database_uuid;
 
-    fs::path existing_path_symlink = fs::weakly_canonical(context->getPath()) / "metadata" / "default";
+    const fs::path context_path = pathFromString(context->getPath());
+    fs::path existing_path_symlink = fs::weakly_canonical(context_path) / "metadata" / "default";
     if (FS::isSymlinkNoThrow(existing_path_symlink))
-        default_database_uuid = parse<UUID>(FS::readSymlink(existing_path_symlink).filename());
+        default_database_uuid = parse<UUID>(pathToGenericString(FS::readSymlink(existing_path_symlink).filename()));
     else
         default_database_uuid = UUIDHelpers::generateV4();
 
     fs::path default_database_metadata_path
-        = fs::weakly_canonical(context->getPath()) / "store" / DatabaseCatalog::getPathForUUID(default_database_uuid);
+        = fs::weakly_canonical(context_path) / "store" / DatabaseCatalog::getPathForUUID(default_database_uuid);
 
-    overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, pathToGenericString(default_database_metadata_path), default_database_uuid, context));
     overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context,
         /// v26.9 added this: true downgrades a missing path to a warning, for the server's own
         /// metadata replay. chdb is not replaying metadata, and v26.7 always threw, so keep that.
@@ -519,7 +535,7 @@ void EmbeddedServer::tryInitPath()
             parent_folder = std::filesystem::current_path();
 
             (void)std::filesystem::is_directory(parent_folder); // checks the path is accessible (may throw on I/O error)
-            LOG_DEBUG(log, "Will create working directory inside current directory: {}", parent_folder.string());
+            LOG_DEBUG(log, "Will create working directory inside current directory: {}", pathToString(parent_folder));
         }
 
         /// we can have another clickhouse-embedded running simultaneously, even with the same PID (for ex. - several dockers mounting the same folder)
@@ -533,21 +549,21 @@ void EmbeddedServer::tryInitPath()
             throw Exception(
                 ErrorCodes::FILE_ALREADY_EXISTS,
                 "Unsuccessful attempt to set up the working directory: {} already exists.",
-                default_path.string());
+                pathToString(default_path));
 
         /// The directory can be created lazily during the runtime.
         temporary_directory_to_delete = default_path;
 
-        path = default_path.string();
+        path = pathToGenericString(default_path);
 
         LOG_DEBUG(log, "Working directory will be created as needed: {}", path);
 
         config().setString("path", path);
     }
-    fs::create_directories(path);
+    fs::create_directories(pathFromString(path));
 
     /// No limit on temporary data here, unlike clickhouse-local: the engine runs inside the caller's process.
-    setupInstancePaths(global_context, config(), path, 0);
+    setupInstancePaths(global_context, config(), pathFromString(path), 0);
 }
 
 
@@ -744,14 +760,15 @@ void EmbeddedServer::setupUsers()
     {
         String config_path = config().getString("config-file", "");
         bool has_user_directories = config().has("user_directories");
-        const auto config_dir = fs::path{config_path}.remove_filename().string();
+        const auto config_dir = pathToGenericString(pathFromString(config_path).remove_filename());
         String users_config_path = config().getString("users_config", "");
 
         if (users_config_path.empty() && has_user_directories)
         {
             users_config_path = config().getString("user_directories.users_xml.path");
-            if (fs::path(users_config_path).is_relative() && fs::exists(fs::path(config_dir) / users_config_path))
-                users_config_path = fs::path(config_dir) / users_config_path;
+            if (pathFromString(users_config_path).is_relative()
+                && fs::exists(pathFromString(config_dir) / pathFromString(users_config_path)))
+                users_config_path = pathToGenericString(pathFromString(config_dir) / pathFromString(users_config_path));
         }
 
         if (users_config_path.empty())
@@ -781,11 +798,13 @@ try
     std::cout << std::fixed << std::setprecision(3);
     std::cerr << std::fixed << std::setprecision(3);
 
+#if !defined(OS_WINDOWS)
     /// Re-install ClickHouse signal handlers (SA_SIGINFO) after Poco::Application::initialize()
     /// which overwrites them with its own non-SA_SIGINFO handlers.
+    /// None on Windows, where faults are reported through SEH (see Common/SignalHandlers.h).
     HandledSignals::instance().setupCommonDeadlySignalHandlers();
 
-    /// Try to increase limit on number of open files.
+    /// Try to increase limit on number of open files. Windows has no such per-process limit.
     {
         rlimit rlim;
         if (getrlimit(RLIMIT_NOFILE, &rlim))
@@ -804,6 +823,7 @@ try
                           << '\n';
         }
     }
+#endif
 
     std::call_once(
         global_register_once_flag,
@@ -1233,15 +1253,15 @@ void EmbeddedServer::processConfig()
         String path = global_context->getPath();
 
         /// Lock path directory before read
-        fs::create_directories(fs::path(path));
-        status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
+        fs::create_directories(pathFromString(path));
+        status.emplace(pathToGenericString(pathFromString(path) / "status"), StatusFile::write_full_info);
 
-        const bool metadata_exists = fs::exists(fs::path(path) / "metadata");
+        const bool metadata_exists = fs::exists(pathFromString(path) / "metadata");
         if (metadata_exists)
         {
             LOG_DEBUG(log, "Loading metadata from {}", path);
 
-            if (fs::exists(std::filesystem::path(path) / "metadata" / "system.sql"))
+            if (fs::exists(pathFromString(path) / "metadata" / "system.sql"))
             {
                 LoadTaskPtrs load_system_metadata_tasks = loadMetadataSystem(global_context);
                 waitLoad(TablesLoaderForegroundPoolId, load_system_metadata_tasks);
@@ -1275,7 +1295,7 @@ void EmbeddedServer::processConfig()
             attachSystemTablesServer(
                 global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
 
-        if (fs::exists(fs::path(path) / "user_defined"))
+        if (fs::exists(pathFromString(path) / "user_defined"))
             global_context->getUserDefinedSQLObjectsStorage().loadObjects();
     }
     else if (!config().has("no-system-tables"))
