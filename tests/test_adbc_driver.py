@@ -487,7 +487,15 @@ class TestAdbcIngest(unittest.TestCase):
     def test_ingest_replace(self):
         with _connect() as conn, conn.cursor() as cur:
             cur.adbc_ingest("ingest_rep", self._table(6), mode="create")
-            cur.adbc_ingest("ingest_rep", self._table(2), mode="replace")
+            try:
+                cur.adbc_ingest("ingest_rep", self._table(2), mode="replace")
+            except adbc_dbapi.NotSupportedError as e:
+                # Replace runs CREATE OR REPLACE TABLE, which publishes the new
+                # table with an atomic EXCHANGE; that needs an OS file-exchange
+                # primitive (renameat2 / renamex_np), which Windows lacks.
+                if "exchanging files is not supported by the OS" not in str(e):
+                    raise
+                self.skipTest(f"RENAME EXCHANGE unsupported on this OS: {e}")
             cur.execute("SELECT count() FROM ingest_rep")
             self.assertEqual(cur.fetchone()[0], 2)
 

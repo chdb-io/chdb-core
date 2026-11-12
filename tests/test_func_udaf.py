@@ -11,6 +11,11 @@ from chdb import agg
 from chdb.session import Session
 from chdb.sqltypes import FLOAT64, INT64, STRING, UINT64
 
+# An executable UDF configured through udf_path runs as an external command. The
+# Windows engine cannot start external commands and fails every such call with this
+# error, so the tests that need one are skipped there, and only on that error.
+NO_EXTERNAL_COMMANDS = "Code: 48. DB::Exception: Running external commands is not implemented on Windows"
+
 
 # Accumulators live at module level on purpose: -State/-Merge and spill-to-disk
 # aggregation pickle the accumulator, which requires the class to be importable by name.
@@ -315,13 +320,16 @@ class UDAFTestCase(unittest.TestCase):
         chdb.create_aggregate_function(name, accumulator, arg_types, return_type, **kwargs)
         self._registered.append(name)
 
-    def run_isolated(self, body):
+    def run_isolated(self, body, runs_executable_udf=False):
         """Run `body` in a fresh interpreter.
 
         Some of what needs testing is process-global: whether registration works before
         any connection exists, and how an executable UDF configured through udf_path
         interacts with a UDAF. Neither can be observed once this class's own Session has
         initialised the engine.
+
+        With runs_executable_udf, a body that fails because this build cannot start
+        external commands skips the test instead of failing it.
         """
         preamble = (
             "import os, sys, tempfile\n"
@@ -337,6 +345,10 @@ class UDAFTestCase(unittest.TestCase):
             text=True,
             timeout=180,
         )
+        if (runs_executable_udf and completed.returncode != 0
+                and NO_EXTERNAL_COMMANDS in completed.stdout + completed.stderr):
+            self.skipTest("executable UDFs need external commands, which this build cannot run "
+                          "(Running external commands is not implemented on Windows)")
         self.assertEqual(completed.returncode, 0,
                          "subprocess failed:\n" + completed.stdout[-2000:] + completed.stderr[-2000:])
         return completed.stdout.strip()
@@ -618,7 +630,8 @@ class TestUDAFTypeDeclaration(UDAFTestCase):
             "    sess.query('SELECT clash_exec(toInt64(1))', 'CSV')\n"
             "    print('resolved:no-error')\n"
             "except Exception as e:\n"
-            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n"
+            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n",
+            runs_executable_udf=True,
         )
 
         self.assertIn("scalar: 2", output)
@@ -675,7 +688,8 @@ class TestUDAFTypeDeclaration(UDAFTestCase):
             "    sess.query('SELECT combclash_execIf(toInt64(1))', 'CSV')\n"
             "    print('resolved:no-error')\n"
             "except Exception as e:\n"
-            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n"
+            "    print('error:', str(e).replace(chr(10), ' ')[:160])\n",
+            runs_executable_udf=True,
         )
 
         self.assertIn("scalar: 2", output)
