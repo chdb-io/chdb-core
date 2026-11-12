@@ -105,12 +105,15 @@ endif ()
 if (OS_WINDOWS AND USE_PYTHON)
     add_library (chdb_pymodule MODULE
         $<TARGET_OBJECTS:clickhouse_malloc>
+        ${ClickHouse_SOURCE_DIR}/programs/local/WindowsDllEntry.c
         ${ClickHouse_SOURCE_DIR}/chdb/pychdb_export.def)
     target_link_libraries (chdb_pymodule PRIVATE
         clickhouse_new_delete
         clickhouse-local-lib
         clickhouse-server-lib
         clickhouse_common_io)
+    # Skips the C++ teardown when the process exits, see programs/local/WindowsDllEntry.c.
+    target_link_options (chdb_pymodule PRIVATE "-Wl,--entry=chdbDllMainCRTStartup")
     set_target_properties (chdb_pymodule PROPERTIES
         PREFIX ""
         OUTPUT_NAME "_chdb"
