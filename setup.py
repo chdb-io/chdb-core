@@ -26,10 +26,31 @@ def is_free_threading():
     return os.environ.get("CHDB_FREE_THREADING") == "1"
 
 
+def is_windows_target():
+    """Whether the wheel is for Windows: built on Windows, or cross-built on Linux by
+    chdb/build_windows_on_linux.sh, which sets CHDB_TARGET_OS=windows."""
+    return sys.platform == "win32" or os.environ.get("CHDB_TARGET_OS") == "windows"
+
+
 def get_python_ext_suffix():
     if is_free_threading():
         return sysconfig.get_config_var("EXT_SUFFIX")
+    if is_windows_target():
+        # CPython on Windows imports a stable-ABI module from a plain .pyd.
+        return ".pyd"
     return ".abi3.so"
+
+
+def is_pybind11_shim_library(file):
+    """The pybind11 non-limited-API stub and per-Python shim libraries the module loads."""
+    if is_windows_target():
+        # Windows: no "lib" prefix, see contrib/pybind11-cmake/CMakeLists.txt.
+        return file.endswith(".dll") and file.startswith(
+            ("pybind11nonlimitedapi_chdb_", "pybind11nonlimitedapi_stubs")
+        )
+    return (file.endswith(".dylib") or file.endswith(".so")) and file.startswith(
+        ("libpybind11nonlimitedapi_chdb_", "libpybind11nonlimitedapi_stubs")
+    )
 
 
 # get the path of the current file
@@ -208,7 +229,7 @@ if __name__ == "__main__":
         # scan the chdb directory and add all the .py and dynamic library files to the package
         pkg_files = []
         for root, dirs, files in os.walk(libdir):
-            if "/build" in root or root.endswith("/build"):
+            if "/build" in root.replace(os.sep, "/") or root.endswith("/build"):
                 continue
 
             for file in files:
@@ -216,13 +237,7 @@ if __name__ == "__main__":
                     pkg_files.append(os.path.join(root, file))
                 elif not is_free_threading():
                     # Stable ABI builds need pybind11 nonlimitedapi shim + stubs libraries
-                    if file.startswith("libpybind11nonlimitedapi_chdb_") and (
-                        file.endswith(".dylib") or file.endswith(".so")
-                    ):
-                        pkg_files.append(os.path.join(root, file))
-                    elif file.startswith("libpybind11nonlimitedapi_stubs") and (
-                        file.endswith(".dylib") or file.endswith(".so")
-                    ):
+                    if is_pybind11_shim_library(file):
                         pkg_files.append(os.path.join(root, file))
 
         pkg_files.append(chdb_so)
@@ -247,6 +262,13 @@ if __name__ == "__main__":
                 else {
                     "bdist_wheel": {
                         "py_limited_api": "cp39",
+                        # A Windows wheel cross-built on Linux would otherwise be tagged for the
+                        # build host.
+                        **(
+                            {"plat_name": "win_amd64"}
+                            if is_windows_target() and sys.platform != "win32"
+                            else {}
+                        ),
                     }
                 }
             ),

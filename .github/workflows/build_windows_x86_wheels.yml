@@ -1,0 +1,191 @@
+name: Build & Test Windows x86_64
+
+# The Windows wheel is cross-compiled on a self-hosted Linux runner
+# (chdb/build_windows_on_linux.sh: host clang/lld 21, mingw-w64 13 UCRT, see
+# cmake/windows/toolchain-x86_64.cmake) and tested on GitHub's hosted Windows
+# runners, which build nothing. It is not published anywhere yet: the wheel is
+# a workflow artifact only.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - '.github/scripts/pypi-upload-wanted.sh'
+      - '.github/scripts/pypi-upload-wanted-test.sh'
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - '.github/scripts/pypi-upload-wanted.sh'
+      - '.github/scripts/pypi-upload-wanted-test.sh'
+      - '.agents/**'
+      - '.github/nightly/**'
+      - '.github/workflows/daily_sync.yml'
+      - '.github/workflows/nightly_publish.yml'
+      - '.github/workflows/nightly_api.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build_on_linux:
+    name: Cross-build Windows Wheel on Linux
+    runs-on: [self-hosted, linux, x64, ubuntu-latest]
+    # Unlike the other wheel workflows this one also runs for draft pull
+    # requests: while the port is new, a draft is where it is worked on.
+    timeout-minutes: 600
+    steps:
+      - name: Install the toolchain
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          # yasm, gawk, make: the native host build that bootstraps flatc configures the default
+          # (Linux) feature set, as in the Linux wheel workflow.
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y cmake ninja-build ccache wget curl \
+            yasm gawk make python3 python3-venv python3-pip xz-utils
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y lld-21 llvm-21
+          clang++-21 --version
+          ld.lld-21 --version
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify Git version (install only if needed)
+        run: bash .github/scripts/ensure-ci-git.sh
+      - name: Update submodules
+        # Authenticated clones; see the script header.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: .github/scripts/update-submodules.sh
+      - name: Update version for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V=${GITHUB_REF#refs/tags/v}
+          echo "CHDB_VERSION=$V" >> "$GITHUB_ENV"
+          python3 -m venv "$RUNNER_TEMP/bumpvenv"
+          "$RUNNER_TEMP/bumpvenv/bin/python" -m pip install --quiet bump-my-version
+          "$RUNNER_TEMP/bumpvenv/bin/bump-my-version" replace --new-version "$V"
+      - name: Set version for main wheel
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 .github/scripts/set-main-wheel-version.py
+      - name: Cache the Windows build dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/chdb-windows-deps
+          key: chdb-windows-deps-${{ hashFiles('chdb/build/download_windows_deps.sh', 'chdb/test_windows_wine.sh') }}
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: windows-x86_64-cross
+          max-size: 10G
+          append-timestamp: true
+      - name: Build the module
+        timeout-minutes: 480
+        run: bash chdb/build_windows_on_linux.sh
+      - name: Build the wheel
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet build wheel
+          rm -rf dist build/lib* build/bdist* chdb/build/lib* *.egg-info
+          CHDB_TARGET_OS=windows "$RUNNER_TEMP/venv/bin/python" -m build --wheel
+          ls -lh dist/
+          python3 -m zipfile -l dist/*-win_amd64.whl | grep -E '\.(pyd|dll) '
+      - name: Smoke test under Wine
+        # A quick first signal only: Wine is not Windows, and the job below is
+        # the authoritative test.
+        continue-on-error: true
+        timeout-minutes: 30
+        run: bash chdb/test_windows_wine.sh dist/*-win_amd64.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: chdb-windows-x86_64-wheel
+          path: dist/*-win_amd64.whl
+          retention-days: 7
+
+  test_on_windows:
+    name: Test on Windows (Python ${{ matrix.python }}, pandas ${{ matrix.pandas }})
+    needs: build_on_linux
+    runs-on: windows-2025
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      # The same Python and pandas lines as the Linux workflow: pandas 3 needs Python 3.11 or later,
+      # and 3.11 to 3.14 also run against pandas 2.
+      matrix:
+        include:
+          - { python: '3.9', pandas: '2' }
+          - { python: '3.10', pandas: '2' }
+          - { python: '3.11', pandas: '2' }
+          - { python: '3.11', pandas: '3' }
+          - { python: '3.12', pandas: '2' }
+          - { python: '3.12', pandas: '3' }
+          - { python: '3.13', pandas: '2' }
+          - { python: '3.13', pandas: '3' }
+          - { python: '3.14', pandas: '2' }
+          - { python: '3.14', pandas: '3' }
+    env:
+      # tests/run_all.py prints non-ASCII status marks.
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: chdb-windows-x86_64-wheel
+          path: dist
+      - name: Install the wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.pandas }}" = 2 ]; then pandas='pandas<3.0'; else pandas='pandas>=3.0'; fi
+          # As in the Linux workflow, Python 3.9 tests against polars 1.10.0.
+          if [ "${{ matrix.python }}" = 3.9 ]; then polars='polars==1.10.0'; else polars='polars'; fi
+          python -m pip install dist/*-win_amd64.whl "$pandas" adbc-driver-manager==1.8.0 psutil deltalake "$polars"
+      - name: Smoke test
+        shell: bash
+        run: |
+          work=$(mktemp -d)
+          cp chdb/build/windows_smoke.py "$work/"
+          cd "$work"
+          python windows_smoke.py
+      - name: Run the test suite
+        shell: bash
+        run: |
+          # The installed package, not the checkout's chdb/ (which has no module).
+          mv chdb chdb.src
+          cd tests
+          python run_all.py
+      # The steps below run once, in the matrix cells the Linux workflow runs them with.
+      - name: Test torch compatibility
+        if: matrix.python == '3.11' && matrix.pandas == '3'
+        shell: bash
+        run: |
+          python -m pip install pytest
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pytest tests/test_torch_compatibility.py -v
+      - name: Test Iceberg reads
+        if: matrix.python == '3.12' && matrix.pandas == '3'
+        shell: bash
+        run: |
+          python -m pip install 'pyiceberg[sql-sqlite]'
+          python tests/integration/native_iceberg_catalog_smoke.py
+      - name: Run the notebook test
+        if: matrix.python == '3.9'
+        shell: bash
+        run: |
+          python -m pip install nbconvert ipykernel "fastjsonschema<2.22"
+          python -m jupyter nbconvert --to notebook --execute tests/test_data_insertion.ipynb --output test_data_insertion_output.ipynb

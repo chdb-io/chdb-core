@@ -1,5 +1,6 @@
 #!python3
 
+import functools
 import os
 import shutil
 import tempfile
@@ -19,6 +20,27 @@ UNKNOWN = _chdb.query_class.UNKNOWN
 # forces backticks, and the backtick inside has to be doubled.
 AWKWARD_DB = "durable-obj`1"
 AWKWARD_DB_SQL = "`durable-obj``1`"
+
+# Why this build cannot write backup archives, or "" when it can; None until a
+# test has asked. The Windows build is configured without libarchive (its
+# ENABLE_LIBRARIES=0 feature set), so every `.tar.gz` destination fails there
+# with SUPPORT_IS_DISABLED.
+_archive_backups_unsupported = None
+
+
+def requires_archive_backups(test):
+    """For a test that has to write an archive. A directory backup is no
+    substitute: backup_database writes one, but restore_database and
+    base_file_path accept only a regular file, so it cannot be read back."""
+
+    @functools.wraps(test)
+    def wrapper(self, *args, **kwargs):
+        reason = self.archive_backups_unsupported()
+        if reason:
+            self.skipTest(reason)
+        return test(self, *args, **kwargs)
+
+    return wrapper
 
 
 class DurablePrimitivesTestCase(unittest.TestCase):
@@ -64,6 +86,27 @@ class DurablePrimitivesTestCase(unittest.TestCase):
 
     def restore(self, database, file_path):
         self.conn._conn.restore_database(database, file_path)
+
+    def archive_backups_unsupported(self):
+        global _archive_backups_unsupported
+        if _archive_backups_unsupported is None:
+            probe = os.path.join(self.backups, "archive-probe.tar.gz")
+            try:
+                self.backup("default", probe)
+                _archive_backups_unsupported = ""
+            except RuntimeError as exc:
+                if "SUPPORT_IS_DISABLED" not in str(exc):
+                    raise
+                _archive_backups_unsupported = f"this build cannot write backup archives: {exc}"
+            finally:
+                # Works around two engine defects: a refused archive leaves an
+                # empty destination file behind (a retry then gets
+                # BACKUP_ALREADY_EXISTS), and a failed backup removes the
+                # directory it emptied, here backups.allowed_path itself.
+                if os.path.exists(probe):
+                    os.remove(probe)
+                os.makedirs(self.backups, exist_ok=True)
+        return _archive_backups_unsupported
 
     def seed_awkward_database(self):
         self.conn.query(f"CREATE DATABASE {AWKWARD_DB_SQL}")
@@ -348,6 +391,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
     so the engine can quote each, which is what makes them safe to call with
     names a control plane did not choose."""
 
+    @requires_archive_backups
     def test_round_trip_of_an_awkward_name_and_path(self):
         self.seed_awkward_database()
         archive = os.path.join(self.backups, "it's a backup.tar.gz")
@@ -364,6 +408,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
             '"a"\n"b"\n"c"',
         )
 
+    @requires_archive_backups
     def test_restore_leaves_the_current_database_alone(self):
         self.seed_awkward_database()
         archive = os.path.join(self.backups, "current-db.tar.gz")
@@ -374,6 +419,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
         self.restore(AWKWARD_DB, archive)
         self.assertEqual(self.scalar("SELECT currentDatabase()"), before)
 
+    @requires_archive_backups
     def test_an_existing_destination_is_refused_not_overwritten(self):
         self.seed_awkward_database()
         archive = os.path.join(self.backups, "once.tar.gz")
@@ -396,10 +442,15 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
         the trailing DROP would run. It has to be read as part of the name,
         which does not exist, so the backup fails and nothing is dropped."""
         self.seed_awkward_database()
-        with self.assertRaises(RuntimeError):
+        # Without archive support the archive writer would refuse before the
+        # name is ever resolved, so there a directory backup gets the engine
+        # as far as the name.
+        destination = "injection" if self.archive_backups_unsupported() else "injection.tar.gz"
+        # The whole string is one unknown database name, not a statement.
+        with self.assertRaisesRegex(RuntimeError, "UNKNOWN_DATABASE"):
             self.backup(
                 f"x` TO File('{self.backups}/inj.tar.gz'); DROP DATABASE {AWKWARD_DB_SQL} --",
-                os.path.join(self.backups, "injection.tar.gz"),
+                os.path.join(self.backups, destination),
             )
         self.assertEqual(self.scalar(f"SELECT count() FROM {AWKWARD_DB_SQL}.t"), "3")
 
@@ -410,6 +461,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
         with self.assertRaises(RuntimeError):
             self.backup(AWKWARD_DB, "")
 
+    @requires_archive_backups
     def test_a_non_ascii_name_and_path_round_trip(self):
         self.conn.query("CREATE DATABASE `数据库-α`")
         self.conn.query(
@@ -424,6 +476,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
 
         self.assertEqual(self.scalar("SELECT sum(id) FROM `数据库-α`.`данные`"), "30")
 
+    @requires_archive_backups
     def test_restore_brings_back_the_schema(self):
         self.seed_awkward_database()
         archive = os.path.join(self.backups, "schema.tar.gz")
@@ -452,6 +505,7 @@ class TestBackupAndRestore(DurablePrimitivesTestCase):
         with self.assertRaises(RuntimeError):
             self.backup(AWKWARD_DB, os.path.join(self.backups, "no-such-dir", "x.tar.gz"))
 
+    @requires_archive_backups
     def test_an_incremental_backup_is_smaller_than_its_base(self):
         self.conn.query("CREATE DATABASE big")
         self.conn.query("CREATE TABLE big.t (id UInt32) ENGINE = MergeTree ORDER BY id")

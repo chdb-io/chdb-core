@@ -58,7 +58,10 @@ class TestParquetNullableFilter(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
-        self._parquet = os.path.join(self._tmpdir, "nullable_test.parquet")
+        # The path goes into SQL string literals, where ClickHouse unescapes
+        # backslashes (the "\t" of a Windows "...\Temp\tmp..." becomes a tab),
+        # so use forward slashes.
+        self._parquet = os.path.join(self._tmpdir, "nullable_test.parquet").replace(os.sep, "/")
         _make_nullable_parquet(self._parquet)
 
     # ------------------------------------------------------------------
@@ -179,7 +182,8 @@ class TestParquetNullableFilter(unittest.TestCase):
         This is the exact usage pattern reported in chdb-core issue #53.
         """
         tmpdir = tempfile.mkdtemp()
-        parquet = os.path.join(tmpdir, "funnel_test.parquet")
+        # Forward slashes: the path goes into SQL string literals (see setUp).
+        parquet = os.path.join(tmpdir, "funnel_test.parquet").replace(os.sep, "/")
 
         # Build a small dataset: user_id, event_time (nullable), fare (<15 or >50)
         chdb.query(

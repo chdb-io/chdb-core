@@ -4,6 +4,8 @@
 #if USE_AVRO
 
 #include <algorithm>
+#include <base/pathToString.h>
+#include <base/time.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -139,7 +141,7 @@ PaimonRestCatalog::PaimonRestCatalog(
 void PaimonRestCatalog::loadConfig()
 {
     Poco::URI::QueryParameters params = {{"warehouse", warehouse}};
-    auto object = requestRest(std::filesystem::path(API_VERSION) / CONFIG_ENDPOINT, "GET", params);
+    auto object = requestRest(pathToGenericString(std::filesystem::path(API_VERSION) / CONFIG_ENDPOINT), "GET", params);
     auto set_config = [this](const Poco::JSON::Object::Ptr & object_)
     {
         if (!object_)
@@ -312,7 +314,7 @@ DB::ReadWriteBufferFromHTTPPtr PaimonRestCatalog::createReadBuffer(
     const String & endpoint, const String & method, const Poco::URI::QueryParameters & params, const DB::HTTPHeaderEntries & headers) const
 {
     const auto & context = getContext();
-    Poco::URI url(base_url / endpoint);
+    Poco::URI url(pathToGenericString(base_url / endpoint));
     if (!params.empty())
         url.setQueryParameters(params);
 
@@ -356,7 +358,7 @@ DB::ReadWriteBufferFromHTTPPtr PaimonRestCatalog::createReadBuffer(
 void PaimonRestCatalog::forEachDatabase(DB::Strings & databases, StopCondition stop_condition, ExecuteFunc execute_func) const
 {
     auto json_ptr = requestRest(
-        std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT, "GET", {{"maxResults", fmt::to_string(getListMaxResults())}});
+        pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT), "GET", {{"maxResults", fmt::to_string(getListMaxResults())}});
     auto databases_array = getListingArray(json_ptr, "databases");
     String next_page_token = extractNextPageToken(json_ptr);
     /// Cycle-detection guard: tracks every non-empty `nextPageToken` we have seen on this request so
@@ -401,7 +403,7 @@ void PaimonRestCatalog::forEachDatabase(DB::Strings & databases, StopCondition s
             {"maxResults", fmt::to_string(getListMaxResults())},
             {"pageToken", next_page_token},
         };
-        json_ptr = requestRest(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT, "GET", params);
+        json_ptr = requestRest(pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT), "GET", params);
         databases_array = getListingArray(json_ptr, "databases");
         next_page_token = extractNextPageToken(json_ptr);
     }
@@ -411,7 +413,7 @@ void PaimonRestCatalog::forEachTables(
     const String & database, DB::Names & tables, StopCondition stop_condition, ExecuteFunc execute_func) const
 {
     auto json_ptr = requestRest(
-        std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database / TABLES_ENDPOINT,
+        pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database / TABLES_ENDPOINT),
         "GET",
         {{"maxResults", fmt::to_string(getListMaxResults())}});
     auto tables_array = getListingArray(json_ptr, "tables");
@@ -456,7 +458,7 @@ void PaimonRestCatalog::forEachTables(
             {"pageToken", next_page_token},
         };
         json_ptr
-            = requestRest(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database / TABLES_ENDPOINT, "GET", params);
+            = requestRest(pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database / TABLES_ENDPOINT), "GET", params);
         tables_array = getListingArray(json_ptr, "tables");
         next_page_token = extractNextPageToken(json_ptr);
     }
@@ -518,7 +520,7 @@ bool PaimonRestCatalog::existsTable(const String & database_name, const String &
     try
     {
         createReadBuffer(
-            std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name, "GET");
+            pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name), "GET");
     }
     catch (const DB::HTTPException & e)
     {
@@ -536,7 +538,7 @@ bool PaimonRestCatalog::tryGetTableMetadata(const String & database_name, const 
     try
     {
         auto table_json_ptr = requestRest(
-            std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name, "GET");
+            pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name), "GET");
         if (result.requiresLocation())
         {
             if (table_json_ptr->has("path"))
@@ -582,8 +584,8 @@ bool PaimonRestCatalog::tryGetTableMetadata(const String & database_name, const 
         if (result.isDefaultReadableTable() && result.requiresCredentials())
         {
             auto table_token_json_ptr = requestRest(
-                std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name
-                    / TABLE_TOKEN_ENDPOINT,
+                pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name
+                    / TABLE_TOKEN_ENDPOINT),
                 "GET");
             StorageType table_storage_type = parseStorageTypeFromLocation(result.getLocation());
             switch (table_storage_type)

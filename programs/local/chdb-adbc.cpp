@@ -472,6 +472,12 @@ AdbcStatusCode parseFileLikeUri(
         rest = slash == std::string::npos ? "" : rest.substr(slash);
     }
     out = percentDecode(rest);
+#if defined(OS_WINDOWS)
+    /// RFC 8089 E.2: a Windows path keeps its drive letter in the URI path (file:///C:/data/db), so
+    /// the slash before it is not part of the file name.
+    if (out.size() >= 3 && out[0] == '/' && std::isalpha(static_cast<unsigned char>(out[1])) && out[2] == ':')
+        out.erase(0, 1);
+#endif
     return ADBC_STATUS_OK;
 }
 

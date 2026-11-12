@@ -3,6 +3,7 @@
 #include <Storages/ObjectStorage/DataLakes/DeltaLakeMetadata.h>
 #include <Storages/ObjectStorage/Utils.h>
 #include <base/JSON.h>
+#include <base/pathToString.h>
 #include "config.h"
 
 #if USE_PARQUET
@@ -189,7 +190,7 @@ struct DeltaLakeMetadataImpl
             while (true)
             {
                 const auto filename = withPadding(++current_version) + metadata_file_suffix;
-                const auto file_path = std::filesystem::path(table_path) / deltalake_metadata_directory / filename;
+                const auto file_path = pathToGenericString(std::filesystem::path(table_path) / deltalake_metadata_directory / filename);
 
                 if (!object_storage->exists(StoredObject(file_path)))
                     break;
@@ -331,7 +332,7 @@ struct DeltaLakeMetadataImpl
                 auto full_path = resolvePathInsideTable(table_path, path);
                 result.insert(full_path);
 
-                auto filename = fs::path(path).filename().string();
+                auto filename = pathToGenericString(fs::path(path).filename());
                 auto it = file_partition_columns.find(full_path);
                 if (it == file_partition_columns.end())
                 {
@@ -467,7 +468,7 @@ struct DeltaLakeMetadataImpl
      */
     size_t readLastCheckpointIfExists() const
     {
-        const auto last_checkpoint_file = std::filesystem::path(table_path) / deltalake_metadata_directory / "_last_checkpoint";
+        const auto last_checkpoint_file = pathToGenericString(std::filesystem::path(table_path) / deltalake_metadata_directory / "_last_checkpoint");
         if (!object_storage->exists(StoredObject(last_checkpoint_file)))
             return 0;
 
@@ -528,9 +529,9 @@ struct DeltaLakeMetadataImpl
 
         const auto checkpoint_filename = withPadding(version) + ".checkpoint.parquet";
 
-        const auto checkpoint_path = std::filesystem::path(table_path) / deltalake_metadata_directory / checkpoint_filename;
+        const auto checkpoint_path = pathToGenericString(std::filesystem::path(table_path) / deltalake_metadata_directory / checkpoint_filename);
 
-        LOG_TRACE(log, "Using checkpoint file: {}", checkpoint_path.string());
+        LOG_TRACE(log, "Using checkpoint file: {}", checkpoint_path);
 
         auto read_settings = context->getReadSettings();
         /// The checkpoint is a Parquet file: skip the generic from-start prefetch, the reader seeks
@@ -646,7 +647,7 @@ struct DeltaLakeMetadataImpl
             if (path.empty())
                 continue;
 
-            auto filename = fs::path(path).filename().string();
+            auto filename = pathToGenericString(fs::path(path).filename());
             auto full_path = resolvePathInsideTable(table_path, path);
             auto it = file_partition_columns.find(full_path);
             if (it == file_partition_columns.end())

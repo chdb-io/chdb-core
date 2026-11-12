@@ -1,3 +1,5 @@
+#include <Common/isValidUTF8.h>
+#include "PythonMessage.h"
 #include "PythonUtils.h"
 #include "config.h"
 
@@ -285,6 +287,55 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
 
         throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, "Error converting Python object {} to string: {}", type_name, e.what());
     }
+}
+
+}
+
+
+namespace CHDB
+{
+
+std::string messageForPython(std::string_view message)
+{
+    const auto is_valid = [](std::string_view text)
+    { return DB::UTF8::isValidUTF8(reinterpret_cast<const UInt8 *>(text.data()), text.size()); };
+
+    if (is_valid(message))
+        return std::string(message);
+
+#if defined(OS_WINDOWS)
+    const int size = static_cast<int>(message.size());
+    if (const int wide_size = MultiByteToWideChar(CP_ACP, 0, message.data(), size, nullptr, 0); wide_size > 0)
+    {
+        std::wstring wide(static_cast<size_t>(wide_size), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, message.data(), size, wide.data(), wide_size);
+        if (const int utf8_size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wide_size, nullptr, 0, nullptr, nullptr); utf8_size > 0)
+        {
+            std::string utf8(static_cast<size_t>(utf8_size), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), wide_size, utf8.data(), utf8_size, nullptr, nullptr);
+            return utf8;
+        }
+    }
+#endif
+
+    std::string result;
+    result.reserve(message.size());
+    for (size_t pos = 0; pos < message.size();)
+    {
+        const auto lead = static_cast<unsigned char>(message[pos]);
+        const size_t length = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 0;
+        if (length != 0 && pos + length <= message.size() && is_valid(message.substr(pos, length)))
+        {
+            result.append(message.substr(pos, length));
+            pos += length;
+        }
+        else
+        {
+            result.append("\xEF\xBF\xBD");
+            ++pos;
+        }
+    }
+    return result;
 }
 
 }

@@ -1,6 +1,7 @@
 #include <optional>
 #include <config.h>
 #include <Poco/Logger.h>
+#include <base/pathToString.h>
 #include <Common/logger_useful.h>
 
 #if USE_AVRO
@@ -184,8 +185,8 @@ std::pair<Int32, String> PaimonTableClient::getLatestTableSchemaInfo()
 std::pair<Int32, String> PaimonTableClient::getTableSchemaInfoById(Int32 schema_id) const
 {
     std::filesystem::path schema_path
-        = std::filesystem::path(table_location) / PAIMON_SCHEMA_DIR / fmt::format("{}{}", PAIMON_SCHEMA_PREFIX, schema_id);
-    return {schema_id, schema_path};
+        = pathFromString(table_location) / PAIMON_SCHEMA_DIR / fmt::format("{}{}", PAIMON_SCHEMA_PREFIX, schema_id);
+    return {schema_id, pathToGenericString(schema_path)};
 }
 
 /// schema
@@ -211,7 +212,7 @@ std::optional<std::pair<Int64, String>> PaimonTableClient::getLatestTableSnapsho
     /// try to read latest hint
     Int64 snapshot_version{-1};
     String latest_snapshot_path;
-    String latest_hint_path = std::filesystem::path(table_location) / PAIMON_SNAPSHOT_DIR / PAIMON_SNAPSHOT_LATEST_HINT;
+    String latest_hint_path = pathToGenericString(pathFromString(table_location) / PAIMON_SNAPSHOT_DIR / PAIMON_SNAPSHOT_LATEST_HINT);
     StoredObject latest_hint_object(latest_hint_path);
     try
     {
@@ -236,7 +237,7 @@ std::optional<std::pair<Int64, String>> PaimonTableClient::getLatestTableSnapsho
                 }
             }
             latest_snapshot_path
-                = std::filesystem::path(table_location) / PAIMON_SNAPSHOT_DIR / (PAIMON_SNAPSHOT_PREFIX + std::to_string(snapshot_version));
+                = pathToGenericString(pathFromString(table_location) / PAIMON_SNAPSHOT_DIR / (PAIMON_SNAPSHOT_PREFIX + std::to_string(snapshot_version)));
         }
     }
     catch (...)
@@ -252,9 +253,9 @@ std::optional<std::pair<Int64, String>> PaimonTableClient::getLatestTableSnapsho
     {
         Int64 next_snapshot_version = snapshot_version + 1;
         StoredObject snapshot_object(latest_snapshot_path);
-        StoredObject next_snapshot_object(
-            std::filesystem::path(table_location) / PAIMON_SNAPSHOT_DIR
-            / (PAIMON_SNAPSHOT_PREFIX + std::to_string(next_snapshot_version)));
+        StoredObject next_snapshot_object(pathToGenericString(
+            pathFromString(table_location) / PAIMON_SNAPSHOT_DIR
+            / (PAIMON_SNAPSHOT_PREFIX + std::to_string(next_snapshot_version))));
         if (object_storage->exists(snapshot_object) && !object_storage->exists(next_snapshot_object))
         {
             return std::make_pair(snapshot_version, latest_snapshot_path);
@@ -287,13 +288,13 @@ std::optional<std::pair<Int64, String>> PaimonTableClient::getLatestTableSnapsho
 
 std::optional<Int64> PaimonTableClient::getEarliestSnapshotId()
 {
-    const auto snapshot_dir = std::filesystem::path(table_location) / PAIMON_SNAPSHOT_DIR;
+    const auto snapshot_dir = pathFromString(table_location) / PAIMON_SNAPSHOT_DIR;
 
     /// Returns the EARLIEST hint only when it agrees with the directory: it must point at an
     /// existing snapshot whose predecessor is already gone. nullopt if the hint is missing or stale.
     auto read_verified_earliest_hint = [&]() -> std::optional<Int64>
     {
-        StoredObject earliest_hint_object(snapshot_dir / PAIMON_SNAPSHOT_EARLIEST_HINT);
+        StoredObject earliest_hint_object(pathToGenericString(snapshot_dir / PAIMON_SNAPSHOT_EARLIEST_HINT));
         if (!object_storage->exists(earliest_hint_object))
             return std::nullopt;
 
@@ -314,8 +315,8 @@ std::optional<Int64> PaimonTableClient::getEarliestSnapshotId()
                 ErrorCodes::CANNOT_PARSE_NUMBER, "The Paimon snapshot hint file content: {} is invalid.", hint_version_string);
         }
 
-        StoredObject hinted_object(snapshot_dir / (PAIMON_SNAPSHOT_PREFIX + std::to_string(hinted_version)));
-        StoredObject previous_object(snapshot_dir / (PAIMON_SNAPSHOT_PREFIX + std::to_string(hinted_version - 1)));
+        StoredObject hinted_object(pathToGenericString(snapshot_dir / (PAIMON_SNAPSHOT_PREFIX + std::to_string(hinted_version))));
+        StoredObject previous_object(pathToGenericString(snapshot_dir / (PAIMON_SNAPSHOT_PREFIX + std::to_string(hinted_version - 1))));
         if (object_storage->exists(hinted_object) && !object_storage->exists(previous_object))
             return hinted_version;
         return std::nullopt;
@@ -386,7 +387,7 @@ std::pair<std::vector<PaimonManifestFileMeta>, size_t> PaimonTableClient::getMan
     /// read manifest list file
     Paimon::checkPathIsRelativeToTable(manifest_list_path, "manifest list");
     auto context = getContext();
-    RelativePathWithMetadata relative_path(std::filesystem::path(table_location) / PAIMON_MANIFEST_DIR / manifest_list_path);
+    RelativePathWithMetadata relative_path(pathToGenericString(pathFromString(table_location) / PAIMON_MANIFEST_DIR / manifest_list_path));
     auto read_settings = getPaimonMetadataReadSettings(disable_filesystem_cache);
     auto manifest_list_buf = createReadBuffer(relative_path, object_storage, context, log, read_settings);
     /// createReadBuffer fills relative_path.metadata->size_bytes via a HEAD request.
@@ -413,7 +414,7 @@ PaimonTableClient::getDataManifest(String manifest_path, const PaimonTableSchema
         return {};
 
     auto context = getContext();
-    RelativePathWithMetadata object_info(std::filesystem::path(table_location) / PAIMON_MANIFEST_DIR / manifest_path);
+    RelativePathWithMetadata object_info(pathToGenericString(pathFromString(table_location) / PAIMON_MANIFEST_DIR / manifest_path));
     auto read_settings = getPaimonMetadataReadSettings(disable_filesystem_cache);
     auto manifest_buf = createReadBuffer(object_info, object_storage, context, log, read_settings);
     /// createReadBuffer fills object_info.metadata->size_bytes via a HEAD request.
@@ -434,7 +435,7 @@ PaimonIndexManifest PaimonTableClient::getIndexManifest(const String & index_man
 {
     Paimon::checkPathIsRelativeToTable(index_manifest_path, "index manifest");
     auto context = getContext();
-    RelativePathWithMetadata object_info(std::filesystem::path(table_location) / PAIMON_MANIFEST_DIR / index_manifest_path);
+    RelativePathWithMetadata object_info(pathToGenericString(pathFromString(table_location) / PAIMON_MANIFEST_DIR / index_manifest_path));
     auto read_settings = getPaimonMetadataReadSettings(disable_filesystem_cache);
     auto index_manifest_buf = createReadBuffer(object_info, object_storage, context, log, read_settings);
     Iceberg::AvroForIcebergDeserializer index_manifest_deserializer(

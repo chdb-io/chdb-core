@@ -80,12 +80,11 @@ def _force_sig_dfl(signum):
     libc.sigaction(signum, ctypes.byref(act), None)
 
 
+# By name: Windows has no SIGBUS, and the module still has to load there.
 _DEADLY_SIGNALS = [
-    signal.SIGABRT,
-    signal.SIGSEGV,
-    signal.SIGILL,
-    signal.SIGBUS,
-    signal.SIGFPE,
+    getattr(signal, name)
+    for name in ("SIGABRT", "SIGSEGV", "SIGILL", "SIGBUS", "SIGFPE")
+    if hasattr(signal, name)
 ]
 
 
@@ -100,6 +99,11 @@ def _has_signal_api():
         return False
 
 
+@unittest.skipIf(
+    sys.platform == "win32",
+    "chDB installs no signal handlers on Windows, where faults are reported through SEH; the "
+    "API is a no-op there and these tests read the handlers with POSIX sigaction",
+)
 @unittest.skipUnless(_has_signal_api(), "chdb signal handler API not available – build first")
 class TestSignalHandlerControlAPI(unittest.TestCase):
 

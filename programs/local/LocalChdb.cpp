@@ -25,11 +25,15 @@
 #include <IO/Progress.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Common/CurrentThread.h>
+#include <Poco/Exception.h>
+#include <base/pathToString.h>
+#include "PythonMessage.h"
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -344,6 +348,12 @@ std::pair<std::string, std::map<std::string, std::string>> connection_wrapper::p
         {
             working_str = working_str.substr(2); // Remove two slashes, keep one
         }
+#if defined(OS_WINDOWS)
+        /// file:///C:/data/db is the Windows form (what pathlib's as_uri() gives): no slash before the drive.
+        if (working_str.size() >= 3 && working_str[0] == '/' && std::isalpha(static_cast<unsigned char>(working_str[1]))
+            && working_str[2] == ':')
+            working_str.erase(0, 1);
+#endif
     }
 
     // Split path and parameters
@@ -392,14 +402,21 @@ std::pair<std::string, std::map<std::string, std::string>> connection_wrapper::p
         path = working_str;
     }
 
-    // Convert relative paths to absolute
-    if (!path.empty() && path[0] != '/' && path != ":memory:")
+    // Convert relative paths to absolute. The path is UTF-8: pathFromString/pathToString keep it so
+    // on Windows, where std::filesystem would go through the ANSI code page (on POSIX they are the
+    // identity), and is_absolute() knows drive letters and UNC paths.
+    if (!path.empty() && path != ":memory:")
     {
-        std::error_code ec;
-        path = std::filesystem::absolute(path, ec).string();
-        if (ec)
+        const auto fs_path = pathFromString(path);
+        if (!fs_path.is_absolute())
         {
-            throw std::runtime_error("Failed to resolve path: " + path);
+            std::error_code ec;
+            auto absolute_path = std::filesystem::absolute(fs_path, ec);
+            if (ec)
+            {
+                throw std::runtime_error("Failed to resolve path: " + path);
+            }
+            path = pathToString(absolute_path);
         }
     }
 
@@ -1350,11 +1367,37 @@ static void chdb_cleanup_at_exit()
 }
 /// chdb_spec: end Python pre-static shutdown.
 
+static void initChdbModule(py::module_ & m);
+
 #ifdef CHDB_FREE_THREADING
 PYBIND11_MODULE(_chdb, m, py::mod_gil_not_used())
 #else
 PYBIND11_MODULE(_chdb, m)
 #endif
+{
+    /// pybind11 reports a C++ exception escaping module initialization as ImportError(e.what()).
+    /// Poco::Exception::what() is only the class name ("Exception"), not what went wrong (DB::Exception
+    /// overrides it with its message), and the text must be valid UTF-8, see messageForPython.
+    try
+    {
+        initChdbModule(m);
+    }
+    catch (const py::error_already_set &)
+    {
+        throw;
+    }
+    catch (const Poco::Exception & e)
+    {
+        throw std::runtime_error(
+            CHDB::messageForPython(dynamic_cast<const DB::Exception *>(&e) ? std::string(e.what()) : e.displayText()));
+    }
+    catch (const std::exception & e)
+    {
+        throw std::runtime_error(CHDB::messageForPython(e.what()));
+    }
+}
+
+static void initChdbModule(py::module_ & m)
 {
     m.doc() = "chDB module for query function";
 
@@ -1382,6 +1425,39 @@ PYBIND11_MODULE(_chdb, m)
         }
     });
 #endif
+
+    /// A C++ exception from a bound function becomes a Python exception with what() as its text,
+    /// decoded as strict UTF-8. Leave valid UTF-8 to pybind11's own translators, which pick the
+    /// Python type; otherwise report the same error with the text made valid (messageForPython),
+    /// instead of a UnicodeDecodeError that hides it. pybind11 tries the local translator above
+    /// first, so its own exception types never get here where it is registered.
+    py::register_exception_translator([](std::exception_ptr exception)
+    {
+        try
+        {
+            if (exception)
+                std::rethrow_exception(exception);
+        }
+        catch (const py::error_already_set &)
+        {
+            throw;
+        }
+        catch (const std::exception & e)
+        {
+            const std::string_view what = e.what();
+            const std::string message = CHDB::messageForPython(what);
+            if (message == what)
+                throw;
+            PyObject * type = PyExc_RuntimeError;
+            if (dynamic_cast<const std::invalid_argument *>(&e))
+                type = PyExc_ValueError;
+            else if (dynamic_cast<const std::out_of_range *>(&e))
+                type = PyExc_IndexError;
+            else if (dynamic_cast<const std::bad_alloc *>(&e))
+                type = PyExc_MemoryError;
+            PyErr_SetString(type, message.c_str());
+        }
+    });
 
     /// Register before user code can create a connection. This callback also
     /// clears the JIT cache before its static owners are destroyed.

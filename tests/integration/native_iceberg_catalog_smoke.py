@@ -10,6 +10,7 @@ manifest and Parquet reads through the installed chdb-core wheel.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import threading
 import unittest
@@ -22,11 +23,19 @@ from chdb import session
 from pyiceberg.catalog.sql import SqlCatalog
 
 
+def _warehouse_uri(path: Path) -> str:
+    # PyIceberg's local file IO turns file:///C:/... into the path /C:/..., which Windows rejects, so
+    # spell a Windows warehouse file:C:/... (RFC 8089's form for drive letters), which it reads as C:/...
+    if sys.platform == "win32":
+        return f"file:{path.as_posix()}"
+    return f"file://{path}"
+
+
 def _make_table(root: Path) -> dict:
     catalog = SqlCatalog(
         "fixture",
-        uri=f"sqlite:///{root}/catalog.db",
-        warehouse=f"file://{root}/warehouse",
+        uri=f"sqlite:///{root / 'catalog.db'}",
+        warehouse=_warehouse_uri(root / "warehouse"),
     )
     catalog.create_namespace("smoke")
     table = catalog.create_table(
@@ -56,6 +65,8 @@ def _make_table(root: Path) -> dict:
     table = catalog.load_table("smoke.items")
     with table.io.new_input(table.metadata_location).open() as stream:
         metadata = json.loads(stream.read().decode("utf-8"))
+    # Close the SQLite catalog: Windows cannot delete the temporary directory while it is open.
+    catalog.engine.dispose()
     return {
         "metadata-location": table.metadata_location,
         "metadata": metadata,
@@ -104,6 +115,10 @@ def _handler(table: dict):
 
 
 class TestNativeIcebergCatalog(unittest.TestCase):
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "DataLakeCatalog does not parse a Windows table location (file:C:/...) yet",
+    )
     def test_rest_catalog_reads_real_local_iceberg_table(self):
         # chDB restricts local-file access to the process working directory. Keep
         # the Iceberg warehouse below it so this exercises the installed wheel
@@ -150,6 +165,29 @@ class TestNativeIcebergCatalog(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+
+    def test_iceberg_local_reads_real_local_iceberg_table(self):
+        # The same table, read straight from its directory: Iceberg metadata, Avro manifests and
+        # Parquet data files, without the catalog. Kept below the working directory, as above.
+        with tempfile.TemporaryDirectory(prefix="chdb-iceberg-", dir=Path.cwd()) as tmp:
+            _make_table(Path(tmp))
+            table_dir = (Path(tmp) / "warehouse" / "smoke" / "items").as_posix()
+            sess = session.Session()
+            try:
+                aggregate = str(
+                    sess.query(f"SELECT count(), sum(id) FROM icebergLocal('{table_dir}')", "CSV")
+                ).strip()
+                self.assertEqual(aggregate, "4,10")
+
+                filtered = str(
+                    sess.query(
+                        f"SELECT id, name FROM icebergLocal('{table_dir}') WHERE id >= 3 ORDER BY id",
+                        "CSV",
+                    )
+                ).strip()
+                self.assertEqual(filtered, '3,"three"\n4,"four"')
+            finally:
+                sess.close()
 
 
 if __name__ == "__main__":

@@ -24,16 +24,27 @@ import sys
 import unittest
 
 
+# Only this platform's library: on Windows, a Linux libchdb.so left in the tree
+# by a local build is not loadable, and the Windows library is libchdb.dll.
+_LIB_NAME = {"Darwin": "libchdb.dylib", "Windows": "libchdb.dll"}.get(
+    platform.system(), "libchdb.so"
+)
+_MISSING_REASON = (
+    "the Windows port does not build libchdb.dll, the C ABI library; set CHDB_LIB_PATH to one"
+    if platform.system() == "Windows"
+    else "libchdb.so/dylib not found; build chdb-core or set CHDB_LIB_PATH to run"
+)
+
+
 def _find_libchdb():
-    """Locate libchdb.so / libchdb.dylib. Returns the path or None."""
+    """Locate this platform's libchdb (_LIB_NAME). Returns the path or None."""
     candidates = []
     if os.environ.get("CHDB_LIB_PATH"):
         candidates.append(os.environ["CHDB_LIB_PATH"])
 
     # tests/ → repo root → buildlib/
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    lib_name = "libchdb.dylib" if platform.system() == "Darwin" else "libchdb.so"
-    candidates.append(os.path.join(repo_root, "buildlib", lib_name))
+    candidates.append(os.path.join(repo_root, "buildlib", _LIB_NAME))
 
     for path in candidates:
         if path and os.path.isfile(path):
@@ -46,7 +57,7 @@ _LIB_PATH = _find_libchdb()
 
 @unittest.skipIf(
     _LIB_PATH is None,
-    "libchdb.so/dylib not found; build chdb-core or set CHDB_LIB_PATH to run",
+    _MISSING_REASON,
 )
 class TestCApiQueryWithParams(unittest.TestCase):
     """Verify the C-ABI parameter-binding entry points."""
@@ -350,7 +361,9 @@ class TestCApiQueryWithParams(unittest.TestCase):
 if __name__ == "__main__":
     if _LIB_PATH is None:
         print(
-            "libchdb.so/dylib not found; build chdb-core (or set CHDB_LIB_PATH) to run this suite.",
+            "libchdb.so/dylib not found; build chdb-core (or set CHDB_LIB_PATH) to run this suite."
+            if platform.system() != "Windows"
+            else _MISSING_REASON + ".",
             file=sys.stderr,
         )
         sys.exit(0)

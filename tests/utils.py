@@ -4,7 +4,9 @@ import platform
 import subprocess
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-data_file = os.path.join(current_dir, "../tests/data/alltypes_dictionary.parquet")
+# Tests embed data_file in SQL string literals, where ClickHouse unescapes backslashes
+# (the "\t" of a Windows "...\tests" becomes a tab), so use forward slashes.
+data_file = os.path.join(current_dir, "../tests/data/alltypes_dictionary.parquet").replace(os.sep, "/")
 
 # reset elapsed time to 0.0 from output, since it will be different each time
 # eg: "elapsed": 0.001015,

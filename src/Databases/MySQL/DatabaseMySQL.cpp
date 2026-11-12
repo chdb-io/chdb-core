@@ -36,6 +36,7 @@
 #    include <Storages/NamedCollectionsHelpers.h>
 #    include <Storages/StorageMySQL.h>
 #    include <base/isSharedPtrUnique.h>
+#    include <base/pathToString.h>
 #    include <Common/escapeForFileName.h>
 #    include <Common/filesystemHelpers.h>
 #    include <Common/parseAddress.h>
@@ -213,7 +214,7 @@ DatabaseDetachedTablesSnapshotIteratorPtr DatabaseMySQL::getDetachedTablesIterat
         snapshot_table.database = database_name;
         snapshot_table.table = table_name;
         auto db_disk = getDisk();
-        fs::path remove_flag_path = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+        String remove_flag_path = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
         snapshot_table.is_permanently = db_disk->existsFile(remove_flag_path);
         snapshot.emplace(table_name, std::move(snapshot_table));
     }
@@ -363,7 +364,7 @@ void DatabaseMySQL::destroyLocalCacheExtraTables(const std::map<String, UInt64> 
         else
         {
             const auto & table_name = *iterator;
-            fs::path remove_flag = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+            String remove_flag = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
             bool is_permanent = persistent && db_disk->existsFile(remove_flag);
 
             /// Only prune non-permanent detach entries when the remote table disappears.
@@ -542,7 +543,7 @@ void DatabaseMySQL::cleanOutdatedTables()
             auto db_disk = getDisk();
             for (const auto & table_name : remove_or_detach_tables)
             {
-                fs::path remove_flag = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+                String remove_flag = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
                 if (!db_disk->existsFile(remove_flag))
                 {
                     has_non_permanent_detach = true;
@@ -573,7 +574,8 @@ void DatabaseMySQL::cleanOutdatedTables()
                     if (!tables_on_remote.contains(*iter))
                     {
                         const auto & table_name = *iter;
-                        fs::path remove_flag = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+                        String remove_flag
+                            = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
                         bool is_permanent = persistent && db_disk->existsFile(remove_flag);
 
                         /// Only prune non-permanent detach entries when the remote table disappears.
@@ -634,7 +636,7 @@ void DatabaseMySQL::attachTable(ContextPtr local_context, const String & table_n
     /// nothing.
     if (persistent)
     {
-        fs::path remove_flag = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+        String remove_flag = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
         auto db_disk = getDisk();
 
         /// fsync the parent directory so the `unlink` survives a power loss. Only when a marker
@@ -682,13 +684,13 @@ void DatabaseMySQL::loadStoredObjects(ContextMutablePtr, LoadingStrictnessLevel 
     std::lock_guard lock{mutex};
     for (const auto it = db_disk->iterateDirectory(metadata_path); it->isValid(); it->next())
     {
-        auto path = fs::path(it->path());
+        auto path = pathFromString(it->path());
         if (path.filename().empty())
             path = path.parent_path();
 
-        if (db_disk->existsFile(path) && endsWith(path.filename(), suffix))
+        if (db_disk->existsFile(pathToGenericString(path)) && endsWith(pathToString(path.filename()), suffix))
         {
-            const auto & filename = path.filename().filename().string();
+            const auto & filename = pathToString(path.filename().filename());
             const auto & table_name = unescapeForFileName(filename.substr(0, filename.size() - strlen(suffix)));
             remove_or_detach_tables.emplace(table_name);
         }
@@ -703,7 +705,7 @@ void DatabaseMySQL::detachTablePermanently(ContextPtr local_context, const Strin
     auto db_disk = getDisk();
     std::lock_guard lock{mutex};
 
-    fs::path remove_flag = fs::path(getMetadataPath()) / (escapeForFileName(table_name) + suffix);
+    String remove_flag = pathToGenericString(pathFromString(getMetadataPath()) / (escapeForFileName(table_name) + suffix));
 
     if (remove_or_detach_tables.contains(table_name))
         throw Exception(ErrorCodes::TABLE_IS_DROPPED, "Table {}.{} is dropped", backQuoteIfNeed(database_name), backQuoteIfNeed(table_name));

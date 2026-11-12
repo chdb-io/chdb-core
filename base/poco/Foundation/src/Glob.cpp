@@ -73,6 +73,18 @@ void Glob::glob(const Path& pathPattern, std::set<std::string>& files, int optio
 	// (which must not contain wildcards), otherwise collect() will fail
 	// as one cannot create a DirectoryIterator with only a node name ("\\srv\").
 	int minDepth = base.getNode().empty() ? 0 : 1;
+#if defined(POCO_OS_FAMILY_WINDOWS)
+	// chdb_spec: start from the longest wildcard-free prefix instead of the root. collect() matches every
+	// segment below the base against the names a directory listing returns, which on Windows are the long,
+	// correctly-cased names; a literal segment spelled differently but naming the same directory - an 8.3
+	// short name such as the RUNNER~1 in %TEMP%, or different case - would never match, and the glob
+	// would find nothing.
+	int literalDepth = 0;
+	while (literalDepth < pattern.depth() - 1 && pattern[literalDepth].find_first_of("*?[\\") == std::string::npos)
+		++literalDepth;
+	if (literalDepth > minDepth)
+		minDepth = literalDepth;
+#endif
 	while (base.depth() > minDepth && base[base.depth() - 1] != "..")
 	{
 		base.popDirectory();

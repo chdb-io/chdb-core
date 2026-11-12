@@ -3,6 +3,9 @@
 #include <IO/ReadBufferFromFileBase.h>
 #include <Common/quoteString.h>
 #include <Common/scope_guard_safe.h>
+#if defined(OS_WINDOWS)
+#include <base/pathToString.h>
+#endif
 
 
 namespace DB
@@ -32,9 +35,24 @@ const char * getArchiveErrorMessage(struct archive * archive)
 /// `archive_entry_pathname` returns nullptr for an entry without a name, e.g. in a 7z archive without file names.
 const char * getEntryPathname(struct archive_entry * entry)
 {
+#if defined(OS_WINDOWS)
+    /// chdb_spec: names are UTF-8 here. On Windows `archive_entry_pathname` returns them in the code page of the CRT
+    /// locale (python.exe sets the user's ANSI one), or nullptr for a name that does not fit in it.
+    const char * pathname = archive_entry_pathname_utf8(entry);
+#else
     const char * pathname = archive_entry_pathname(entry);
+#endif
     return pathname ? pathname : "";
 }
+
+#if defined(OS_WINDOWS)
+/// chdb_spec: take the names in tar headers without a pax `path` record as UTF-8, as they are taken on POSIX. libarchive
+/// on Windows decodes them in the OEM code page otherwise.
+void setTarHeaderCharsetToUTF8(struct archive * archive)
+{
+    archive_read_set_format_option(archive, "tar", "hdrcharset", "UTF-8");
+}
+#endif
 
 }
 
@@ -288,6 +306,9 @@ private:
             archive_read_support_format_tar(archive);
             archive_read_support_format_7zip(archive);
             archive_read_support_format_zip(archive);
+#if defined(OS_WINDOWS)
+            setTarHeaderCharsetToUTF8(archive);
+#endif
 
             archive_read_set_seek_callback(archive, StreamInfo::seek);
             if (archive_read_open(archive, read_stream_, nullptr, StreamInfo::read, nullptr) != ARCHIVE_OK)
@@ -327,7 +348,14 @@ private:
             archive_read_support_format_tar(archive);
             archive_read_support_format_7zip(archive);
             archive_read_support_format_zip(archive);
+#if defined(OS_WINDOWS)
+            setTarHeaderCharsetToUTF8(archive);
+            /// chdb_spec: on Windows `archive_read_open_filename` takes the name in the ANSI code page, so a non-ASCII
+            /// UTF-8 path would not be found. The wide-char variant takes it as UTF-16.
+            if (archive_read_open_filename_w(archive, pathFromString(path_to_archive_).c_str(), 10240) != ARCHIVE_OK)
+#else
             if (archive_read_open_filename(archive, path_to_archive_.c_str(), 10240) != ARCHIVE_OK)
+#endif
                 throw Exception(
                     ErrorCodes::CANNOT_UNPACK_ARCHIVE,
                     "Couldn't open archive {}: {}",

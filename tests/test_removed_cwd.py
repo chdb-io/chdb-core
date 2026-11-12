@@ -80,6 +80,10 @@ def _run(code, *args):
     )
 
 
+@unittest.skipIf(
+    sys.platform == "win32",
+    "Windows does not let a process remove its working directory (the rmdir fails with a sharing violation)",
+)
 class TestRemovedWorkingDirectory(unittest.TestCase):
     def _check(self, code):
         proc = _run(code)

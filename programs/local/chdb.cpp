@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ChunkCollectorOutputFormat.h"
@@ -163,7 +164,9 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
         /// on SIGSEGV/SIGILL/etc.  This is a no-op when the caller has opted out via
         /// chdb_set_signal_handlers_enabled(0), and it is safe to call on every query
         /// because addSignalHandler() is idempotent with respect to the OS handler.
+#if !defined(OS_WINDOWS)
         HandledSignals::instance().setupCommonDeadlySignalHandlers();
+#endif
 
         int ret = app.run();
         std::unique_ptr<MaterializedQueryResult> result;
@@ -1451,7 +1454,7 @@ void checkArchivePath(std::string_view what, std::string_view file_path, bool mu
     if (file_path.find('\0') != std::string_view::npos)
         throw std::invalid_argument(std::string(what) + " must not contain a null byte");
 
-    const std::filesystem::path path{std::string(file_path)};
+    const std::filesystem::path path = pathFromString(file_path);
     if (!path.is_absolute())
         throw std::invalid_argument(
             std::string(what) + " must be absolute: a relative path resolves against backups.allowed_path, "
@@ -1461,11 +1464,11 @@ void checkArchivePath(std::string_view what, std::string_view file_path, bool mu
     std::error_code ec;
     if (!std::filesystem::is_directory(parent, ec))
         throw std::invalid_argument(
-            "Directory '" + parent.string() + "' does not exist; create it, or point " + std::string(what)
+            "Directory '" + pathToString(parent) + "' does not exist; create it, or point " + std::string(what)
             + " somewhere that does. It must also be covered by backups.allowed_path");
 
     if (must_exist && !std::filesystem::is_regular_file(path, ec))
-        throw std::invalid_argument("Backup archive '" + path.string() + "' does not exist");
+        throw std::invalid_argument("Backup archive '" + pathToString(path) + "' does not exist");
 }
 
 String buildBackupOrRestoreQuery(
@@ -1646,10 +1649,16 @@ const char * chdb_get(chdb_connection conn, const char * key)
 
 void chdb_set_signal_handlers_enabled(int enabled)
 {
+#if defined(OS_WINDOWS)
+    /// Windows reports faults through SEH, and chDB installs no signal handlers there,
+    /// so there is nothing to enable or take back. Kept as a no-op for the C ABI.
+    (void)enabled;
+#else
     HandledSignals::disable_signal_handlers.store(!enabled, std::memory_order_relaxed);
 
     if (!enabled)
         chdb_reset_signal_handlers();
+#endif
 }
 
 chdb_state chdb_shutdown(void)
@@ -1733,6 +1742,7 @@ chdb_state chdb_shutdown(void)
 
 void chdb_reset_signal_handlers(void)
 {
+#if !defined(OS_WINDOWS)
     /// No instance means chDB never installed a handler, so there is nothing of ours
     /// to take back. Do not construct the singleton just to find that out.
     auto * instance = HandledSignals::tryGetInstance();
@@ -1770,4 +1780,5 @@ void chdb_reset_signal_handlers(void)
     }
 
     instance->handled_signals.clear();
+#endif
 }

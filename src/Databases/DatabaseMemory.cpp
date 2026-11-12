@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include <Databases/DDLDependencyVisitor.h>
 #include <Databases/DDLLoadingDependencyVisitor.h>
 #include <Databases/DatabaseFactory.h>
@@ -36,7 +37,7 @@ DatabaseMemory::DatabaseMemory(const String & name_, ContextPtr context_)
 
 DatabaseMemory::DatabaseMemory(const String & name_, UUID uuid, ContextPtr context_)
     : DatabaseWithOwnTablesBase(name_, "DatabaseMemory(" + name_ + ")", context_)
-    , data_path(DatabaseCatalog::getDataDirPath(name_) / "")
+    , data_path(pathToGenericString(DatabaseCatalog::getDataDirPath(name_) / ""))
     , db_uuid(uuid)
 {
     auto component_guard = Coordination::setCurrentComponent("DatabaseMemory::DatabaseMemory");

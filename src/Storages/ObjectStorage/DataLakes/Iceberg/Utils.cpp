@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_set>
 #include <config.h>
+#include <base/pathToString.h>
 #include <Core/ColumnsWithTypeAndName.h>
 #include <Core/Settings.h>
 #include <Core/TypeId.h>
@@ -209,7 +210,7 @@ static std::optional<String> metadataPointerTargetName(const String & pointer_co
     if (std::all_of(pointer_content.begin(), pointer_content.end(), isdigit))
         return "v" + pointer_content + ".metadata.json";
     String named = pointer_content.ends_with(".metadata.json") ? pointer_content : pointer_content + ".metadata.json";
-    return String(std::filesystem::path(named).filename());
+    return pathToGenericString(pathFromString(named).filename());
 }
 
 /// Parse an all-digit version string into Int32, mapping overflow/garbage to BAD_ARGUMENTS.
@@ -231,7 +232,7 @@ static Int32 parseMetadataVersion(const String & version_str, const String & fil
 
 MetadataFileWithInfo getMetadataFileAndVersion(const std::string & path)
 {
-    String file_name = std::filesystem::path(path).filename();
+    String file_name = pathToGenericString(pathFromString(path).filename());
     if (isTemporaryMetadataFile(file_name))
     {
         throw Exception(
@@ -299,7 +300,7 @@ static std::optional<String> resolveMetadataFilenameFromVersionHint(
 
     /// First try without compression.
     String candidate = "v" + version_number + ".metadata.json";
-    auto candidate_path = std::filesystem::path(table_path) / "metadata" / candidate;
+    auto candidate_path = pathToGenericString(pathFromString(table_path) / "metadata" / candidate);
     if (object_storage->exists(StoredObject(candidate_path)))
         return candidate;
 
@@ -317,7 +318,7 @@ static std::optional<String> resolveMetadataFilenameFromVersionHint(
         for (const auto & suffix : {toIcebergMetadataCompressionExtension(compression_method), toContentEncodingName(compression_method)})
         {
             String compressed_candidate = "v" + version_number + "." + suffix + ".metadata.json";
-            auto compressed_path = std::filesystem::path(table_path) / "metadata" / compressed_candidate;
+            auto compressed_path = pathToGenericString(pathFromString(table_path) / "metadata" / compressed_candidate);
             if (object_storage->exists(StoredObject(compressed_path)))
                 return compressed_candidate;
         }
@@ -1504,7 +1505,7 @@ static MetadataFileWithInfo getLatestMetadataFileAndVersion(
             {
                 /// A hint that cannot be read leaves the scheme unknown, and guessing it here would
                 /// widen what a destructive caller may delete, so the read is allowed to throw.
-                StoredObject version_hint(std::filesystem::path(table_path) / "metadata" / "version-hint.text");
+                StoredObject version_hint(pathToGenericString(pathFromString(table_path) / "metadata" / "version-hint.text"));
                 auto buf = object_storage->readObject(version_hint, ReadSettings{});
                 readString(pointer_content, *buf);
                 pointer_is_version_hint = true;
@@ -1523,7 +1524,7 @@ static MetadataFileWithInfo getLatestMetadataFileAndVersion(
                 size_t spellings = 0;
                 for (const auto & path : metadata_files)
                 {
-                    String name = std::filesystem::path(path).filename();
+                    String name = pathToGenericString(pathFromString(path).filename());
                     /// A commit in progress leaves one of these behind and it is never a candidate,
                     /// so counting its name as a scheme would describe the table by a file that
                     /// cannot be current.
@@ -1576,7 +1577,7 @@ static MetadataFileWithInfo getLatestMetadataFileAndVersion(
         metadata_files_with_versions.reserve(metadata_files.size());
         for (const auto & path : metadata_files)
         {
-            String filename = std::filesystem::path(path).filename();
+            String filename = pathToGenericString(pathFromString(path).filename());
             if (isTemporaryMetadataFile(filename))
                 continue;
             if (own_scheme_is_version_numbered && isVersionNumberedCommitScheme(filename) != *own_scheme_is_version_numbered)
@@ -1643,7 +1644,7 @@ static MetadataFileWithInfo getLatestMetadataFileAndVersion(
             bool uuid_named_candidate = false;
             for (const auto & candidate : metadata_files_with_versions)
             {
-                if (isVersionNumberedCommitScheme(std::filesystem::path(candidate.path).filename()))
+                if (isVersionNumberedCommitScheme(pathToGenericString(pathFromString(candidate.path).filename())))
                     version_numbered_candidate = true;
                 else
                     uuid_named_candidate = true;
@@ -1806,7 +1807,7 @@ MetadataFileWithInfo getLatestOrExplicitMetadataFileAndVersion(
     else if (data_lake_settings[DataLakeStorageSetting::iceberg_use_version_hint].value && !ignore_metadata_pointer_overrides)
     {
         ProfileEventTimeIncrement<Microseconds> watch(ProfileEvents::IcebergVersionHintReadMicroseconds);
-        auto version_hint_path = std::filesystem::path(table_path) / "metadata" / "version-hint.text";
+        auto version_hint_path = pathToGenericString(pathFromString(table_path) / "metadata" / "version-hint.text");
         std::string metadata_file;
         StoredObject version_hint(version_hint_path);
         auto buf = object_storage->readObject(version_hint, ReadSettings{});
@@ -1817,7 +1818,7 @@ MetadataFileWithInfo getLatestOrExplicitMetadataFileAndVersion(
         {
             LOG_TEST(log, "Version hint file points to {}, will read from this metadata file", *resolved);
             ProfileEvents::increment(ProfileEvents::IcebergVersionHintUsed);
-            return getMetadataFileAndVersion(std::filesystem::path(table_path) / "metadata" / fs::path(*resolved).filename());
+            return getMetadataFileAndVersion(pathToGenericString(pathFromString(table_path) / "metadata" / pathFromString(*resolved).filename()));
         }
         LOG_WARNING(log, "Version hint content '{}' could not be resolved to a metadata file, falling back to listing", metadata_file);
     }

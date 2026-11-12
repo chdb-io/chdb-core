@@ -1,13 +1,9 @@
+#include <base/pathToString.h>
 #include <Functions/UserDefined/createUserDefinedSQLObjectsStorage.h>
 #include <Functions/UserDefined/UserDefinedSQLObjectsDiskStorage.h>
 #include <Functions/UserDefined/UserDefinedSQLObjectsZooKeeperStorage.h>
 #include <Interpreters/Context.h>
 #include <Poco/Util/AbstractConfiguration.h>
-#include <filesystem>
-
-namespace fs = std::filesystem;
-
-
 namespace DB
 {
 
@@ -38,10 +34,10 @@ std::unique_ptr<IUserDefinedSQLObjectsStorage> createUserDefinedSQLObjectsStorag
 
     if (config.has("path"))
     {
-        global_context->setPath(fs::path{config.getString("path")} / "");
+        global_context->setPath(pathToGenericString(pathFromString(config.getString("path")) / ""));
     }
     
-    String default_path = fs::path{global_context->getPath()} / "user_defined" / "";
+    String default_path = pathToGenericString(pathFromString(global_context->getPath()) / "user_defined" / "");
     String path = config.getString(disk_path_key, default_path);
     return std::make_unique<UserDefinedSQLObjectsDiskStorage>(global_context, path);
 }

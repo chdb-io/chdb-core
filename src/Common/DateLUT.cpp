@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include <Common/DateLUT.h>
 #include <Common/MemoryTrackerBlockerInThread.h>
 
@@ -69,7 +70,8 @@ std::string preferredTimeZoneName(const std::string & tz_name, const std::filesy
             return candidate;
     }
 
-    return canonicalTimeZoneName(relative_path.lexically_normal().string());
+    /// Time zone names separate their parts with `/` whatever the platform's path separator is.
+    return canonicalTimeZoneName(pathToGenericString(relative_path.lexically_normal()));
 }
 
 
@@ -111,6 +113,12 @@ std::string determineDefaultTimeZone()
     }
     else
     {
+#if defined(OS_WINDOWS)
+        /// chdb_spec: no /etc/localtime on Windows. Without a drive letter that path means the root
+        /// of the current drive (C:\etc\localtime), which any local user can create, so do not
+        /// probe it: use the same default as a host without tzdata.
+        return "UTC";
+#endif
         error_prefix = "Could not determine local time zone: ";
         tz_file_path = "/etc/localtime";
 
@@ -180,7 +188,7 @@ std::string determineDefaultTimeZone()
                 continue;
 
             if (fs::file_size(path) == tzfile_size && calcSHA1(path.string()) == tzfile_sha1)
-                return path.lexically_relative(tz_database_path).string();
+                return pathToGenericString(path.lexically_relative(tz_database_path));
         }
     }
     catch (const Poco::Exception & ex)

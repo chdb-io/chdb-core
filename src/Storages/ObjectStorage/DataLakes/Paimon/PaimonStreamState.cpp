@@ -3,6 +3,7 @@
 #if USE_AVRO
 
 #include <Storages/ObjectStorage/DataLakes/Paimon/PaimonStreamState.h>
+#include <base/pathToString.h>
 #include <Core/Field.h>
 #include <Core/ServerUUID.h>
 #include <IO/ReadHelpers.h>
@@ -172,8 +173,8 @@ PaimonCommittedSnapshot PaimonStreamState::readCommittedSnapshot(const PaimonPro
 {
     auto component_guard = Coordination::setCurrentComponent("PaimonStreamState::readCommittedSnapshot");
 
-    const String committed_path = fs_keeper_path / COMMITTED_SNAPSHOT_NODE;
-    const String identity_path = fs_keeper_path / COMMITTED_SNAPSHOT_IDENTITY_NODE;
+    const String committed_path = pathToGenericString(fs_keeper_path / COMMITTED_SNAPSHOT_NODE);
+    const String identity_path = pathToGenericString(fs_keeper_path / COMMITTED_SNAPSHOT_IDENTITY_NODE);
     auto responses = processing_lock.getKeeper().tryGet(std::vector<std::string>{committed_path, identity_path});
     auto node_exists = [&](size_t index, const String & path)
     {
@@ -215,7 +216,7 @@ PaimonProcessingLockPtr PaimonStreamState::acquireProcessingLock()
     auto component_guard = Coordination::setCurrentComponent("PaimonStreamState::acquireProcessingLock");
     std::lock_guard lock(mutex);
 
-    const auto processing_lock_path = fs_keeper_path / PROCESSING_LOCK_NODE;
+    const auto processing_lock_path = pathToGenericString(fs_keeper_path / PROCESSING_LOCK_NODE);
     /// Pin the session we are acquiring with: the `keeper` member may be replaced by
     /// a concurrent query, and the lock must stay tied to the session that owns it.
     auto lock_keeper = keeper;
@@ -236,14 +237,14 @@ PaimonProcessingLockPtr PaimonStreamState::acquireProcessingLock()
         throw Exception(
             ErrorCodes::REPLICA_IS_ALREADY_ACTIVE,
             "Another incremental read is in progress (processing lock exists at {})",
-            processing_lock_path.string());
+            processing_lock_path);
     if (code != Coordination::Error::ZOK)
         zkutil::KeeperMultiException::check(code, ops, responses);
 
     const Int32 version = dynamic_cast<const Coordination::SetResponse &>(*responses[1]).stat.version;
 
     LOG_DEBUG(log, "Acquired processing lock at {} with token '{}' (version {})",
-        processing_lock_path.string(), token, version);
+        processing_lock_path, token, version);
 
     return std::make_unique<PaimonProcessingLock>(
         std::move(lock_keeper), processing_lock_path, token, session_id, version);
@@ -265,12 +266,12 @@ void PaimonStreamState::initializeKeeperNodes()
         ops.emplace_back(zkutil::makeCreateRequest(keeper_path, "", zkutil::CreateMode::Persistent));
 
     // Create replicas directory
-    auto replicas_path = fs_keeper_path / REPLICAS_NODE;
+    auto replicas_path = pathToGenericString(fs_keeper_path / REPLICAS_NODE);
     if (!keeper->exists(replicas_path))
         ops.emplace_back(zkutil::makeCreateRequest(replicas_path, "", zkutil::CreateMode::Persistent));
 
     // Create this replica's directory
-    auto replica_path = replicas_path / replica_name;
+    auto replica_path = pathToGenericString(fs_keeper_path / REPLICAS_NODE / replica_name);
     if (!keeper->exists(replica_path))
         ops.emplace_back(zkutil::makeCreateRequest(replica_path, "", zkutil::CreateMode::Persistent));
 
@@ -299,7 +300,7 @@ bool PaimonStreamState::activate()
     }
 
     auto replica_path = fs_keeper_path / REPLICAS_NODE / replica_name;
-    auto is_active_path = replica_path / IS_ACTIVE_NODE;
+    auto is_active_path = pathToGenericString(replica_path / IS_ACTIVE_NODE);
 
     try
     {
@@ -323,11 +324,11 @@ bool PaimonStreamState::activate()
                 if (remove_code != Coordination::Error::ZOK && remove_code != Coordination::Error::ZNONODE)
                 {
                     LOG_WARNING(log, "Failed to remove stale is_active node at {} (code: {}). "
-                        "Will retry on next attempt.", is_active_path.string(), remove_code);
+                        "Will retry on next attempt.", is_active_path, remove_code);
                     return false;
                 }
                 LOG_INFO(log, "Cleared stale is_active node from previous session at {} ({})",
-                    is_active_path.string(), remove_code);
+                    is_active_path, remove_code);
             }
             else
             {
@@ -384,14 +385,14 @@ void PaimonStreamState::setCommittedSnapshot(
     /// here would let a read whose session died borrow a session established later
     /// by a concurrent query and commit over another consumer's progress.
     auto & lock_keeper = processing_lock.getKeeper();
-    const auto committed_path = fs_keeper_path / COMMITTED_SNAPSHOT_NODE;
+    const auto committed_path = pathToGenericString(fs_keeper_path / COMMITTED_SNAPSHOT_NODE);
 
     /// The batch was computed from `observed`, so anything else is a bug in the caller.
     if (observed.snapshot_id && snapshot_id <= *observed.snapshot_id)
         throw Exception(
             ErrorCodes::LOGICAL_ERROR,
             "Attempted to move the Paimon committed snapshot at {} from {} to {}, which is not forward",
-            committed_path.string(), *observed.snapshot_id, snapshot_id);
+            committed_path, *observed.snapshot_id, snapshot_id);
 
     Coordination::Requests ops;
     processing_lock.addFenceOps(ops);
@@ -408,7 +409,7 @@ void PaimonStreamState::setCommittedSnapshot(
 
     if (snapshot_identity)
     {
-        const auto identity_path = fs_keeper_path / COMMITTED_SNAPSHOT_IDENTITY_NODE;
+        const auto identity_path = pathToGenericString(fs_keeper_path / COMMITTED_SNAPSHOT_IDENTITY_NODE);
         if (observed.identity_node_exists)
             ops.emplace_back(zkutil::makeSetRequest(identity_path, snapshot_identity->toJSON(), -1));
         else
@@ -443,7 +444,7 @@ void PaimonStreamState::setCommittedSnapshot(
                     "externally while this read was in progress (it was {} when the read started), "
                     "for example reset by an operator. Nothing was delivered and the watermark was left as set, "
                     "so the next read resumes from it.",
-                    snapshot_id, committed_path.string(),
+                    snapshot_id, committed_path,
                     observed.snapshot_id ? toString(*observed.snapshot_id) : "absent");
         }
 

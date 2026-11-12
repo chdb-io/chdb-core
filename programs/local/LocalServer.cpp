@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include "LocalServer.h"
 #include "InstancePaths.h"
 #include "ChdbSettingsOverrides.h"
@@ -14,7 +15,10 @@
 #include <TableFunctions/TableFunctionFactory.h>
 #include <Formats/FormatFactory.h>
 #include <Server/StartupWarnings.h>
+
+#if !defined(OS_WINDOWS)
 #include <sys/resource.h>
+#endif
 #include <algorithm>
 #include <exception>
 #include <filesystem>
@@ -125,7 +129,9 @@
 #include <base/getMemoryAmount.h>
 #include <base/safeExit.h>
 #include <boost/program_options/options_description.hpp>
+#if !defined(OS_WINDOWS)
 #include <sys/resource.h>
+#endif
 #include <Poco/Logger.h>
 #include <Poco/Net/HTTPServerParams.h>
 #include <Poco/NullChannel.h>
@@ -136,6 +142,11 @@
 #include <Common/Config/ConfigProcessor.h>
 #include <Common/Config/getConfigPath.h>
 #include <Common/Config/getLocalConfigPath.h>
+#include <Common/getUserHomePath.h>
+#if defined(OS_WINDOWS)
+#include <Poco/Net/Net.h>
+#include <mutex>
+#endif
 #include <Common/CurrentMemoryTracker.h>
 #include <Common/CurrentMetrics.h>
 #include <Common/ErrorHandlers.h>
@@ -454,11 +465,19 @@ void LocalServer::processError(std::string_view query) const
 
 void LocalServer::initialize(Poco::Util::Application & self)
 {
+#if defined(OS_WINDOWS)
+    /// chdb_spec: Winsock needs WSAStartup before any socket call (gethostname included). The
+    /// executable does it in main(); the Python module never runs main(), so do it here, once.
+    /// It is reference-counted and never undone, which also keeps it alive through teardown.
+    static std::once_flag winsock_started;
+    std::call_once(winsock_started, [] { Poco::Net::initializeNetwork(); });
+#endif
     Poco::Util::Application::initialize(self);
 
-    const char * home_path_cstr = getenv("HOME"); // NOLINT(concurrency-mt-unsafe)
-    if (home_path_cstr)
-        home_path = home_path_cstr;
+    /// Not the raw `HOME`: on Windows the home directory lives in `USERPROFILE`
+    /// (see getUserHomePath), and without it the `~/.clickhouse-local` config
+    /// auto-discovery below never fires there.
+    home_path = pathFromString(getUserHomePath());
 
     /// Load config files if exists
     std::string config_path;
@@ -469,7 +488,7 @@ void LocalServer::initialize(Poco::Util::Application & self)
     else if (auto path_in_current_directory = tryGetConfigPath("config"))
         config_path = *path_in_current_directory;
     else
-        config_path = getLocalConfigPath(home_path).value_or("");
+        config_path = getLocalConfigPath(pathToGenericString(home_path)).value_or("");
 
     /// The names of the merge directories are derived from the name of the main config file, see
     /// `ConfigProcessor::getConfigMergeFiles`, so without a config file there is nothing to derive
@@ -478,15 +497,15 @@ void LocalServer::initialize(Poco::Util::Application & self)
     /// the base config path: then `./config.d` and `./conf.d` are merged into it, and running
     /// `clickhouse-local` in a directory with a `config.d` does not additionally require creating
     /// an otherwise empty `config.xml` next to it.
-    if (!fs::exists(config_path))
+    if (!fs::exists(pathFromString(config_path)))
     {
         config_path = "config.xml";
         ConfigProcessor::registerEmbeddedConfig(config_path, "<clickhouse/>");
     }
 
     ConfigProcessor config_processor(config_path);
-    const fs::path config_dir = fs::path(config_path).parent_path();
-    ConfigProcessor::setConfigPath(config_dir.empty() ? fs::path(".") : config_dir);
+    const fs::path config_dir = pathFromString(config_path).parent_path();
+    ConfigProcessor::setConfigPath(config_dir.empty() ? "." : pathToGenericString(config_dir));
     auto loaded_config = config_processor.loadConfig();
     getClientConfiguration().add(loaded_config.configuration.duplicate(), PRIO_DEFAULT, false);
     loaded_config_path = config_path;
@@ -640,7 +659,7 @@ void deferSystemDatabaseTables(ContextPtr context, IDatabase & system_database)
 UUID tryReadAtomicDatabaseUUID(const String & name, ContextPtr context)
 {
     auto db_disk = context->getDatabaseDisk();
-    auto metadata_file_path = DatabaseCatalog::getMetadataFilePath(name);
+    auto metadata_file_path = pathToGenericString(DatabaseCatalog::getMetadataFilePath(name));
     if (!db_disk->existsFile(metadata_file_path))
         return UUIDHelpers::Nil;
 
@@ -656,13 +675,13 @@ void writeMissingDatabaseMetadataFile(const IDatabase & database, ContextPtr con
 {
     auto db_disk = context->getDatabaseDisk();
     const String database_name = database.getDatabaseName();
-    auto metadata_file_path = DatabaseCatalog::getMetadataFilePath(database_name);
+    auto metadata_file_path = pathToGenericString(DatabaseCatalog::getMetadataFilePath(database_name));
     if (db_disk->existsFile(metadata_file_path))
         return;
 
     String statement = fmt::format("ATTACH DATABASE {} UUID '{}'\nENGINE = Atomic\n", TABLE_WITH_UUID_NAME_PLACEHOLDER, toString(database.getUUID()));
-    auto metadata_tmp_file_path = DatabaseCatalog::getMetadataTmpFilePath(database_name);
-    db_disk->createDirectories(DatabaseCatalog::getMetadataDirPath());
+    auto metadata_tmp_file_path = pathToGenericString(DatabaseCatalog::getMetadataTmpFilePath(database_name));
+    db_disk->createDirectories(pathToGenericString(DatabaseCatalog::getMetadataDirPath()));
     db_disk->removeFileIfExists(metadata_tmp_file_path);
     writeMetadataFile(
         db_disk,
@@ -684,14 +703,15 @@ DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPt
     /// Using a hardcoded `"default"` here means a non-default `default_database`
     /// (e.g. `--default_database=mydb`) silently loses data on restart because
     /// the lookup misses the previous run's symlink and a fresh UUID is picked.
-    fs::path existing_path_symlink = fs::weakly_canonical(context->getPath()) / DatabaseCatalog::getMetadataDirPath(name_);
+    const fs::path context_path = pathFromString(context->getPath());
+    fs::path existing_path_symlink = fs::weakly_canonical(context_path) / DatabaseCatalog::getMetadataDirPath(name_);
     if (FS::isSymlinkNoThrow(existing_path_symlink))
     {
         auto symlink_path = FS::readSymlink(existing_path_symlink);
         /// If symlink ends with '/':
         if (!symlink_path.has_filename() && symlink_path.has_parent_path())
             symlink_path = symlink_path.parent_path();
-        default_database_uuid = parse<UUID>(symlink_path.filename());
+        default_database_uuid = parse<UUID>(pathToGenericString(symlink_path.filename()));
     }
     /// The file is written on the first run, before any table creates the symlink.
     else if (UUID uuid_from_metadata_file = tryReadAtomicDatabaseUUID(name_, context); uuid_from_metadata_file != UUIDHelpers::Nil)
@@ -699,10 +719,10 @@ DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPt
     else
         default_database_uuid = UUIDHelpers::generateV4();
 
-    fs::path default_database_metadata_path = fs::weakly_canonical(context->getPath()) /
+    fs::path default_database_metadata_path = fs::weakly_canonical(context_path) /
         DatabaseCatalog::getStoreDirPath(default_database_uuid);
 
-    overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, pathToGenericString(default_database_metadata_path), default_database_uuid, context));
     /// The URL database handles local files, URLs and object storage uniformly: with the `file://`
     /// base URL, a plain table name resolves to `file://<name>` -- a path relative to the current
     /// directory, read by the File engine (globs included) -- while a name with a URL scheme
@@ -717,7 +737,10 @@ DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPt
 /// If path is specified and not empty, will try to setup server environment and load existing metadata
 void LocalServer::tryInitPath()
 {
-    std::string path;
+    /// Kept as `fs::path` until the final `set*Path` boundaries: on Windows a round trip
+    /// through a narrow string and back into `std::filesystem` would reinterpret the bytes
+    /// through the active code page (see base/pathToString.h).
+    fs::path path;
 
     if (getClientConfiguration().has("path") && (path_from_command_line || !getClientConfiguration().has("tmp")))
     {
@@ -725,10 +748,11 @@ void LocalServer::tryInitPath()
         /// can pass --tmp as a baseline and still redirect particular invocations to an explicit location.
         /// A path from a config file does not, so --tmp always gives a unique temporary directory
         /// and never loads or locks the directory configured in the home or the current directory.
-        path = getClientConfiguration().getString("path");
-        Poco::trimInPlace(path);
+        auto path_string = getClientConfiguration().getString("path");
+        Poco::trimInPlace(path_string);
+        path = pathFromString(path_string);
 
-        if (path.empty())
+        if (path_string.empty())
         {
             throw Exception(ErrorCodes::BAD_ARGUMENTS,
                 "Cannot work with empty storage path that is explicitly specified"
@@ -762,7 +786,7 @@ void LocalServer::tryInitPath()
             parent_folder = std::filesystem::current_path();
 
             (void)std::filesystem::is_directory(parent_folder); // checks the path is accessible (may throw on I/O error)
-            LOG_DEBUG(log, "Will create working directory inside current directory: {}", parent_folder.string());
+            LOG_DEBUG(log, "Will create working directory inside current directory: {}", pathToString(parent_folder));
         }
 
         /// we can have another clickhouse-local running simultaneously, even with the same PID (for ex. - several dockers mounting the same folder)
@@ -773,7 +797,7 @@ void LocalServer::tryInitPath()
         default_path = parent_folder / fmt::format("clickhouse-local-{}", UUIDHelpers::generateV4());
 
         if (fs::exists(default_path))
-            throw Exception(ErrorCodes::FILE_ALREADY_EXISTS, "Unsuccessful attempt to set up the working directory: {} already exists.", default_path.string());
+            throw Exception(ErrorCodes::FILE_ALREADY_EXISTS, "Unsuccessful attempt to set up the working directory: {} already exists.", pathToString(default_path));
 
         /// The directory can be created lazily during the runtime.
         temporary_directory_to_delete = default_path;
@@ -781,11 +805,11 @@ void LocalServer::tryInitPath()
         /// explicit --path (locked, metadata and `user_defined` loaded from it), which is also why `path`
         /// is set below: sessions used to create the directory in Python and pass it as --path (#337).
 
-        path = default_path.string();
+        path = default_path;
 
-        LOG_DEBUG(log, "Working directory will be created as needed: {}", path);
+        LOG_DEBUG(log, "Working directory will be created as needed: {}", pathToString(path));
 
-        getClientConfiguration().setString("path", path);
+        getClientConfiguration().setString("path", pathToGenericString(path));
     }
     fs::create_directories(path);
 
@@ -797,7 +821,7 @@ void LocalServer::tryInitPath()
     {
         try
         {
-            status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
+            status.emplace(pathToGenericString(path / "status"), StatusFile::write_full_info);
         }
         catch (Exception & e)
         {
@@ -823,7 +847,7 @@ void LocalServer::tryInitPath()
         getClientConfiguration(),
         path,
         max_temporary_data_on_disk_size.changed ? max_temporary_data_on_disk_size.value : 1_TiB);
-    fs::create_directories(global_context->getDynamicUserDefinedExecutableFunctionsPath());
+    fs::create_directories(pathFromString(global_context->getDynamicUserDefinedExecutableFunctionsPath()));
 }
 
 
@@ -1324,7 +1348,7 @@ void LocalServer::setupUsers()
     /// Apply user-level configuration from the config processed in `initialize`: a config file
     /// auto-discovered via `getLocalConfigPath` (e.g. `~/.clickhouse-local/config.xml`), or the
     /// merge directories of the current directory processed on top of the embedded config.
-    const auto config_dir = fs::path{loaded_config_path}.remove_filename().string();
+    const auto config_dir = pathFromString(loaded_config_path).remove_filename();
     bool has_user_directories = getClientConfiguration().has("user_directories");
     String users_config_path = getClientConfiguration().getString("users_config", "");
 
@@ -1334,8 +1358,8 @@ void LocalServer::setupUsers()
     /// Anchor relative paths to the config's directory, not the cwd.
     /// Otherwise a missing `users.xml` silently falls back to `./users.xml`,
     /// which could grant `access_management` to the default user.
-    if (!users_config_path.empty() && fs::path(users_config_path).is_relative())
-        users_config_path = fs::path(config_dir) / users_config_path;
+    if (!users_config_path.empty() && pathFromString(users_config_path).is_relative())
+        users_config_path = pathToGenericString(config_dir / pathFromString(users_config_path));
 
     if (users_config_path.empty())
         users_config = getConfigurationFromXMLString(minimal_default_user_xml);
@@ -1394,11 +1418,19 @@ try
 
     /// Re-install ClickHouse signal handlers (SA_SIGINFO) after Poco::Application::initialize()
     /// which overwrites them with its own non-SA_SIGINFO handlers.
+    /// None on Windows, where faults are reported through SEH (see Common/SignalHandlers.h).
+#if !defined(OS_WINDOWS)
     HandledSignals::instance().setupCommonDeadlySignalHandlers();
+#endif
 
     std::cout << std::fixed << std::setprecision(3);
     std::cerr << std::fixed << std::setprecision(3);
 
+#if defined(OS_WINDOWS)
+    /// There is no equivalent limit to raise: Windows caps the number of *stdio streams*
+    /// (`_setmaxstdio`, and only for the CRT's own layer), not the number of open handles, which
+    /// is bounded by memory rather than by a per-process rlimit.
+#else
     /// Try to increase limit on number of open files.
     {
         rlimit rlim{};
@@ -1413,6 +1445,7 @@ try
                 std::cerr << fmt::format("Cannot set max number of file descriptors to {}. Try to specify max_open_files according to your system limits. error: {}", rlim.rlim_cur, errnoToString()) << '\n';
         }
     }
+#endif
 
     is_interactive = !is_background && stdin_is_a_tty
         && (getClientConfiguration().hasOption("interactive")
@@ -1585,6 +1618,7 @@ void LocalServer::processConfig()
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Options '--query' and '--queries-file' cannot be specified at the same time");
 
     pager = getClientConfiguration().getString("pager", "");
+    checkPagerIsSupported(pager);
 
     delayed_interactive = getClientConfiguration().has("interactive") && (!queries.empty() || !queries_files.empty());
     if (!is_interactive || delayed_interactive)
@@ -2055,7 +2089,9 @@ void LocalServer::processConfig()
         /// If it is loaded from a user-specified path, we load it as usual. If not, we create it as a memory (ephemeral) database.
         bool attached_system_database = false;
 
-        String path = global_context->getPath();
+        /// `getPath` returns UTF-8; `pathFromString` (rather than the narrow `fs::path`
+        /// constructor) keeps it intact on Windows.
+        fs::path path = pathFromString(global_context->getPath());
 
         /// The directory is already locked by `tryInitPath`.
 
@@ -2065,11 +2101,11 @@ void LocalServer::processConfig()
         if (!server_default_database.empty() && !getClientConfiguration().has("only-system-tables"))
             writeMissingDatabaseMetadataFile(*DatabaseCatalog::instance().getDatabase(server_default_database), global_context);
 
-        if (fs::exists(fs::path(path) / "metadata"))
+        if (fs::exists(path / "metadata"))
         {
-            LOG_DEBUG(log, "Loading metadata from {}", path);
+            LOG_DEBUG(log, "Loading metadata from {}", pathToString(path));
 
-            if (attach_system_tables && fs::exists(std::filesystem::path(path) / "metadata" / "system.sql"))
+            if (attach_system_tables && fs::exists(path / "metadata" / "system.sql"))
             {
                 LoadTaskPtrs load_system_metadata_tasks = loadMetadataSystem(global_context);
                 waitLoad(TablesLoaderForegroundPoolId, load_system_metadata_tasks);
@@ -2109,7 +2145,7 @@ void LocalServer::processConfig()
         if (attach_system_tables && !attached_system_database)
             deferSystemDatabaseTables(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE));
 
-        if (fs::exists(fs::path(path) / "user_defined"))
+        if (fs::exists(path / "user_defined"))
             global_context->getUserDefinedSQLObjectsStorage().loadObjects();
     }
     else if (attach_system_tables)
