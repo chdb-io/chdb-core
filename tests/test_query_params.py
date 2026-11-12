@@ -150,17 +150,6 @@ class TestQueryParams(unittest.TestCase):
             chdb.query("SELECT {x:UInt64} AS v", params={"x": "not-a-number"})
         self.assert_exception_message(exc, "cannot be parsed as UInt64")
 
-    def test_param_conversion_error_keeps_its_type(self):
-        class ParamError(Exception):
-            pass
-
-        class Unprintable:
-            def __str__(self):
-                raise ParamError("no text for this value")
-
-        with self.assertRaisesRegex(ParamError, "no text for this value"):
-            chdb.query("SELECT {x:String} AS v", params={"x": Unprintable()})
-
     def test_session_send_query_with_params_missing_value_stream(self):
         sess = session.Session(":memory:")
         try:

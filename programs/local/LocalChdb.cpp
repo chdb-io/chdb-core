@@ -1246,31 +1246,6 @@ PYBIND11_MODULE(_chdb, m)
 {
     m.doc() = "chDB module for query function";
 
-#ifndef CHDB_FREE_THREADING
-    /// pybind11 translates its own exception types (py::error_already_set and the
-    /// py::*_error family) with catch clauses compiled into the nonlimitedapi shim,
-    /// against the shim's copy of their type_info. _chdb exports none of its own, so
-    /// where libc++ compares type_info by address (Linux, macOS x86_64) an exception
-    /// thrown here misses those clauses and reaches Python as RuntimeError. Catch
-    /// them on this side, where the type_info is the thrower's.
-    py::register_local_exception_translator([](std::exception_ptr p)
-    {
-        try
-        {
-            if (p)
-                std::rethrow_exception(p);
-        }
-        catch (py::error_already_set & e)
-        {
-            e.restore();
-        }
-        catch (const py::builtin_exception & e)
-        {
-            e.set_error();
-        }
-    });
-#endif
-
     /// Register before user code can create a connection. This callback also
     /// clears the JIT cache before its static owners are destroyed.
     py::module_::import("atexit").attr("register")(py::cpp_function(&chdb_cleanup_at_exit));
