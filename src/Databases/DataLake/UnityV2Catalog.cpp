@@ -3,6 +3,7 @@
 #if USE_AVRO && USE_PARQUET
 
 #include <Databases/DataLake/RestCatalog.h>
+#include <base/pathToString.h>
 #include <Databases/DataLake/DatabaseDataLakeSettings.h>
 #include <Databases/DataLake/UnityCatalogUtils.h>
 #include <IO/HTTPCommon.h>
@@ -260,7 +261,7 @@ std::pair<Poco::Dynamic::Var, std::string> UnityV2Catalog::getJSONRequest(
     return requestWithRetry([&](bool force_refresh)
     {
         return makeHTTPRequestAndReadJSON(
-            base_url / route, getContext(), /* bearer_token = */ "", params, getAuthHeaders(force_refresh));
+            pathToGenericString(base_url / route), getContext(), /* bearer_token = */ "", params, getAuthHeaders(force_refresh));
     });
 }
 
@@ -275,7 +276,7 @@ std::pair<Poco::Dynamic::Var, std::string> UnityV2Catalog::postJSONRequest(
         /// Some Unity servers answer HTTP 500 to a POST without an explicit `Content-Type`.
         headers.emplace_back("Content-Type", "application/json");
         return makeHTTPRequestAndReadJSON(
-            base_url / route, getContext(), /* bearer_token = */ "", {}, headers,
+            pathToGenericString(base_url / route), getContext(), /* bearer_token = */ "", {}, headers,
             Poco::Net::HTTPRequest::HTTP_POST, out_stream_callback);
     });
 }
@@ -285,7 +286,7 @@ void UnityV2Catalog::deleteRequest(const std::string & route) const
     requestWithRetry([&](bool force_refresh)
     {
         auto buf = createReadBuffer(
-            base_url / route, getContext(), /* bearer_token = */ "", {}, getAuthHeaders(force_refresh),
+            pathToGenericString(base_url / route), getContext(), /* bearer_token = */ "", {}, getAuthHeaders(force_refresh),
             Poco::Net::HTTPRequest::HTTP_DELETE);
         /// The response body carries no useful data.
         buf->ignoreAll();
@@ -356,7 +357,7 @@ bool UnityV2Catalog::existsTable(const std::string & schema_name, const std::str
     auto full_table_name = fmt::format("{}.{}.{}", warehouse, schema_name, table_name);
     try
     {
-        auto json = getJSONRequest(std::filesystem::path{TABLES_ENDPOINT} / full_table_name).first;
+        auto json = getJSONRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / full_table_name)).first;
         const Poco::JSON::Object::Ptr & object = json.extract<Poco::JSON::Object::Ptr>();
         return hasValueAndItsNotNone("name", object)
             && object->get("name").extract<String>() == table_name;
@@ -378,7 +379,7 @@ void UnityV2Catalog::checkNamespaceExists(const std::string & schema_name) const
 {
     try
     {
-        getJSONRequest(std::filesystem::path{SCHEMAS_ENDPOINT} / fmt::format("{}.{}", warehouse, schema_name));
+        getJSONRequest(pathToGenericString(std::filesystem::path{SCHEMAS_ENDPOINT} / fmt::format("{}.{}", warehouse, schema_name)));
     }
     catch (const DB::HTTPException & e)
     {
@@ -443,7 +444,7 @@ std::optional<std::string> UnityV2Catalog::getDefaultTableLocation(
 {
     checkNamespaceExists(namespace_name);
 
-    auto json = getJSONRequest(std::filesystem::path{SCHEMAS_ENDPOINT} / fmt::format("{}.{}", warehouse, namespace_name)).first;
+    auto json = getJSONRequest(pathToGenericString(std::filesystem::path{SCHEMAS_ENDPOINT} / fmt::format("{}.{}", warehouse, namespace_name))).first;
     const auto & object = json.extract<Poco::JSON::Object::Ptr>();
 
     /// Only Unity on Databricks reports a location for a schema; the open-source server does not,
@@ -454,7 +455,7 @@ std::optional<std::string> UnityV2Catalog::getDefaultTableLocation(
         return std::nullopt;
     }
 
-    return std::string(std::filesystem::path(object->get("storage_location").extract<String>()) / table_name);
+    return pathToGenericString(std::filesystem::path(object->get("storage_location").extract<String>()) / table_name);
 }
 
 void UnityV2Catalog::createNamespaceIfNotExists(const String & namespace_name) const
@@ -481,7 +482,7 @@ void UnityV2Catalog::dropTable(const String & namespace_name, const String & tab
 
     try
     {
-        deleteRequest(std::filesystem::path{TABLES_ENDPOINT} / full_table_name);
+        deleteRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / full_table_name));
     }
     catch (...)
     {
@@ -494,7 +495,7 @@ void UnityV2Catalog::dropTable(const String & namespace_name, const String & tab
 
 String UnityV2Catalog::getTableType(const String & full_table_name) const
 {
-    auto json = getJSONRequest(std::filesystem::path{TABLES_ENDPOINT} / full_table_name).first;
+    auto json = getJSONRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / full_table_name)).first;
     const Poco::JSON::Object::Ptr & object = json.extract<Poco::JSON::Object::Ptr>();
     if (!hasValueAndItsNotNone("table_type", object))
         throw DB::Exception(
@@ -561,7 +562,7 @@ bool UnityV2Catalog::tryGetTableMetadata(
     Poco::Dynamic::Var json;
     try
     {
-        json = getJSONRequest(std::filesystem::path{TABLES_ENDPOINT} / full_table_name).first;
+        json = getJSONRequest(pathToGenericString(std::filesystem::path{TABLES_ENDPOINT} / full_table_name)).first;
     }
     catch (const DB::HTTPException & e)
     {
@@ -605,7 +606,7 @@ bool UnityV2Catalog::tryGetTableMetadata(
         catch (...)
         {
             /// Status codes for a refused request are undocumented, so any failure marks the table unreadable.
-            std::string iceberg_rest_url = std::filesystem::path(base_url_str) / "iceberg-rest";
+            std::string iceberg_rest_url = pathToGenericString(std::filesystem::path(base_url_str) / "iceberg-rest");
             auto reason = fmt::format(
                 "Cannot read Iceberg table `{}`: the Unity Iceberg REST endpoint `{}` returned an error: {}. "
                 "Reading managed Iceberg tables from Unity requires 'External data access' to be enabled on the metastore "
@@ -860,7 +861,7 @@ std::shared_ptr<RestCatalog> UnityV2Catalog::getIcebergRestCatalog(bool force_re
         }
     }
 
-    std::string iceberg_rest_url = std::filesystem::path(base_url_str) / "iceberg-rest";
+    std::string iceberg_rest_url = pathToGenericString(std::filesystem::path(base_url_str) / "iceberg-rest");
 
     /// Built outside `token_mutex`: the `RestCatalog` ctor fetches `/v1/config` over the network,
     /// and holding the lock there would stall every Delta request waiting in `getBearerToken`.

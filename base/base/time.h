@@ -38,6 +38,13 @@ inline std::tm * localtime_r(const std::time_t * time, std::tm * result)
     return ::localtime_s(result, time) == 0 ? result : nullptr;
 }
 
+/// chdb_spec: `gmtime_r` is the reentrant `gmtime`; the Windows CRT spells it `gmtime_s`, the same way
+/// as `localtime_s` above.
+inline std::tm * gmtime_r(const std::time_t * time, std::tm * result)
+{
+    return ::gmtime_s(result, time) == 0 ? result : nullptr;
+}
+
 /// `timegm` is the inverse of `gmtime`: it interprets a broken-down time as UTC, where `mktime`
 /// interprets it as local time and so depends on the current time zone. The Windows CRT provides
 /// exactly this under its own name.

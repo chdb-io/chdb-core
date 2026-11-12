@@ -53,6 +53,13 @@ add_library (ch_contrib::avrocpp ALIAS _avrocpp)
 set_target_properties (_avrocpp PROPERTIES VERSION ${AVRO_VERSION_MAJOR}.${AVRO_VERSION_MINOR})
 
 target_include_directories(_avrocpp SYSTEM PUBLIC ${AVROCPP_INCLUDE_DIR})
+if (OS_WINDOWS)
+    # chdb_spec: forwarding headers for avro-cpp's MSVC-only includes. "Windows.h" is FileStream.cc's
+    # alone (windows-private/: a public one would shadow usearch's forwarding header of the same name);
+    # <intsafe.h> comes from the public Config.hh, which every user of avro includes (windows/).
+    target_include_directories(_avrocpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/windows-private)
+    target_include_directories(_avrocpp SYSTEM BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/windows)
+endif ()
 
 target_link_libraries (_avrocpp PRIVATE boost::headers_only boost::iostreams)
 
