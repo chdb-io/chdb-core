@@ -68,6 +68,9 @@ endif ()
 if (HIDE_BUNDLED_RUNTIME)
     target_compile_definitions(unwind PRIVATE -D_LIBUNWIND_HIDE_SYMBOLS)
     hide_bundled_runtime(unwind)
+elseif (OS_WINDOWS)
+    # chdb_spec: see contrib/libcxx-cmake/CMakeLists.txt.
+    target_compile_definitions(unwind PRIVATE -D_LIBUNWIND_HIDE_SYMBOLS)
 endif ()
 
 if (USE_MUSL)

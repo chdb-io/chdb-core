@@ -80,4 +80,9 @@ if (HIDE_BUNDLED_RUNTIME)
         -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS
         -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
     hide_bundled_runtime(cxxabi)
+elseif (OS_WINDOWS)
+    # chdb_spec: see contrib/libcxx-cmake/CMakeLists.txt.
+    target_compile_definitions(cxxabi PRIVATE
+        -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS
+        -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
 endif ()

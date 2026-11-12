@@ -95,3 +95,25 @@ else ()
     clickhouse_program_install(clickhouse-server server)
 endif ()
 # chdb_spec
+
+# chdb_spec: the Python module on Windows. On Linux and macOS chdb/build.sh links _chdb.abi3.so
+# from the `clickhouse` executable's own link command; a PE image cannot be produced that way (an
+# EXE and a DLL differ in their startup code and in how imports are bound), so here it is a CMake
+# module with the same contents as `clickhouse.exe` minus `main.cpp`. clickhouse_new_delete comes
+# first so that its operator new/delete win over the libc++ defaults. The .def file is the export
+# list; it mirrors chdb/pychdb_export.map.
+if (OS_WINDOWS AND USE_PYTHON)
+    add_library (chdb_pymodule MODULE
+        $<TARGET_OBJECTS:clickhouse_malloc>
+        ${ClickHouse_SOURCE_DIR}/chdb/pychdb_export.def)
+    target_link_libraries (chdb_pymodule PRIVATE
+        clickhouse_new_delete
+        clickhouse-local-lib
+        clickhouse-server-lib
+        clickhouse_common_io)
+    set_target_properties (chdb_pymodule PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "_chdb"
+        SUFFIX ".pyd"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+endif ()

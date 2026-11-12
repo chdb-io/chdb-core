@@ -146,4 +146,10 @@ endif ()
 if (HIDE_BUNDLED_RUNTIME)
     target_compile_definitions(cxx PRIVATE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
     hide_bundled_runtime(cxx)
+elseif (OS_WINDOWS)
+    # chdb_spec: on Windows the annotations are dllexport, so every DLL that links the runtime
+    # statically (_chdb.pyd and the pybind11 stub and shim DLLs) would export it, and a DLL linking
+    # another one's import library would then find each runtime symbol twice. Drop the annotations;
+    # there is no visibility to set on PE.
+    target_compile_definitions(cxx PRIVATE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
 endif ()

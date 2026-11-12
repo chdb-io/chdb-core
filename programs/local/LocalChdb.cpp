@@ -24,6 +24,7 @@
 #include <IO/Progress.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Common/CurrentThread.h>
+#include <Poco/Exception.h>
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
@@ -1238,11 +1239,31 @@ static void chdb_cleanup_at_exit()
 }
 /// chdb_spec: end Python pre-static shutdown.
 
+static void initChdbModule(py::module_ & m);
+
 #ifdef CHDB_FREE_THREADING
 PYBIND11_MODULE(_chdb, m, py::mod_gil_not_used())
 #else
 PYBIND11_MODULE(_chdb, m)
 #endif
+{
+    /// pybind11 reports a C++ exception escaping module initialization as ImportError(e.what()),
+    /// and Poco::Exception::what() is only the class name ("Exception"), not what went wrong.
+    try
+    {
+        initChdbModule(m);
+    }
+    catch (const DB::Exception &)
+    {
+        throw;
+    }
+    catch (const Poco::Exception & e)
+    {
+        throw std::runtime_error(e.displayText());
+    }
+}
+
+static void initChdbModule(py::module_ & m)
 {
     m.doc() = "chDB module for query function";
 

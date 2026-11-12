@@ -732,7 +732,9 @@ if (OS_DARWIN)
     else()
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-U,_inside_main")
     endif()
-elseif (USE_PYTHON)
+elseif (USE_PYTHON AND NOT OS_WINDOWS)
+    # chdb_spec: not on Windows - a PE image resolves every import at link time (lld's MinGW
+    # driver has no --unresolved-symbols), so the Windows targets link python3.lib instead.
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--unresolved-symbols=ignore-all")
 endif()
 

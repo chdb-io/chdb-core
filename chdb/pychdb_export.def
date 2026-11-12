@@ -1,0 +1,5 @@
+; Exports of _chdb.pyd, the Windows counterpart of pychdb_export.map.
+EXPORTS
+    PyInit__chdb
+    chdb_adbc_init
+    AdbcDriverInit
