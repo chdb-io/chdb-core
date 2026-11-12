@@ -295,12 +295,9 @@ if (CMAKE_CROSSCOMPILING)
         # neither applies to a PE binary.
         set (ENABLE_EMBEDDED_COMPILER OFF CACHE INTERNAL "")
         set (ENABLE_DWARF_PARSER OFF CACHE INTERNAL "")
-        # `libfiu` injects failures through `dlsym` interposition.
-        set (ENABLE_LIBFIU OFF CACHE INTERNAL "")
-        # libarchive does have Windows support upstream, but it needs a hand-written
-        # `config.h` for it (the one in `contrib/libarchive-cmake` describes a POSIX host).
-        # Until that exists, `clickhouse-local` on Windows cannot read archives.
-        set (ENABLE_LIBARCHIVE OFF CACHE INTERNAL "")
+        # chdb_spec: libfiu and libarchive are left to the build's options. ClickHouse uses only
+        # libfiu's core (contrib/libfiu-cmake builds it without the POSIX-only remote control),
+        # and contrib/libarchive-cmake has a Windows config.h.
         # `liburing`/`numactl`/`librseq` are Linux kernel interfaces.
         set (ENABLE_LIBURING OFF CACHE INTERNAL "")
         set (ENABLE_NUMACTL OFF CACHE INTERNAL "")

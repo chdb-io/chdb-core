@@ -17,6 +17,8 @@
 #   CHDB_VERSION            engine version (default: derived from git tags, see chdb/vars.sh)
 #   CC, CXX                 host clang 21 (default clang-21, clang++-21)
 #   CHDB_WINDOWS_CONFIGURE_ONLY=1  stop after cmake
+#   CHDB_WINDOWS_EXTRA_CMAKE_ARGS  extra arguments appended to the cmake command line, after the
+#                           defaults below, e.g. "-DENABLE_MYSQL=0" to try a build without MySQL
 
 set -euo pipefail
 
@@ -50,10 +52,11 @@ done
 bash "${DIR}/build/download_windows_deps.sh" "${DEPS_DIR}"
 MINGW_SYSROOT="${DEPS_DIR}/mingw/usr/x86_64-w64-mingw32ucrt"
 
-# Windows v1 feature set: the engine with the formats the Python API relies on (Arrow, Parquet,
-# JSON), the sqids and ULID functions, vector similarity indexes (usearch), and no network-backed
-# storage. ENABLE_LIBRARIES=0 turns every optional contrib off; the ones the module needs are enabled
-# explicitly.
+# Windows feature set: the engine with the formats the Python API relies on (Arrow, Parquet, JSON,
+# Protobuf, Avro), archives (libarchive, with bzip2), the sqids and ULID functions, vector similarity
+# indexes (usearch), the MySQL and MongoDB integrations, and fail points (libfiu), which the tests use.
+# No S3/Azure/HDFS storage yet. ENABLE_LIBRARIES=0 turns every optional contrib off; the ones the
+# module needs are enabled explicitly.
 CMAKE_ARGS=(
     -G Ninja
     -DCMAKE_TOOLCHAIN_FILE="${PROJ_DIR}/cmake/windows/toolchain-x86_64.cmake"
@@ -65,10 +68,12 @@ CMAKE_ARGS=(
     -DENABLE_PARQUET=1 -DENABLE_THRIFT=1 -DENABLE_BROTLI=1
     -DENABLE_RAPIDJSON=1 -DENABLE_SIMDJSON=1 -DENABLE_SIMDUTF=1 -DENABLE_UTF8PROC=1
     -DENABLE_SQIDS=1 -DENABLE_ULID=1 -DENABLE_USEARCH=1 -DENABLE_SIMSIMD=1
-    -DENABLE_ARROW_FLIGHT=0 -DENABLE_ICU=0 -DENABLE_PROTOBUF=0 -DENABLE_AVRO=0
+    -DENABLE_PROTOBUF=1 -DENABLE_AVRO=1 -DENABLE_LIBARCHIVE=1 -DENABLE_BZIP2=1 -DENABLE_LIBFIU=1
+    -DENABLE_MYSQL=1 -DUSE_MONGODB=1
+    -DENABLE_ARROW_FLIGHT=0 -DENABLE_ICU=0
     -DENABLE_AWS_S3=0 -DENABLE_AZURE_BLOB_STORAGE=0 -DENABLE_HDFS=0
     -DENABLE_JEMALLOC=0 -DENABLE_RUST=0 -DENABLE_EMBEDDED_COMPILER=0 -DENABLE_DWARF_PARSER=0
-    -DENABLE_LIBFIU=0 -DGLIBC_COMPATIBILITY=0 -DENABLE_CLIENT_AI=0
+    -DGLIBC_COMPATIBILITY=0 -DENABLE_CLIENT_AI=0
     -DENABLE_TESTS=0 -DENABLE_UTILS=0 -DENABLE_EXAMPLES=0 -DENABLE_BENCHMARKS=0
     -DENABLE_FUZZING=0 -DENABLE_BUZZHOUSE=0 -DENABLE_FUZZER_TEST=0
     -DENABLE_THINLTO=0 -DENABLE_XRAY=0 -DENABLE_CLICKHOUSE_SELF_EXTRACTING=0
@@ -83,7 +88,8 @@ CMAKE_ARGS=(
 )
 
 mkdir -p "${BUILD_DIR}"
-cmake -S "${PROJ_DIR}" -B "${BUILD_DIR}" "${CMAKE_ARGS[@]}"
+# shellcheck disable=SC2086 # word splitting of the extra arguments is intended
+cmake -S "${PROJ_DIR}" -B "${BUILD_DIR}" "${CMAKE_ARGS[@]}" ${CHDB_WINDOWS_EXTRA_CMAKE_ARGS:-}
 if [ "${CHDB_WINDOWS_CONFIGURE_ONLY:-0}" = "1" ]; then
     exit 0
 fi
