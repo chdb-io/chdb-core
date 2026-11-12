@@ -115,14 +115,26 @@ jobs:
           retention-days: 7
 
   test_on_windows:
-    name: Test on Windows (Python ${{ matrix.python }})
+    name: Test on Windows (Python ${{ matrix.python }}, pandas ${{ matrix.pandas }})
     needs: build_on_linux
     runs-on: windows-2025
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      # The same Python and pandas lines as the Linux workflow: pandas 3 needs Python 3.11 or later,
+      # and 3.11 to 3.14 also run against pandas 2.
       matrix:
-        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        include:
+          - { python: '3.9', pandas: '2' }
+          - { python: '3.10', pandas: '2' }
+          - { python: '3.11', pandas: '2' }
+          - { python: '3.11', pandas: '3' }
+          - { python: '3.12', pandas: '2' }
+          - { python: '3.12', pandas: '3' }
+          - { python: '3.13', pandas: '2' }
+          - { python: '3.13', pandas: '3' }
+          - { python: '3.14', pandas: '2' }
+          - { python: '3.14', pandas: '3' }
     env:
       # tests/run_all.py prints non-ASCII status marks.
       PYTHONUTF8: '1'
@@ -139,12 +151,10 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          # pandas 3.x requires Python >= 3.11.
-          case "${{ matrix.python }}" in
-            3.9|3.10) pandas='pandas<3.0' ;;
-            *) pandas='pandas' ;;
-          esac
-          python -m pip install dist/*-win_amd64.whl "$pandas" adbc-driver-manager==1.8.0 psutil deltalake polars
+          if [ "${{ matrix.pandas }}" = 2 ]; then pandas='pandas<3.0'; else pandas='pandas>=3.0'; fi
+          # As in the Linux workflow, Python 3.9 tests against polars 1.10.0.
+          if [ "${{ matrix.python }}" = 3.9 ]; then polars='polars==1.10.0'; else polars='polars'; fi
+          python -m pip install dist/*-win_amd64.whl "$pandas" adbc-driver-manager==1.8.0 psutil deltalake "$polars"
       - name: Smoke test
         shell: bash
         run: |
@@ -159,3 +169,23 @@ jobs:
           mv chdb chdb.src
           cd tests
           python run_all.py
+      # The steps below run once, in the matrix cells the Linux workflow runs them with.
+      - name: Test torch compatibility
+        if: matrix.python == '3.11' && matrix.pandas == '3'
+        shell: bash
+        run: |
+          python -m pip install pytest
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pytest tests/test_torch_compatibility.py -v
+      - name: Test Iceberg reads
+        if: matrix.python == '3.12' && matrix.pandas == '3'
+        shell: bash
+        run: |
+          python -m pip install 'pyiceberg[sql-sqlite]'
+          python tests/integration/native_iceberg_catalog_smoke.py
+      - name: Run the notebook test
+        if: matrix.python == '3.9'
+        shell: bash
+        run: |
+          python -m pip install nbconvert ipykernel "fastjsonschema<2.22"
+          python -m jupyter nbconvert --to notebook --execute tests/test_data_insertion.ipynb --output test_data_insertion_output.ipynb
