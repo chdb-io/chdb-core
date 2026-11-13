@@ -122,6 +122,9 @@ public:
     /// parallel parsing before creating this parser.
     virtual void setRowsReadBefore(size_t /*rows*/) {}
 
+    /// The number of rows read so far, counting the rows set by setRowsReadBefore().
+    virtual std::optional<size_t> getRowsRead() const { return std::nullopt; }
+
     /// Sets the serialization hints for the columns. It allows to create columns
     /// in custom serializations (e.g. Sparse) for parsing and avoid extra conversion.
     virtual void setSerializationHints(const SerializationInfoByName & /*hints*/) {}

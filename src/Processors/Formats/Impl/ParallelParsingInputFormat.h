@@ -286,6 +286,9 @@ private:
     /// Compute it to have a more understandable error message.
     size_t successfully_read_rows_count{0};
 
+    /// Rows read by the parser of the first segment, set before first_parser_finished.
+    std::optional<size_t> first_parser_rows_read;
+
 
     void scheduleParserThreadForUnitWithNumber(size_t ticket_number)
     {
