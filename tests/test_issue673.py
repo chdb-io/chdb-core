@@ -10,10 +10,15 @@ from decimal import Decimal
 import pandas as pd
 import chdb
 
+# chdb-core-lite drops Decimal128/256 (toDecimal128/256 raise Code 46).
+_LITE = os.environ.get("CHDB_LITE") == "1"
+_SKIP_LITE = unittest.skipIf(_LITE, "Decimal128/256 are not in chdb-core-lite")
+
 
 class TestIssue673(unittest.TestCase):
     """DataFrame output keeps Decimal values exact, as decimal.Decimal objects like pyarrow's to_pandas()."""
 
+    @_SKIP_LITE
     def test_top_level_values_are_exact(self):
         df = chdb.query(
             "SELECT toDecimal128('12345678901234597890.25', 2) AS d, "
@@ -27,6 +32,7 @@ class TestIssue673(unittest.TestCase):
         # The scale is kept: 3.30 has two fractional digits, as in pyarrow.
         self.assertEqual(str(df["t"][0]), "3.30")
 
+    @_SKIP_LITE
     def test_decimal256(self):
         df = chdb.query("SELECT toDecimal256('-1234567890123456789012345678901234567890.5', 1) AS d", "DataFrame")
         self.assertEqual(df["d"].tolist(), [Decimal("-1234567890123456789012345678901234567890.5")])
@@ -38,6 +44,7 @@ class TestIssue673(unittest.TestCase):
         self.assertIs(df["d"][1], pd.NA)
         self.assertEqual([df["d"][0], df["d"][2]], [Decimal("0.00"), Decimal("2.00")])
 
+    @_SKIP_LITE
     def test_nested_values_are_exact(self):
         df = chdb.query(
             "SELECT [toDecimal64('1.10', 2), toDecimal64('2.25', 2)] AS a, "
@@ -52,6 +59,7 @@ class TestIssue673(unittest.TestCase):
         self.assertEqual(df["m"][0], {"k": Decimal("1.10")})
         self.assertEqual(str(df["m"][0]["k"]), "1.10")
 
+    @_SKIP_LITE
     def test_conversion_logs_no_errors(self):
         # Runs in its own process: logging is a startup option of the engine.
         body = textwrap.dedent("""
@@ -69,6 +77,7 @@ class TestIssue673(unittest.TestCase):
         self.assertIn("OK", proc.stdout)
         self.assertNotIn("neither finalized nor canceled", proc.stdout + proc.stderr)
 
+    @_SKIP_LITE
     def test_matches_arrow_output(self):
         sql = "SELECT toDecimal128(number, 4) / 3 AS d FROM numbers(5)"
         self.assertEqual(
