@@ -740,6 +740,12 @@ void EmbeddedServer::setupUsers()
     auto & access_control = global_context->getAccessControl();
     access_control.setNoPasswordAllowed(config().getBool("allow_no_password", true));
     access_control.setPlaintextPasswordAllowed(config().getBool("allow_plaintext_password", true));
+
+    /// Before the users config is loaded: its settings profiles may set custom settings.
+    /// Mirrors LocalServer::setupUsers (ClickHouse 6c99880936b7).
+    if (config().has("custom_settings_prefixes"))
+        access_control.setCustomSettingsPrefixes(config().getString("custom_settings_prefixes"));
+
     if (config().has("config-file") || fs::exists("config.xml"))
     {
         String config_path = config().getString("config-file", "");

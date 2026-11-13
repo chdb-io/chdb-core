@@ -293,6 +293,7 @@ namespace DB
     extern void registerFunctionGeohashDecode(FunctionFactory & factory);
     extern void registerFunctionGeohashEncode(FunctionFactory & factory);
     extern void registerFunctionGeohashesInBox(FunctionFactory & factory);
+    extern void registerFunctionGeometryAccessors(FunctionFactory & factory);
     extern void registerFunctionGeometryLength(FunctionFactory & factory);
     extern void registerFunctionGetClientHTTPHeader(FunctionFactory & factory);
     extern void registerFunctionGetMacro(FunctionFactory & factory);
@@ -1194,6 +1195,7 @@ namespace DB
             &registerFunctionGeohashDecode,
             &registerFunctionGeohashEncode,
             &registerFunctionGeohashesInBox,
+            &registerFunctionGeometryAccessors,
             &registerFunctionGeometryLength,
             &registerFunctionGetClientHTTPHeader,
             &registerFunctionGetMacro,
