@@ -474,15 +474,23 @@ connection_wrapper::connection_wrapper(const std::string & conn_str)
 
 std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::string & conn_str)
 {
-    auto & registry = PythonConnectionRegistry::instance();
-    std::lock_guard lock(registry.mutex);
-    if (registry.exiting)
-        throw std::runtime_error("chDB is shutting down");
+    std::shared_ptr<connection_wrapper> result;
+    std::string warning;
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+            throw std::runtime_error("chDB is shutting down");
 
-    auto result = std::make_shared<connection_wrapper>(conn_str);
-    if (registry.connections.size() >= 64)
-        std::erase_if(registry.connections, [](const auto & item) { return item.expired(); });
-    registry.connections.push_back(result);
+        result = std::make_shared<connection_wrapper>(conn_str);
+        warning = DB::EmbeddedServer::takeConnectWarning();
+        if (registry.connections.size() >= 64)
+            std::erase_if(registry.connections, [](const auto & item) { return item.expired(); });
+        registry.connections.push_back(result);
+    }
+    /// Outside the registry lock: a warning filter may run Python code that connects again.
+    if (!warning.empty() && PyErr_WarnEx(PyExc_RuntimeWarning, warning.c_str(), 1) != 0)
+        throw py::error_already_set();
     return result;
 }
 
