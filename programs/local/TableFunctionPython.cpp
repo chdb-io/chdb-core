@@ -4,6 +4,7 @@
 #include "PyArrowTable.h"
 #include "PythonArrowStream.h"
 #include "PythonDict.h"
+#include "PythonImporter.h"
 #include "PythonReader.h"
 #include "PythonTableCache.h"
 #include "PythonUtils.h"
@@ -19,6 +20,7 @@
 #include <TableFunctions/TableFunctionFactory.h>
 #include <pybind11/gil.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pytypes.h>
 #include <Poco/Logger.h>
 #include <Common/Exception.h>
@@ -28,6 +30,53 @@
 namespace py = pybind11;
 
 using namespace CHDB;
+
+namespace
+{
+
+/// The lists of a dict become object arrays holding the same Python objects, without pandas' own inference
+/// (which turns bytes into their repr and rounds integers beyond 64 bits), so the analyzer decides every type as it
+/// does for an object column. Arrays and Series are kept as they are. The lists holding a str go to `string_columns`.
+pybind11::dict listsToObjectArrays(
+    const pybind11::dict & columns, std::vector<std::pair<pybind11::object, pybind11::array>> & string_columns)
+{
+    pybind11::dict result;
+    for (auto item : columns)
+    {
+        if (!PyList_Check(item.second.ptr()))
+        {
+            result[item.first] = item.second;
+            continue;
+        }
+
+        auto values = pybind11::reinterpret_borrow<pybind11::list>(item.second);
+        const auto rows = static_cast<pybind11::ssize_t>(values.size());
+        pybind11::array array(pybind11::dtype("O"), std::vector<pybind11::ssize_t>{rows});
+        auto ** data = static_cast<PyObject **>(array.mutable_data());
+        bool has_string = false;
+        for (pybind11::ssize_t i = 0; i < rows; ++i)
+        {
+#ifdef Py_GIL_DISABLED
+            /// Another thread can change the list while it is copied without the GIL.
+            PyObject * value = PyList_GetItemRef(values.ptr(), i);
+            if (!value)
+                throw pybind11::error_already_set();
+#else
+            PyObject * value = PyList_GetItem(values.ptr(), i);
+            Py_INCREF(value);
+#endif
+            Py_XDECREF(data[i]);
+            data[i] = value;
+            has_string = has_string || PyUnicode_Check(value);
+        }
+        if (has_string)
+            string_columns.emplace_back(pybind11::reinterpret_borrow<pybind11::object>(item.first), array);
+        result[item.first] = std::move(array);
+    }
+    return result;
+}
+
+}
 
 namespace DB
 {
@@ -92,6 +141,25 @@ void TableFunctionPython::parseArguments(const ASTPtr & ast_function, ContextPtr
             py::str(instance.attr("__class__")).cast<std::string>());
 
         auto reader = instance.cast<py::object>();
+        /// A dict of columns is read as a DataFrame of the same values, so the two inputs follow one set of type
+        /// rules. Without pandas it keeps its own, narrower path.
+        if (PythonDict::isPythonDict(reader))
+        {
+            auto & pandas = PythonImporter::ImportCache().pandas;
+            auto data_frame = pandas.DataFrame();
+            if (data_frame)
+            {
+                std::vector<std::pair<py::object, py::array>> string_columns;
+                reader = data_frame(listsToObjectArrays(reader.cast<py::dict>(), string_columns), py::arg("copy") = false);
+                /// pandas 3 turns an object array of strings into its str dtype; such a list stays an object column.
+                for (const auto & [name, array] : string_columns)
+                {
+                    if (py::str(reader[name].attr("dtype")).cast<std::string>() != "object")
+                        reader[name] = pandas.Series()(
+                            array, py::arg("index") = reader.attr("index"), py::arg("dtype") = "object", py::arg("copy") = false);
+                }
+            }
+        }
         data_source_wrapper = std::make_shared<DataSourceWrapper>(reader);
         is_pandas_df = PandasDataFrame::isPandasDataframe(reader);
     }

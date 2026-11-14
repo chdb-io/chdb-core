@@ -202,6 +202,16 @@ bool isDecimal(const py::handle & obj)
 	return GetPythonObjectType(obj) == PythonObjectType::Decimal;
 }
 
+bool isMissingValue(const py::handle & obj)
+{
+	if (isNone(obj))
+		return true;
+	if (isFloat(obj))
+		return std::isnan(PyFloat_AsDouble(obj.ptr()));
+	/// str() spells a decimal NaN as NaN, -NaN, sNaN or NaN<payload>.
+	return isDecimal(obj) && py::str(obj).cast<std::string>().find("NaN") != std::string::npos;
+}
+
 static void writeDecimal(const py::handle & obj, rapidjson::Value & json_value, rapidjson::Document::AllocatorType & allocator)
 {
     String str = py::str(obj);
