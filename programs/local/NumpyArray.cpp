@@ -265,8 +265,9 @@ static bool CHColumnDecimalToNumpyArray(NumpyAppendData & append_data, const Dat
 
 	UInt32 scale = decimal_type->getScale();
 
-	auto * dest_ptr = reinterpret_cast<double *>(append_data.target_data);
+	auto * dest_ptr = reinterpret_cast<PyObject **>(append_data.target_data);
 	auto * mask_ptr = append_data.target_mask;
+	auto decimal_class = PythonImporter::ImportCache().decimal.Decimal();
 
 	for (size_t i = 0; i < append_data.src_count; i++)
 	{
@@ -274,15 +275,14 @@ static bool CHColumnDecimalToNumpyArray(NumpyAppendData & append_data, const Dat
 		size_t dest_index = append_data.dest_offset + i;
 		if (nullable_column && nullable_column->isNullAt(src_index))
 		{
-			/// Set to 0.0 for null values
-			dest_ptr[dest_index] = 0.0;
+			dest_ptr[dest_index] = nullptr;
 			mask_ptr[dest_index] = true;
 			has_null = true;
 		}
 		else
 		{
-			auto decimal_value = decimal_column->getElement(src_index);
-			dest_ptr[dest_index] = DecimalUtils::convertTo<double>(decimal_value, scale);
+			dest_ptr[dest_index]
+				= convertDecimalToPython(decimal_column->getElement(src_index), scale, decimal_class).release().ptr();
 			mask_ptr[dest_index] = false;
 		}
 	}
