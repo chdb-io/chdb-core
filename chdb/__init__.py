@@ -25,19 +25,24 @@ g_udf_path = ""
 __version__ = "0.0.1b1"
 if sys.version_info[:2] >= (3, 7):
     current_path = os.path.dirname(os.path.abspath(__file__))
-    # Pre-load _chdb.abi3.so with RTLD_DEEPBIND so that its DT_NEEDED
+    # Pre-load the _chdb extension with RTLD_DEEPBIND so that its DT_NEEDED
     # dependency (pybind11 stubs) resolves weak operator new/delete from
-    # _chdb's jemalloc rather than from a global libstdc++ (e.g. ray, torch).
+    # _chdb's jemalloc rather than from a global libstdc++ (e.g. ray, torch),
+    # and _chdb's own operator new/delete win over a preloaded allocator's.
+    # Pick the file the import below loads: free-threading builds are not
+    # named _chdb.abi3.so.
     if sys.platform == "linux":
         import ctypes
+        import importlib.machinery
         _RTLD_DEEPBIND = 0x00008
-        try:
-            ctypes.CDLL(
-                os.path.join(current_path, "_chdb.abi3.so"),
-                mode=sys.getdlopenflags() | _RTLD_DEEPBIND,
-            )
-        except OSError:
-            pass
+        for _suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            _ext_path = os.path.join(current_path, "_chdb" + _suffix)
+            if os.path.exists(_ext_path):
+                try:
+                    ctypes.CDLL(_ext_path, mode=sys.getdlopenflags() | _RTLD_DEEPBIND)
+                except OSError:
+                    pass
+                break
     from . import _chdb  # noqa
 
     conn = _chdb.connect()
