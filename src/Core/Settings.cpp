@@ -11507,7 +11507,7 @@ Enable experimental table function `eval`.
     \
     /** Experimental feature for chDB. */ \
     DECLARE(Int64, pandas_analyze_sample, 10000, R"(
-Sample rows in pandas to automatically determine the data types. When set to 0, sampling is disabled
+Whether to infer the types of pandas object columns. Any positive value reads every row of such a column to infer its type, so every value fits it. When set to 0, object columns are read as String; a negative value reads every object column as JSON without inference, and values in it that are not dicts read as NULL
 )", EXPERIMENTAL) \
     DECLARE(String, chdb_client_name, "", R"(
 The application name appended to 'chDB' when connecting to remote servers via remote() or remoteSecure() table functions.
