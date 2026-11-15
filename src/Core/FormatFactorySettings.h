@@ -1715,9 +1715,11 @@ Write Date values as plain 16-bit numbers (read back as UInt16), instead of conv
     DECLARE(Bool, output_format_arrow_uuid_as_fixed_byte_array, false, R"(
 Write UUID values as plain FixedSizeBinary(16), without Arrow UUID extension metadata.
 )", 0) \
-    DECLARE(Bool, output_format_arrow_variant_as_string, false, R"(
-Write Variant values as Arrow String containing JSON text instead of Arrow DenseUnion.
-)", 0) \
+    ALIAS(Bool, output_format_arrow_variant_as_json_string, false, R"(
+Write `Variant` values as an Arrow `String` holding the JSON representation of each value (as in the `JSONEachRow` format,
+e.g. a `String` value is quoted) instead of an Arrow dense union. `output_format_arrow_variant_as_string` is an alias
+kept for compatibility.
+)", 0, output_format_arrow_variant_as_string) \
     DECLARE(ArrowUnsupportedTypes, output_format_arrow_unsupported_types, "binary", R"(
 What to write for a column whose type has no first-class Arrow mapping (for example `JSON`, `Dynamic`, `QBit` or `AggregateFunction`):
 

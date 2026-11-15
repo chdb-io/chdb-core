@@ -233,7 +233,7 @@ struct FormatSettings
         bool parallel_encoding = true;
         bool output_date_as_uint16 = false;
         bool output_uuid_as_fixed_byte_array = false;
-        bool output_variant_as_string = false;
+        bool output_variant_as_json_string = false;
         ArrowUnsupportedTypes output_unsupported_types = ArrowUnsupportedTypes::BINARY;
         UInt64 output_record_batch_rows = 0;
         UInt64 output_record_batch_bytes = 0;

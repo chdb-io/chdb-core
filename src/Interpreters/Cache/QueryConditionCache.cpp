@@ -30,7 +30,7 @@ namespace Setting
     /// There are way too many format settings to handle extern declarations manually.
 #define DECLARE_FORMAT_EXTERN(TYPE, NAME, DEFAULT, DESCRIPTION, FLAGS, ...) \
     extern const Settings ## TYPE NAME;
-FORMAT_FACTORY_SETTINGS(DECLARE_FORMAT_EXTERN, INITIALIZE_SETTING_EXTERN)
+FORMAT_FACTORY_SETTINGS(DECLARE_FORMAT_EXTERN, DECLARE_FORMAT_EXTERN)
 #undef DECLARE_FORMAT_EXTERN
 
     extern const SettingsBool formatdatetime_f_prints_single_zero;

@@ -34,7 +34,7 @@ constexpr const char * kArrowConverterFormatName = "Arrow";
 CHColumnToArrowColumn::Settings buildConverterSettings(
     const chdb_arrow_options * options,
     bool output_uuid_as_fixed_byte_array = false,
-    bool output_variant_as_string = false)
+    bool output_variant_as_json_string = false)
 {
     CHColumnToArrowColumn::Settings settings;
     /// Defaults align with the Layer-1 type contract (string_as_string=1,
@@ -52,7 +52,7 @@ CHColumnToArrowColumn::Settings buildConverterSettings(
     settings.use_64_bit_indexes_for_dictionary = false;
     settings.output_date_as_uint16 = false;
     settings.output_uuid_as_fixed_byte_array = output_uuid_as_fixed_byte_array;
-    settings.output_variant_as_string = output_variant_as_string;
+    settings.output_variant_as_json_string = output_variant_as_json_string;
     /// `format_settings` (what an opaque value is serialized with) keeps its defaults: there is no
     /// query context here.
     settings.output_unsupported_types = FormatSettings::ArrowUnsupportedTypes::THROW;
@@ -171,7 +171,7 @@ struct ArrowStreamingState
 {
     chdb_arrow_options options;
     bool output_uuid_as_fixed_byte_array = false;
-    bool output_variant_as_string = false;
+    bool output_variant_as_json_string = false;
     std::unique_ptr<CHColumnToArrowColumn> converter;
     std::shared_ptr<arrow::Schema> schema;
     ColumnsWithTypeAndName header_columns;
@@ -192,7 +192,7 @@ void ensureConverterInitialized(
 
     state.header_columns = header;
     auto settings = buildConverterSettings(
-        &state.options, state.output_uuid_as_fixed_byte_array, state.output_variant_as_string);
+        &state.options, state.output_uuid_as_fixed_byte_array, state.output_variant_as_json_string);
     state.converter = std::make_unique<CHColumnToArrowColumn>(
         state.header_columns,
         kArrowConverterFormatName,
@@ -211,7 +211,7 @@ chdb_result * runMaterializedArrowQuery(
     ArrowArrayStream * out_stream,
     const chdb_arrow_options * options,
     bool output_uuid_as_fixed_byte_array = false,
-    bool output_variant_as_string = false)
+    bool output_variant_as_json_string = false)
 {
     if (!out_stream)
         return makeErrorResult("Unexpected null out_stream");
@@ -241,7 +241,7 @@ chdb_result * runMaterializedArrowQuery(
 
     const auto & header_columns = chunk_result->header->getColumnsWithTypeAndName();
 
-    auto settings = buildConverterSettings(options, output_uuid_as_fixed_byte_array, output_variant_as_string);
+    auto settings = buildConverterSettings(options, output_uuid_as_fixed_byte_array, output_variant_as_json_string);
     auto converter = std::make_unique<CHColumnToArrowColumn>(
         header_columns,
         kArrowConverterFormatName,
@@ -323,7 +323,7 @@ void chdb_stream_result_set_arrow_uuid_as_fixed(chdb_result * result, bool enabl
     state->output_uuid_as_fixed_byte_array = enabled;
 }
 
-void chdb_stream_result_set_arrow_variant_as_string(chdb_result * result, bool enabled)
+void chdb_stream_result_set_arrow_variant_as_json_string(chdb_result * result, bool enabled)
 {
     if (!result)
         return;
@@ -335,7 +335,7 @@ void chdb_stream_result_set_arrow_variant_as_string(chdb_result * result, bool e
     if (!state)
         return;
     std::lock_guard<std::mutex> lock(state->mutex);
-    state->output_variant_as_string = enabled;
+    state->output_variant_as_json_string = enabled;
 }
 
 chdb_result * chdb_query_arrow_with_settings_n(
@@ -345,7 +345,7 @@ chdb_result * chdb_query_arrow_with_settings_n(
     chdb_arrow_stream out_stream,
     const chdb_arrow_options * options,
     bool output_uuid_as_fixed_byte_array,
-    bool output_variant_as_string,
+    bool output_variant_as_json_string,
     const DB::NameToNameMap & params)
 {
     if (!conn)
@@ -367,7 +367,7 @@ chdb_result * chdb_query_arrow_with_settings_n(
             raw_stream,
             options,
             output_uuid_as_fixed_byte_array,
-            output_variant_as_string);
+            output_variant_as_json_string);
     }
     catch (const Exception & e)
     {

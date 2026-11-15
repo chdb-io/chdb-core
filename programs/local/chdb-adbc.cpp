@@ -59,7 +59,14 @@ namespace
 {
 
 constexpr const char * kArrowUuidAsFixedByteArrayOption = "output_format_arrow_uuid_as_fixed_byte_array";
+constexpr const char * kArrowVariantAsJsonStringOption = "output_format_arrow_variant_as_json_string";
+/// The previous name of `kArrowVariantAsJsonStringOption`, still accepted.
 constexpr const char * kArrowVariantAsStringOption = "output_format_arrow_variant_as_string";
+
+bool isArrowVariantAsJsonStringOption(const char * key)
+{
+    return std::strcmp(key, kArrowVariantAsJsonStringOption) == 0 || std::strcmp(key, kArrowVariantAsStringOption) == 0;
+}
 
 /// ---------------------------------------------------------------------
 /// Error helpers
@@ -184,7 +191,7 @@ struct ConnectionImpl
     std::mutex stream_mutex;
     StreamingResultState * active_stream = nullptr;
     bool arrow_uuid_as_fixed_byte_array = false;
-    bool arrow_variant_as_string = false;
+    bool arrow_variant_as_json_string = false;
     /// ADBC_CONNECTION_OPTION_READ_ONLY, held until ConnectionInit can pass it
     /// to the engine. Enforcement is the engine's (readonly=2: writes and DDL
     /// are rejected, per-query settings still work), not this driver's, so it
@@ -224,7 +231,7 @@ struct StatementImpl
     ArrowArrayStream bound_stream;
     bool has_bound_stream = false;
     std::optional<bool> arrow_uuid_as_fixed_byte_array;
-    std::optional<bool> arrow_variant_as_string;
+    std::optional<bool> arrow_variant_as_json_string;
 
     /// Statement options that name a ClickHouse setting, applied around this
     /// statement's execution only (see applyStatementSettings).
@@ -246,9 +253,9 @@ bool outputUuidAsFixedByteArray(const StatementImpl * impl)
     return impl->arrow_uuid_as_fixed_byte_array.value_or(impl->connection->arrow_uuid_as_fixed_byte_array);
 }
 
-bool outputVariantAsString(const StatementImpl * impl)
+bool outputVariantAsJsonString(const StatementImpl * impl)
 {
-    return impl->arrow_variant_as_string.value_or(impl->connection->arrow_variant_as_string);
+    return impl->arrow_variant_as_json_string.value_or(impl->connection->arrow_variant_as_json_string);
 }
 
 constexpr const char * kStreamInvalidatedBySuccessor
@@ -1234,10 +1241,10 @@ AdbcStatusCode chdbConnectionSetOption(
         auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
         return parseBoolOption(value, impl->arrow_uuid_as_fixed_byte_array, error, key);
     }
-    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    if (isArrowVariantAsJsonStringOption(key))
     {
         auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
-        return parseBoolOption(value, impl->arrow_variant_as_string, error, key);
+        return parseBoolOption(value, impl->arrow_variant_as_json_string, error, key);
     }
     return notImplemented(error, std::string("connection option '") + key + "'");
 }
@@ -2007,12 +2014,12 @@ AdbcStatusCode chdbStatementSetOption(
         impl->arrow_uuid_as_fixed_byte_array = parsed;
         return ADBC_STATUS_OK;
     }
-    if (std::strcmp(key, kArrowVariantAsStringOption) == 0)
+    if (isArrowVariantAsJsonStringOption(key))
     {
         bool parsed = false;
         if (AdbcStatusCode status = parseBoolOption(value, parsed, error, key); status != ADBC_STATUS_OK)
             return status;
-        impl->arrow_variant_as_string = parsed;
+        impl->arrow_variant_as_json_string = parsed;
         return ADBC_STATUS_OK;
     }
     /// Refused rather than silently made permanent: this one cannot be put
@@ -2399,7 +2406,7 @@ AdbcStatusCode executeBoundQuery(
                 reinterpret_cast<chdb_arrow_stream>(&row_stream),
                 nullptr,
                 outputUuidAsFixedByteArray(impl),
-                outputVariantAsString(impl),
+                outputVariantAsJsonString(impl),
                 params);
             AdbcStatusCode status = arrowCDataResultToBatches(result, &row_stream, concat_schema, concat_batches, error);
             if (status != ADBC_STATUS_OK)
@@ -2424,7 +2431,7 @@ AdbcStatusCode executeBoundQuery(
             if (!stream_result)
                 return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
             CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
-            CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
+            CHDB::chdb_stream_result_set_arrow_variant_as_json_string(stream_result, outputVariantAsJsonString(impl));
             if (const char * err = chdb_result_error(stream_result))
             {
                 std::string message(err);
@@ -2442,7 +2449,7 @@ AdbcStatusCode executeBoundQuery(
                     reinterpret_cast<chdb_arrow_stream>(out),
                     nullptr,
                     outputUuidAsFixedByteArray(impl),
-                    outputVariantAsString(impl),
+                    outputVariantAsJsonString(impl),
                     params);
                 return consumeArrowCDataResult(result, out, rows_affected, error, statementIsInsert(rewritten));
             }
@@ -2556,7 +2563,7 @@ AdbcStatusCode executeMaterializedSelect(
         reinterpret_cast<chdb_arrow_stream>(out),
         nullptr,
         outputUuidAsFixedByteArray(impl),
-        outputVariantAsString(impl),
+        outputVariantAsJsonString(impl),
         DB::NameToNameMap{});
     return consumeArrowCDataResult(result, out, rows_affected, error, statementIsInsert(impl->query));
 }
@@ -2713,7 +2720,7 @@ AdbcStatusCode executeStreamingSelect(
     if (!stream_result)
         return setError(error, ADBC_STATUS_INTERNAL, "[chdb] streaming init returned no handle");
     CHDB::chdb_stream_result_set_arrow_uuid_as_fixed(stream_result, outputUuidAsFixedByteArray(impl));
-    CHDB::chdb_stream_result_set_arrow_variant_as_string(stream_result, outputVariantAsString(impl));
+    CHDB::chdb_stream_result_set_arrow_variant_as_json_string(stream_result, outputVariantAsJsonString(impl));
     if (const char * err = chdb_result_error(stream_result))
     {
         std::string message(err);
