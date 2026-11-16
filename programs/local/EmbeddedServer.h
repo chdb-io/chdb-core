@@ -7,12 +7,16 @@
 #include <Interpreters/Context_fwd.h>
 #include <Loggers/Loggers.h>
 #include <Common/MemoryWorker.h>
+#include <Common/SettingsChanges.h>
 #include <Common/StatusFile.h>
 
 #include <filesystem>
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 
 namespace DB
@@ -43,6 +47,17 @@ public:
 
     static EmbeddedServer & getInstance(int argc = 0, char ** argv = nullptr);
 
+    /// The --key=value, --key value and bare --key (meaning "1") options of a connection, in order, as
+    /// clickhouse-local reads them. A dash-leading token is a value only when it is a negative number.
+    static std::vector<std::pair<std::string, std::string>> parseOptions(int argc, char ** argv);
+
+    /// The options of a connection that are query settings, applied to each of its sessions.
+    static SettingsChanges parseQuerySettingChanges(int argc, char ** argv);
+
+    /// The warning of the last getInstance() on this thread that joined a running instance whose startup options
+    /// differed from the connection's, and clears it. Empty when there was none.
+    static std::string takeConnectWarning();
+
     static void releaseInstance();
 
     /// Claims the engine for teardown: succeeds only when no client holds the
@@ -65,6 +80,10 @@ private:
     void setupSystemLogs();
     void applyCmdOptions(ContextMutablePtr context);
     void initializeWithArgs(int argc, char ** argv);
+    /// Startup options of a connection that joins this running instance: refuses the ones that would make its queries
+    /// read other files, loads other executable UDF paths, and leaves a warning for the rest.
+    void reconcileStartupOptions(int argc, char ** argv);
+
     static std::unique_ptr<EmbeddedServer> global_instance;
     static std::mutex instance_mutex;
     static size_t client_ref_count;

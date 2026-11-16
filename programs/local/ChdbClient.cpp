@@ -132,45 +132,7 @@ void ChdbClient::applyCmdSettings(int argc, char ** argv)
     if (argc <= 1 || !argv)
         return;
 
-    SettingsChanges changes;
-    for (int i = 1; i < argc; ++i)
-    {
-        if (!argv[i])
-            continue;
-        std::string_view arg = argv[i];
-        if (!arg.starts_with("--") || arg.size() <= 2)
-            continue;
-        arg.remove_prefix(2);
-
-        String key;
-        String value;
-        if (auto pos = arg.find('='); pos != std::string_view::npos)
-        {
-            key = String(arg.substr(0, pos));
-            value = String(arg.substr(pos + 1));
-        }
-        else
-        {
-            key = String(arg);
-            /// Space-separated value; do not advance i — the value token is
-            /// harmless to re-scan since it does not start with "--".
-            /// A dash-leading token counts as the value only when it is a
-            /// negative number (e.g. --max_partitions_to_read -1); any other
-            /// dash-leading token is the next option, making this key a bare
-            /// boolean flag.
-            if (i + 1 < argc && argv[i + 1]
-                && (argv[i + 1][0] != '-'
-                    || (argv[i + 1][1] >= '0' && argv[i + 1][1] <= '9')
-                    || argv[i + 1][1] == '.'))
-                value = argv[i + 1];
-            else
-                value = "1";
-        }
-
-        if (!key.empty() && Settings::hasBuiltin(key))
-            changes.emplace_back(key, value);
-    }
-
+    auto changes = EmbeddedServer::parseQuerySettingChanges(argc, argv);
     if (!changes.empty())
         global_context->applySettingsChanges(changes);
 }
