@@ -38,7 +38,7 @@
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+（Linux/macOS） | 默认完整版，功能齐全 |
 | **chdb-core-lite** | 发布到 PyPI 时可用 — `pip install chdb-core-lite` | Python 3.9+（Linux/macOS） | 更精简的构建，裁剪了不常用的功能（如 MySQL、Kafka 等外部连接器） |
-| **chdb-core（free-threaded）** | GitHub release 附件 | free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
+| **chdb-core（free-threaded）** | CI artifact（目前暂停上传到 release） | Linux x86_64 上的 free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | 浏览器与 Node（WebAssembly） | 在浏览器或 Node 里运行完整引擎 |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | 面向 Cloudflare Workers 的精简构建 |
 

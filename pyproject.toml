@@ -40,7 +40,7 @@ publish = ["twine", "wheel"]
 
 [project.urls]
 Homepage = "https://clickhouse.com/chdb"
-Documentation = "https://github.com/chdb-io/chdb-core/tree/main/docs"
+Documentation = "https://chdb.readthedocs.io/en/latest/index.html"
 Repository = "https://github.com/chdb-io/chdb-core"
 Changelog = "https://github.com/chdb-io/chdb-core/releases"
 Issues = "https://github.com/chdb-io/chdb-core/issues"

@@ -38,7 +38,7 @@
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS) | Default full build — everything included |
 | **chdb-core-lite** | PyPI when published — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
-| **chdb-core (free-threaded)** | GitHub release assets | Free-threaded Python 3.14t (no GIL) | Running chDB without the GIL |
+| **chdb-core (free-threaded)** | CI artifact (release upload currently disabled) | Free-threaded Python 3.14t on Linux x86_64 (no GIL) | Running chDB without the GIL |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | A slimmer build for Cloudflare Workers |
 

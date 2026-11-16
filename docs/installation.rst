@@ -75,7 +75,11 @@ You should see output similar to:
    chDB is working!
    
    chdb-core version: 26.11.1
-   ClickHouse engine: 26.11.1.1
+   ClickHouse engine: ...
+
+The engine version shown by your build can differ from the chdb-core package
+version. To identify the exact synced ClickHouse source, consult
+``UPSTREAM_COMMIT`` in the corresponding source tree.
 
 Troubleshooting
 ---------------
@@ -111,7 +115,7 @@ If you encounter issues:
 Development Installation
 ------------------------
 
-For contributing to chDB development, you need to build from source. The build process compiles both a Python module and a standalone library.
+For contributing to chdb-core development, you need to build from source. The build process compiles both a Python module and a standalone library.
 
 **Prerequisites:**
 
@@ -127,13 +131,13 @@ For contributing to chDB development, you need to build from source. The build p
 .. code-block:: bash
 
    # Clone the repository with submodules
-   git clone --recursive https://github.com/chdb-io/chdb.git
-   cd chdb
+   git clone --recursive https://github.com/chdb-io/chdb-core.git
+   cd chdb-core
    
    # Ensure Python 3.9+ is active
    python --version
    
-   # Build chDB (creates both Python module and libchdb.so)
+   # Build chdb-core (creates both Python module and libchdb.so)
    bash chdb/build.sh
 
    # Run tests to verify installation
