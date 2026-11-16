@@ -13,7 +13,7 @@ public:
 	explicit PandasAnalyzer(const DB::Settings & settings);
 
 public:
-	DB::DataTypePtr getItemType(py::object obj, bool & can_convert);
+	DB::DataTypePtr getItemType(py::object obj, bool & can_convert, bool & negative_integer);
 	bool Analyze(py::object column);
 
 	DB::DataTypePtr analyzedType()
@@ -22,8 +22,7 @@ public:
 	}
 
 private:
-	DB::DataTypePtr innerAnalyze(py::object column, bool & can_convert, size_t increment);
-	size_t getSampleIncrement(size_t rows);
+	DB::DataTypePtr innerAnalyze(py::object column, bool & can_convert);
 
 private:
 	int64_t sample_size;

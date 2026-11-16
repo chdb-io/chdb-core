@@ -33,6 +33,19 @@ using namespace DB;
 namespace CHDB
 {
 
+/// getItemType runs for every row of an object column, so the types it returns are shared instances.
+static const DataTypePtr & int32Type() { static const DataTypePtr type = std::make_shared<DataTypeInt32>(); return type; }
+static const DataTypePtr & int64Type() { static const DataTypePtr type = std::make_shared<DataTypeInt64>(); return type; }
+static const DataTypePtr & uint64Type() { static const DataTypePtr type = std::make_shared<DataTypeUInt64>(); return type; }
+static const DataTypePtr & float64Type() { static const DataTypePtr type = std::make_shared<DataTypeFloat64>(); return type; }
+static const DataTypePtr & boolType() { static const DataTypePtr type = DataTypeFactory::instance().get("Bool"); return type; }
+static const DataTypePtr & jsonType()
+{
+	static const DataTypePtr type = std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
+	return type;
+}
+static const DataTypePtr & decimalPlaceholderType() { static const DataTypePtr type = createDecimal<DataTypeDecimal>(1, 0); return type; }
+
 static TypeIndex getTypeIndex(const DataTypePtr & type)
 {
     return type ? type->getTypeId() : TypeIndex::Nothing;
@@ -69,7 +82,14 @@ static bool mergeAnalyzedTypes(DataTypePtr & current, const DataTypePtr & next)
     auto is_signed_int = [](TypeIndex idx) { return idx == TypeIndex::Int32 || idx == TypeIndex::Int64; };
     if (is_signed_int(current_idx) && is_signed_int(next_idx))
     {
-        current = std::make_shared<DataTypeInt64>();
+        current = int64Type();
+        return true;
+    }
+
+    /// innerAnalyze rejects the UInt64 column when one of its values is negative.
+    if ((is_signed_int(current_idx) && next_idx == TypeIndex::UInt64) || (current_idx == TypeIndex::UInt64 && is_signed_int(next_idx)))
+    {
+        current = uint64Type();
         return true;
     }
 
@@ -80,11 +100,12 @@ static bool mergeAnalyzedTypes(DataTypePtr & current, const DataTypePtr & next)
     if (!is_expected_numeric(current_idx) || !is_expected_numeric(next_idx))
         return false;
 
-    current = std::make_shared<DataTypeFloat64>();
+    current = float64Type();
     return true;
 }
 
-static DataTypePtr getBestIntegerType(PyObject * obj)
+/// Returns nullptr for an integer outside both Int64 and UInt64: Float64 would round it.
+static DataTypePtr getBestIntegerType(PyObject * obj, bool & negative)
 {
 	chassert(obj);
 
@@ -93,31 +114,64 @@ static DataTypePtr getBestIntegerType(PyObject * obj)
 
 	if (overflow == -1)
 	{
-		return std::make_shared<DataTypeFloat64>();
+		negative = true;
+		return nullptr;
 	}
-	else if (overflow == 1)
+	if (overflow == 1)
 	{
-		uint64_t unsigned_value = PyLong_AsUnsignedLongLong(obj);
+		PyLong_AsUnsignedLongLong(obj);
 		if (PyErr_Occurred())
 		{
 			PyErr_Clear();
-			return std::make_shared<DataTypeFloat64>();
+			return nullptr;
 		}
-		else
-		{
-			return std::make_shared<DataTypeUInt64>();
-		}
+		return uint64Type();
 	}
-	else if (val == -1 && PyErr_Occurred())
+	if (val == -1 && PyErr_Occurred())
 	{
 		PyErr_Clear();
-		return {};
+		return nullptr;
 	}
 
+	if (val < 0)
+		negative = true;
 	if (val < static_cast<Int64>(std::numeric_limits<int32_t>::min()) || val > static_cast<Int64>(std::numeric_limits<int32_t>::max()))
-		return std::make_shared<DataTypeInt64>();
-	else
-		return std::make_shared<DataTypeInt32>();
+		return int64Type();
+	return int32Type();
+}
+
+/// Calls `f` with every value of `column` until it returns false. A pandas Series is read through its
+/// numpy array; an object array is walked over its buffer, without a Python call per value.
+template <typename F>
+static void forEachValue(py::object column, F && f)
+{
+	auto & import_cache = PythonImporter::ImportCache();
+	auto pandas_series = import_cache.pandas.Series();
+	if (pandas_series && py::isinstance(column, pandas_series))
+		column = column.attr("__array__")();
+
+	size_t rows = py::len(column);
+	if (py::isinstance<py::array>(column))
+	{
+		auto array = py::reinterpret_borrow<py::array>(column);
+		if (array.ndim() == 1 && array.dtype().kind() == 'O')
+		{
+			const auto * data = static_cast<const char *>(array.data());
+			auto stride = array.strides(0);
+			for (size_t i = 0; i < rows; ++i)
+			{
+				auto * obj = *reinterpret_cast<PyObject * const *>(data + static_cast<ssize_t>(i) * stride);
+				if (!f(py::reinterpret_borrow<py::object>(obj)))
+					return;
+			}
+			return;
+		}
+	}
+
+	auto row = column.attr("__getitem__");
+	for (size_t i = 0; i < rows; ++i)
+		if (!f(row(i)))
+			return;
 }
 
 /// Reads the digit counts from the str() of a finite decimal.Decimal, such as "-12.50", "0.00" or "1.2E-7".
@@ -172,51 +226,52 @@ static bool getDecimalDigits(std::string_view text, Int64 & integer_digits, Int6
 /// Every row is visited because a value outside the sample that did not fit would be truncated or overflow.
 static DataTypePtr getExactDecimalType(py::object column)
 {
-	auto & import_cache = PythonImporter::ImportCache();
-	auto pandas_series = import_cache.pandas.Series();
-	if (pandas_series && py::isinstance(column, pandas_series))
-		column = column.attr("__array__")();
-
-	auto row = column.attr("__getitem__");
-	size_t rows = py::len(column);
 	Int64 scale = 0;
 	Int64 integer_digits = 0;
+	bool fits = true;
 
-	for (size_t i = 0; i < rows; ++i)
+	forEachValue(column, [&](const py::object & obj)
 	{
-		auto obj = row(i);
 		switch (GetPythonObjectType(obj))
 		{
 		case PythonObjectType::None:
-			continue;
+			return true;
 		case PythonObjectType::Float:
 			if (std::isnan(PyFloat_AsDouble(obj.ptr())))
-				continue;
-			return nullptr;
+				return true;
+			fits = false;
+			return false;
 		case PythonObjectType::Integer:
 			{
 				auto digits = py::str(obj).cast<std::string>();
 				integer_digits = std::max<Int64>(integer_digits, digits.size() - (digits[0] == '-'));
-				continue;
+				return true;
 			}
 		case PythonObjectType::Decimal:
 			{
 				auto text = py::str(obj).cast<std::string>();
 				/// pandas treats Decimal('NaN') as a missing value; str() spells it NaN, -NaN, sNaN or NaN<payload>.
 				if (text.find("NaN") != std::string::npos)
-					continue;
+					return true;
 				Int64 value_integer_digits = 0;
 				Int64 value_scale = 0;
 				if (!getDecimalDigits(text, value_integer_digits, value_scale))
-					return nullptr;
+				{
+					fits = false;
+					return false;
+				}
 				scale = std::max(scale, value_scale);
 				integer_digits = std::max(integer_digits, value_integer_digits);
-				continue;
+				return true;
 			}
 		default:
-			return nullptr;
+			fits = false;
+			return false;
 		}
-	}
+	});
+
+	if (!fits)
+		return nullptr;
 
 	Int64 precision = std::max<Int64>(integer_digits + scale, 1);
 	if (precision > static_cast<Int64>(DecimalUtils::max_precision<Decimal256>))
@@ -246,19 +301,10 @@ bool PandasAnalyzer::Analyze(py::object column) {
 	if (!pandas)
 		return false;
 
+	/// Every row is read: the scan cannot widen a column once it reads it, so a value outside a sample that did
+	/// not fit would be lost. Reading stops at the first value that rules out every type but String.
 	bool can_convert = true;
-	auto increment = getSampleIncrement(py::len(column));
-	auto type = innerAnalyze(column, can_convert, increment);
-
-	if (can_convert && !type && increment > 1) {
-		auto first_valid_index = column.attr("first_valid_index")();
-		if (GetPythonObjectType(first_valid_index) != PythonObjectType::None)
-		{
-			auto row = column.attr("__getitem__");
-			auto obj = row(first_valid_index);
-			type = getItemType(obj, can_convert);
-		}
-	}
+	auto type = innerAnalyze(column, can_convert);
 
 	if (can_convert && type && isDecimal(type))
 	{
@@ -276,51 +322,35 @@ bool PandasAnalyzer::Analyze(py::object column) {
 	return can_convert;
 }
 
-size_t PandasAnalyzer::getSampleIncrement(size_t rows)
+DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert, bool & negative_integer)
 {
-	auto sample = static_cast<uint64_t>(sample_size);
-	if (sample > rows)
-		sample = rows;
+	/// Exactly the values the scan writes as NULL.
+	if (isMissingValue(obj))
+		return {};
 
-	if (sample == 0)
-		return rows;
-
-	return rows / sample;
-}
-
-DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
-{
 	auto object_type = GetPythonObjectType(obj);
 
 	switch (object_type)
 	{
 	case PythonObjectType::Dict:
-		return std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
+		return jsonType();
 	case PythonObjectType::Integer:
 		{
-			auto best_type = getBestIntegerType(obj.ptr());
-			if (!best_type)
-			{
-				can_convert = false;
-				return std::make_shared<DataTypeString>();
-			}
-			return best_type;
+			/// An integer beyond 64 bits reads as String unless a later Decimal makes the column a Decimal one, which
+			/// holds it exactly: String merges with no number, so innerAnalyze keeps looking instead of stopping here.
+			static const DataTypePtr string_type = std::make_shared<DataTypeString>();
+			auto best_type = getBestIntegerType(obj.ptr(), negative_integer);
+			return best_type ? best_type : string_type;
 		}
 	case PythonObjectType::Float:
-		{
-			if (std::isnan(PyFloat_AsDouble(obj.ptr())))
-				return {};
-			return std::make_shared<DataTypeFloat64>();
-		}
+		return float64Type();
 	case PythonObjectType::Bool:
-		return std::const_pointer_cast<IDataType>(DataTypeFactory::instance().get("Bool"));
+		return boolType();
 	case PythonObjectType::None:
 		return {};
 	case PythonObjectType::Decimal:
-		/// pandas treats Decimal('NaN') as a missing value. The type is settled later from every row.
-		if (py::str(obj).cast<std::string>().find("NaN") != std::string::npos)
-			return {};
-		return createDecimal<DataTypeDecimal>(1, 0);
+		/// The type is settled later from every row.
+		return decimalPlaceholderType();
 	case PythonObjectType::Tuple:
 	case PythonObjectType::List:
 	case PythonObjectType::Datetime:
@@ -345,41 +375,46 @@ DataTypePtr PandasAnalyzer::getItemType(py::object obj, bool & can_convert)
 	}
 }
 
-DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert, size_t increment) {
-	size_t rows = py::len(column);
+DataTypePtr PandasAnalyzer::innerAnalyze(py::object column, bool & can_convert) {
 	can_convert = true;
 
-	if (rows == 0)
-		return {};
-
-	auto & import_cache = PythonImporter::ImportCache();
-	auto pandas_series = import_cache.pandas.Series();
-
-	if (pandas_series && py::isinstance(column, pandas_series))
-		column = column.attr("__array__")();
-
-	auto row = column.attr("__getitem__");
-
 	DataTypePtr current_type = {};
-	for (size_t i = 0; i < rows; i += increment)
+	DataTypePtr result;
+	DataTypePtr unmergeable;
+	bool negative_integer = false;
+	forEachValue(column, [&](const py::object & obj)
 	{
-		auto obj = row(i);
-		DataTypePtr next_type = getItemType(obj, can_convert);
+		DataTypePtr next_type = getItemType(obj, can_convert, negative_integer);
 
 		if (!can_convert)
-			return next_type;
-
-		/// Which other values a Decimal column may hold is settled by getExactDecimalType over every row.
-		if (next_type && isDecimal(next_type))
-			return next_type;
-
-		if (!mergeAnalyzedTypes(current_type, next_type))
 		{
-			can_convert = false;
-			return next_type;
+			result = next_type;
+			return false;
 		}
-	}
 
+		/// Which other values a Decimal column may hold is settled by getExactDecimalType over every row,
+		/// including integers that do not merge with each other (1 and 2**63) before it.
+		if (next_type && isDecimal(next_type))
+		{
+			result = next_type;
+			return false;
+		}
+
+		if (!unmergeable && !mergeAnalyzedTypes(current_type, next_type))
+			unmergeable = next_type;
+		return true;
+	});
+
+	if (result)
+		return result;
+	if (unmergeable)
+	{
+		can_convert = false;
+		return unmergeable;
+	}
+	/// A negative value and one above Int64's range fit no integer type, and Float64 would round them.
+	if (negative_integer && getTypeIndex(current_type) == TypeIndex::UInt64)
+		can_convert = false;
 	return current_type;
 }
 
