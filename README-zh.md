@@ -32,15 +32,17 @@
 
 ## 软件包与分发
 
-**chdb-core**（本仓库）是引擎；[**chDB**](https://github.com/chdb-io/chdb) 是构建在其之上的更高层 Pandas 兼容 DataStore API（见下方示意图）。引擎本身以五种分发产物发布 —— 三个 Python wheel（同一套 `import chdb`，仅编译选项不同）和两个 JavaScript/WASM 包：
+**chdb-core**（本仓库）是引擎；[**chDB**](https://github.com/chdb-io/chdb) 是构建在其之上的更高层 Pandas 兼容 DataStore API（见下方示意图）。引擎有五种构建变体 —— 三个 Python wheel（同一套 `import chdb`，仅编译选项不同）和两个 JavaScript/WASM 包；实际可用产物取决于具体 release：
 
 | 产物 | 获取方式 | 目标 / 运行时 | 适用场景 |
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+（Linux/macOS） | 默认完整版，功能齐全 |
-| **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+（Linux/macOS） | 更精简的构建，裁剪了不常用的功能（如 MySQL、Kafka 等外部连接器） |
-| **chdb-core（free-threaded）** | GitHub release 附件 | free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
+| **chdb-core-lite** | 发布到 PyPI 时可用 — `pip install chdb-core-lite` | Python 3.9+（Linux/macOS） | 更精简的构建，裁剪了不常用的功能（如 MySQL、Kafka 等外部连接器） |
+| **chdb-core（free-threaded）** | CI artifact（目前暂停上传到 release） | Linux x86_64 上的 free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | 浏览器与 Node（WebAssembly） | 在浏览器或 Node 里运行完整引擎 |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | 面向 Cloudflare Workers 的精简构建 |
+
+目前 release 工作流暂停上传 chdb-core-lite 到 PyPI；使用该变体前请确认相应 release 的产物。
 
 <div align="center">
 <pre>
@@ -102,7 +104,7 @@ pip install chdb-core
 `SHA256SUMS`，因此下载结果可以校验，而不必假定其正确：
 
 ```bash
-TAG=v26.7.2-rc.2
+TAG=v26.11.1
 BASE=https://github.com/chdb-io/chdb-core/releases/download/${TAG}
 
 curl -sSLO ${BASE}/linux-x86_64-libchdb.tar.gz

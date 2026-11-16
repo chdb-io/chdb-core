@@ -22,7 +22,7 @@ _process_result_format_funs = {
 # UDF script path will be f"{g_udf_path}/{func_name}.py"
 g_udf_path = ""
 
-__version__ = "0.0.1b1"
+__version__ = "26.11.1"
 if sys.version_info[:2] >= (3, 7):
     current_path = os.path.dirname(os.path.abspath(__file__))
     # Pre-load the _chdb extension with RTLD_DEEPBIND so that its DT_NEEDED

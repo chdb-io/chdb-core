@@ -38,7 +38,7 @@ extensions = [
 
 source_suffix = '.rst'
 master_doc = 'index'
-project = 'chDB'
+project = 'chdb-core'
 year = '2024'
 author = 'chDB Team'
 copyright = '{0}, {1}'.format(year, author)
@@ -46,9 +46,9 @@ copyright = '{0}, {1}'.format(year, author)
 if chdb and hasattr(chdb, '__version__'):
     version = release = chdb.__version__
 else:
-    version = release = '0.0.1b1'
+    version = release = '26.11.1'
 
-github_repo_url = 'https://github.com/chdb-io/chdb'
+github_repo_url = 'https://github.com/chdb-io/chdb-core'
 
 pygments_style = 'trac'
 templates_path = ['.']

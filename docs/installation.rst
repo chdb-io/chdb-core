@@ -1,7 +1,7 @@
 Installation
 ============
 
-chDB is an in-process OLAP SQL engine powered by ClickHouse, providing fast analytical queries directly within Python.
+chdb-core is the in-process ClickHouse engine and Python SQL API for chDB.
 
 Requirements
 ------------
@@ -13,35 +13,20 @@ Requirements
 Quick Installation
 ------------------
 
-Install chDB with a single command:
+Install chdb-core with a single command:
 
 .. code-block:: bash
 
-   pip install chdb
+   pip install chdb-core
 
-This installs the core chDB package with all essential functionality.
-
-Optional Dependencies
----------------------
-
-For enhanced functionality, install with optional dependencies:
-
-**For DataFrame Support:**
-
-.. code-block:: bash
-
-   pip install chdb[pandas,pyarrow]
-
-This enables:
-
-- Direct pandas DataFrame querying
-- PyArrow table support
-- Efficient data interchange between formats
+This installs the ``chdb`` Python module from the full chdb-core wheel. For the
+higher-level pandas-compatible DataStore API, install ``chdb`` from the
+`chDB repository <https://github.com/chdb-io/chdb>`_ instead.
 
 Supported Platforms
 -------------------
 
-chDB supports the following platforms:
+chdb-core supports the following platforms:
 
 **Linux**
   - x86_64 (Intel/AMD 64-bit)
@@ -79,7 +64,7 @@ Verify your installation works correctly:
    print(result)
    
    # Check version
-   print(f"chDB version: {chdb.__version__}")
+   print(f"chdb-core version: {chdb.__version__}")
    print(f"ClickHouse engine: {chdb.engine_version}")
 
 You should see output similar to:
@@ -89,8 +74,12 @@ You should see output similar to:
    message
    chDB is working!
    
-   chDB version: 3.7.0
-   ClickHouse engine: 25.5.2.1
+   chdb-core version: 26.11.1
+   ClickHouse engine: ...
+
+The engine version shown by your build can differ from the chdb-core package
+version. To identify the exact synced ClickHouse source, consult
+``UPSTREAM_COMMIT`` in the corresponding source tree.
 
 Troubleshooting
 ---------------
@@ -119,14 +108,14 @@ For better performance with large datasets:
 
 If you encounter issues:
 
-- Check the `GitHub Issues <https://github.com/chdb-io/chdb/issues>`_
+- Check the `GitHub Issues <https://github.com/chdb-io/chdb-core/issues>`_
 - Visit our `Discord community <https://discord.gg/D2Daa2fM5K>`_
 - Review the troubleshooting guide
 
 Development Installation
 ------------------------
 
-For contributing to chDB development, you need to build from source. The build process compiles both a Python module and a standalone library.
+For contributing to chdb-core development, you need to build from source. The build process compiles both a Python module and a standalone library.
 
 **Prerequisites:**
 
@@ -142,13 +131,13 @@ For contributing to chDB development, you need to build from source. The build p
 .. code-block:: bash
 
    # Clone the repository with submodules
-   git clone --recursive https://github.com/chdb-io/chdb.git
-   cd chdb
+   git clone --recursive https://github.com/chdb-io/chdb-core.git
+   cd chdb-core
    
    # Ensure Python 3.9+ is active
    python --version
    
-   # Build chDB (creates both Python module and libchdb.so)
+   # Build chdb-core (creates both Python module and libchdb.so)
    bash chdb/build.sh
 
    # Run tests to verify installation

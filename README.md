@@ -32,15 +32,17 @@
 
 ## Packages & Distributions
 
-**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine itself ships as five distribution artifacts — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages:
+**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine has five build variants — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages. Availability depends on the release:
 
 | Artifact | How to get it | Target / runtime | Best for |
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS) | Default full build — everything included |
-| **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
-| **chdb-core (free-threaded)** | GitHub release assets | Free-threaded Python 3.14t (no GIL) | Running chDB without the GIL |
+| **chdb-core-lite** | PyPI when published — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
+| **chdb-core (free-threaded)** | CI artifact (release upload currently disabled) | Free-threaded Python 3.14t on Linux x86_64 (no GIL) | Running chDB without the GIL |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | A slimmer build for Cloudflare Workers |
+
+The chdb-core-lite PyPI upload is currently disabled in the release workflow; check the release assets before relying on this variant.
 
 <div align="center">
 <pre>
@@ -103,7 +105,7 @@ release also carries a `SHA256SUMS` covering all of its assets, so a download ca
 rather than assumed:
 
 ```bash
-TAG=v26.7.2-rc.2
+TAG=v26.11.1
 BASE=https://github.com/chdb-io/chdb-core/releases/download/${TAG}
 
 curl -sSLO ${BASE}/linux-x86_64-libchdb.tar.gz
