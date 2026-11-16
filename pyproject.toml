@@ -1,8 +1,8 @@
 [project]
 name = "chdb-core"
 requires-python = ">=3.9"
-version = "0.0.1b1"
-description = "chDB is an in-process OLAP SQL Engine powered by ClickHouse"
+version = "26.11.1"
+description = "chdb-core is the in-process ClickHouse engine and Python SQL API for chDB"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [
@@ -40,7 +40,7 @@ publish = ["twine", "wheel"]
 
 [project.urls]
 Homepage = "https://clickhouse.com/chdb"
-Documentation = "https://chdb.readthedocs.io/en/latest/index.html"
+Documentation = "https://github.com/chdb-io/chdb-core/tree/main/docs"
 Repository = "https://github.com/chdb-io/chdb-core"
 Changelog = "https://github.com/chdb-io/chdb-core/releases"
 Issues = "https://github.com/chdb-io/chdb-core/issues"

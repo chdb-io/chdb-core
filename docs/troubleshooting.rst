@@ -7,7 +7,7 @@ Installation Issues
 Platform Compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-chDB currently supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64). Windows support is not available yet.
+chdb-core currently supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64). Windows support is not available yet.
 
 **Supported Platforms:**
 
@@ -25,29 +25,29 @@ If you encounter import errors:
    ImportError: No module named '_chdb'
    ImportError: No module named 'chdb'
 
-**Solution**: Ensure chDB is properly installed:
+**Solution**: Ensure chdb-core is properly installed:
 
 .. code-block:: bash
 
-   pip uninstall chdb
-   pip install chdb
+   pip uninstall chdb-core
+   pip install chdb-core
 
 **Alternative installation methods:**
 
 .. code-block:: bash
 
    # Force reinstall
-   pip install --force-reinstall chdb
+   pip install --force-reinstall chdb-core
    
    # Install specific version
-   pip install chdb==3.7.0
+   pip install chdb-core==26.11.1
 
 **Check installation:**
 
 .. code-block:: python
 
    import chdb
-   print(f"chDB version: {chdb.__version__}")
+   print(f"chdb-core version: {chdb.__version__}")
    print(f"Engine version: {chdb.engine_version}")
 
 Python Version Issues
@@ -57,7 +57,7 @@ If you get Python version compatibility errors:
 
 .. code-block:: text
 
-   ERROR: chdb requires Python >=3.9
+   ERROR: chdb-core requires Python >=3.9
 
 **Solution**: Upgrade your Python version:
 
@@ -67,7 +67,7 @@ If you get Python version compatibility errors:
    python --version
    
    # Use Python 3.9+ explicitly
-   python3.9 -m pip install chdb
+   python3.9 -m pip install chdb-core
 
 Query Execution Issues
 ----------------------

@@ -4,12 +4,13 @@
     :width: 400px
     :align: center
 
-chDB
-====
+chdb-core
+=========
 
-chDB is an in-process SQL OLAP Engine powered by ClickHouse.
+chdb-core is the in-process ClickHouse engine and Python SQL API for chDB.
 
-For more information, see the `GitHub repository <https://github.com/chdb-io/chdb>`_.
+For the higher-level pandas-compatible DataStore API, see `chDB <https://github.com/chdb-io/chdb>`_.
+For engine source and releases, see the `chdb-core repository <https://github.com/chdb-io/chdb-core>`_.
 
 Contents
 ========

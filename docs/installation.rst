@@ -1,7 +1,7 @@
 Installation
 ============
 
-chDB is an in-process OLAP SQL engine powered by ClickHouse, providing fast analytical queries directly within Python.
+chdb-core is the in-process ClickHouse engine and Python SQL API for chDB.
 
 Requirements
 ------------
@@ -13,35 +13,20 @@ Requirements
 Quick Installation
 ------------------
 
-Install chDB with a single command:
+Install chdb-core with a single command:
 
 .. code-block:: bash
 
-   pip install chdb
+   pip install chdb-core
 
-This installs the core chDB package with all essential functionality.
-
-Optional Dependencies
----------------------
-
-For enhanced functionality, install with optional dependencies:
-
-**For DataFrame Support:**
-
-.. code-block:: bash
-
-   pip install chdb[pandas,pyarrow]
-
-This enables:
-
-- Direct pandas DataFrame querying
-- PyArrow table support
-- Efficient data interchange between formats
+This installs the ``chdb`` Python module from the full chdb-core wheel. For the
+higher-level pandas-compatible DataStore API, install ``chdb`` from the
+`chDB repository <https://github.com/chdb-io/chdb>`_ instead.
 
 Supported Platforms
 -------------------
 
-chDB supports the following platforms:
+chdb-core supports the following platforms:
 
 **Linux**
   - x86_64 (Intel/AMD 64-bit)
@@ -79,7 +64,7 @@ Verify your installation works correctly:
    print(result)
    
    # Check version
-   print(f"chDB version: {chdb.__version__}")
+   print(f"chdb-core version: {chdb.__version__}")
    print(f"ClickHouse engine: {chdb.engine_version}")
 
 You should see output similar to:
@@ -89,8 +74,8 @@ You should see output similar to:
    message
    chDB is working!
    
-   chDB version: 3.7.0
-   ClickHouse engine: 25.5.2.1
+   chdb-core version: 26.11.1
+   ClickHouse engine: 26.11.1.1
 
 Troubleshooting
 ---------------
@@ -119,7 +104,7 @@ For better performance with large datasets:
 
 If you encounter issues:
 
-- Check the `GitHub Issues <https://github.com/chdb-io/chdb/issues>`_
+- Check the `GitHub Issues <https://github.com/chdb-io/chdb-core/issues>`_
 - Visit our `Discord community <https://discord.gg/D2Daa2fM5K>`_
 - Review the troubleshooting guide
 
