@@ -24,6 +24,7 @@
 #include <aws/core/client/AWSError.h>
 #include <aws/core/client/CoreErrors.h>
 #include <aws/core/client/RetryStrategy.h>
+#include <aws/core/config/ConfigAndCredentialsCacheManager.h>
 #include <aws/core/http/URI.h>
 #include <aws/core/internal/AWSHttpResourceClient.h>
 
@@ -824,6 +825,245 @@ TEST(IOTestAwsS3Client, AssumeRoleWithSessionPolicy)
     ASSERT_EQ(result.getSecretAccessKey(), role_secret_key);
     ASSERT_EQ(result.getSessionToken(), "session_token");
     ASSERT_EQ(result.getExpiration().Millis(), Aws::Utils::DateTime("2030-01-01T00:00:00Z", Aws::Utils::DateFormat::ISO_8601).Millis());
+}
+
+namespace
+{
+
+/// Answers like the EC2 instance metadata service with a single instance role. Refuses POST requests, so it
+/// is also an STS endpoint that denies AssumeRole.
+class MockMetadataRequestHandler : public Poco::Net::HTTPRequestHandler
+{
+public:
+    void handleRequest(Poco::Net::HTTPServerRequest & request, Poco::Net::HTTPServerResponse & response) override
+    {
+        if (request.getMethod() == Poco::Net::HTTPRequest::HTTP_POST)
+            response.setStatus(Poco::Net::HTTPResponse::HTTP_FORBIDDEN);
+        auto & out = response.send();
+        if (request.getMethod() == Poco::Net::HTTPRequest::HTTP_POST)
+            out << "<ErrorResponse><Error><Code>AccessDenied</Code><Message>denied</Message></Error></ErrorResponse>";
+        else if (request.getURI() == "/latest/api/token")
+            out << "imds_token";
+        else if (request.getURI() == "/latest/meta-data/iam/security-credentials")
+            out << "instance_role";
+        else
+            out << R"({"AccessKeyId":"instance_access_key","SecretAccessKey":"instance_secret_key","Token":"instance_token"})";
+        out.flush();
+    }
+};
+
+class MockMetadataRequestHandlerFactory : public Poco::Net::HTTPRequestHandlerFactory
+{
+    Poco::Net::HTTPRequestHandler * createRequestHandler(const Poco::Net::HTTPServerRequest &) override
+    {
+        return new MockMetadataRequestHandler;
+    }
+};
+
+}
+
+/// A profile of the AWS config file with `role_arn` and `credential_source` makes the server assume that role
+/// with its own credentials, and a `role_arn` of the query is assumed on top of it.
+TEST(IOTestAwsS3Client, ProfileAssumeRole)
+{
+    TestPocoHTTPServer http;
+
+    static constexpr std::string_view role_access_key = "role_access_key";
+    TestPocoHTTPStsServer sts_http(std::string{role_access_key}, "role_secret_key");
+
+    Poco::Net::ServerSocket metadata_socket(0);
+    Poco::Net::HTTPServer metadata_http(new MockMetadataRequestHandlerFactory, metadata_socket, makeMockServerParams());
+    metadata_http.start();
+    SCOPE_EXIT({ metadata_http.stop(); });
+    const std::string metadata_url = "http://127.0.0.1:" + std::to_string(metadata_socket.address().port());
+
+    const std::string config_file = std::filesystem::temp_directory_path() / "clickhouse_aws_config_for_gtest_profile_assume_role";
+    {
+        std::ofstream out(config_file);
+        out << R"(
+[profile from_instance_metadata]
+role_arn = arn:aws:iam::123456789012:role/from_instance_metadata
+credential_source = Ec2InstanceMetadata
+role_session_name = profile_session
+external_id = profile_external_id
+
+[profile web_identity]
+role_arn = arn:aws:iam::123456789012:role/web_identity
+web_identity_token_file = /tmp/clickhouse_web_identity_token_for_gtest_profile_assume_role
+credential_source = Ec2InstanceMetadata
+
+[profile only_role_arn]
+role_arn = arn:aws:iam::123456789012:role/only_role_arn
+
+[profile only_source_profile]
+role_arn = arn:aws:iam::123456789012:role/only_source_profile
+source_profile = from_instance_metadata
+)";
+    }
+
+    /// Only the fake metadata server is a source of credentials.
+    ScopedEnvVarForAwsS3ClientTests config_file_env("AWS_CONFIG_FILE", config_file);
+    ScopedEnvVarForAwsS3ClientTests credentials_file_env("AWS_SHARED_CREDENTIALS_FILE", config_file + "_missing");
+    ScopedEnvVarForAwsS3ClientTests metadata_endpoint_env("AWS_EC2_METADATA_SERVICE_ENDPOINT", metadata_url);
+    ScopedEnvVarForAwsS3ClientTests metadata_disabled_env("AWS_EC2_METADATA_DISABLED", "");
+    ScopedEnvVarForAwsS3ClientTests container_relative_uri_env("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "");
+    ScopedEnvVarForAwsS3ClientTests container_full_uri_env("AWS_CONTAINER_CREDENTIALS_FULL_URI", "");
+    ScopedEnvVarForAwsS3ClientTests access_key_env("AWS_ACCESS_KEY_ID", "");
+    ScopedEnvVarForAwsS3ClientTests secret_key_env("AWS_SECRET_ACCESS_KEY", "");
+    ScopedEnvVarForAwsS3ClientTests role_env("AWS_ROLE_ARN", "");
+    ScopedEnvVarForAwsS3ClientTests token_file_env("AWS_WEB_IDENTITY_TOKEN_FILE", "");
+    ScopedEnvVarForAwsS3ClientTests default_profile_env("AWS_DEFAULT_PROFILE", "");
+
+    /// The AWS SDK reads the config file once, at initialization.
+    DB::S3::ClientFactory::instance();
+    Aws::Config::ReloadCachedConfigFile();
+    SCOPE_EXIT({
+        std::filesystem::remove(config_file);
+        Aws::Config::ReloadCachedConfigFile();
+    });
+
+    static const DB::RemoteHostFilter remote_host_filter;
+    DB::S3::URI uri(http.getUrl() + "/IOTestAwsS3ClientProfileAssumeRole/test.txt");
+    const String region = "eu-west-1";
+
+    DB::S3::PocoHTTPClientConfiguration client_configuration = DB::S3::ClientFactory::instance().createClientConfiguration(
+        region,
+        remote_host_filter,
+        /* s3_max_redirects = */ 100,
+        DB::S3::PocoHTTPClientConfiguration::RetryStrategy{.max_retries = 0},
+        /* s3_slow_all_threads_after_network_error = */ true,
+        /* s3_slow_all_threads_after_retryable_error = */ true,
+        /* enable_s3_requests_logging = */ false,
+        /* for_disk_s3 = */ false,
+        /* opt_disk_name = */ {},
+        /* request_throttler = */ {},
+        "http");
+
+    client_configuration.endpointOverride = uri.endpoint;
+    client_configuration.retryStrategy = std::make_shared<Aws::Client::DefaultRetryStrategy>();
+
+    struct Options
+    {
+        std::string role_arn{};
+        bool use_environment_credentials = true;
+        bool forbid_implicit_credentials = false;
+        bool no_sign_request = false;
+        std::string access_key_id{};
+        bool sts_denies = false;
+    };
+
+    /// Reads with the given profile and returns the `Credential` of the request to S3, empty if it is not signed.
+    const auto read_from_s3 = [&](const std::string & profile, const Options & options = {})
+    {
+        ScopedEnvVarForAwsS3ClientTests profile_env("AWS_PROFILE", profile);
+        sts_http.resetLastRequest();
+
+        std::shared_ptr<DB::S3::Client> client = DB::S3::ClientFactory::instance().create(
+            client_configuration,
+            DB::S3::ClientSettings{.use_virtual_addressing = uri.is_virtual_hosted_style},
+            options.access_key_id,
+            /* secret_access_key = */ options.access_key_id.empty() ? "" : "explicit_secret_key",
+            "",
+            {},
+            {},
+            DB::S3::CredentialsConfiguration
+            {
+                .use_environment_credentials = options.use_environment_credentials,
+                .no_sign_request = options.no_sign_request,
+                .role_arn = options.role_arn,
+                .sts_endpoint_override = options.sts_denies ? metadata_url : sts_http.getUrl(),
+                .forbid_implicit_credentials = options.forbid_implicit_credentials,
+            }
+        );
+
+        DB::S3::S3RequestSettings request_settings;
+        request_settings[DB::S3RequestSetting::max_single_read_retries] = 1;
+        DB::ReadBufferFromS3 read_buffer(client, uri.bucket, uri.key, /* version_id = */ "", request_settings, DB::ReadSettings{});
+
+        std::string content;
+        DB::readStringUntilEOF(content, read_buffer);
+
+        return getCredentialString(http.getLastRequestHeader());
+    };
+
+    const std::string profile = "from_instance_metadata";
+    const std::string profile_role = "arn:aws:iam::123456789012:role/from_instance_metadata";
+    const std::string query_role = "arn:aws:iam::123456789012:role/from_query";
+
+    {
+        SCOPED_TRACE("the profile role cannot be assumed");
+
+        /// No fallback to the instance credentials: the request is not signed.
+        ASSERT_TRUE(read_from_s3(profile, {.sts_denies = true}).empty());
+        ASSERT_TRUE(read_from_s3(profile, {.role_arn = query_role, .sts_denies = true}).empty());
+    }
+
+    {
+        SCOPED_TRACE("the profile role is assumed with the instance credentials");
+
+        validateCredential(read_from_s3(profile), "s3", role_access_key, region);
+        ASSERT_TRUE(sts_http.hasLastRequest());
+        validateCredential(getCredentialString(sts_http.getLastRequestHeader()), "sts", "instance_access_key", region);
+        validateAssumeRoleQueryParams(sts_http.getLastQueryParams(), profile_role, "profile_session", "profile_external_id");
+    }
+
+    {
+        SCOPED_TRACE("role_arn of the query on top of the profile role");
+
+        /// The profile role is cached from the previous case, and its keys sign the request for the role of the query.
+        /// The same holds when the credentials of the server are restricted to being the base of such a role.
+        for (bool forbid_implicit_credentials : {false, true})
+        {
+            const auto role_arn = query_role + (forbid_implicit_credentials ? "_restricted" : "");
+            validateCredential(
+                read_from_s3(profile, {.role_arn = role_arn, .forbid_implicit_credentials = forbid_implicit_credentials}),
+                "s3", role_access_key, region);
+            ASSERT_TRUE(sts_http.hasLastRequest());
+            validateCredential(getCredentialString(sts_http.getLastRequestHeader()), "sts", role_access_key, region);
+            validateAssumeRoleQueryParams(sts_http.getLastQueryParams(), role_arn, "ClickHouseSession");
+        }
+    }
+
+    {
+        SCOPED_TRACE("credential_source is not checked: environment credentials are the base if set");
+
+        ScopedEnvVarForAwsS3ClientTests env_access_key("AWS_ACCESS_KEY_ID", "environment_access_key");
+        ScopedEnvVarForAwsS3ClientTests env_secret_key("AWS_SECRET_ACCESS_KEY", "environment_secret_key");
+        validateCredential(read_from_s3(profile), "s3", role_access_key, region);
+        ASSERT_TRUE(sts_http.hasLastRequest());
+        validateCredential(getCredentialString(sts_http.getLastRequestHeader()), "sts", "environment_access_key", region);
+    }
+
+    {
+        SCOPED_TRACE("the profile is ignored when the credentials of the server are not used");
+
+        ASSERT_TRUE(read_from_s3(profile, {.use_environment_credentials = false}).empty());
+        ASSERT_FALSE(sts_http.hasLastRequest());
+
+        ASSERT_TRUE(read_from_s3(profile, {.no_sign_request = true}).empty());
+        ASSERT_FALSE(sts_http.hasLastRequest());
+
+        EXPECT_THROW(read_from_s3(profile, {.forbid_implicit_credentials = true}), DB::Exception);
+        ASSERT_FALSE(sts_http.hasLastRequest());
+
+        validateCredential(read_from_s3(profile, {.access_key_id = "explicit_access_key"}), "s3", "explicit_access_key", region);
+        ASSERT_FALSE(sts_http.hasLastRequest());
+
+        /// Explicit keys are the base of the role of the query, not the profile role.
+        validateCredential(
+            read_from_s3(profile, {.role_arn = query_role, .access_key_id = "explicit_access_key"}), "s3", role_access_key, region);
+        ASSERT_TRUE(sts_http.hasLastRequest());
+        validateCredential(getCredentialString(sts_http.getLastRequestHeader()), "sts", "explicit_access_key", region);
+    }
+
+    /// Other profiles leave the chain as it was: the instance credentials are used.
+    for (const auto * other_profile : {"web_identity", "only_role_arn", "only_source_profile", "missing"})
+    {
+        SCOPED_TRACE(other_profile);
+
+        validateCredential(read_from_s3(other_profile), "s3", "instance_access_key", region);
+        ASSERT_FALSE(sts_http.hasLastRequest());
+    }
 }
 
 TEST(IOTestAwsS3Client, ClientCacheRegistryGetOrCreateCacheForKey)
