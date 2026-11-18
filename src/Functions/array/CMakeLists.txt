@@ -5,9 +5,10 @@ add_headers_and_sources(clickhouse_functions_array .)
 
 if (CHDB_LITE)
     # chdb embedded build: drop arrayDistance/distanceTransposed/arrayNormalizedGini/arrayDotProduct/arrayLevenshtein
-    # plus niche array/map helpers (mapOp, arrayCumSum, arrayFold, ...).
+    # plus niche array/map helpers (mapOp, arrayCumSum, ...).
+    # Keep arrayFold: DataStore uses it for grouped products.
     message(STATUS "CHDB_LITE: dropping niche array / vector-distance / map functions")
-    foreach (_drop arrayDistance.cpp distanceTransposed.cpp arrayNormalizedGini.cpp arrayDotProduct.cpp arrayLevenshtein.cpp mapPopulateSeries.cpp mapOp.cpp arrayShingles.cpp arrayJaccardIndex.cpp arrayShiftRotate.cpp arrayCumSum.cpp arrayCumSumNonNegative.cpp arrayDifference.cpp arrayFold.cpp arrayAUC.cpp arrayRandomSample.cpp arrayShuffle.cpp arrayEnumerateDense.cpp arrayEnumerateDenseRanked.cpp arrayEnumerateUniqRanked.cpp indexOfAssumeSorted.cpp)
+    foreach (_drop arrayDistance.cpp distanceTransposed.cpp arrayNormalizedGini.cpp arrayDotProduct.cpp arrayLevenshtein.cpp mapPopulateSeries.cpp mapOp.cpp arrayShingles.cpp arrayJaccardIndex.cpp arrayShiftRotate.cpp arrayCumSum.cpp arrayCumSumNonNegative.cpp arrayDifference.cpp arrayAUC.cpp arrayRandomSample.cpp arrayShuffle.cpp arrayEnumerateDense.cpp arrayEnumerateDenseRanked.cpp arrayEnumerateUniqRanked.cpp indexOfAssumeSorted.cpp)
         list(REMOVE_ITEM clickhouse_functions_array_sources "${_drop}" "./${_drop}")
     endforeach()
     set(_chdb_vec_stub "${CMAKE_CURRENT_BINARY_DIR}/chdbVectorStubs.cpp")

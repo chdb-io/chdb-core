@@ -97,7 +97,6 @@ if (CHDB_LITE)
         arrayCumSum.cpp
         arrayCumSumNonNegative.cpp
         arrayDifference.cpp
-        arrayFold.cpp
         arrayAUC.cpp
         arrayRandomSample.cpp
         arrayShuffle.cpp
