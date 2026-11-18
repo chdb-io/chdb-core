@@ -45,13 +45,36 @@ class TestChDBCoreLite(unittest.TestCase):
     def test_trimmed_array_and_map_functions_throw_cleanly(self):
         for sql in [
             "SELECT arrayCumSum([1, 2, 3])",
-            "SELECT arrayFold((x, acc) -> acc + x, [1, 2, 3], 0)",
             "SELECT arrayShuffle([1, 2, 3])",
             "SELECT mapAdd(map(1, 1), map(1, 2))",
             "SELECT indexOfAssumeSorted([1, 2, 3], 2)",
         ]:
             with self.subTest(sql=sql):
                 self._assert_not_found(sql)
+
+    def test_array_fold_is_available(self):
+        for values, expected in [
+            ("[toInt64(2), -3, 4]", b"-24\n"),
+            ("[toInt64(2), 0, 4]", b"0\n"),
+            ("CAST([], 'Array(Int64)')", b"1\n"),
+        ]:
+            with self.subTest(values=values):
+                result = chdb.query(
+                    f"SELECT arrayFold((acc, v) -> acc * v, {values}, toInt64(1))",
+                    "CSV",
+                )
+                self.assertEqual(result.bytes(), expected)
+
+    def test_grouped_product_uses_array_fold(self):
+        # DataStore v4.5.0 lowers groupby().prod() to arrayFold over groupArray.
+        result = chdb.query(
+            "SELECT g, arrayFold((acc, v) -> acc * v, groupArray(v), toInt64(1)) "
+            "FROM values('g String, v Nullable(Int64)', "
+            "('a', 2), ('a', -3), ('a', NULL), ('b', 4), ('b', 0)) "
+            "GROUP BY g ORDER BY g",
+            "CSV",
+        )
+        self.assertEqual(result.bytes(), b'"a",-6\n"b",0\n')
 
     def test_trimmed_aggregates_throw_cleanly(self):
         # Keep this list aligned with src/AggregateFunctions/CMakeLists.txt drop list.
