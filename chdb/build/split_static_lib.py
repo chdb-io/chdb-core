@@ -38,7 +38,8 @@ The rest is what prelink_static_lib.sh does, per shard: -z noexecstack, `ld.bfd 
 the shard with a COMMON symbol (OpenSSL's hidden OPENSSL_ia32cap_P on x86_64; every member that
 has one is kept in the same shard, so it is allocated once), lld otherwise, .llvm_addrsig
 dropped, and on aarch64 the code sections renamed into runs of at most 64 MB, with names of
-their own per shard (split_static_lib_text.py).
+their own per shard (split_static_lib_text.py --always-rename): even a shard that is one run
+is renamed, or the consumer's .text would get the code of every shard again.
 
 The archive's members are padded so that each object starts at an 8-byte aligned offset
 (gold, see prelink_static_lib.sh). A JSON manifest records the link order, the sizes and
@@ -71,6 +72,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+from split_static_lib_text import exec_sections
 
 SUFFIX = ".chdb"
 MY_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -328,6 +331,9 @@ def verify(tools, objects, keep):
     - A private name that nothing defines is referenced weakly only (an optional hook).
     - No COMDAT group has a public signature, which the host's group of that name could
       replace.
+    - On aarch64, no code is left in .text or .text.*, and shard i's code is all in
+      .chdb.text.<i>.*: what the consumer's .text gets, or code of the same name in two
+      shards, is one output section, and GNU ld cannot place its stubs within reach of a BL.
     - Shard i defines the anchor of shard i, and every contract symbol is defined."""
     problems = []
     defined, private, undefined, weak = set(), set(), {}, set()
@@ -362,6 +368,12 @@ def verify(tools, objects, keep):
         public_groups = {g for g in group_signatures(tools, obj) if not g.endswith(SUFFIX)}
         if public_groups:
             problems.append(f"{name_of}: {len(public_groups)} COMDAT groups under public names, e.g. {sorted(public_groups)[:5]}")
+        code, is_aarch64 = exec_sections(obj)
+        prefix = f".chdb.text.{index}."
+        misplaced = [name for name, _, _ in code if (name == ".text" or name.startswith(".text.")
+                                                       or name.startswith(".chdb.text.") and not name.startswith(prefix))]
+        if is_aarch64 and misplaced:
+            problems.append(f"{name_of}: {len(misplaced)} code sections outside {prefix}*, e.g. {misplaced[:5]}")
         if ANCHOR.format(index) not in private:
             problems.append(f"{name_of}: does not define its anchor {ANCHOR.format(index)}")
     stale = sorted(n for n in undefined if not n.endswith(SUFFIX) and n + SUFFIX in private)
@@ -603,7 +615,7 @@ def main():
             options = []
             if is_aarch64:
                 split = run([sys.executable, os.path.join(MY_DIR, "split_static_lib_text.py"), source,
-                             "--prefix", f".chdb.text.{index}."], capture_output=True, text=True)
+                             "--prefix", f".chdb.text.{index}.", "--always-rename"], capture_output=True, text=True)
                 sys.stderr.write(split.stderr)
                 options_file = os.path.join(work, f"text_{index}.txt")
                 with open(options_file, "w") as f:

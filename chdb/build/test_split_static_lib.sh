@@ -183,6 +183,34 @@ if split_fixture fx fx 0.0001; then
     else
         sed 's/^/    /' check.log; fail "fx: split_static_lib.py --check rejects the split archive"
     fi
+    # On aarch64 every shard's code is renamed, even a shard far below the 64 MB of one run:
+    # the consumer would otherwise put the .text.* of all shards into its own .text, past
+    # the reach of GNU ld's stubs (chdb-io/chdb-core#343).
+    if [[ "$(readelf -h "$(shard fx 0)")" == *AArch64* ]]; then
+        code_names () { readelf -SW "$1" | sed -n 's/^ *\[ *[0-9]*\] \([^ ]*\) *PROGBITS .* [A-Z]*AX[A-Z]* .*/\1/p'; }
+        bad=0
+        for i in $(seq 0 $((shards - 1))); do
+            names=$(code_names "$(shard fx "${i}")")
+            if [ -z "${names}" ] || grep -qv "^\.chdb\.text\.${i}\.[0-9]*$" <<< "${names}"; then
+                echo "    shard ${i}: $(echo ${names})"; bad=$((bad + 1))
+            fi
+        done
+        [ "${bad}" -eq 0 ] && pass "fx, aarch64: every shard's code is in .chdb.text.<shard>.*" \
+            || fail "fx, aarch64: ${bad} shards with code outside .chdb.text.<shard>.*"
+        OBJCOPY=${SPLIT_OBJCOPY:-$(newest /usr/bin/llvm-objcopy* /usr/local/bin/llvm-objcopy*)}
+        mkdir -p samename && cp fx/shards/*.o samename/
+        renamed=$(code_names samename/libchdb_part_001.o | awk 'NR == 1')
+        "${OBJCOPY}" "--rename-section=${renamed}=.chdb.text.0.0" samename/libchdb_part_001.o
+        # shellcheck disable=SC2046
+        rm -f samename/libfx.a && ar rcs samename/libfx.a $(ls samename/*.o | sort)
+        if python3 "${SPLIT}" --check samename/libfx.a --contract "${FIXTURE}/fx.contract" > check.log 2>&1; then
+            fail "fx, aarch64: --check accepts shard 1 code named after shard 0"
+        elif grep -q "code sections outside .chdb.text.1" check.log; then
+            pass "fx, aarch64: --check rejects shard 1 code named after shard 0"
+        else
+            sed 's/^/    /' check.log; fail "fx, aarch64: --check rejects shard 1 code, but not for its name"
+        fi
+    fi
 
     echo "== fx: symbols =="
     while read -r name; do

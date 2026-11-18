@@ -23,7 +23,12 @@ links binaries that crash: its range-extension thunks are per symbol, and a call
 merge turned into "section + offset" lands at "thunk + offset". --gc-sections could not drop
 anything either.
 
-Prints nothing when the code fits into one run.
+Prints nothing when the code fits into one run, unless --always-rename is given. The split
+archive (split_static_lib.py) needs that option: each of its shards fits into one run, but a
+consumer links all of them together, and their code left as .text.* would again all go into
+the consumer's .text. So every shard's code is renamed, even when it is a single run, under a
+prefix of its own (.chdb.text.<shard>.): GNU ld puts orphan sections of the same name into
+one output section, so a .chdb.text.0 in every shard would be one output section again.
 """
 
 import argparse
@@ -34,14 +39,14 @@ import sys
 SHT_PROGBITS = 1
 SHF_ALLOC = 0x2
 SHF_EXECINSTR = 0x4
+EM_AARCH64 = 183
 SECTION_HEADER = struct.Struct("<IIQQQQIIQQ")
 MB = 1 << 20
 
 
-def code_sections(path):
-    """The .text and .text.* sections of an ELF64 little-endian relocatable object, in
-    section order, as (name, offset) with the offset each gets when they are laid out back
-    to back, and the end of that layout."""
+def exec_sections(path):
+    """The allocated, executable PROGBITS sections of an ELF64 little-endian relocatable
+    object, in section order, as (name, size, alignment); and whether it is an aarch64 object."""
     with open(path, "rb") as f:
         header = f.read(64)
         if header[:4] != b"\x7fELF" or header[4] != 2 or header[5] != 1:
@@ -63,17 +68,26 @@ def code_sections(path):
         f.seek(names_header[4])
         names = f.read(names_header[5])
 
-    sections, end = [], 0
+    (machine,) = struct.unpack_from("<H", header, 0x12)
+    sections = []
     for name_offset, sh_type, flags, _, _, size, _, _, align, _ in SECTION_HEADER.iter_unpack(table):
         if sh_type != SHT_PROGBITS or flags & (SHF_ALLOC | SHF_EXECINSTR) != SHF_ALLOC | SHF_EXECINSTR:
             continue
-        name = names[name_offset:names.index(b"\0", name_offset)].decode()
+        sections.append((names[name_offset:names.index(b"\0", name_offset)].decode(), size, max(align, 1)))
+    return sections, machine == EM_AARCH64
+
+
+def code_sections(path):
+    """The .text and .text.* sections of an ELF64 little-endian relocatable object, in
+    section order, as (name, offset) with the offset each gets when they are laid out back
+    to back, and the end of that layout."""
+    sections, end = [], 0
+    for name, size, align in exec_sections(path)[0]:
         if name != ".text" and not name.startswith(".text."):
             continue
         # An llvm-objcopy response file splits on whitespace and --rename-section on '='.
         if any(c.isspace() or c in "=\"'\\" for c in name):
             raise SystemExit(f"{path}: cannot rename section {name!r}")
-        align = max(align, 1)
         start = -(-end // align) * align
         sections.append((name, start))
         end = start + size
@@ -85,23 +99,26 @@ def main():
     parser.add_argument("object", help="the prelinked object")
     parser.add_argument("--max-mb", type=float, default=64, help="the longest run, in MB (default: 64)")
     parser.add_argument("--prefix", default=".chdb.text.", help="the name of the runs, numbered from 0")
+    parser.add_argument("--always-rename", action="store_true",
+                        help="rename the code sections even when they fit into one run")
     args = parser.parse_args()
 
     sections, end = code_sections(args.object)
     runs = math.ceil(end / (args.max_mb * MB))
-    if runs <= 1:
+    if not sections or (runs <= 1 and not args.always_rename):
         print(f"split_static_lib_text: {len(sections)} code sections, {end / MB:.1f} MB: nothing to split",
               file=sys.stderr)
         return
-    length = end / runs
+    runs = max(runs, 1)
+    length = end / runs or 1
     sizes = [0] * runs
     for i, (name, start) in enumerate(sections):
         run = min(int(start // length), runs - 1)
         print(f"--rename-section={name}={args.prefix}{run}")
         sizes[run] += (sections[i + 1][1] if i + 1 < len(sections) else end) - start
+    names = f"{args.prefix}0-{runs - 1}" if runs > 1 else f"{args.prefix}0"
     print(f"split_static_lib_text: {len(sections)} code sections, {end / MB:.1f} MB, into {runs} output sections "
-          f"{args.prefix}0-{runs - 1} of " + ", ".join(f"{size / MB:.1f}" for size in sizes) + " MB",
-          file=sys.stderr)
+          f"{names} of " + ", ".join(f"{size / MB:.1f}" for size in sizes) + " MB", file=sys.stderr)
 
 
 if __name__ == "__main__":
