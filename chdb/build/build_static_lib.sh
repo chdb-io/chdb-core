@@ -158,7 +158,13 @@ fi
 # is renamed instead.
 # After minimisation, which needs the per-member layout and the original names, and before
 # the Go test and the gates, which must see the archive as shipped.
+#
+# Linux also gets the split archive chdb-go ships in Go modules (chdb-io/chdb-core#342): the
+# same isolation, in shards of a bounded size rather than one object of over a gigabyte. It is
+# made from the same minimised archive, so before prelinking rewrites that in place.
 if [ "$(uname)" == "Linux" ]; then
+    python3 ${MY_DIR}/split_static_lib.py ${MY_DIR}/libchdb_minimal.a ${MY_DIR}/libchdb_split.a \
+        --manifest ${MY_DIR}/libchdb_split.json --version "${CHDB_VERSION}"
     bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
 else
     python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
@@ -168,6 +174,9 @@ fi
 
 # Test with Go example
 bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_minimal.a
+if [ "$(uname)" == "Linux" ]; then
+    bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_split.a
+fi
 
 # Copy final library to project root
 echo "Copying libchdb_minimal.a to project root as libchdb.a..."
@@ -181,3 +190,12 @@ ls -lh ${PROJ_DIR}/libchdb.a
 # Symbol gate for the archive: the bundled runtime must stay hidden and the C API must stay
 # reachable. Runs on both platforms - see chdb/build/check_static_lib_hermetic.sh.
 bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb.a ${PROJ_DIR}/programs/local/chdb.h
+
+# The split archive, as shipped: libchdb_split.a and its manifest at the project root, gated
+# like libchdb.a.
+if [ "$(uname)" == "Linux" ]; then
+    mv -f ${MY_DIR}/libchdb_split.a ${MY_DIR}/libchdb_split.json ${PROJ_DIR}/
+    echo "Final libchdb_split.a created at ${PROJ_DIR}/libchdb_split.a:"
+    ls -lh ${PROJ_DIR}/libchdb_split.a
+    bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb_split.a ${PROJ_DIR}/programs/local/chdb.h
+fi

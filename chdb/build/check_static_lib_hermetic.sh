@@ -8,19 +8,25 @@
 # archive member still satisfies the consumer's own references in a static link
 # (chdb-io/chdb-rust#53). So on Linux the archive is also prelinked into one object that
 # keeps only the C API global (prelink_static_lib.sh), and on macOS every other symbol is
-# renamed (rename_static_lib_symbols_macos.py). These checks verify that it was done.
+# renamed (rename_static_lib_symbols_macos.py). The split Linux archive does both, per shard:
+# what a shard alone uses is local, what the shards share is hidden and renamed
+# (split_static_lib.py). These checks verify that it was done.
 #
 #   Gate 1  nothing in the probe can bind the bundled runtime to the system runtime
 #   Gate 2  macOS: the bundled runtime objects export nothing at all, and the archive
 #                  defines nothing under its own name outside the C API contract
 #           Linux: the archive defines nothing global outside the C API contract, and no
-#                  weak reference outside the C library keeps its name
+#                  weak reference outside the C library keeps its name. Split archive: the
+#                  shards share only hidden .chdb names, reference nothing of each other by
+#                  an old name, and a plain -lchdb pulls in every shard
 #   Gate 3a the two checked-in export allow-lists describe the same C API contract
 #   Gate 3b every symbol in that contract is still reachable from libchdb.a
 #   Gate 4  the linked probe connects and runs a query
 #   Gate 5  the archive does not override libc's posix_spawn
 #   Gate 6  a consumer's own runtime references still bind to the host runtime, and C, C++
 #           and Rust consumers can unwind, throw and panic after chDB has run
+#   Gate 7  Linux: a consumer that links its own static zlib, OpenSSL and zstd links without
+#           duplicate definitions, and the host's and chDB's copies each work as themselves
 #
 # Gates 1, 3, 4 and 6 are the same on both platforms; only the tools and the condition that
 # exposes the hazard differ. Gate 5 has nothing to find on macOS - base/glibc-compatibility
@@ -130,6 +136,8 @@ echo "  exposure: ${EXPOSURE}"
 echo
 
 failures=0
+# Set by gate 2 on Linux: "prelinked" or "split".
+LAYOUT=single
 fail () { echo "FAIL: $*"; failures=$((failures + 1)); }
 
 # grep exit 1 means "no matches", a legitimate outcome here. Exit 2 and up is a real error
@@ -179,7 +187,12 @@ for lib in ${SYS_LIBS_REQUIRED} ${SYS_LIBS_OPTIONAL}; do
         esac
     fi
 done
-sort -u "${WORK_DIR}/system_exports_raw.txt" > "${WORK_DIR}/system_exports.txt"
+# The symbols a linker defines in every image it writes are no runtime's: a libc++.so.1 that
+# exports them (Ubuntu's does) would otherwise make gate 1 report every -rdynamic probe.
+printf '%s\n' __bss_start _edata _end _etext _fini _init \
+    | sort -u > "${WORK_DIR}/linker_defined.txt"
+sort -u "${WORK_DIR}/system_exports_raw.txt" | comm -23 - "${WORK_DIR}/linker_defined.txt" \
+    > "${WORK_DIR}/system_exports.txt"
 echo "  total: $(wc -l < "${WORK_DIR}/system_exports.txt" | tr -d ' ') distinct symbols"
 echo
 
@@ -298,6 +311,17 @@ else
     # everything else, so the contract must be the archive's entire global surface. Checked
     # at every visibility and including COMMON symbols, and against the contract rather than
     # this host's system runtime: whatever else stays global, a consumer can bind to.
+    # One prelinked member (prelink_static_lib.sh) or several shards (split_static_lib.py).
+    if ! ar t "${LIBCHDB_A}" > "${WORK_DIR}/all_members.txt"; then
+        fail "could not list the archive members"
+    fi
+    member_count=$(wc -l < "${WORK_DIR}/all_members.txt" | tr -d ' ')
+    if [ "${member_count}" -gt 1 ]; then
+        LAYOUT=split
+    else
+        LAYOUT=prelinked
+    fi
+    echo "  layout: ${LAYOUT} (${member_count} members)"
     echo "== Gate 2: the archive defines nothing global outside the C API contract =="
     if ! readelf -sW "${LIBCHDB_A}" > "${WORK_DIR}/archive_readelf.txt" 2> "${WORK_DIR}/archive_readelf.err"; then
         sed 's/^/    /' "${WORK_DIR}/archive_readelf.err" | tail -5
@@ -312,6 +336,20 @@ else
         awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") && $6 == "DEFAULT" {
                  n = $8; sub(/@.*/, "", n); if (n != "") print n
              }' "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/archive_default_globals.txt"
+        # The split archive's shards share hidden globals with the .chdb suffix, which no
+        # consumer asks for and which stay out of every .dynsym. Hidden alone would not do -
+        # the suffix is what keeps the consumer's references off them - so both are required.
+        private=0
+        private_visible=0
+        if [ "${LAYOUT}" = split ]; then
+            grep_optional '\.chdb$' "${WORK_DIR}/archive_globals.txt" > "${WORK_DIR}/archive_private.txt"
+            grep_optional -v '\.chdb$' "${WORK_DIR}/archive_globals.txt" > "${WORK_DIR}/archive_named_globals.txt"
+            mv "${WORK_DIR}/archive_named_globals.txt" "${WORK_DIR}/archive_globals.txt"
+            private=$(wc -l < "${WORK_DIR}/archive_private.txt" | tr -d ' ')
+            awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") && $6 != "HIDDEN" && $8 ~ /\.chdb$/ { print $8 }' \
+                "${WORK_DIR}/archive_readelf.txt" | sort -u > "${WORK_DIR}/private_visible.txt"
+            private_visible=$(wc -l < "${WORK_DIR}/private_visible.txt" | tr -d ' ')
+        fi
         comm -23 "${WORK_DIR}/archive_globals.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/extra_globals.txt"
         comm -13 "${WORK_DIR}/archive_default_globals.txt" "${WORK_DIR}/contract_sorted.txt" > "${WORK_DIR}/missing_globals.txt"
         comm -12 "${WORK_DIR}/extra_globals.txt" "${WORK_DIR}/system_exports.txt" > "${WORK_DIR}/overlap.txt"
@@ -347,14 +385,42 @@ else
 
         # A COMDAT group whose signature was localized is still matched by name in the
         # consumer's link, so it could be discarded in favour of the host's same-named group.
-        # prelink_static_lib.sh dissolves them all.
+        # prelink_static_lib.sh dissolves them all. The split archive keeps them, so that the
+        # consumer's linker deduplicates what several shards share, under private signatures
+        # only.
         if ! readelf -gW "${LIBCHDB_A}" > "${WORK_DIR}/archive_groups.txt" 2>&1; then
             fail "readelf could not list the archive's section groups"
         fi
-        groups=$(grep_optional -c 'group section \[' "${WORK_DIR}/archive_groups.txt")
+        all_groups=$(grep_optional -c 'group section \[' "${WORK_DIR}/archive_groups.txt")
+        if [ "${LAYOUT}" = split ]; then
+            sed -n "s/^COMDAT group section \[ *[0-9]*\] \`[^']*' \[\([^]]*\)\].*/\1/p" "${WORK_DIR}/archive_groups.txt" \
+                | grep_optional -v '\.chdb$' > "${WORK_DIR}/public_groups.txt"
+            groups=$(wc -l < "${WORK_DIR}/public_groups.txt" | tr -d ' ')
+        else
+            groups=${all_groups}
+        fi
+
+        # The split archive's own references between shards: a reference that kept the name
+        # of a symbol the archive defines under its private name would bind to the host's
+        # definition of that name, or to none.
+        stale=0
+        anchors_missing=0
+        if [ "${LAYOUT}" = split ]; then
+            sed 's/\.chdb$//' "${WORK_DIR}/archive_private.txt" | sort -u > "${WORK_DIR}/private_old_names.txt"
+            comm -12 "${WORK_DIR}/archive_undefined.txt" "${WORK_DIR}/private_old_names.txt" > "${WORK_DIR}/stale.txt"
+            stale=$(wc -l < "${WORK_DIR}/stale.txt" | tr -d ' ')
+            # The ring of anchors that makes -lchdb pull in every shard (checked at link time
+            # below as well).
+            for ((i = 0; i < member_count; i++)); do
+                grep -qx "chdb_split_shard_${i}\.chdb" "${WORK_DIR}/archive_private.txt" || anchors_missing=$((anchors_missing + 1))
+            done
+        fi
 
         echo "  global definitions: $(wc -l < "${WORK_DIR}/archive_globals.txt" | tr -d ' '), outside the contract: ${extra} (${overlap} also defined by the system runtime), contract symbols missing: ${missing}"
-        echo "  section groups: ${groups}, COMMON symbols: ${commons}, undefined references: $(wc -l < "${WORK_DIR}/archive_undefined.txt" | tr -d ' ') (${needs_runtime} into the system C++ runtime)"
+        if [ "${LAYOUT}" = split ]; then
+            echo "  hidden .chdb globals shared between shards: ${private} (${private_visible} not hidden), stale references to their old names: ${stale}, missing shard anchors: ${anchors_missing}"
+        fi
+        echo "  section groups: ${all_groups} (${groups} under a public signature), COMMON symbols: ${commons}, undefined references: $(wc -l < "${WORK_DIR}/archive_undefined.txt" | tr -d ' ') (${needs_runtime} into the system C++ runtime)"
         echo "  weak references under their own name: $(wc -l < "${WORK_DIR}/weak_named.txt" | tr -d ' ') (${hooks} outside the C library)"
         if [ "${extra}" -ne 0 ]; then
             echo "  first 20:"
@@ -370,7 +436,19 @@ else
             fail "${missing} contract symbols are not default-visibility global definitions in the archive"
         fi
         if [ "${groups}" -ne 0 ]; then
-            fail "${groups} section groups survived prelinking"
+            head -20 "${WORK_DIR}/public_groups.txt" 2>/dev/null | sed 's/^/    /'
+            fail "${groups} section groups survived under a public signature"
+        fi
+        if [ "${private_visible}" -ne 0 ]; then
+            head -20 "${WORK_DIR}/private_visible.txt" | sed 's/^/    /'
+            fail "${private_visible} .chdb globals shared between shards are not hidden"
+        fi
+        if [ "${stale}" -ne 0 ]; then
+            head -20 "${WORK_DIR}/stale.txt" | sed 's/^/    /'
+            fail "${stale} references between shards kept the old name of a symbol the archive renamed"
+        fi
+        if [ "${anchors_missing}" -ne 0 ]; then
+            fail "${anchors_missing} of ${member_count} shards define no chdb_split_shard_<n>.chdb anchor"
         fi
         if [ "${commons}" -ne 0 ]; then
             fail "${commons} COMMON symbols survived prelinking"
@@ -384,7 +462,8 @@ else
             fail "${hooks} weak references outside the C library kept their name - was the archive prelinked by prelink_static_lib.sh?"
         fi
         if [ "${extra}" -eq 0 ] && [ "${missing}" -eq 0 ] && [ "${groups}" -eq 0 ] \
-                && [ "${commons}" -eq 0 ] && [ "${needs_runtime}" -eq 0 ] && [ "${hooks}" = 0 ]; then
+                && [ "${commons}" -eq 0 ] && [ "${needs_runtime}" -eq 0 ] && [ "${hooks}" = 0 ] \
+                && [ "${private_visible}" -eq 0 ] && [ "${stale}" -eq 0 ] && [ "${anchors_missing}" -eq 0 ]; then
             echo "PASS"
         fi
     fi
@@ -649,8 +728,18 @@ fi
 
 # Built concurrently: with Ubuntu 24.04's GNU ld every link of this archive takes minutes
 # on aarch64, where binutils walks its whole stub table for every input section.
+# The split archive's shards must all be pulled in by a consumer that names one C API
+# function and no more, as this probe does. -y makes the linker report each shard anchor's
+# definition, which only a shard that was linked can make; GNU ld 2.42's --trace names the
+# archive but not its members.
+trace_flags=()
+if [ "${LAYOUT}" = split ]; then
+    for ((i = 0; i < member_count; i++)); do
+        trace_flags+=("-Wl,-y,chdb_split_shard_${i}.chdb")
+    done
+fi
 (cd "${WORK_DIR}" && { "${HOST_CC}" ${host_cflags[@]+"${host_cflags[@]}"} -I. -c host_unwind_probe.c -o host_unwind_probe.o \
-        && "${HOST_CC}" host_unwind_probe.o -o host_unwind_probe "${consumer_flags[@]}"; } \
+        && "${HOST_CC}" host_unwind_probe.o -o host_unwind_probe ${trace_flags[@]+"${trace_flags[@]}"} "${consumer_flags[@]}"; } \
     > "${WORK_DIR}/host_unwind_link.log" 2>&1) &
 unwind_build=$!
 (cd "${WORK_DIR}" && { "${HOST_CXX}" ${host_cflags[@]+"${host_cflags[@]}"} -std=c++20 -I. -c host_cxx_probe.cpp -o host_cxx_probe.o \
@@ -667,6 +756,19 @@ fi
 
 if wait "${unwind_build}"; then
     check_host_bindings "${WORK_DIR}/host_unwind_probe.o" "${WORK_DIR}/host_unwind_probe"
+    if [ "${LAYOUT}" = split ]; then
+        # "<archive>(<member>): definition of <symbol>", from GNU ld and lld alike.
+        not_pulled=0
+        for ((i = 0; i < member_count; i++)); do
+            grep -q "): definition of chdb_split_shard_${i}\.chdb\$" "${WORK_DIR}/host_unwind_link.log" \
+                || { echo "    not linked: shard ${i}"; not_pulled=$((not_pulled + 1)); }
+        done
+        if [ "${not_pulled}" -eq 0 ]; then
+            echo "PASS (host_unwind_probe: -lchdb pulled in all ${member_count} shards)"
+        else
+            fail "host_unwind_probe: -lchdb left ${not_pulled} of ${member_count} shards out of the link"
+        fi
+    fi
     if [ "${PLATFORM}" = Linux ]; then
         # The archive used to give every GNU ld consumer an executable stack: dozens of its
         # assembly members carry no .note.GNU-stack. prelink_static_lib.sh passes -z noexecstack.
@@ -719,6 +821,61 @@ else
     echo "SKIP (rust_unwind_probe: rustc is not on PATH)"
 fi
 echo
+
+# --- Gate 7: a consumer's own copies of the bundled libraries -----------------------------
+# chdb-io/chdb-core#342. A host that statically links its own zlib, OpenSSL or zstd next to
+# libchdb.a must link without duplicate definitions - no --allow-multiple-definition, as
+# everywhere above - and each side must keep using its own copy (host_deps_probe.c). Static
+# archives rather than shared objects: they are what the same static link could bind the
+# wrong way. zstd is optional - Ubuntu's libzstd-dev is not on every build host - and so are
+# the others outside CI.
+if [ "${PLATFORM}" = Linux ]; then
+    echo "== Gate 7: a consumer's own static zlib, OpenSSL and zstd coexist with libchdb.a =="
+    host_static () {
+        local path
+        path=$("${HOST_CC}" -print-file-name="$1")
+        [ "${path}" != "$1" ] && [ -f "${path}" ] && echo "${path}"
+    }
+    zlib_a=$(host_static libz.a || true)
+    crypto_a=$(host_static libcrypto.a || true)
+    zstd_a=$(host_static libzstd.a || true)
+    deps_cflags=()
+    deps_libs=()
+    if [ -n "${zstd_a}" ] && echo '#include <zstd.h>' | "${HOST_CC}" -E -x c - > /dev/null 2>&1; then
+        deps_cflags+=(-DHOST_DEPS_ZSTD)
+        deps_libs+=("${zstd_a}")
+    else
+        echo "  (no static libzstd with headers on this host; zstd is not checked)"
+        zstd_a=
+    fi
+    if [ -z "${zlib_a}" ] || [ -z "${crypto_a}" ] \
+            || ! printf '#include <zlib.h>\n#include <openssl/evp.h>\n' | "${HOST_CC}" -E -x c - > /dev/null 2>&1; then
+        if [ -n "${CI:-}" ]; then
+            fail "host_deps_probe: needs a static zlib and OpenSSL with headers (zlib1g-dev, libssl-dev)"
+        else
+            echo "SKIP (host_deps_probe: no static zlib and OpenSSL with headers on this host)"
+        fi
+    else
+        cp "${MY_DIR}/static-probe/host_deps_probe.c" "${WORK_DIR}/"
+        # libchdb.a before the host's archives, as a consumer that adds -lchdb first would
+        # link: a name the archive still defined would then satisfy the probe's reference
+        # before the host's library is looked at, and the version checks would catch it.
+        if (cd "${WORK_DIR}" && "${HOST_CC}" -I. ${deps_cflags[@]+"${deps_cflags[@]}"} host_deps_probe.c -o host_deps_probe \
+                    -L. -lchdb ${deps_libs[@]+"${deps_libs[@]}"} "${crypto_a}" "${zlib_a}" -lpthread -ldl -lm -lrt \
+                > "${WORK_DIR}/host_deps_link.log" 2>&1); then
+            echo "PASS (host_deps_probe: links with the host's $(basename "${zlib_a}") $(basename "${crypto_a}")${zstd_a:+ $(basename "${zstd_a}")} and no duplicate definitions)"
+            if run_probe host_deps_probe; then
+                echo "PASS (host_deps_probe: behaviour)"
+            else
+                fail "host_deps_probe: the host's or chDB's copy of a bundled library did not work as itself"
+            fi
+        else
+            sed 's/^/    /' "${WORK_DIR}/host_deps_link.log" | tail -40
+            fail "could not link host_deps_probe with the host's static zlib/OpenSSL/zstd"
+        fi
+    fi
+    echo
+fi
 
 if [ "${failures}" -ne 0 ]; then
     echo "${failures} gate(s) failed"
