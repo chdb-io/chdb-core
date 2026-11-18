@@ -1,5 +1,5 @@
-//go:build linux
-// +build linux
+//go:build linux && !chdb_plain_link
+// +build linux,!chdb_plain_link
 
 package main
 

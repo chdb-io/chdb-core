@@ -17,12 +17,16 @@ extern "C" {
     fn chdb_close_conn(conn: *mut chdb_connection);
     fn chdb_query(conn: chdb_connection, query: *const c_char, format: *const c_char) -> *mut c_void;
     fn chdb_result_error(result: *mut c_void) -> *const c_char;
+    fn chdb_result_buffer(result: *mut c_void) -> *const c_char;
+    fn chdb_result_length(result: *mut c_void) -> usize;
     fn chdb_destroy_query_result(result: *mut c_void);
 }
 
+#[inline(never)]
 fn backtrace_works(when: &str) -> bool {
     let rendered = std::backtrace::Backtrace::force_capture().to_string();
-    let ok = rendered.contains("rust_unwind_probe");
+    // This very frame, by name: a walk that stopped early, or symbolized nothing, misses it.
+    let ok = rendered.contains("rust_unwind_probe::backtrace_works");
     if !ok {
         eprintln!("rust_unwind_probe ({when}): backtrace does not show this program:\n{rendered}");
     }
@@ -35,6 +39,38 @@ fn panics_unwind(when: &str) -> bool {
         eprintln!("rust_unwind_probe ({when}): catch_unwind did not catch the panic");
     }
     ok
+}
+
+// A panic on another thread unwinds that thread and reaches join(), rather than aborting
+// the process.
+fn thread_panic_joins(when: &str) -> bool {
+    let ok = std::thread::spawn(|| panic!("probe thread")).join().is_err();
+    if !ok {
+        eprintln!("rust_unwind_probe ({when}): a thread's panic was not reported by join");
+    }
+    ok
+}
+
+// The connection still answers after the failed query and the panics.
+fn query_succeeds(conn: chdb_connection) -> bool {
+    let query = CString::new("SELECT 40 + 2").unwrap();
+    let format = CString::new("CSV").unwrap();
+    unsafe {
+        let result = chdb_query(conn, query.as_ptr(), format.as_ptr());
+        if result.is_null() {
+            eprintln!("rust_unwind_probe: chdb_query returned NULL");
+            return false;
+        }
+        let ok = chdb_result_error(result).is_null() && {
+            let data = std::slice::from_raw_parts(chdb_result_buffer(result) as *const u8, chdb_result_length(result));
+            data == b"42\n"
+        };
+        if !ok {
+            eprintln!("rust_unwind_probe: SELECT 40 + 2 did not return 42");
+        }
+        chdb_destroy_query_result(result);
+        ok
+    }
 }
 
 fn main() {
@@ -67,9 +103,11 @@ fn main() {
     // line printed before it has already been flushed.
     let backtrace_ok = report("backtrace", backtrace_works("with a connection open"));
     let panic_ok = report("panic", panics_unwind("with a connection open"));
+    let thread_ok = report("thread panic", thread_panic_joins("with a connection open"));
+    let query_ok = report("query after the panics", query_succeeds(unsafe { *conn }));
     unsafe { chdb_close_conn(conn) };
 
-    if !(query_failed && backtrace_ok && panic_ok) {
+    if !(query_failed && backtrace_ok && panic_ok && thread_ok && query_ok) {
         std::process::exit(1);
     }
     println!("rust_unwind_probe: backtraces and panics work after a chDB exception");

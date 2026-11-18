@@ -9,7 +9,10 @@
  * reports the version of the headers it was compiled against; chDB's copies are other
  * versions, or at least other builds (zlib-ng reports a "zlib-ng" version string). And data
  * crosses between the two copies: the host compresses files with its own libraries that chDB
- * then reads with its own, and both compute the same SHA-256 digest.
+ * then reads with its own, chDB compresses files the host then reads, and both compute the
+ * same SHA-256 digest. Which copy each of the host's calls reached is checked at link time
+ * as well (check_static_lib_hermetic.sh traces them), so the version checks are not the only
+ * evidence when both copies happen to be of one version.
  *
  * zstd is optional (the build host may have no libzstd-dev); the gate defines
  * HOST_DEPS_ZSTD when it links one.
@@ -53,7 +56,8 @@ static int check_query(chdb_connection * conn, const char * query, const char * 
     }
     const char * buffer = chdb_result_buffer(result);
     size_t length = chdb_result_length(result);
-    int ok = buffer && length == strlen(expected) && memcmp(buffer, expected, length) == 0;
+    /* An INSERT returns no buffer at all. */
+    int ok = length == strlen(expected) && (length == 0 || (buffer && memcmp(buffer, expected, length) == 0));
     if (!ok)
         fprintf(stderr, "host_deps_probe: %s: expected \"%s\", got \"%.*s\"\n", query, expected, (int)length,
                 buffer ? buffer : "");
@@ -134,6 +138,37 @@ int main(void)
     char expected[128];
     snprintf(expected, sizeof(expected), "\"%s\"\n", host_hex);
     failures += check_query(conn, "SELECT hex(SHA256('chdb'))", expected);
+    /* And the other way: chDB compresses with its own copies, the host decompresses with
+       its own. */
+    static const char * const WRITTEN = "0,\"zero\"\n1,\"one\"\n2,\"two\"\n";
+    char out_gz[256], out_zst[256];
+    snprintf(out_gz, sizeof(out_gz), "%s/out.csv.gz", dir);
+    snprintf(out_zst, sizeof(out_zst), "%s/out.csv.zst", dir);
+    snprintf(query, sizeof(query),
+             "INSERT INTO FUNCTION file('%s', 'CSV', 'n UInt8, s String') SELECT number, ['zero', 'one', 'two'][number + 1] FROM numbers(3)",
+             out_gz);
+    failures += check_query(conn, query, "");
+    gz = gzopen(out_gz, "rb");
+    char unpacked[256] = {0};
+    if (!gz || gzread(gz, unpacked, sizeof(unpacked) - 1) != (int)strlen(WRITTEN) || strcmp(unpacked, WRITTEN) != 0)
+        failures += fail("host zlib could not read the gzip file chDB wrote");
+    if (gz)
+        gzclose(gz);
+#ifdef HOST_DEPS_ZSTD
+    snprintf(query, sizeof(query),
+             "INSERT INTO FUNCTION file('%s', 'CSV', 'n UInt8, s String') SELECT number, ['zero', 'one', 'two'][number + 1] FROM numbers(3)",
+             out_zst);
+    failures += check_query(conn, query, "");
+    FILE * zin = fopen(out_zst, "rb");
+    char packed[4096];
+    size_t packed_size = zin ? fread(packed, 1, sizeof(packed), zin) : 0;
+    if (zin)
+        fclose(zin);
+    memset(unpacked, 0, sizeof(unpacked));
+    size_t unpacked_size = ZSTD_decompress(unpacked, sizeof(unpacked) - 1, packed, packed_size);
+    if (ZSTD_isError(unpacked_size) || unpacked_size != strlen(WRITTEN) || strcmp(unpacked, WRITTEN) != 0)
+        failures += fail("host zstd could not read the zstd file chDB wrote");
+#endif
     /* A failing query is an error result, not a crash. */
     chdb_result * result = chdb_query(*conn, "SELECT * FROM host_deps_probe_missing_table", "CSV");
     if (!result || !chdb_result_error(result))
@@ -151,6 +186,8 @@ int main(void)
 
     unlink(gz_path);
     unlink(zst_path);
+    unlink(out_gz);
+    unlink(out_zst);
     rmdir(dir);
     if (failures)
         return 1;

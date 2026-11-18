@@ -42,10 +42,15 @@ export CGO_LDFLAGS_ALLOW='-Wl,(-force_load,.*|--whole-archive|--no-whole-archive
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf "${BUILD_DIR}"' EXIT
 echo "Building Go example..."
-(ulimit -c 0 && go build -o "${BUILD_DIR}/chdb_go_example" .)
+# GO_BUILD_TAGS=chdb_plain_link links with a plain -lchdb (go-example/cgo_linux_plain.go).
+echo "Build tags: ${GO_BUILD_TAGS:-none}"
+(ulimit -c 0 && go build ${GO_BUILD_TAGS:+-tags "${GO_BUILD_TAGS}"} -o "${BUILD_DIR}/chdb_go_example" .)
 
 echo "Running Go test..."
-if ! "${BUILD_DIR}/chdb_go_example"; then
+# From a directory of its own: the example's --path=:memory: is a directory there, and a
+# second run in the same place (the split archive's, after the prelinked one's) would find
+# the first one's tables.
+if ! (cd "${BUILD_DIR}" && ./chdb_go_example); then
     echo "Error: Go test failed"
     exit 1
 fi

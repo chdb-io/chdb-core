@@ -316,7 +316,10 @@ else
         fail "could not list the archive members"
     fi
     member_count=$(wc -l < "${WORK_DIR}/all_members.txt" | tr -d ' ')
-    if [ "${member_count}" -gt 1 ]; then
+    # split_static_lib.py names its members libchdb_part_<n>.o, and writes a single one when
+    # CHDB_SPLIT_SHARD_MB covers the whole input. Any other multi-member archive is judged as
+    # split too, so that an unprotected one fails the split checks.
+    if [ "${member_count}" -gt 1 ] || grep -qx 'libchdb_part_[0-9]*\.o' "${WORK_DIR}/all_members.txt"; then
         LAYOUT=split
     else
         LAYOUT=prelinked
@@ -436,7 +439,11 @@ else
             fail "${missing} contract symbols are not default-visibility global definitions in the archive"
         fi
         if [ "${groups}" -ne 0 ]; then
-            head -20 "${WORK_DIR}/public_groups.txt" 2>/dev/null | sed 's/^/    /'
+            if [ "${LAYOUT}" = split ]; then
+                head -20 "${WORK_DIR}/public_groups.txt"
+            else
+                awk '/group section \[/ && n++ < 20' "${WORK_DIR}/archive_groups.txt"
+            fi | sed 's/^/    /'
             fail "${groups} section groups survived under a public signature"
         fi
         if [ "${private_visible}" -ne 0 ]; then
@@ -748,7 +755,7 @@ unwind_build=$!
 cxx_build=$!
 rust_build=
 if [ -n "${RUSTC}" ]; then
-    (cd "${WORK_DIR}" && "${RUSTC}" --edition=2021 -C debuginfo=1 rust_unwind_probe.rs -o rust_unwind_probe \
+    (cd "${WORK_DIR}" && "${RUSTC}" --edition=2021 -C debuginfo=1 -C panic=unwind rust_unwind_probe.rs -o rust_unwind_probe \
             -L native=. "${rust_link_flags[@]}" \
         > "${WORK_DIR}/rust_link.log" 2>&1) &
     rust_build=$!
@@ -857,21 +864,69 @@ if [ "${PLATFORM}" = Linux ]; then
         fi
     else
         cp "${MY_DIR}/static-probe/host_deps_probe.c" "${WORK_DIR}/"
-        # libchdb.a before the host's archives, as a consumer that adds -lchdb first would
-        # link: a name the archive still defined would then satisfy the probe's reference
-        # before the host's library is looked at, and the version checks would catch it.
-        if (cd "${WORK_DIR}" && "${HOST_CC}" -I. ${deps_cflags[@]+"${deps_cflags[@]}"} host_deps_probe.c -o host_deps_probe \
-                    -L. -lchdb ${deps_libs[@]+"${deps_libs[@]}"} "${crypto_a}" "${zlib_a}" -lpthread -ldl -lm -lrt \
-                > "${WORK_DIR}/host_deps_link.log" 2>&1); then
-            echo "PASS (host_deps_probe: links with the host's $(basename "${zlib_a}") $(basename "${crypto_a}")${zstd_a:+ $(basename "${zstd_a}")} and no duplicate definitions)"
-            if run_probe host_deps_probe; then
-                echo "PASS (host_deps_probe: behaviour)"
-            else
-                fail "host_deps_probe: the host's or chDB's copy of a bundled library did not work as itself"
-            fi
+        host_archives=(${deps_libs[@]+"${deps_libs[@]}"} "${crypto_a}" "${zlib_a}")
+        if (cd "${WORK_DIR}" && "${HOST_CC}" -I. ${deps_cflags[@]+"${deps_cflags[@]}"} -c host_deps_probe.c -o host_deps_probe.o) \
+                > "${WORK_DIR}/host_deps_compile.log" 2>&1; then
+            # The probe's calls into the host's libraries, traced in the link (-y): each must be
+            # bound to a definition in one of the host's archives, and none to libchdb.a. That
+            # holds when the two copies are of the same version too, which the probe's own
+            # version checks cannot tell apart.
+            nm -u "${WORK_DIR}/host_deps_probe.o" | awk '{ print $NF }' | sort -u > "${WORK_DIR}/host_deps_refs.txt"
+            for archive in "${host_archives[@]}"; do
+                nm -g --defined-only "${archive}" 2>/dev/null | awk 'NF >= 3 { print $3 }'
+            done | sort -u | comm -12 "${WORK_DIR}/host_deps_refs.txt" - > "${WORK_DIR}/host_deps_traced.txt"
+            deps_trace=()
+            while read -r symbol; do deps_trace+=("-Wl,-y,${symbol}"); done < "${WORK_DIR}/host_deps_traced.txt"
+            traced=${#deps_trace[@]}
+            # Both orders a consumer may list them in, linked concurrently. libchdb.a first: a
+            # name the archive still defined would satisfy the probe's reference before the
+            # host's library is looked at. The host's archives first: a name the archive
+            # defined would clash with the host's definition already in the link.
+            (cd "${WORK_DIR}" && "${HOST_CC}" host_deps_probe.o -o host_deps_probe_chdb_first "${deps_trace[@]}" \
+                    -L. -lchdb "${host_archives[@]}" -lpthread -ldl -lm -lrt > host_deps_chdb_first.log 2>&1) &
+            chdb_first=$!
+            (cd "${WORK_DIR}" && "${HOST_CC}" host_deps_probe.o -o host_deps_probe_host_first "${deps_trace[@]}" \
+                    "${host_archives[@]}" -L. -lchdb -lpthread -ldl -lm -lrt > host_deps_host_first.log 2>&1) &
+            host_first=$!
+            for order in chdb_first host_first; do
+                if [ "${order}" = chdb_first ]; then pid=${chdb_first}; label="libchdb.a first"; else pid=${host_first}; label="host archives first"; fi
+                log="${WORK_DIR}/host_deps_${order}.log"
+                if ! wait "${pid}"; then
+                    sed 's/^/    /' "${log}" | tail -40
+                    fail "host_deps_probe (${label}): could not link with the host's static zlib/OpenSSL/zstd"
+                    continue
+                fi
+                echo "PASS (host_deps_probe, ${label}: links with the host's $(basename "${zlib_a}") $(basename "${crypto_a}")${zstd_a:+ $(basename "${zstd_a}")} and no duplicate definitions)"
+                # "[ld: ]<archive>(<member>): definition of <symbol>".
+                wrong=0
+                while read -r symbol; do
+                    origin=$(awk -v tail="): definition of ${symbol}" '
+                        length($0) > length(tail) && substr($0, length($0) - length(tail) + 1) == tail {
+                            line = substr($0, 1, length($0) - length(tail)); sub(/\([^()]*$/, "", line)
+                            # GNU ld prefixes its own name ("/usr/bin/ld: "); lld does not.
+                            n = split(line, parts, ": "); print parts[n]; exit
+                        }' "${log}")
+                    case " ${host_archives[*]} " in
+                        *" ${origin} "*) ;;
+                        *) echo "    ${symbol}: defined by '${origin:-nothing traced}'"; wrong=$((wrong + 1)) ;;
+                    esac
+                done < "${WORK_DIR}/host_deps_traced.txt"
+                if [ "${traced}" -eq 0 ]; then
+                    fail "host_deps_probe (${label}): the probe calls nothing the host's archives define - the trace would pass vacuously"
+                elif [ "${wrong}" -eq 0 ]; then
+                    echo "PASS (host_deps_probe, ${label}: all ${traced} of its calls into zlib/OpenSSL/zstd bound to the host's archives)"
+                else
+                    fail "host_deps_probe (${label}): ${wrong} of its ${traced} calls into zlib/OpenSSL/zstd bound elsewhere than the host's archives"
+                fi
+                if run_probe "host_deps_probe_${order}"; then
+                    echo "PASS (host_deps_probe, ${label}: behaviour)"
+                else
+                    fail "host_deps_probe (${label}): the host's or chDB's copy of a bundled library did not work as itself"
+                fi
+            done
         else
-            sed 's/^/    /' "${WORK_DIR}/host_deps_link.log" | tail -40
-            fail "could not link host_deps_probe with the host's static zlib/OpenSSL/zstd"
+            sed 's/^/    /' "${WORK_DIR}/host_deps_compile.log" | tail -20
+            fail "could not compile host_deps_probe"
         fi
     fi
     echo

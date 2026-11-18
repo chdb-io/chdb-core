@@ -46,10 +46,17 @@ checksums, and what the shards need from the system. check_static_lib_hermetic.s
 result.
 
 Usage: split_static_lib.py <input libchdb.a> <output libchdb.a> [--manifest out.json]
-                           [--shard-mb N] [--version V]
+                           [--shard-mb N] [--version V] [--contract FILE]
+       split_static_lib.py --check <split libchdb.a> [--contract FILE]
 
 The input is the minimised, stripped archive build_static_lib.sh hands to prelink_static_lib.sh;
-it is not modified.
+it is not modified. --check verifies an existing split archive and exits non-zero if it is not
+valid; the same checks run on every archive this script writes. --contract replaces the C API
+contract with a file of names, for test_split_static_lib.sh's fixtures.
+
+Keep the shard limit near the default. `ld.bfd -r -d` links the shard with the COMMON symbol,
+and it slows down out of proportion to the input: a whole x86_64 archive in one shard had not
+finished after 40 minutes, while the default nine shards take under a minute.
 """
 
 import argparse
@@ -221,10 +228,16 @@ def c_library_exports():
     return names
 
 
-def contract():
-    out = run([sys.executable, os.path.join(MY_DIR, "check_export_contract.py")],
-              capture_output=True, text=True).stdout
-    names = set(out.split())
+def contract(path=None):
+    """The C API contract: check_export_contract.py's, or the names in `path`, one per line
+    (test_split_static_lib.sh's fixtures)."""
+    if path:
+        with open(path) as f:
+            names = set(f.read().split())
+    else:
+        out = run([sys.executable, os.path.join(MY_DIR, "check_export_contract.py")],
+                  capture_output=True, text=True).stdout
+        names = set(out.split())
     if not names:
         sys.exit("split_static_lib: the C API contract is empty")
     return names
@@ -269,6 +282,117 @@ def hide_private_definitions(path):
         f.seek(0)
         f.write(data)
     return hidden
+
+
+STB_NAMES = {0: "LOCAL", 1: "GLOBAL", 2: "WEAK", 10: "UNIQUE"}
+STV_HIDDEN = 2
+SHN_COMMON = 0xFFF2
+
+
+def elf_globals(path):
+    """(name, binding, visibility, section index) of every non-local symbol of an ELF64
+    little-endian object, read from the object itself: readelf's columns shift on aarch64."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        sys.exit(f"{path}: not an ELF64 little-endian object")
+    (shoff,) = struct.unpack_from("<Q", data, 0x28)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
+    if shnum == 0:
+        shnum = SECTION_HEADER.unpack_from(data, shoff)[5]
+    sections = [SECTION_HEADER.unpack_from(data, shoff + i * shentsize) for i in range(shnum)]
+    symtab = [sec for sec in sections if sec[1] == 2]  # SHT_SYMTAB
+    if len(symtab) != 1:
+        sys.exit(f"{path}: {len(symtab)} symbol tables")
+    _, _, _, _, offset, size, link, first_global, _, entsize = symtab[0]
+    strtab = sections[link]
+    names = data[strtab[4]:strtab[4] + strtab[5]]
+    result = []
+    start = offset + first_global * entsize
+    for st_name, st_info, st_other, st_shndx, _, _ in SYMBOL.iter_unpack(data[start:offset + size]):
+        name = names[st_name:names.index(b"\0", st_name)].decode()
+        result.append((name, STB_NAMES.get(st_info >> 4, str(st_info >> 4)), st_other & 3, st_shndx))
+    return result
+
+
+def verify(tools, objects, keep):
+    """What a split archive must be, checked on its shards (`objects`, in link order) against
+    the C API contract `keep`: the problems found, as messages. check_static_lib_hermetic.sh
+    checks the same on the real archive, from the outside.
+
+    - Every global definition is a contract symbol of default visibility, or a hidden one
+      with the private suffix. No COMMON symbol is left.
+    - No shard references a symbol by the old name of one the archive defines under its
+      private name: that reference would bind to the host's definition of the old name,
+      or fail to link - the private definition would never be reached.
+    - A private name that nothing defines is referenced weakly only (an optional hook).
+    - No COMDAT group has a public signature, which the host's group of that name could
+      replace.
+    - Shard i defines the anchor of shard i, and every contract symbol is defined."""
+    problems = []
+    defined, private, undefined, weak = set(), set(), {}, set()
+    for index, obj in enumerate(objects):
+        name_of = f"shard {index} ({os.path.basename(obj)})"
+        public_private = []
+        hidden_public = []
+        outside = []
+        for name, binding, visibility, shndx in elf_globals(obj):
+            if shndx == SHN_COMMON:
+                problems.append(f"{name_of}: COMMON symbol {name}")
+            elif shndx == 0:
+                undefined.setdefault(name, set()).add(index)
+                if binding == "WEAK":
+                    weak.add(name)
+            elif binding != "LOCAL":
+                defined.add(name)
+                if name in keep:
+                    if visibility != 0:
+                        hidden_public.append(name)
+                elif name.endswith(SUFFIX):
+                    private.add(name)
+                    if visibility != STV_HIDDEN:
+                        public_private.append(name)
+                else:
+                    outside.append(name)
+        for what, names in (("global definitions outside the C API", outside),
+                            ("private definitions that are not hidden", public_private),
+                            ("C API definitions that are not of default visibility", hidden_public)):
+            if names:
+                problems.append(f"{name_of}: {len(names)} {what}, e.g. {sorted(names)[:5]}")
+        public_groups = {g for g in group_signatures(tools, obj) if not g.endswith(SUFFIX)}
+        if public_groups:
+            problems.append(f"{name_of}: {len(public_groups)} COMDAT groups under public names, e.g. {sorted(public_groups)[:5]}")
+        if ANCHOR.format(index) not in private:
+            problems.append(f"{name_of}: does not define its anchor {ANCHOR.format(index)}")
+    stale = sorted(n for n in undefined if not n.endswith(SUFFIX) and n + SUFFIX in private)
+    if stale:
+        problems.append(f"{len(stale)} references by the old name of a symbol the archive renamed, e.g. "
+                        + ", ".join(f"{n} in shard {sorted(undefined[n])[0]}" for n in stale[:5]))
+    dangling = sorted(n for n in undefined if n.endswith(SUFFIX) and n not in private and n not in weak)
+    if dangling:
+        problems.append(f"{len(dangling)} private names referenced but defined nowhere, e.g. {dangling[:5]}")
+    missing = sorted(keep - defined)
+    if missing:
+        problems.append(f"{len(missing)} C API symbols are not defined, e.g. {missing[:5]}")
+    return problems
+
+
+def check_archive(tools, archive, keep):
+    """--check: verify() on the members of an existing split archive."""
+    work = tempfile.mkdtemp(prefix="split-check.")
+    try:
+        members = [name for name, _, _ in archive_members(archive)]
+        if not members:
+            sys.exit(f"{archive}: no members")
+        run([tools["ar"], "x", os.path.abspath(archive)], cwd=work)
+        problems = verify(tools, [os.path.join(work, m) for m in members], keep)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    for problem in problems:
+        log(f"  {problem}")
+    if problems:
+        sys.exit(f"{archive}: not a valid split archive ({len(problems)} problems)")
+    log(f"{archive}: a valid split archive of {len(members)} shards")
 
 
 def ar_header(name, size):
@@ -353,8 +477,11 @@ def git_commit():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("input", help="the minimised, stripped multi-member archive")
-    parser.add_argument("output", help="the split archive to write")
+    parser.add_argument("input", help="the minimised, stripped multi-member archive (with --check: the split archive)")
+    parser.add_argument("output", nargs="?", help="the split archive to write")
+    parser.add_argument("--check", action="store_true",
+                        help="only check that the input is a valid split archive, and exit non-zero if not")
+    parser.add_argument("--contract", help="a file of the C API symbols, one per line (default: check_export_contract.py's)")
     parser.add_argument("--manifest", help="where to write the JSON manifest (default: <output>.json)")
     parser.add_argument("--shard-mb", type=float,
                         default=float(os.environ.get("CHDB_SPLIT_SHARD_MB", DEFAULT_SHARD_MB)),
@@ -366,7 +493,12 @@ def main():
     if not sys.platform.startswith("linux"):
         sys.exit("split_static_lib: Linux only; the macOS archive is already made of ordinary members")
     tools = find_tools()
-    keep = contract()
+    keep = contract(args.contract)
+    if args.check:
+        check_archive(tools, args.input, keep)
+        return
+    if not args.output:
+        parser.error("the output archive is required")
     c_library = c_library_exports()
 
     out_dir = os.path.dirname(os.path.abspath(args.output))
@@ -444,8 +576,12 @@ def main():
 
         all_signatures = set().union(*signatures)
         # Shared between shards, or a COMDAT signature: global under a private name.
+        # The anchors too, even the one of a single shard, which only that shard references:
+        # check_static_lib_hermetic.sh finds a shard by its anchor, in the archive and in the
+        # consumer's link trace, and neither shows a local symbol.
+        anchors = {ANCHOR.format(index) for index in range(count)}
         shared = {name for name in defined_in
-                  if name not in keep and (len(seen_in[name]) > 1 or name in all_signatures)}
+                  if name not in keep and (len(seen_in[name]) > 1 or name in all_signatures or name in anchors)}
         hooks = {name for name in weak_undefined if name not in defined_in and name not in c_library}
         rename = {name: name + SUFFIX for name in (shared | hooks) if not name.endswith(SUFFIX)}
         log(f"  {count} shards; {len(defined_in)} global definitions, {len(shared)} shared between shards "
@@ -485,31 +621,14 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
             finished = list(pool.map(finish, range(count)))
             final_tables = list(pool.map(lambda item: symbols(tools, item[0]), finished))
-            final_signatures = list(pool.map(lambda item: group_signatures(tools, item[0]), finished))
-
-        # What check_static_lib_hermetic.sh checks again on the archive, here against the names
-        # the input had.
-        private_defined = set()
-        for defined, _, _ in final_tables:
-            extra = {n for n in defined if n not in keep and not n.endswith(SUFFIX)}
-            if extra:
-                sys.exit(f"{len(extra)} definitions kept a global name outside the C API, e.g. {sorted(extra)[:5]}")
-            private_defined |= {n for n in defined if n.endswith(SUFFIX)}
-        for index, (_, undefined, _) in enumerate(final_tables):
-            stale = {n for n in undefined if n in defined_in and n not in keep and not n.endswith(SUFFIX)}
-            if stale:
-                sys.exit(f"shard {index} still references {len(stale)} symbols of the archive by their old "
-                         f"name, e.g. {sorted(stale)[:5]}")
-            dangling = {n for n in undefined if n.endswith(SUFFIX) and n not in private_defined
-                        and n[:-len(SUFFIX)] not in hooks}
-            if dangling:
-                sys.exit(f"shard {index} references {len(dangling)} private names nothing defines, e.g. {sorted(dangling)[:5]}")
-        for index, names_ in enumerate(final_signatures):
-            public = {n for n in names_ if not n.endswith(SUFFIX)}
-            if public:
-                sys.exit(f"shard {index} has COMDAT groups under public names, e.g. {sorted(public)[:5]}")
 
         objects = [out for out, _ in finished]
+        problems = verify(tools, objects, keep)
+        if problems:
+            for problem in problems:
+                log(f"  {problem}")
+            sys.exit(f"the split archive would not be valid ({len(problems)} problems)")
+
         archive = write_archive(objects, [table[0] for table in final_tables], os.path.join(work, "libchdb.a"))
         os.replace(os.path.join(work, "libchdb.a"), args.output)
 
