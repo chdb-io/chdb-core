@@ -295,6 +295,20 @@ if split_fixture fx fx 0.0001; then
     fi
     try_link "fx, stale reference" 0 "${FX_CXX}" host_fx.o -o host_fx -pthread -fuse-ld=bfd -Lbad -lfx \
         && run_host "fx, stale reference: links, then reaches the host's helper()" fail ./host_fx
+    # A shard that no longer references the next shard's anchor breaks the ring: a plain -l
+    # could then leave out a shard that only constructors live in.
+    mkdir -p ring/shards
+    cp fx/shards/*.o ring/shards/
+    "${llvm_objcopy:-objcopy}" --redefine-sym chdb_split_shard_2.chdb=fx_unrelated_reference "$(shard ring 1)"
+    # shellcheck disable=SC2046
+    (cd ring/shards && ar rcs ../libfx.a $(ls *.o | sort))
+    if python3 "${SPLIT}" --check ring/libfx.a --contract "${FIXTURE}/fx.contract" > check.log 2>&1; then
+        fail "fx: split_static_lib.py --check accepts a shard that does not reference the next anchor"
+    elif grep -q "shard 1 .*does not reference the next shard's anchor chdb_split_shard_2.chdb" check.log; then
+        pass "fx: split_static_lib.py --check rejects a broken anchor ring"
+    else
+        sed 's/^/    /' check.log; fail "fx: --check rejected the broken anchor ring for another reason"
+    fi
 else
     fail "fx: split_static_lib.py failed"
 fi

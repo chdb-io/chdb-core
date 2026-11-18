@@ -334,7 +334,10 @@ def verify(tools, objects, keep):
     - On aarch64, no code is left in .text or .text.*, and shard i's code is all in
       .chdb.text.<i>.*: what the consumer's .text gets, or code of the same name in two
       shards, is one output section, and GNU ld cannot place its stubs within reach of a BL.
-    - Shard i defines the anchor of shard i, and every contract symbol is defined."""
+    - Shard i defines the anchor of shard i and, with more than one shard, references the
+      anchor of shard i + 1 (the last one shard 0's): the ring that makes a plain -lchdb pull
+      in every shard. A single shard's reference to its own anchor is resolved by `ld -r`.
+    - Every contract symbol is defined."""
     problems = []
     defined, private, undefined, weak = set(), set(), {}, set()
     for index, obj in enumerate(objects):
@@ -376,6 +379,9 @@ def verify(tools, objects, keep):
             problems.append(f"{name_of}: {len(misplaced)} code sections outside {prefix}*, e.g. {misplaced[:5]}")
         if ANCHOR.format(index) not in private:
             problems.append(f"{name_of}: does not define its anchor {ANCHOR.format(index)}")
+        next_anchor = ANCHOR.format((index + 1) % len(objects))
+        if len(objects) > 1 and index not in undefined.get(next_anchor, set()):
+            problems.append(f"{name_of}: does not reference the next shard's anchor {next_anchor}")
     stale = sorted(n for n in undefined if not n.endswith(SUFFIX) and n + SUFFIX in private)
     if stale:
         problems.append(f"{len(stale)} references by the old name of a symbol the archive renamed, e.g. "
