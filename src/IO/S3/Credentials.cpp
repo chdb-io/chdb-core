@@ -1487,6 +1487,31 @@ std::shared_ptr<Aws::Auth::AWSCredentialsProvider> getCredentialsProvider(
     {
         credentials_provider
             = std::make_shared<S3CredentialsProviderChain>(configuration, credentials, credentials_configuration);
+
+        /// A profile of the AWS config file like
+        ///     [profile name]
+        ///     role_arn = arn:aws:iam::123456789012:role/name
+        ///     credential_source = Ec2InstanceMetadata
+        /// makes that role the identity of the server: it is assumed with whatever the chain above resolves
+        /// (the value of `credential_source` is not checked), and a `role_arn` of the query is assumed on top
+        /// of it below. It applies only when the chain resolves the server's own credentials, and there is no
+        /// fallback to them if the role cannot be assumed. `source_profile` is not supported.
+        const auto profile_name = Aws::Auth::GetConfigProfileName();
+        const auto profile = Aws::Config::GetCachedConfigProfile(profile_name);
+        if (credentials_configuration.use_environment_credentials && credentials.IsEmpty()
+            && !profile.GetRoleArn().empty() && !profile.GetValue("credential_source").empty()
+            && profile.GetValue("web_identity_token_file").empty())
+        {
+            LOG_INFO(getLogger("AWSClient"), "Assuming role {} of profile {}", profile.GetRoleArn(), profile_name);
+            credentials_provider = AwsAuthSTSAssumeRoleCredentialsProvider::create(
+                profile.GetRoleArn(),
+                profile.GetValue("role_session_name"),
+                profile.GetExternalId(),
+                credentials_configuration.expiration_window_seconds,
+                std::move(credentials_provider),
+                configuration,
+                credentials_configuration.sts_endpoint_override);
+        }
     }
 
     /// Skip the STS assume-role wrapper for anonymous / `gcp_oauth` / fallback clients, so a stray `role_arn`
