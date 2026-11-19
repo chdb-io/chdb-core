@@ -112,10 +112,15 @@ def main():
     runs = max(runs, 1)
     length = end / runs or 1
     sizes = [0] * runs
+    # llvm-objcopy renames every section of a name, and rejects a second option for it. An
+    # object `ld -r` made can have several code sections of one name, each in a COMDAT group
+    # of its own; they all go into the run of the first one.
+    run_of = {}
     for i, (name, start) in enumerate(sections):
-        run = min(int(start // length), runs - 1)
-        print(f"--rename-section={name}={args.prefix}{run}")
-        sizes[run] += (sections[i + 1][1] if i + 1 < len(sections) else end) - start
+        if name not in run_of:
+            run_of[name] = min(int(start // length), runs - 1)
+            print(f"--rename-section={name}={args.prefix}{run_of[name]}")
+        sizes[run_of[name]] += (sections[i + 1][1] if i + 1 < len(sections) else end) - start
     names = f"{args.prefix}0-{runs - 1}" if runs > 1 else f"{args.prefix}0"
     print(f"split_static_lib_text: {len(sections)} code sections, {end / MB:.1f} MB, into {runs} output sections "
           f"{names} of " + ", ".join(f"{size / MB:.1f}" for size in sizes) + " MB", file=sys.stderr)
