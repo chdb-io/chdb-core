@@ -127,9 +127,9 @@ public:
     /// Closes and removes session
     void closeSession(const String & session_id);
 
-#if USE_PYTHON
     bool isJSONSupported() const { return is_json_supported; }
     void setJSONSupport(bool support) { is_json_supported = support; }
+#if USE_PYTHON
     std::shared_ptr<CHDB::PythonTableCache> & getPythonTableCache() { return py_table_cache; }
     void setPythonTableCache(std::shared_ptr<CHDB::PythonTableCache> py_table_cache_) { py_table_cache = std::move(py_table_cache_); }
 #endif
