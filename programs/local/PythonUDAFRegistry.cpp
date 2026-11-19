@@ -244,7 +244,8 @@ bool PythonUDAFRegistry::removeUDAF(const String & name)
 
 void PythonUDAFRegistry::clear()
 {
-    py::gil_assert();
+    if (Py_IsInitialized())
+        py::gil_assert();
 
     std::unordered_map<String, PythonUDAFDescriptorPtr> removed;
     {

@@ -167,6 +167,11 @@ DB::DataTypePtr PythonScalarUDF::getReturnTypeImpl(const DB::DataTypes & argumen
 
 PythonScalarUDF::~PythonScalarUDF()
 {
+    if (!Py_IsInitialized())
+    {
+        (void)func.release();
+        return;
+    }
     py::gil_scoped_acquire acquire;
     func.release().dec_ref();
 }
