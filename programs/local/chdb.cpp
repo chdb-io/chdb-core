@@ -14,6 +14,7 @@
 #include <optional>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <EmbeddedSession.h>
@@ -233,6 +234,7 @@ const std::string & chdb_streaming_result_error_string(chdb_streaming_result * r
 struct ChdbConnectionState
 {
     chdb_conn raw_conn{nullptr, false};
+    chdb_conn ** owned_outer_cell = nullptr;
     std::unique_ptr<DB::EmbeddedSession> owned_client;
     std::shared_ptr<CHDB::InterruptController> interrupt_controller;
     std::condition_variable cv;
@@ -249,6 +251,19 @@ struct ChdbConnectionState
     }
 };
 
+struct ChdbDatabaseState
+{
+    chdb_database_ raw_db{nullptr};
+    DB::EmbeddedDatabasePtr owned_db;
+    bool closed = false;
+
+    explicit ChdbDatabaseState(DB::EmbeddedDatabasePtr db_)
+        : owned_db(std::move(db_))
+    {
+        raw_db.internal_data = owned_db.get();
+    }
+};
+
 namespace
 {
 struct ConnectionRegistry
@@ -256,6 +271,7 @@ struct ConnectionRegistry
     std::mutex mutex;
     std::unordered_map<const chdb_conn *, std::shared_ptr<ChdbConnectionState>> by_conn;
     std::unordered_map<const void *, std::shared_ptr<ChdbConnectionState>> by_client;
+    std::unordered_set<chdb_conn **> owned_cells;
 
     static ConnectionRegistry & instance()
     {
@@ -263,6 +279,39 @@ struct ConnectionRegistry
         return *reg;
     }
 };
+
+struct DatabaseRegistry
+{
+    std::mutex mutex;
+    std::unordered_map<const chdb_database_ *, std::shared_ptr<ChdbDatabaseState>> by_handle;
+
+    static DatabaseRegistry & instance()
+    {
+        static auto * reg = new DatabaseRegistry;
+        return *reg;
+    }
+};
+
+struct NormalizedOptionArgv
+{
+    std::vector<char *> ptrs;
+};
+
+NormalizedOptionArgv normalizeOptionArgv(int argc, const char * const * argv)
+{
+    NormalizedOptionArgv out;
+    if (argc <= 0 || !argv)
+        return out;
+
+    static char kProgName[] = "chdb";
+    const bool needs_prog_prefix = argv[0] && std::strncmp(argv[0], "--", 2) == 0;
+    out.ptrs.reserve(static_cast<size_t>(argc) + (needs_prog_prefix ? 1 : 0));
+    if (needs_prog_prefix)
+        out.ptrs.push_back(kProgName);
+    for (int i = 0; i < argc; ++i)
+        out.ptrs.push_back(const_cast<char *>(argv[i]));
+    return out;
+}
 
 thread_local std::vector<const ChdbConnectionState *> active_leases_on_thread;
 
@@ -363,7 +412,146 @@ ChdbConnectionLease acquireConnectionLeaseByClient(const void * client_ptr)
     return ChdbConnectionLease(state, state->owned_client.get());
 }
 
-chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
+chdb_database open_chdb_database_with_exception(const char * path, const chdb_open_options * opts)
+{
+    try
+    {
+        if (opts && opts->struct_size != 0 && opts->struct_size < sizeof(chdb_open_options))
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Invalid chdb_open_options struct_size");
+        if (opts && opts->argc > 0 && !opts->argv)
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "chdb_open_options argv is NULL with positive argc");
+
+        std::optional<DB::ThreadStatus> thread_status;
+        if (!DB::CurrentThread::isInitialized())
+            thread_status.emplace();
+
+        auto norm = normalizeOptionArgv(opts ? opts->argc : 0, opts ? opts->argv : nullptr);
+        const bool read_only = opts && opts->read_only != 0;
+        const std::string target_path = (path && path[0] != '\0') ? std::string(path) : std::string(":memory:");
+
+        auto db = DB::EmbeddedServer::openDatabase(
+            target_path,
+            static_cast<int>(norm.ptrs.size()),
+            norm.ptrs.empty() ? nullptr : norm.ptrs.data(),
+            /*isolated_memory=*/true,
+            /*default_read_only=*/read_only,
+            /*explicit_path_arg=*/false,
+            /*allow_readonly_os_dir=*/read_only);
+
+        auto state = std::make_shared<ChdbDatabaseState>(std::move(db));
+        {
+            auto & reg = DatabaseRegistry::instance();
+            std::lock_guard<std::mutex> lock(reg.mutex);
+            reg.by_handle.emplace(&state->raw_db, state);
+        }
+        return &state->raw_db;
+    }
+    catch (const DB::Exception & e)
+    {
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to open database: {}", DB::getExceptionMessage(e, false));
+    }
+    catch (const Poco::Exception & e)
+    {
+        throw std::domain_error(std::string("Database open failed: ") + e.displayText());
+    }
+    catch (const std::exception & e)
+    {
+        throw std::domain_error(std::string("Database open failed: ") + e.what());
+    }
+    catch (...)
+    {
+        throw std::domain_error(DB::getCurrentExceptionMessage(true));
+    }
+}
+
+namespace
+{
+chdb_connection createConnectionFromDatabaseImpl(
+    chdb_database db,
+    const chdb_connect_options * opts,
+    bool allocate_outer_cell,
+    chdb_connection ** out_cell)
+{
+    if (!db)
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Database handle is NULL");
+    if (opts && opts->struct_size != 0 && opts->struct_size < sizeof(chdb_connect_options))
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Invalid chdb_connect_options struct_size");
+    if (opts && opts->argc > 0 && !opts->argv)
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "chdb_connect_options argv is NULL with positive argc");
+
+    DB::EmbeddedDatabasePtr db_ptr;
+    {
+        auto & reg = DatabaseRegistry::instance();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        auto it = reg.by_handle.find(db);
+        if (it == reg.by_handle.end() || !it->second || it->second->closed || !it->second->owned_db)
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Database handle is invalid or closed");
+        db_ptr = it->second->owned_db;
+    }
+
+    std::optional<DB::ThreadStatus> thread_status;
+    if (!DB::CurrentThread::isInitialized())
+        thread_status.emplace();
+
+    auto norm = normalizeOptionArgv(opts ? opts->argc : 0, opts ? opts->argv : nullptr);
+    const bool force_ro = opts && opts->read_only != 0;
+
+    auto client = DB::EmbeddedSession::create(
+        std::move(db_ptr),
+        static_cast<int>(norm.ptrs.size()),
+        norm.ptrs.empty() ? nullptr : norm.ptrs.data(),
+        force_ro);
+    if (!client)
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create EmbeddedSession");
+
+    auto state = std::make_shared<ChdbConnectionState>(std::move(client));
+    std::unique_ptr<chdb_conn *> outer_cell;
+    if (allocate_outer_cell)
+    {
+        outer_cell = std::make_unique<chdb_conn *>(&state->raw_conn);
+        state->owned_outer_cell = outer_cell.get();
+    }
+
+    {
+        auto & reg = ConnectionRegistry::instance();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        reg.by_conn.emplace(&state->raw_conn, state);
+        reg.by_client.emplace(state->raw_conn.server, state);
+        if (state->owned_outer_cell)
+            reg.owned_cells.insert(state->owned_outer_cell);
+    }
+
+    if (out_cell)
+        *out_cell = reinterpret_cast<chdb_connection *>(outer_cell.release());
+    return reinterpret_cast<chdb_connection>(&state->raw_conn);
+}
+}
+
+chdb_connection * connect_chdb_database_with_exception(chdb_database db, const chdb_connect_options * opts)
+{
+    try
+    {
+        chdb_connection * cell = nullptr;
+        (void)createConnectionFromDatabaseImpl(db, opts, /*allocate_outer_cell=*/true, &cell);
+        return cell;
+    }
+    catch (const DB::Exception & e)
+    {
+        throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create connection: {}", DB::getExceptionMessage(e, false));
+    }
+    catch (const Poco::Exception & e)
+    {
+        throw std::domain_error(std::string("Connection failed: ") + e.displayText());
+    }
+    catch (const std::exception & e)
+    {
+        throw std::domain_error(std::string("Connection failed: ") + e.what());
+    }
+    catch (...)
+    {
+        throw std::domain_error(DB::getCurrentExceptionMessage(true));
+    }
+}
 
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
@@ -372,22 +560,8 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
         std::optional<DB::ThreadStatus> thread_status;
         if (!DB::CurrentThread::isInitialized())
             thread_status.emplace();
-        auto & server = DB::EmbeddedServer::getInstance(argc, argv);
-        std::unique_ptr<DB::EmbeddedSession> client;
-        try
-        {
-            client = DB::EmbeddedSession::create(server, argc, argv);
-        }
-        catch (...)
-        {
-            /// getInstance() already counted this connection, and only a fully
-            /// constructed EmbeddedSession releases it from its destructor — without
-            /// this release a failed connect (e.g. an invalid --setting value)
-            /// would pin the engine alive forever, blocking any later connect
-            /// with a different path.
-            DB::EmbeddedServer::releaseInstance();
-            throw;
-        }
+        auto database = DB::EmbeddedServer::openDatabaseFromArgs(argc, argv);
+        auto client = DB::EmbeddedSession::create(std::move(database), argc, argv);
         if (!client)
         {
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create EmbeddedSession");
@@ -395,12 +569,14 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 
         auto state = std::make_shared<ChdbConnectionState>(std::move(client));
         auto conn_ptr = std::make_unique<chdb_conn *>(&state->raw_conn);
+        state->owned_outer_cell = conn_ptr.get();
 
         {
             auto & reg = ConnectionRegistry::instance();
             std::lock_guard<std::mutex> lock(reg.mutex);
             reg.by_conn.emplace(&state->raw_conn, state);
             reg.by_client.emplace(state->raw_conn.server, state);
+            reg.owned_cells.insert(state->owned_outer_cell);
         }
 
         return reinterpret_cast<chdb_connection *>(conn_ptr.release());
@@ -543,15 +719,18 @@ void close_conn(chdb_conn ** conn)
 
     std::shared_ptr<ChdbConnectionState> state_to_close;
     std::unique_ptr<DB::EmbeddedSession> client_to_destroy;
+    bool delete_outer_cell = false;
     {
         auto & reg = ConnectionRegistry::instance();
         std::unique_lock<std::mutex> lock(reg.mutex);
         auto it = reg.by_conn.find(*conn);
         if (it == reg.by_conn.end())
         {
+            delete_outer_cell = reg.owned_cells.erase(conn) > 0;
             lock.unlock();
             *conn = nullptr;
-            delete conn;
+            if (delete_outer_cell)
+                delete conn;
             return;
         }
 
@@ -583,6 +762,12 @@ void close_conn(chdb_conn ** conn)
             state_to_close->cv.wait(lock, [&] { return state_to_close->active_ops == 0; });
         }
 
+        delete_outer_cell = (state_to_close->owned_outer_cell == conn);
+        if (state_to_close->owned_outer_cell)
+        {
+            reg.owned_cells.erase(state_to_close->owned_outer_cell);
+            state_to_close->owned_outer_cell = nullptr;
+        }
         reg.by_client.erase(state_to_close->raw_conn.server);
         reg.by_conn.erase(it);
         state_to_close->raw_conn.server = nullptr;
@@ -606,7 +791,8 @@ void close_conn(chdb_conn ** conn)
     state_to_close->cv.notify_all();
 
     *conn = nullptr;
-    delete conn;
+    if (delete_outer_cell)
+        delete conn;
 }
 
 struct local_result_v2 * query_conn(chdb_conn * conn, const char * query, const char * format)
@@ -772,6 +958,106 @@ void chdb_destroy_result(chdb_streaming_result * result)
 }
 
 /// ============== New API Implementation ==============
+
+chdb_state chdb_open(const char * path, const chdb_open_options * opts, chdb_database * out_db)
+{
+    if (!out_db)
+        return CHDBError;
+    *out_db = nullptr;
+
+    try
+    {
+        *out_db = open_chdb_database_with_exception(path, opts);
+        return *out_db ? CHDBSuccess : CHDBError;
+    }
+    catch (const DB::Exception & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_open failed with DB::Exception: {}", DB::getExceptionMessage(e, false));
+        return CHDBError;
+    }
+    catch (const boost::program_options::error & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_open failed with bad arguments: {}", e.what());
+        return CHDBError;
+    }
+    catch (const Poco::Exception & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_open failed with Poco::Exception: {}", e.displayText());
+        return CHDBError;
+    }
+    catch (...)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_open failed with unknown exception: {}", DB::getCurrentExceptionMessage(true));
+        return CHDBError;
+    }
+}
+
+void chdb_close_database(chdb_database * db)
+{
+    if (!db || !*db)
+        return;
+
+    DB::EmbeddedDatabasePtr db_to_destroy;
+    {
+        auto & reg = DatabaseRegistry::instance();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        auto it = reg.by_handle.find(*db);
+        if (it != reg.by_handle.end())
+        {
+            if (it->second)
+            {
+                it->second->closed = true;
+                it->second->raw_db.internal_data = nullptr;
+                db_to_destroy = std::move(it->second->owned_db);
+            }
+            reg.by_handle.erase(it);
+        }
+    }
+
+    *db = nullptr;
+
+    try
+    {
+        db_to_destroy.reset();
+    }
+    catch (...)
+    {
+        DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+    }
+}
+
+chdb_state chdb_connect_database(chdb_database db, const chdb_connect_options * opts, chdb_connection * out_conn)
+{
+    if (!out_conn)
+        return CHDBError;
+    *out_conn = nullptr;
+
+    try
+    {
+        *out_conn = createConnectionFromDatabaseImpl(db, opts, /*allocate_outer_cell=*/false, /*out_cell=*/nullptr);
+        return *out_conn ? CHDBSuccess : CHDBError;
+    }
+    catch (const DB::Exception & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_connect_database failed with DB::Exception: {}", DB::getExceptionMessage(e, false));
+        return CHDBError;
+    }
+    catch (const boost::program_options::error & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_connect_database failed with bad arguments: {}", e.what());
+        return CHDBError;
+    }
+    catch (const Poco::Exception & e)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_connect_database failed with Poco::Exception: {}", e.displayText());
+        return CHDBError;
+    }
+    catch (...)
+    {
+        LOG_ERROR(&Poco::Logger::get("EmbeddedServer"), "chdb_connect_database failed with unknown exception: {}", DB::getCurrentExceptionMessage(true));
+        return CHDBError;
+    }
+}
 
 chdb_connection * chdb_connect(int argc, char ** argv)
 {

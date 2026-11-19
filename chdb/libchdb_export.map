@@ -17,6 +17,9 @@
         chdb_destroy_result;
 
         /* New API */
+        chdb_open;
+        chdb_close_database;
+        chdb_connect_database;
         chdb_connect;
         chdb_close_conn;
         chdb_interrupt;

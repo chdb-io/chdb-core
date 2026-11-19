@@ -112,7 +112,7 @@ static void loadDatabase(
 
     String database_attach_query;
 
-    auto default_db_disk = Context::getGlobalContextInstance()->getDatabaseDisk();
+    auto default_db_disk = context->getDatabaseDisk();
     if (default_db_disk->existsFile(metadata_file_path))
     {
         /// There is .sql file with database creation statement.
@@ -136,9 +136,9 @@ static void loadDatabase(
     }
 }
 
-static void checkUnsupportedVersion(ContextMutablePtr, const String & database_name)
+static void checkUnsupportedVersion(ContextMutablePtr context, const String & database_name)
 {
-    auto default_db_disk = Context::getGlobalContextInstance()->getDatabaseDisk();
+    auto default_db_disk = context->getDatabaseDisk();
     /// Produce better exception message
     auto metadata_dir_path = DatabaseCatalog::getMetadataDirPath(database_name);
     if (default_db_disk->existsDirectory(metadata_dir_path))
@@ -208,7 +208,7 @@ static void dropRestoringDatabasesForTableDropping(ContextMutablePtr context, co
 LoadTaskPtrs loadMetadata(ContextMutablePtr context, const String & default_database_name, bool async_load_databases)
 {
     auto component_guard = Coordination::setCurrentComponent("loadMetadata");
-    auto default_db_disk = Context::getGlobalContextInstance()->getDatabaseDisk();
+    auto default_db_disk = context->getDatabaseDisk();
 
     LoggerPtr log = getLogger("loadMetadata");
 
@@ -346,7 +346,7 @@ static void loadSystemDatabaseImpl(ContextMutablePtr context, const String & dat
     if (DatabaseCatalog::instance().isDatabaseExist(database_name))
         return;
 
-    auto default_db_disk = Context::getGlobalContextInstance()->getDatabaseDisk();
+    auto default_db_disk = context->getDatabaseDisk();
     auto metadata_file = DatabaseCatalog::getMetadataFilePath(database_name);
     auto metadata_tmp_file = DatabaseCatalog::getMetadataTmpFilePath(database_name);
     default_db_disk->removeFileIfExists(metadata_tmp_file);

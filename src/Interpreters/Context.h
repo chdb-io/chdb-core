@@ -18,6 +18,7 @@
 #include <Disks/IO/getThreadPoolReader.h>
 #include <Formats/FormatSettings.h>
 #include <Interpreters/ClientInfo.h>
+#include <Interpreters/ChdbNamespace.h>
 #include <Interpreters/Context_fwd.h>
 #include <Interpreters/StorageID.h>
 #include <Interpreters/DistributedPlanLocalObject.h>
@@ -839,6 +840,7 @@ protected:
     bool is_json_supported = true;
     std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
     std::shared_ptr<CHDB::ArrowStreamRegistry> arrow_stream_registry;
+    ChdbNamespacePtr chdb_namespace;
 };
 
 /** A set of known objects that can be used in the query.
@@ -989,6 +991,10 @@ public:
 #endif
     CHDB::ArrowStreamRegistry * getArrowStreamRegistry() const { return arrow_stream_registry.get(); }
     void setArrowStreamRegistry(const std::shared_ptr<CHDB::ArrowStreamRegistry> & registry) { this->arrow_stream_registry = registry; }
+    const ChdbNamespacePtr & getChdbNamespace() const { return chdb_namespace; }
+    void setChdbNamespace(ChdbNamespacePtr ns) { this->chdb_namespace = std::move(ns); }
+    void markAsNamespaceGlobalContext();
+    void removeChdbDiskAndStoragePolicy(const String & disk_name, const String & policy_name);
 
     AccessControl & getAccessControl();
     const AccessControl & getAccessControl() const;

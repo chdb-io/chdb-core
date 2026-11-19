@@ -13,6 +13,9 @@ _chdb_streaming_fetch_result
 _chdb_streaming_cancel_query
 _chdb_destroy_result
 
+_chdb_open
+_chdb_close_database
+_chdb_connect_database
 _chdb_connect
 _chdb_close_conn
 _chdb_interrupt

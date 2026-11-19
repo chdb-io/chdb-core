@@ -562,6 +562,7 @@ void DatabaseOrdinary::loadTableFromMetadata(
     const ASTPtr & ast,
     LoadingStrictnessLevel mode)
 {
+    ChdbNamespaceScope ns_scope(local_context ? local_context->getChdbNamespace() : nullptr);
     chassert(name.database == TSA_SUPPRESS_WARNING_FOR_READ(database_name));
     const auto & query = ast->as<const ASTCreateQuery &>();
 
@@ -705,6 +706,7 @@ void DatabaseOrdinary::loadTableLazy(
                         global_context = local_context->getGlobalContext(),
                         mode]() -> StoragePtr
     {
+        ChdbNamespaceScope ns_scope(global_context ? global_context->getChdbNamespace() : nullptr);
         auto load_context = Context::createCopy(global_context);
         ParserCreateQuery parser;
         ASTPtr parsed_ast = parseQuery(

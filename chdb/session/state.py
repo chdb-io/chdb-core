@@ -39,7 +39,27 @@ class Session:
           to avoid lock contention, though sharing a session across threads is safe.
     """
 
+    @staticmethod
+    def _is_isolated_memory_conn_str(conn_str: str) -> bool:
+        working = conn_str
+        if working.startswith("file:"):
+            working = working[5:]
+            if working.startswith("///"):
+                working = working[2:]
+        base_path, _, query = working.partition("?")
+        if base_path not in ("", ":memory:"):
+            return False
+        if query:
+            for item in query.split("&"):
+                k, sep, v = item.partition("=")
+                if k == "shared" and (not sep or v.lower() not in ("0", "false", "no")):
+                    return False
+                if k == "isolated" and sep and v.lower() in ("0", "false", "no"):
+                    return False
+        return True
+
     def __init__(self, path=None):
+        self._db = None
         self._conn = None
         if path is None:
             self._path = ":memory:"
@@ -58,7 +78,16 @@ class Session:
         else:
             self._udf_path = ""
             self._conn_str = f"{self._path}"
-        self._conn = chdb_stateful.Connection(self._conn_str)
+        if self._is_isolated_memory_conn_str(self._conn_str):
+            self._db = chdb_stateful.Database(self._conn_str)
+            try:
+                self._conn = self._db.connect()
+            except BaseException:
+                self._db.close()
+                self._db = None
+                raise
+        else:
+            self._conn = chdb_stateful.Connection(self._conn_str)
 
     def __del__(self):
         self.close()
@@ -89,8 +118,15 @@ class Session:
             >>> session.close()  # Explicitly close the session
         """
         if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+        if getattr(self, "_db", None) is not None:
+            try:
+                self._db.close()
+            finally:
+                self._db = None
 
     def cleanup(self):
         """Cleanup session resources with exception handling.

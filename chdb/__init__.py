@@ -237,6 +237,8 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
                 res = conn.query_df(sql, params=params, tables=tables)
             else:
                 res = conn.query(sql, output_format, params=params, tables=tables)
+        except ChdbError:
+            raise
         except RuntimeError as e:
             raise ChdbError(str(e)) from e.with_traceback(None)
         else:
@@ -265,12 +267,14 @@ UDFType = _chdb.UDFType
 
 from . import dbapi, session, udf, utils  # noqa: E402
 from .udf import agg, func  # noqa: E402
-from .state import connect  # noqa: E402
+from .state import Database, connect, open  # noqa: E402
 
 __all__ = [
     "_chdb",
     "PyReader",
     "ChdbError",
+    "Database",
+    "open",
     "query",
     "sql",
     "func",

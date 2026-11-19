@@ -18,8 +18,10 @@
 
 namespace DB
 {
+class EmbeddedDatabase;
 class EmbeddedServer;
 class QueryStatus;
+using EmbeddedDatabasePtr = std::shared_ptr<EmbeddedDatabase>;
 }
 
 namespace CHDB
@@ -81,9 +83,11 @@ class EmbeddedSession
 public:
     using ProgressValuesCallback = std::function<void(const ProgressValues &, UInt64)>;
 
-    static std::unique_ptr<EmbeddedSession> create(EmbeddedServer & server_ref, int argc = 0, char ** argv = nullptr);
+    static std::unique_ptr<EmbeddedSession> create(
+        EmbeddedDatabasePtr database_, int argc = 0, char ** argv = nullptr, bool force_read_only = false);
 
-    explicit EmbeddedSession(EmbeddedServer & server_ref, int argc = 0, char ** argv = nullptr);
+    explicit EmbeddedSession(
+        EmbeddedDatabasePtr database_, int argc = 0, char ** argv = nullptr, bool force_read_only = false);
     ~EmbeddedSession();
 
     EmbeddedSession(const EmbeddedSession &) = delete;
@@ -119,6 +123,7 @@ public:
 
     void interrupt() noexcept;
     const std::shared_ptr<CHDB::InterruptController> & getInterruptController() const noexcept { return interrupt_controller; }
+    const EmbeddedDatabasePtr & getDatabase() const noexcept { return database; }
 
     CHDB::ArrowStreamRegistry * getArrowStreamRegistry() const { return arrow_stream_registry.get(); }
 #if USE_PYTHON
@@ -162,6 +167,7 @@ private:
 
     void runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx);
 
+    EmbeddedDatabasePtr database;
     EmbeddedServer & server;
     std::unique_ptr<Session> session;
     ContextMutablePtr session_context;

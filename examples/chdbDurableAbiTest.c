@@ -757,9 +757,9 @@ int main(void)
     }
     expect_scalar(*conn, "11b. restored rows", "SELECT sum(id) FROM `数据库-α`.`данные`", "30\n");
 
-    /* 12. The new entry points do not disturb the engine's path model: one
-     *     path per process, several connections to it, a different path only
-     *     once they are all closed. */
+    /* 12. Multiple persistent paths coexist cleanly in one process: two
+     *     connections to the first path share its catalog, while a connection
+     *     to a second path mounts an isolated catalog alongside them. */
     chdb_close_conn(conn);
     {
         char other[600];
@@ -780,14 +780,21 @@ int main(void)
         if (second)
             analyze(*second, "SELECT 1", NULL, &a);
 
-        chdb_connection * intruder = chdb_connect(2, other_args);
-        if (intruder)
+        chdb_connection * parallel_second_path = chdb_connect(2, other_args);
+        if (!parallel_second_path)
         {
-            fail("12b. a second path is refused while one is open", "expected NULL");
-            chdb_close_conn(intruder);
+            fail("12b. a second path opens alongside the first", "expected a connection");
         }
         else
-            pass("12b. a second path is refused while one is open");
+        {
+            pass("12b. a second path opens alongside the first");
+            expect_scalar(
+                *parallel_second_path,
+                "12b2. second path does not see first path's database",
+                "SELECT count() FROM system.databases WHERE name = '数据库-α'",
+                "0\n");
+            chdb_close_conn(parallel_second_path);
+        }
 
         if (second)
             chdb_close_conn(second);
@@ -796,10 +803,10 @@ int main(void)
 
         chdb_connection * after = chdb_connect(2, other_args);
         if (!after)
-            fail("12c. a second path opens once the first is closed", "expected a connection");
+            fail("12c. second path reopens cleanly after all connections close", "expected a connection");
         else
         {
-            pass("12c. a second path opens once the first is closed");
+            pass("12c. second path reopens cleanly after all connections close");
             chdb_close_conn(after);
         }
     }

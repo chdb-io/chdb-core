@@ -79,20 +79,35 @@ namespace
     /// Checks that a path specified as parameters of File() is valid, and returns the
     /// 'backups.allowed_path' entry it resolved against. Every directory the backup may create is
     /// below that entry, so it bounds how far up the durability fsyncs have to go.
-    fs::path checkPath(fs::path & path, const Poco::Util::AbstractConfiguration & config, const fs::path & data_dir)
+    fs::path checkPath(
+        fs::path & path,
+        const Poco::Util::AbstractConfiguration & config,
+        const fs::path & data_dir,
+        const std::vector<String> * namespace_allowed_paths = nullptr)
     {
         path = path.lexically_normal();
         if (path.empty())
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Path to backup must not be empty");
 
-        String key = "backups.allowed_path";
-        if (!config.has(key))
+        std::vector<String> configured_entries;
+        if (namespace_allowed_paths && !namespace_allowed_paths->empty())
+        {
+            configured_entries = *namespace_allowed_paths;
+        }
+        else
+        {
+            String key = "backups.allowed_path";
+            for (size_t counter = 0; config.has(key); key = "backups.allowed_path[" + std::to_string(++counter) + "]")
+                configured_entries.push_back(config.getString(key));
+        }
+
+        if (configured_entries.empty())
             throw Exception(ErrorCodes::INVALID_CONFIG_PARAMETER,
                             "The 'backups.allowed_path' configuration parameter is not set, cannot use 'File' backup engine");
 
         if (path.is_relative())
         {
-            auto first_allowed_path = fs::path(config.getString(key));
+            auto first_allowed_path = fs::path(configured_entries.front());
             if (first_allowed_path.is_relative())
                 first_allowed_path = data_dir / first_allowed_path;
 
@@ -103,9 +118,9 @@ namespace
         /// boundary does not depend on the order of the entries in the config.
         std::optional<fs::path> deepest_allowed_path;
         size_t deepest_depth = 0;
-        for (size_t counter = 0; config.has(key); key = "backups.allowed_path[" + std::to_string(++counter) + "]")
+        for (const auto & raw_allowed : configured_entries)
         {
-            auto allowed_path = fs::path(config.getString(key));
+            auto allowed_path = fs::path(raw_allowed);
             if (allowed_path.is_relative())
                 allowed_path = data_dir / allowed_path;
             allowed_path = allowed_path.lexically_normal();
@@ -144,7 +159,10 @@ namespace
                 throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Backup engine 'File' requires 1 argument (path)");
 
             location.path = args[0].safeGet<String>();
-            location.allowed_path = checkPath(location.path, context->getConfigRef(), fs::absolute(context->getPath()));
+            const auto & chdb_ns = context->getChdbNamespace();
+            const std::vector<String> * ns_paths
+                = (chdb_ns && !chdb_ns->backups_allowed_paths.empty()) ? &chdb_ns->backups_allowed_paths : nullptr;
+            location.allowed_path = checkPath(location.path, context->getConfigRef(), fs::absolute(context->getPath()), ns_paths);
         }
         else if (engine_name == "Disk")
         {

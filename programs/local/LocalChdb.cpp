@@ -68,6 +68,7 @@ struct PythonConnectionRegistry
     size_t active_stateless_queries = 0;
     std::atomic<bool> exit_complete{false};
     std::vector<std::weak_ptr<connection_wrapper>> connections;
+    std::vector<std::weak_ptr<database_wrapper>> databases;
 
     static PythonConnectionRegistry & instance()
     {
@@ -462,6 +463,147 @@ connection_wrapper::build_clickhouse_args(const std::string & path, const std::m
     return argv;
 }
 
+database_wrapper::database_wrapper(const std::string & conn_str, bool read_only)
+{
+    is_readonly = read_only;
+    auto [path, params] = connection_wrapper::parse_connection_string(conn_str);
+
+#if USE_CLIENT_AI
+    ai_config = connection_wrapper::extractAIParams(params);
+#endif
+
+    std::vector<std::string> option_args;
+    for (const auto & [key, value] : params)
+    {
+        if (key == "mode")
+        {
+            if (value == "ro")
+                is_readonly = true;
+        }
+        else if (key == "--")
+        {
+            option_args.push_back("--");
+        }
+        else if (value.empty())
+        {
+            option_args.push_back("--" + key);
+            default_conn_params[key] = "";
+        }
+        else
+        {
+            option_args.push_back("--" + key + "=" + value);
+            if (key != "user_scripts_path" && key != "user_defined_executable_functions_config"
+                && key != "backups.allowed_path" && key != "config-file")
+            {
+                default_conn_params[key] = value;
+            }
+        }
+    }
+
+    std::vector<const char *> argv_ptrs;
+    argv_ptrs.reserve(option_args.size());
+    for (const auto & arg : option_args)
+        argv_ptrs.push_back(arg.c_str());
+
+    chdb_open_options opts{};
+    opts.struct_size = sizeof(chdb_open_options);
+    opts.read_only = is_readonly ? 1 : 0;
+    opts.argc = static_cast<int>(argv_ptrs.size());
+    opts.argv = argv_ptrs.empty() ? nullptr : argv_ptrs.data();
+
+    const std::string effective_path = path.empty() ? ":memory:" : path;
+    {
+        py::gil_scoped_release release;
+        db = CHDB::open_chdb_database_with_exception(effective_path.c_str(), &opts);
+    }
+    db_path = effective_path;
+    is_memory_db = (effective_path == ":memory:");
+}
+
+database_wrapper::~database_wrapper()
+{
+    try
+    {
+        close();
+    }
+    catch (...)
+    {
+    }
+}
+
+std::shared_ptr<database_wrapper> database_wrapper::createPython(const std::string & conn_str, bool read_only)
+{
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+            throw std::runtime_error("chDB is shutting down");
+    }
+
+    auto result = std::make_shared<database_wrapper>(conn_str, read_only);
+    std::string warning = DB::EmbeddedServer::takeConnectWarning();
+
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+        {
+            result->close();
+            throw std::runtime_error("chDB is shutting down");
+        }
+        if (registry.databases.size() >= 64)
+            std::erase_if(registry.databases, [](const auto & item) { return item.expired(); });
+        registry.databases.push_back(result);
+    }
+
+    if (!warning.empty() && PyErr_WarnEx(PyExc_RuntimeWarning, warning.c_str(), 1) != 0)
+        throw py::error_already_set();
+    return result;
+}
+
+chdb_database database_wrapper::snapshotHandle() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    if (closed || !db)
+        throw std::runtime_error("Database is closed");
+    return db;
+}
+
+bool database_wrapper::isOpen() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    return db && !closed;
+}
+
+bool database_wrapper::needsExitClose() const
+{
+    std::lock_guard lock(lifecycle_mutex);
+    return !closed;
+}
+
+void database_wrapper::close()
+{
+    chdb_database to_close = nullptr;
+    {
+        std::lock_guard lock(lifecycle_mutex);
+        if (closed)
+            return;
+        closed = true;
+        to_close = std::exchange(db, nullptr);
+    }
+
+    if (to_close)
+    {
+        py::gil_scoped_release release;
+        chdb_close_database(&to_close);
+    }
+}
+
+std::shared_ptr<connection_wrapper> database_wrapper::connect(const std::string & options_str, bool read_only)
+{
+    return connection_wrapper::createFromDatabase(*this, options_str, read_only);
+}
+
 connection_wrapper::connection_wrapper(const std::string & conn_str)
 {
     is_readonly = false;
@@ -479,23 +621,97 @@ connection_wrapper::connection_wrapper(const std::string & conn_str)
         argv_char.push_back(const_cast<char *>(arg.c_str()));
     }
 
-    conn = CHDB::connect_chdb_with_exception(argv_char.size(), argv_char.data());
+    {
+        py::gil_scoped_release release;
+        conn = CHDB::connect_chdb_with_exception(argv_char.size(), argv_char.data());
+    }
     db_path = path;
     is_memory_db = (path == ":memory:");
 }
 
+connection_wrapper::connection_wrapper(
+    const database_wrapper & db_owner, const std::string & options_str, bool read_only)
+{
+    chdb_database db_handle = db_owner.snapshotHandle();
+    is_readonly = read_only;
+    db_path = db_owner.path();
+    is_memory_db = (db_path == ":memory:");
+
+#if USE_CLIENT_AI
+    ai_config = db_owner.getAIConfig();
+#endif
+
+    std::map<std::string, std::string> params = db_owner.defaultConnectionParams();
+    if (!options_str.empty())
+    {
+        const std::string query_form = options_str.front() == '?' ? options_str : ("?" + options_str);
+        for (auto & [k, v] : parse_connection_string(query_form).second)
+            params[k] = std::move(v);
+    }
+
+#if USE_CLIENT_AI
+    if (auto override_ai = extractAIParams(params))
+        ai_config = std::move(override_ai);
+#endif
+
+    std::vector<std::string> option_args;
+    for (const auto & [key, value] : params)
+    {
+        if (key == "mode")
+        {
+            if (value == "ro")
+                is_readonly = true;
+        }
+        else if (key == "--")
+        {
+            option_args.push_back("--");
+        }
+        else if (value.empty())
+        {
+            option_args.push_back("--" + key);
+        }
+        else
+        {
+            option_args.push_back("--" + key + "=" + value);
+        }
+    }
+
+    std::vector<const char *> argv_ptrs;
+    argv_ptrs.reserve(option_args.size());
+    for (const auto & arg : option_args)
+        argv_ptrs.push_back(arg.c_str());
+
+    chdb_connect_options opts{};
+    opts.struct_size = sizeof(chdb_connect_options);
+    opts.read_only = is_readonly ? 1 : 0;
+    opts.argc = static_cast<int>(argv_ptrs.size());
+    opts.argv = argv_ptrs.empty() ? nullptr : argv_ptrs.data();
+
+    {
+        py::gil_scoped_release release;
+        conn = CHDB::connect_chdb_database_with_exception(db_handle, &opts);
+    }
+}
+
 std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::string & conn_str)
 {
-    std::shared_ptr<connection_wrapper> result;
-    std::string warning;
     {
         auto & registry = PythonConnectionRegistry::instance();
         std::lock_guard lock(registry.mutex);
         if (registry.exiting)
             throw std::runtime_error("chDB is shutting down");
+    }
 
-        result = std::make_shared<connection_wrapper>(conn_str);
-        warning = DB::EmbeddedServer::takeConnectWarning();
+    auto result = std::make_shared<connection_wrapper>(conn_str);
+    std::string warning = DB::EmbeddedServer::takeConnectWarning();
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+        {
+            result->close();
+            throw std::runtime_error("chDB is shutting down");
+        }
         if (registry.connections.size() >= 64)
             std::erase_if(registry.connections, [](const auto & item) { return item.expired(); });
         registry.connections.push_back(result);
@@ -503,6 +719,32 @@ std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::
     /// Outside the registry lock: a warning filter may run Python code that connects again.
     if (!warning.empty() && PyErr_WarnEx(PyExc_RuntimeWarning, warning.c_str(), 1) != 0)
         throw py::error_already_set();
+    return result;
+}
+
+std::shared_ptr<connection_wrapper> connection_wrapper::createFromDatabase(
+    const database_wrapper & db_owner, const std::string & options_str, bool read_only)
+{
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+            throw std::runtime_error("chDB is shutting down");
+    }
+
+    auto result = std::make_shared<connection_wrapper>(db_owner, options_str, read_only);
+    {
+        auto & registry = PythonConnectionRegistry::instance();
+        std::lock_guard lock(registry.mutex);
+        if (registry.exiting)
+        {
+            result->close();
+            throw std::runtime_error("chDB is shutting down");
+        }
+        if (registry.connections.size() >= 64)
+            std::erase_if(registry.connections, [](const auto & item) { return item.expired(); });
+        registry.connections.push_back(result);
+    }
     return result;
 }
 
@@ -565,6 +807,7 @@ bool connection_wrapper::closePythonConnectionsAtExit()
 {
     auto & registry = PythonConnectionRegistry::instance();
     std::vector<std::shared_ptr<connection_wrapper>> live;
+    std::vector<std::shared_ptr<database_wrapper>> live_databases;
     {
         std::lock_guard lock(registry.mutex);
         registry.exiting = true;
@@ -572,11 +815,18 @@ bool connection_wrapper::closePythonConnectionsAtExit()
             if (auto connection = entry.lock())
                 live.push_back(std::move(connection));
         registry.connections.clear();
+        for (auto & entry : registry.databases)
+            if (auto db = entry.lock())
+                live_databases.push_back(std::move(db));
+        registry.databases.clear();
     }
 
     const bool had_live_connection = std::any_of(live.begin(), live.end(), [](const auto & connection)
     {
         return connection->needsExitClose();
+    }) || std::any_of(live_databases.begin(), live_databases.end(), [](const auto & db)
+    {
+        return db->needsExitClose();
     });
 
     {
@@ -601,6 +851,18 @@ bool connection_wrapper::closePythonConnectionsAtExit()
         try
         {
             connection->close();
+        }
+        catch (...)
+        {
+            if (!first_error)
+                first_error = std::current_exception();
+        }
+    }
+    for (auto & db : live_databases)
+    {
+        try
+        {
+            db->close();
         }
         catch (...)
         {
@@ -1349,9 +1611,10 @@ py::dict connection_wrapper::classify_query(const std::string & sql, const std::
 }
 
 #if USE_CLIENT_AI
-void connection_wrapper::applyAIParams(std::map<std::string, std::string> & params)
+std::optional<DB::AIConfiguration> connection_wrapper::extractAIParams(std::map<std::string, std::string> & params)
 {
     DB::AIConfiguration config;
+    bool saw_any = false;
 
     auto consume_string = [&](const std::string & target, std::string DB::AIConfiguration::* field)
     {
@@ -1359,6 +1622,7 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
         {
             if (Poco::toLower(it->first) == target)
             {
+                saw_any = true;
                 if (!it->second.empty())
                 {
                     if ((config.*field).empty())
@@ -1379,6 +1643,7 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
         {
             if (Poco::toLower(it->first) == target)
             {
+                saw_any = true;
                 if (!it->second.empty())
                 {
                     try
@@ -1404,6 +1669,7 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
         {
             if (Poco::toLower(it->first) == target)
             {
+                saw_any = true;
                 if (!it->second.empty())
                 {
                     try
@@ -1429,6 +1695,7 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
         {
             if (Poco::toLower(it->first) == target)
             {
+                saw_any = true;
                 if (!it->second.empty())
                 {
                     std::string val = Poco::toLower(it->second);
@@ -1457,7 +1724,14 @@ void connection_wrapper::applyAIParams(std::map<std::string, std::string> & para
     consume_size_t("ai_max_steps", &DB::AIConfiguration::max_steps);
     consume_bool("ai_enable_schema_access", &DB::AIConfiguration::enable_schema_access);
 
-    ai_config = config;
+    if (!saw_any)
+        return std::nullopt;
+    return config;
+}
+
+void connection_wrapper::applyAIParams(std::map<std::string, std::string> & params)
+{
+    ai_config = extractAIParams(params).value_or(DB::AIConfiguration{});
 }
 #endif
 
@@ -1716,6 +1990,34 @@ PYBIND11_MODULE(_chdb, m)
         .def("has_error", &cursor_wrapper::has_error)
         .def("error_code", &cursor_wrapper::error_code)
         .def("error_message", &cursor_wrapper::error_message);
+
+    py::class_<database_wrapper, std::shared_ptr<database_wrapper>>(m, "Database")
+        .def(
+            py::init(&database_wrapper::createPython),
+            py::arg("path") = ":memory:",
+            py::kw_only(),
+            py::arg("read_only") = false,
+            "Open a database instance handle owning an isolated `:memory:` namespace or mounted persistent directory")
+        .def_property_readonly("path", &database_wrapper::path)
+        .def("is_open", &database_wrapper::isOpen)
+        .def(
+            "connect",
+            &database_wrapper::connect,
+            py::arg("options") = "",
+            py::kw_only(),
+            py::arg("read_only") = false,
+            "Open a lightweight session connection attached to this database instance")
+        .def("close", &database_wrapper::close, "Close this database handle")
+        .def("__enter__", [](const std::shared_ptr<database_wrapper> & self) { return self; })
+        .def("__exit__", [](database_wrapper & self, const py::object &, const py::object &, const py::object &) { self.close(); });
+
+    m.def(
+        "open",
+        &database_wrapper::createPython,
+        py::arg("path") = ":memory:",
+        py::kw_only(),
+        py::arg("read_only") = false,
+        "Open a database instance (`_chdb.Database`) on the shared embedded engine");
 
     py::class_<connection_wrapper, std::shared_ptr<connection_wrapper>>(m, "connect")
         .def(py::init(&connection_wrapper::createPython), py::arg("path") = ":memory:")

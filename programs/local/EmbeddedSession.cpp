@@ -1162,16 +1162,20 @@ void cancelStreamExecutionStateHook(void * raw_state) noexcept
 }
 } // namespace
 
-std::unique_ptr<EmbeddedSession> EmbeddedSession::create(EmbeddedServer & server_ref, int argc, char ** argv)
+std::unique_ptr<EmbeddedSession> EmbeddedSession::create(
+    EmbeddedDatabasePtr database_, int argc, char ** argv, bool force_read_only)
 {
-    return std::make_unique<EmbeddedSession>(server_ref, argc, argv);
+    return std::make_unique<EmbeddedSession>(std::move(database_), argc, argv, force_read_only);
 }
 
-EmbeddedSession::EmbeddedSession(EmbeddedServer & server_ref, int argc, char ** argv)
-    : server(server_ref)
+EmbeddedSession::EmbeddedSession(
+    EmbeddedDatabasePtr database_, int argc, char ** argv, bool force_read_only)
+    : database(std::move(database_))
+    , server(database->getServer())
     , interrupt_controller(std::make_shared<CHDB::InterruptController>())
 {
-    session = std::make_unique<Session>(server.getGlobalContext(), ClientInfo::Interface::LOCAL);
+    ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
+    session = std::make_unique<Session>(database->getNamespaceContext(), ClientInfo::Interface::LOCAL);
 #if USE_PYTHON
     python_table_cache = std::make_shared<CHDB::PythonTableCache>();
     session->setPythonTableCache(python_table_cache);
@@ -1190,16 +1194,20 @@ EmbeddedSession::EmbeddedSession(EmbeddedServer & server_ref, int argc, char ** 
     session_context->setPythonTableCache(python_table_cache);
 #endif
     session_context_raw = session_context.get();
-    session_context->setCurrentDatabase("default");
+    session_context->setCurrentDatabase(database->getDefaultDatabaseName());
 
     print_stack_trace = server.config().getBool("stacktrace", false);
+    if (database->isReadOnly() || force_read_only)
+        session_context->applySettingChange(SettingChange("readonly", Field(UInt64(2))));
     applyCmdSettings(argc, argv);
+    EmbeddedServer::registerActiveSession();
 }
 
 EmbeddedSession::~EmbeddedSession()
 {
+    EmbeddedServer::unregisterActiveSession();
     cleanup();
-    EmbeddedServer::releaseInstance();
+    database.reset();
 }
 
 void EmbeddedSession::applyCmdSettings(int argc, char ** argv)
@@ -1343,6 +1351,7 @@ ContextMutablePtr EmbeddedSession::makeQueryContextLocked(
     size_t format_len,
     bool is_chunk_collect) const
 {
+    ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     ContextMutablePtr query_context = session->makeQueryContext();
     query_context->setClientInterface(ClientInfo::Interface::LOCAL);
     query_context->setCurrentQueryId("");
@@ -1493,6 +1502,7 @@ void EmbeddedSession::setConnectionSetting(const String & key, const String * va
 {
     checkNotReentrant();
     ScopedActiveSessionFrame active_frame(this);
+    ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     std::unique_lock<std::shared_mutex> lock(session_mutex);
 
     if (streaming_insert_context)
@@ -1528,6 +1538,7 @@ void EmbeddedSession::setConnectionSetting(const String & key, const String * va
 bool EmbeddedSession::getConnectionSetting(const String & key, String & value) const
 {
     checkNotReentrant();
+    ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     std::shared_lock<std::shared_mutex> lock(session_mutex);
 
     if (auto name = connectionParameterName(key); !name.empty())
@@ -2766,6 +2777,7 @@ void EmbeddedSession::analyzeQuery(
         return;
 
     checkNotReentrant();
+    ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     std::shared_lock<std::shared_mutex> lock(session_mutex);
 
     const String text(sql, sql_len);

@@ -316,10 +316,17 @@ static void recordSQLUserDefinedFunctionUse(const ASTPtr & ast, const String & f
         query_context->addQueryFactoriesInfo(Context::QueryLogFactories::SQLUserDefinedFunction, function_name);
 }
 
+static ContextPtr getContextForSQLObjectsLookup()
+{
+    if (auto query_ctx = CurrentThread::tryGetQueryContext())
+        return query_ctx;
+    return Context::getGlobalContextInstance();
+}
+
 ASTPtr UserDefinedSQLFunctionFactory::get(const String & function_name) const
 {
     // chdb_spec
-    ASTPtr ast = Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().get(function_name);
+    ASTPtr ast = getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().get(function_name);
     // chdb_spec
     recordSQLUserDefinedFunctionUse(ast, function_name);
     return ast;
@@ -328,7 +335,7 @@ ASTPtr UserDefinedSQLFunctionFactory::get(const String & function_name) const
 ASTPtr UserDefinedSQLFunctionFactory::tryGet(const std::string & function_name) const
 {
     // chdb_spec
-    ASTPtr ast = Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().tryGet(function_name);
+    ASTPtr ast = getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().tryGet(function_name);
     // chdb_spec
     recordSQLUserDefinedFunctionUse(ast, function_name);
     return ast;
@@ -337,21 +344,21 @@ ASTPtr UserDefinedSQLFunctionFactory::tryGet(const std::string & function_name) 
 bool UserDefinedSQLFunctionFactory::has(const String & function_name) const
 {
     // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().has(function_name);
+    return getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().has(function_name);
     // chdb_spec
 }
 
 VectorWithMemoryTracking<String> UserDefinedSQLFunctionFactory::getAllRegisteredNames() const
 {
     // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().getAllObjectNames();
+    return getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().getAllObjectNames();
     // chdb_spec
 }
 
 bool UserDefinedSQLFunctionFactory::empty() const
 {
     // chdb_spec
-    return Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().empty();
+    return getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().empty();
     // chdb_spec
 }
 
@@ -362,7 +369,7 @@ void UserDefinedSQLFunctionFactory::backup(BackupEntriesCollector & backup_entri
         backup_entries_collector,
         data_path_in_backup,
         UserDefinedSQLObjectType::Function,
-        Context::getGlobalContextInstance()->getUserDefinedSQLObjectsStorage().getAllObjects());
+        getContextForSQLObjectsLookup()->getUserDefinedSQLObjectsStorage().getAllObjects());
     // chdb_spec
 }
 

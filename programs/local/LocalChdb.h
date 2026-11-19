@@ -28,12 +28,44 @@ class AIQueryProcessor;
 namespace py = pybind11;
 
 class __attribute__((visibility("default"))) local_result_wrapper;
+class __attribute__((visibility("default"))) database_wrapper;
 class __attribute__((visibility("default"))) connection_wrapper;
 class __attribute__((visibility("default"))) cursor_wrapper;
 class __attribute__((visibility("default"))) memoryview_wrapper;
 class __attribute__((visibility("default"))) query_result;
 class __attribute__((visibility("default"))) streaming_query_result;
 class __attribute__((visibility("default"))) streaming_insert_result;
+
+class database_wrapper : public std::enable_shared_from_this<database_wrapper>
+{
+private:
+    chdb_database db = nullptr;
+    mutable std::mutex lifecycle_mutex;
+    bool closed = false;
+    std::string db_path;
+    bool is_memory_db = true;
+    bool is_readonly = false;
+    std::map<std::string, std::string> default_conn_params;
+#if USE_CLIENT_AI
+    std::optional<DB::AIConfiguration> ai_config;
+#endif
+
+public:
+    database_wrapper(const std::string & conn_str, bool read_only);
+    ~database_wrapper();
+
+    static std::shared_ptr<database_wrapper> createPython(const std::string & conn_str = ":memory:", bool read_only = false);
+    std::shared_ptr<connection_wrapper> connect(const std::string & options_str = "", bool read_only = false);
+    void close();
+    bool isOpen() const;
+    bool needsExitClose() const;
+    const std::string & path() const noexcept { return db_path; }
+    const std::map<std::string, std::string> & defaultConnectionParams() const noexcept { return default_conn_params; }
+    chdb_database snapshotHandle() const;
+#if USE_CLIENT_AI
+    const std::optional<DB::AIConfiguration> & getAIConfig() const noexcept { return ai_config; }
+#endif
+};
 
 class connection_wrapper : public std::enable_shared_from_this<connection_wrapper>
 {
@@ -78,8 +110,11 @@ public:
     };
 
     explicit connection_wrapper(const std::string & conn_str);
+    connection_wrapper(const database_wrapper & db_owner, const std::string & options_str, bool read_only);
     ~connection_wrapper();
     static std::shared_ptr<connection_wrapper> createPython(const std::string & conn_str);
+    static std::shared_ptr<connection_wrapper> createFromDatabase(
+        const database_wrapper & db_owner, const std::string & options_str, bool read_only);
     static bool closePythonConnectionsAtExit();
     Operation startOperation();
     size_t activeOperationCount() const;
@@ -135,10 +170,11 @@ public:
 
     // Move the private methods declarations here
     void requireOpen() const;
-    std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
+    static std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
     std::vector<std::string> build_clickhouse_args(const std::string & path, const std::map<std::string, std::string> & params);
 
 #if USE_CLIENT_AI
+    static std::optional<DB::AIConfiguration> extractAIParams(std::map<std::string, std::string> & params);
 private:
     void applyAIParams(std::map<std::string, std::string> & params);
 #endif

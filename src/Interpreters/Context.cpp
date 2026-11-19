@@ -15,6 +15,7 @@
 #include <Common/ISlotControl.h>
 #include <Common/Scheduler/IResourceManager.h>
 #include <Common/AsyncLoader.h>
+#include <Common/CurrentThread.h>
 #include <Common/PoolId.h>
 #include <Common/SensitiveDataMasker.h>
 #include <Common/Macros.h>
@@ -1724,7 +1725,8 @@ ContextData::ContextData(const ContextData &o) :
     backups_query_throttler(o.backups_query_throttler),
     is_json_supported(o.is_json_supported),
     py_table_cache(o.py_table_cache),
-    arrow_stream_registry(o.arrow_stream_registry)
+    arrow_stream_registry(o.arrow_stream_registry),
+    chdb_namespace(o.chdb_namespace)
 {
     std::lock_guard lock(o.table_function_results_mutex);
     table_function_results = o.table_function_results;
@@ -1824,8 +1826,45 @@ String Context::resolveDatabase(const String & database_name) const
     return res;
 }
 
+namespace
+{
+thread_local const ChdbNamespace * g_chdb_namespace_override = nullptr;
+}
+
+ChdbNamespaceScope::ChdbNamespaceScope(const ChdbNamespace * ns) noexcept
+    : previous(g_chdb_namespace_override)
+    , active(ns != nullptr)
+{
+    if (active)
+        g_chdb_namespace_override = ns;
+}
+
+ChdbNamespaceScope::~ChdbNamespaceScope() noexcept
+{
+    if (active)
+        g_chdb_namespace_override = previous;
+}
+
+const ChdbNamespace * ChdbNamespaceScope::tryGetThreadOverride() noexcept
+{
+    return g_chdb_namespace_override;
+}
+
+const ChdbNamespace * ChdbNamespaceScope::tryGetActive(const ContextPtr & explicit_context) noexcept
+{
+    if (explicit_context && explicit_context->getChdbNamespace())
+        return explicit_context->getChdbNamespace().get();
+    if (g_chdb_namespace_override)
+        return g_chdb_namespace_override;
+    if (auto query_ctx = CurrentThread::tryGetQueryContext(); query_ctx && query_ctx->getChdbNamespace())
+        return query_ctx->getChdbNamespace().get();
+    return nullptr;
+}
+
 String Context::getPath() const
 {
+    if (chdb_namespace && !chdb_namespace->data_path.empty())
+        return chdb_namespace->data_path;
     SharedLockGuard lock(shared->mutex);
     return shared->path;
 }
@@ -1862,6 +1901,9 @@ String Context::getFilesystemCachesPath() const
 
 std::shared_ptr<IDisk> Context::getDatabaseDisk() const
 {
+    if (chdb_namespace && chdb_namespace->disk)
+        return chdb_namespace->disk;
+
     {
         SharedLockGuard lock(shared->mutex);
         if (shared->default_db_disk)
@@ -2205,7 +2247,12 @@ try
     }
     else
     {
-        disk->createDirectory("");
+        /// chdb_spec: Do not eagerly materialize `<lazy_scratch_dir>/tmp` when the parent
+        /// directory itself does not exist yet (zero-disk `:memory:` mode). `TemporaryFileOnDisk`
+        /// calls `createDirectories` lazily if external spilling actually occurs.
+        const auto parent = fs::path(disk->getPath()).parent_path().parent_path();
+        if (parent.empty() || fs::exists(parent))
+            disk->createDirectory("");
     }
 }
 catch (...)
@@ -4625,6 +4672,11 @@ void Context::makeSessionContext()
     session_context = shared_from_this();
 }
 
+void Context::markAsNamespaceGlobalContext()
+{
+    global_context = shared_from_this();
+}
+
 void Context::makeGlobalContext()
 {
     global_context_instance = shared_from_this();
@@ -4958,55 +5010,23 @@ void Context::loadUserDefinedExecutableFunctionDrivers(const Poco::Util::Abstrac
 
 const IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage() const
 {
-    // callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
-    //     shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-    // });
+    if (chdb_namespace && chdb_namespace->sql_objects_storage)
+        return *chdb_namespace->sql_objects_storage;
 
+    std::lock_guard lock(shared->mutex);
     if (!shared->user_defined_sql_objects_storage)
-    {
         shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-        return *shared->user_defined_sql_objects_storage;
-    }
-
-    String udf_path;
-    if (getConfigRef().has("path"))
-    {
-        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
-    }
-
-    SharedLockGuard lock(shared->mutex);
-    if (!udf_path.empty())
-    {
-        shared->user_defined_sql_objects_storage->setPath(udf_path);
-    }
-
     return *shared->user_defined_sql_objects_storage;
 }
 
 IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
 {
-    // callOnce(shared->user_defined_sql_objects_storage_initialized, [&] {
-    //     shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-    // });
-
-    if (!shared->user_defined_sql_objects_storage)
-    {
-        shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
-        return *shared->user_defined_sql_objects_storage;
-    }
-
-    String udf_path;
-    if (getConfigRef().has("path"))
-    {
-        udf_path = fs::path{getConfigRef().getString("path")} / "user_defined" / "";
-    }
+    if (chdb_namespace && chdb_namespace->sql_objects_storage)
+        return *chdb_namespace->sql_objects_storage;
 
     std::lock_guard lock(shared->mutex);
-    if (!udf_path.empty())
-    {
-        shared->user_defined_sql_objects_storage->setPath(udf_path);
-    }
-
+    if (!shared->user_defined_sql_objects_storage)
+        shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
     return *shared->user_defined_sql_objects_storage;
 }
 
@@ -8600,6 +8620,9 @@ CompressionCodecPtr Context::chooseCompressionCodec(size_t part_size, double par
 
 DiskPtr Context::getDisk(const String & name) const
 {
+    if (name == DiskSelector::DEFAULT_DISK_NAME && chdb_namespace && chdb_namespace->disk)
+        return chdb_namespace->disk;
+
     std::lock_guard lock(shared->storage_policies_mutex);
 
     auto disk_selector = getDiskSelector(lock);
@@ -8625,6 +8648,9 @@ DiskPtr Context::getOrCreateDisk(const String & name, DiskCreator creator) const
 
 StoragePolicyPtr Context::getStoragePolicy(const String & name) const
 {
+    if (name == "default" && chdb_namespace && chdb_namespace->storage_policy)
+        return chdb_namespace->storage_policy;
+
     std::lock_guard lock(shared->storage_policies_mutex);
 
     auto policy_selector = getStoragePolicySelector(lock);
@@ -8634,11 +8660,23 @@ StoragePolicyPtr Context::getStoragePolicy(const String & name) const
 
 StoragePolicyPtr Context::tryGetStoragePolicy(const String & name) const
 {
+    if (name == "default" && chdb_namespace && chdb_namespace->storage_policy)
+        return chdb_namespace->storage_policy;
+
     std::lock_guard lock(shared->storage_policies_mutex);
 
     auto policy_selector = getStoragePolicySelector(lock);
 
     return policy_selector->tryGet(name);
+}
+
+void Context::removeChdbDiskAndStoragePolicy(const String & disk_name, const String & policy_name)
+{
+    std::lock_guard lock(shared->storage_policies_mutex);
+    if (!policy_name.empty() && shared->merge_tree_storage_policy_selector)
+        const_cast<StoragePolicySelector *>(shared->merge_tree_storage_policy_selector.get())->remove(policy_name);
+    if (!disk_name.empty() && shared->merge_tree_disk_selector)
+        const_cast<DiskSelector *>(shared->merge_tree_disk_selector.get())->removeFromDiskMap(disk_name);
 }
 
 StoragePolicyPtr Context::getStoragePolicyFromDisk(const String & disk_name) const

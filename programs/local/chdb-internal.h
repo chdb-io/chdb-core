@@ -62,6 +62,10 @@ ChdbConnectionLease acquireConnectionLeaseByClient(const void * client_ptr);
 
 std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char ** argv);
 
+chdb_database open_chdb_database_with_exception(const char * path, const chdb_open_options * opts);
+chdb_connection * connect_chdb_database_with_exception(chdb_database db, const chdb_connect_options * opts);
+chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
+
 const std::string & chdb_result_error_string(chdb_result * result);
 
 const std::string & chdb_streaming_result_error_string(chdb_streaming_result * result);
