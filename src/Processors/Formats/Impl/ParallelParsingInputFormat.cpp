@@ -43,6 +43,12 @@ void ParallelParsingInputFormat::segmentatorThreadFunction(ThreadGroupPtr thread
             unit.is_last = !have_more_data;
             unit.status = READY_TO_PARSE;
             scheduleParserThreadForUnitWithNumber(segmentator_ticket_number);
+
+            /// The segmentation engine counts every line of the first segment as a row, including the header
+            /// and lines skipped by input_format_*_skip_first_lines, so take the number of rows from the first parser.
+            /// Keep the old count if it read no rows, because the next parser reads the prefix again at offset 0.
+            if (segmentator_ticket_number == 0 && first_parser_rows_read.value_or(0) != 0)
+                successfully_read_rows_count = *first_parser_rows_read;
             ++segmentator_ticket_number;
 
             if (!have_more_data)
@@ -115,6 +121,7 @@ void ParallelParsingInputFormat::parserThreadFunction(size_t current_ticket_numb
         {
             column_mapping = input_format->getColumnMapping();
             column_mapping->is_set = true;
+            first_parser_rows_read = input_format->getRowsRead();
             first_parser_finished.set();
         }
 

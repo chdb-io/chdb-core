@@ -89,6 +89,9 @@ public:
     void set_progress_callback(const py::object & callback);
     query_result * query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
     py::object query_df(const std::string & query_str, const py::dict & params = py::dict());
+    py::object query_arrow_reader(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
+    streaming_query_result * send_query_arrow(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
+    py::object streaming_fetch_arrow(streaming_query_result * streaming_result);
     streaming_query_result * send_query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
     query_result * streaming_fetch_result(streaming_query_result * streaming_result);
     py::object streaming_fetch_df(streaming_query_result * streaming_result);

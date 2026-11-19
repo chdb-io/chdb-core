@@ -261,6 +261,20 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
         string_column->insertData(str.data(), str.size());
         return;
     }
+    /// A bytes-like object already holds the bytes of a String; str() would write its repr (b'...').
+    if (PyBytes_Check(obj) || PyByteArray_Check(obj) || PyMemoryView_Check(obj))
+    {
+        py::gil_scoped_acquire acquire;
+        auto bytes = PyBytes_Check(obj) ? py::reinterpret_borrow<py::object>(obj) : py::reinterpret_steal<py::object>(PyBytes_FromObject(obj));
+        if (!bytes)
+            throw py::error_already_set();
+        char * data = nullptr;
+        Py_ssize_t size = 0;
+        if (PyBytes_AsStringAndSize(bytes.ptr(), &data, &size) != 0)
+            throw py::error_already_set();
+        string_column->insertData(data, static_cast<size_t>(size));
+        return;
+    }
     /// try convert the object to string
     try
     {
