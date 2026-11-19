@@ -1095,6 +1095,10 @@ struct StreamExecutionState
 
     void releaseBindingsAndContextLocked() noexcept
     {
+        /// Drop the query's process list entry now rather than with the stream handle: a Python handle can be
+        /// collected at interpreter exit, after the engine is gone, and ~ProcessListEntry dereferences the ProcessList.
+        try { io = BlockIO(); } catch (...) {}
+
         if (interrupt_controller && interrupt_slot)
             interrupt_controller->unregisterSlot(interrupt_slot.get());
 #if USE_PYTHON
