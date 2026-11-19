@@ -258,14 +258,20 @@ class TestAdbcQuery(unittest.TestCase):
         self.assertEqual(field.type, pa.binary(16))
         self.assertNotIn(b"ARROW:extension:name", field.metadata or {})
 
-    def test_variant_as_string_option(self):
+    def test_variant_as_json_string_option(self):
+        # The previous name of the option is still accepted.
+        for option in ("output_format_arrow_variant_as_json_string", "output_format_arrow_variant_as_string"):
+            with self.subTest(option=option):
+                self._check_variant_as_json_string_option(option)
+
+    def _check_variant_as_json_string_option(self, option):
         from adbc_driver_manager import AdbcConnection, AdbcDatabase, AdbcStatement
 
         db = AdbcDatabase(driver=_LIBCHDB_PATH, entrypoint="chdb_adbc_init")
         conn = AdbcConnection(db)
         stmt = AdbcStatement(conn)
         try:
-            stmt.set_options(output_format_arrow_variant_as_string="true")
+            stmt.set_options(**{option: "true"})
             stmt.set_sql_query(
                 """
                 SELECT multiIf(
@@ -673,7 +679,7 @@ class TestAdbcParameters(unittest.TestCase):
         with _connect() as conn, conn.cursor() as cur:
             cur.adbc_statement.set_options(
                 output_format_arrow_uuid_as_fixed_byte_array="true",
-                output_format_arrow_variant_as_string="true",
+                output_format_arrow_variant_as_json_string="true",
             )
             cur.adbc_statement.set_sql_query(
                 """

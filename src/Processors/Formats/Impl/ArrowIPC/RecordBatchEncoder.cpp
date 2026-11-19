@@ -694,7 +694,7 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
         return;
     }
 
-    if (settings.arrow.output_variant_as_string && isVariant(removeNullable(type)))
+    if (settings.arrow.output_variant_as_json_string && isVariant(removeNullable(type)))
     {
         encodeVariantAsJSONText(column, type, begin, end);
         return;

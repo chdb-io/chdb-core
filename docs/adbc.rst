@@ -96,10 +96,12 @@ the standard ADBC enabled/disabled values.
      - Writes ``UUID`` as plain Arrow ``FixedSizeBinary(16)`` without UUID
        extension metadata.
      - The client cannot read Arrow UUID extension types.
-   * - ``output_format_arrow_variant_as_string``
+   * - ``output_format_arrow_variant_as_json_string``
      - ``false``
-     - Writes ``Variant(...)`` as Arrow ``String`` containing JSON text.
-       ``NULL`` values remain Arrow nulls.
+     - Writes ``Variant(...)`` as Arrow ``String`` holding the JSON
+       representation of each value. ``NULL`` values remain Arrow nulls.
+       The previous name ``output_format_arrow_variant_as_string`` is still
+       accepted.
      - The client cannot read Arrow dense unions, for example Polars.
 
 Example
@@ -116,7 +118,7 @@ Example
 
    stmt.set_options(
        output_format_arrow_uuid_as_fixed_byte_array="true",
-       output_format_arrow_variant_as_string="true",
+       output_format_arrow_variant_as_json_string="true",
    )
    stmt.set_sql_query("""
        SELECT
@@ -131,5 +133,5 @@ Example
    conn.close()
    db.close()
 
-With ``output_format_arrow_variant_as_string=true``, the ``Variant`` value in
+With ``output_format_arrow_variant_as_json_string=true``, the ``Variant`` value in
 the example is returned as JSON text, so the value above is ``"abc"``.

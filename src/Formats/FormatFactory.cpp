@@ -39,7 +39,7 @@ namespace Setting
     /// There are way too many format settings to handle extern declarations manually.
 #define DECLARE_FORMAT_EXTERN(TYPE, NAME, DEFAULT, DESCRIPTION, FLAGS, ...) \
     extern const Settings ## TYPE NAME;
-FORMAT_FACTORY_SETTINGS(DECLARE_FORMAT_EXTERN, INITIALIZE_SETTING_EXTERN)
+FORMAT_FACTORY_SETTINGS(DECLARE_FORMAT_EXTERN, DECLARE_FORMAT_EXTERN)
 #undef DECLARE_FORMAT_EXTERN
 
     extern const SettingsBool apply_string_filters_during_scan;
@@ -383,7 +383,7 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.arrow.output_use_native_writer = settings[Setting::output_format_arrow_use_native_writer];
     format_settings.arrow.output_date_as_uint16 = settings[Setting::output_format_arrow_date_as_uint16];
     format_settings.arrow.output_uuid_as_fixed_byte_array = settings[Setting::output_format_arrow_uuid_as_fixed_byte_array];
-    format_settings.arrow.output_variant_as_string = settings[Setting::output_format_arrow_variant_as_string];
+    format_settings.arrow.output_variant_as_json_string = settings[Setting::output_format_arrow_variant_as_json_string];
     format_settings.arrow.output_unsupported_types = getArrowUnsupportedTypesMode(settings);
     format_settings.arrow.output_record_batch_rows = settings[Setting::output_format_arrow_record_batch_size];
     format_settings.arrow.output_record_batch_bytes = settings[Setting::output_format_arrow_record_batch_size_bytes];

@@ -37,7 +37,7 @@ public:
         /// Output UUID as plain FixedSizeBinary(16), without Arrow extension metadata.
         bool output_uuid_as_fixed_byte_array = false;
         /// Output Variant as Arrow String containing JSON text instead of Arrow DenseUnion.
-        bool output_variant_as_string = false;
+        bool output_variant_as_json_string = false;
         /// Output DateTime as Arrow TIMESTAMP with second precision instead of UInt32,
         /// so the temporal type survives a round-trip through the format.
         bool output_datetime_as_timestamp = false;
