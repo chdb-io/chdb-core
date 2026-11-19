@@ -3,6 +3,7 @@
 import os
 import shutil
 import unittest
+from decimal import Decimal
 import pandas as pd
 import chdb
 from datetime import datetime, date, timezone, timedelta
@@ -343,59 +344,36 @@ class TestDataFrameColumnTypesOne(unittest.TestCase):
         for col in ret.columns:
             print(f"{col}: {ret.dtypes[col]} (actual value: {ret.iloc[0][col]}, Python type: {type(ret.iloc[0][col])})")
 
-        # Test first row - regular and extreme decimal values (converted to float64)
-        self.assertAlmostEqual(ret.iloc[0]["decimal32_val"], 123.456, places=3)
-        self.assertAlmostEqual(ret.iloc[0]["decimal32_min"], -999999.999, places=3)
-        self.assertAlmostEqual(ret.iloc[0]["decimal32_max"], 999999.999, places=3)
-
-        self.assertAlmostEqual(ret.iloc[0]["decimal64_val"], 123456.789012, places=6)
-        self.assertAlmostEqual(ret.iloc[0]["decimal64_min"], -999999999999.999999, places=6)
-        self.assertAlmostEqual(ret.iloc[0]["decimal64_max"], 999999999999.999999, places=6)
-
-        self.assertAlmostEqual(ret.iloc[0]["decimal128_val"], 12345678901234567890123456789.123456789, delta=1e20)
-        self.assertAlmostEqual(ret.iloc[0]["decimal128_min"], -12345678901234567890123456789.123456789, delta=1e20)
-        self.assertAlmostEqual(ret.iloc[0]["decimal128_max"], 12345678901234567890123456789.123456789, delta=1e20)
-
-        self.assertAlmostEqual(ret.iloc[0]["decimal256_val"], 1234567890123456789012345678901234567890123456789012345678.123456789012345678, delta=1e50)
-        self.assertAlmostEqual(ret.iloc[0]["decimal256_min"], -1234567890123456789012345678901234567890123456789012345678.123456789012345678, delta=1e50)
-        self.assertAlmostEqual(ret.iloc[0]["decimal256_max"], 1234567890123456789012345678901234567890123456789012345678.123456789012345678, delta=1e50)
-
-        # Test second row - small decimal values (converted to float64)
-        self.assertAlmostEqual(ret.iloc[1]["decimal32_val"], 0.001, places=3)
-        self.assertEqual(ret.iloc[1]["decimal32_min"], 0.000)
-        self.assertAlmostEqual(ret.iloc[1]["decimal32_max"], 1.000, places=3)
-
-        self.assertAlmostEqual(ret.iloc[1]["decimal64_val"], 0.000001, places=6)
-        self.assertEqual(ret.iloc[1]["decimal64_min"], 0.000000)
-        self.assertAlmostEqual(ret.iloc[1]["decimal64_max"], 1.000000, places=6)
-
-        self.assertAlmostEqual(ret.iloc[1]["decimal128_val"], 0.000000001, places=9)
-        self.assertEqual(ret.iloc[1]["decimal128_min"], 0.000000000)
-        self.assertAlmostEqual(ret.iloc[1]["decimal128_max"], 1.000000000, places=9)
-
-        self.assertAlmostEqual(ret.iloc[1]["decimal256_val"], 0.000000000000000001, places=18)
-        self.assertEqual(ret.iloc[1]["decimal256_min"], 0.000000000000000000)
-        self.assertAlmostEqual(ret.iloc[1]["decimal256_max"], 1.000000000000000000, places=18)
+        # Decimal values come back exactly, as decimal.Decimal objects with their scale
+        expected_rows = [
+            {
+                "decimal32_val": "123.456", "decimal32_min": "-999999.999", "decimal32_max": "999999.999",
+                "decimal64_val": "123456.789012", "decimal64_min": "-999999999999.999999", "decimal64_max": "999999999999.999999",
+                "decimal128_val": "12345678901234567890123456789.123456789",
+                "decimal128_min": "-12345678901234567890123456789.123456789",
+                "decimal128_max": "12345678901234567890123456789.123456789",
+                "decimal256_val": "1234567890123456789012345678901234567890123456789012345678.123456789012345678",
+                "decimal256_min": "-1234567890123456789012345678901234567890123456789012345678.123456789012345678",
+                "decimal256_max": "1234567890123456789012345678901234567890123456789012345678.123456789012345678",
+            },
+            {
+                "decimal32_val": "0.001", "decimal32_min": "0.000", "decimal32_max": "1.000",
+                "decimal64_val": "0.000001", "decimal64_min": "0.000000", "decimal64_max": "1.000000",
+                "decimal128_val": "0.000000001", "decimal128_min": "0.000000000", "decimal128_max": "1.000000000",
+                "decimal256_val": "0.000000000000000001", "decimal256_min": "0.000000000000000000",
+                "decimal256_max": "1.000000000000000000",
+            },
+        ]
+        for row, expected in enumerate(expected_rows):
+            for col, text in expected.items():
+                value = ret.iloc[row][col]
+                self.assertIsInstance(value, Decimal, col)
+                # as_tuple() compares the digits and the exponent, so the scale has to match too
+                self.assertEqual(value.as_tuple(), Decimal(text).as_tuple(), col)
 
         # Precise data type validation
-        expected_types = {
-            "decimal32_val": "float64",  # Decimal types mapped to float64 in ClickHouse->pandas conversion
-            "decimal32_min": "float64",
-            "decimal32_max": "float64",
-            "decimal64_val": "float64",
-            "decimal64_min": "float64",
-            "decimal64_max": "float64",
-            "decimal128_val": "float64",
-            "decimal128_min": "float64",
-            "decimal128_max": "float64",
-            "decimal256_val": "float64",
-            "decimal256_min": "float64",
-            "decimal256_max": "float64"
-        }
-
-        for col, expected_type in expected_types.items():
-            actual_type = str(ret.dtypes[col])
-            self.assertEqual(actual_type, expected_type)
+        for col in expected_rows[0]:
+            self.assertEqual(str(ret.dtypes[col]), "object")
 
     def test_string_types(self):
         """Test String, FixedString, and LowCardinality string types"""
