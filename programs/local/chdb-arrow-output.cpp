@@ -205,7 +205,7 @@ void ensureConverterInitialized(
 /// Materialized path: collect all chunks, build a single arrow::Table, and
 /// export it as a RecordBatchReader-backed ArrowArrayStream.
 chdb_result * runMaterializedArrowQuery(
-    chdb_conn * connection,
+    DB::ChdbClient * client,
     const char * query,
     size_t query_len,
     ArrowArrayStream * out_stream,
@@ -221,7 +221,6 @@ chdb_result * runMaterializedArrowQuery(
     /// Ensure caller-supplied stream is zeroed; on error we leave it released.
     std::memset(out_stream, 0, sizeof(*out_stream));
 
-    auto * client = static_cast<DB::ChdbClient *>(connection->server);
     auto query_result = client->executeMaterializedQuery(
         query, query_len,
         CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME));
@@ -351,17 +350,17 @@ chdb_result * chdb_query_arrow_with_settings_n(
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return makeErrorResult("Invalid or closed connection");
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         CApiQueryParameterGuard guard(client, params);
         auto * raw_stream = reinterpret_cast<ArrowArrayStream *>(out_stream);
         return runMaterializedArrowQuery(
-            connection,
+            client,
             query,
             query_len,
             raw_stream,
@@ -400,14 +399,14 @@ chdb_result * chdb_query_arrow_n(
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return makeErrorResult("Invalid or closed connection");
 
     try
     {
         auto * raw_stream = reinterpret_cast<ArrowArrayStream *>(out_stream);
-        return runMaterializedArrowQuery(connection, query, query_len, raw_stream, options);
+        return runMaterializedArrowQuery(lease.getClient(), query, query_len, raw_stream, options);
     }
     catch (const Exception & e)
     {
@@ -437,13 +436,13 @@ chdb_result * chdb_stream_query_arrow_n(
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeStreamingInit(
             query, query_len,
             CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME),
@@ -510,13 +509,13 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         /// Parameters only need to be present while the statement is parsed
         /// during init — the engine captures the values then (same contract
         /// as chdb_stream_query_with_params).
@@ -565,8 +564,8 @@ chdb_state chdb_stream_fetch_arrow(
     if (!conn || !stream_result || !out_batch)
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     auto * raw_out = reinterpret_cast<ArrowArrayStream *>(out_batch);
@@ -581,7 +580,7 @@ chdb_state chdb_stream_fetch_arrow(
     if (!state)
         return CHDBError;
 
-    auto * client = static_cast<DB::ChdbClient *>(connection->server);
+    auto * client = lease.getClient();
     if (!client->hasStreamingQuery())
         return CHDBError;
 

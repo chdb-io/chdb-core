@@ -54,9 +54,11 @@ int main(void)
 
     const char * macro_ver = CHDB_VERSION;      /* compile-time (header) */
     const char * lib_ver = chdb_version();      /* runtime (linked library) */
+    const char * eng_ver = chdb_engine_version(); /* embedded ClickHouse version (no connect) */
 
     failed += looks_like_version(macro_ver);
     failed += looks_like_version(lib_ver);
+    failed += looks_like_version(eng_ver);
 
     if (strcmp(macro_ver, lib_ver) != 0) {
         fprintf(stderr, "  ASSERT FAIL: header (%s) and library (%s) versions differ\n",
@@ -64,8 +66,9 @@ int main(void)
         failed += 1;
     }
 
-    printf("CHDB_VERSION (header)   -> %s\n", macro_ver);
-    printf("chdb_version() (library) -> %s\n", lib_ver);
+    printf("CHDB_VERSION (header)          -> %s\n", macro_ver);
+    printf("chdb_version() (library)       -> %s\n", lib_ver);
+    printf("chdb_engine_version() (engine) -> %s\n", eng_ver);
     printf("\n== summary: %d failed ==\n", failed);
     return failed ? 1 : 0;
 }

@@ -371,6 +371,7 @@ void LocalConnection::sendQuery(
     query_context->setJSONSupport(session->isJSONSupported());
     query_context->setPythonTableCache(session->getPythonTableCache());
 #endif
+    query_context->setArrowStreamRegistry(session->getArrowStreamRegistry());
 
     /// Always track progress so that output formats (e.g. JSON) can report accurate statistics.
     /// The send_progress flag only controls the client-side progress bar, not progress tracking.

@@ -22,7 +22,9 @@ public:
         const DB::Block & sample_block_,
         const DB::FormatSettings & format_settings_,
         size_t num_streams_,
-        size_t max_block_size_);
+        size_t max_block_size_,
+        std::shared_ptr<std::mutex> shared_stream_mutex_ = nullptr,
+        std::shared_ptr<void> stream_keepalive_ = nullptr);
 
     ~ArrowTableReader() = default;
 
@@ -57,8 +59,12 @@ private:
     /// Global stream state
     bool global_stream_exhausted = false;
 
-    /// Mutex for thread-safe access to arrow_stream
-    mutable std::mutex stream_mutex;
+    /// Mutex for thread-safe access to arrow_stream (shared across readers when
+    /// multiple scans reference the same registered ArrowStream).
+    std::shared_ptr<std::mutex> stream_mutex;
+
+    /// Keeps an owned registered stream alive until all readers finish.
+    std::shared_ptr<void> stream_keepalive;
 };
 
 } // namespace CHDB

@@ -49,9 +49,11 @@ private:
     bool is_memory_db;
     bool is_readonly;
 #if USE_PYTHON
+    mutable std::mutex callback_mutex;
     py::object progress_callback;
 #endif
 #if USE_CLIENT_AI
+    mutable std::mutex ai_mutex;
     std::unique_ptr<AIQueryProcessor> ai_processor;
     std::optional<DB::AIConfiguration> ai_config;
 #endif
@@ -96,6 +98,7 @@ public:
     query_result * streaming_fetch_result(streaming_query_result * streaming_result);
     py::object streaming_fetch_df(streaming_query_result * streaming_result);
     void streaming_cancel_query(streaming_query_result * streaming_result);
+    void tryCancelAbandonedStream(chdb_result * stream_result) noexcept;
     /// Streaming INSERT (write side).
     streaming_insert_result * send_insert(const std::string & query_str, const std::string & format = "CSV");
     void insert_append(streaming_insert_result * ins, const py::bytes & data);
@@ -233,17 +236,14 @@ class streaming_query_result
 {
 private:
     chdb_result * result;
+    std::weak_ptr<connection_wrapper> owner;
 
 public:
-    streaming_query_result(chdb_result * result_) : result(result_) {}
-    ~streaming_query_result()
-    {
-        chdb_destroy_query_result(result);
-        /// Runs on a Python thread with the GIL held; settle borrow-guard
-        /// decrefs from any still-buffered batches instead of leaving them
-        /// queued until the next query.
-        CHDB::drainPyBorrowGuardQueue();
-    }
+    explicit streaming_query_result(chdb_result * result_) : result(result_) {}
+    streaming_query_result(chdb_result * result_, std::weak_ptr<connection_wrapper> owner_)
+        : result(result_), owner(std::move(owner_))
+    {}
+    ~streaming_query_result();
     bool has_error() { return chdb_result_error(result) != nullptr; }
     py::str error_message()
     {
@@ -325,16 +325,23 @@ class cursor_wrapper
 {
 private:
     std::shared_ptr<connection_wrapper> conn;
-    chdb_result * current_result;
+    mutable std::mutex cursor_mutex;
+    std::shared_ptr<local_result_wrapper> current_result;
+
+    std::shared_ptr<local_result_wrapper> snapshot_result() const
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex);
+        return current_result;
+    }
 
     void release_result()
     {
-        if (current_result)
+        std::shared_ptr<local_result_wrapper> old_result;
         {
-            chdb_destroy_query_result(current_result);
-
-            current_result = nullptr;
+            std::lock_guard<std::mutex> lock(cursor_mutex);
+            old_result = std::move(current_result);
         }
+        old_result.reset();
     }
 
 public:
@@ -354,63 +361,67 @@ public:
     py::memoryview get_memview()
     {
         conn->requireOpen();
-        if (current_result == nullptr)
+        auto res = snapshot_result();
+        if (res == nullptr)
         {
             return py::memoryview(py::memoryview::from_memory(nullptr, 0, true));
         }
-        return py::memoryview(py::memoryview::from_memory(chdb_result_buffer(current_result), chdb_result_length(current_result), true));
+        return py::memoryview(py::memoryview::from_memory(res->data(), res->size(), true));
     }
 
     size_t data_size()
     {
         conn->requireOpen();
-        return chdb_result_length(current_result);
+        auto res = snapshot_result();
+        return res ? res->size() : 0;
     }
 
     size_t rows_read()
     {
         conn->requireOpen();
-        return chdb_result_rows_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->rows_read() : 0;
     }
 
     size_t bytes_read()
     {
         conn->requireOpen();
-        return chdb_result_bytes_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->bytes_read() : 0;
     }
 
     size_t storage_rows_read()
     {
         conn->requireOpen();
-        return chdb_result_storage_rows_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->storage_rows_read() : 0;
     }
 
     size_t storage_bytes_read()
     {
         conn->requireOpen();
-        return chdb_result_storage_bytes_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->storage_bytes_read() : 0;
     }
 
     double elapsed()
     {
         conn->requireOpen();
-        return chdb_result_elapsed(current_result);
+        auto res = snapshot_result();
+        return res ? res->elapsed() : 0.0;
     }
 
     bool has_error()
     {
         conn->requireOpen();
-        return chdb_result_error(current_result) != nullptr;
+        auto res = snapshot_result();
+        return res ? res->has_error() : false;
     }
 
     py::str error_message()
     {
         conn->requireOpen();
-        auto error_message = chdb_result_error(current_result);
-        if (error_message)
-        {
-            return py::str(error_message);
-        }
-        return py::str();
+        auto res = snapshot_result();
+        return res ? res->error_message() : py::str();
     }
 };

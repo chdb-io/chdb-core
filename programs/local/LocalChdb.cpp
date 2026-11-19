@@ -3,7 +3,6 @@
 
 #include <base/scope_guard.h>
 #include "chdb-internal.h"
-#include "DataFrameQueryResult.h"
 #include "PandasDataFrameBuilder.h"
 #include "PythonArrowStream.h"
 #include "PythonImporter.h"
@@ -209,11 +208,8 @@ private:
 
 DB::ChdbClient * getChdbClient(chdb_connection handle)
 {
-    auto * connection = reinterpret_cast<chdb_conn *>(handle);
-    if (!checkConnectionValidity(connection))
-        return nullptr;
-
-    return static_cast<DB::ChdbClient *>(connection->server);
+    auto lease = CHDB::acquireConnectionLease(handle);
+    return lease ? lease.getClient() : nullptr;
 }
 
 }
@@ -664,11 +660,17 @@ void connection_wrapper::close()
     std::exception_ptr callback_error;
     try
     {
-        if (to_close && progress_callback && !progress_callback.is_none())
+        py::object old_callback;
+        {
+            std::lock_guard lock(callback_mutex);
+            old_callback = std::move(progress_callback);
+            progress_callback = py::object{};
+        }
+        if (to_close && old_callback && !old_callback.is_none())
         {
             if (auto * client = getChdbClient(*to_close))
                 client->setProgressValuesCallback(nullptr);
-            progress_callback = py::object{};
+            old_callback = py::object{};
         }
     }
     catch (...)
@@ -676,7 +678,14 @@ void connection_wrapper::close()
         callback_error = std::current_exception();
     }
 #if USE_CLIENT_AI
-    ai_processor.reset();
+    {
+        std::unique_ptr<AIQueryProcessor> old_ai;
+        {
+            std::lock_guard lock(ai_mutex);
+            old_ai = std::move(ai_processor);
+        }
+        old_ai.reset();
+    }
 #endif
     if (to_close)
     {
@@ -697,7 +706,12 @@ void connection_wrapper::set_progress_callback(const py::object & callback)
 
     if (callback.is_none())
     {
-        progress_callback = py::none();
+        py::object old_callback;
+        {
+            std::lock_guard lock(callback_mutex);
+            old_callback = std::exchange(progress_callback, py::none());
+        }
+        old_callback = py::object{};
         client->setProgressValuesCallback(nullptr);
         return;
     }
@@ -705,7 +719,14 @@ void connection_wrapper::set_progress_callback(const py::object & callback)
     if (!PyCallable_Check(callback.ptr()))
         throw std::runtime_error("progress callback must be callable");
 
-    progress_callback = callback;
+    {
+        py::object old_callback;
+        {
+            std::lock_guard lock(callback_mutex);
+            old_callback = std::exchange(progress_callback, callback);
+        }
+        old_callback = py::object{};
+    }
     auto * callback_ptr = callback.ptr();
     Py_INCREF(callback_ptr);
     auto callback_holder = std::shared_ptr<void>(
@@ -877,7 +898,7 @@ streaming_query_result * connection_wrapper::send_query_arrow(const std::string 
         chdb_destroy_query_result(result);
         throw std::runtime_error(message);
     }
-    return new streaming_query_result(result);
+    return new streaming_query_result(result, weak_from_this());
 }
 
 py::object connection_wrapper::streaming_fetch_arrow(streaming_query_result * streaming_result)
@@ -913,11 +934,12 @@ std::string connection_wrapper::generate_sql(const std::string & prompt)
     auto operation = startOperation();
     auto * conn = operation.cell();
 #if USE_CLIENT_AI
-    if (!ai_config.has_value())
-        ai_config = DB::AIConfiguration{};
-
     try
     {
+        py::gil_scoped_release release;
+        std::lock_guard lock(ai_mutex);
+        if (!ai_config.has_value())
+            ai_config = DB::AIConfiguration{};
         if (!ai_processor)
             ai_processor = std::make_unique<AIQueryProcessor>(conn, *ai_config);
         return ai_processor->generateSQL(prompt);
@@ -927,6 +949,7 @@ std::string connection_wrapper::generate_sql(const std::string & prompt)
         throw std::runtime_error(std::string("AI SQL generation failed: ") + e.what());
     }
 #else
+    (void)conn;
     (void)prompt;
     throw std::runtime_error("AI SQL generation is not available in this build. Rebuild with USE_CLIENT_AI enabled.");
 #endif
@@ -951,7 +974,7 @@ streaming_query_result * connection_wrapper::send_query(const std::string & quer
         throw std::runtime_error(msg_copy);
     }
 
-    return new streaming_query_result(result);
+    return new streaming_query_result(result, weak_from_this());
 }
 
 query_result * connection_wrapper::streaming_fetch_result(streaming_query_result * streaming_result)
@@ -984,7 +1007,8 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
         return py::none();
 
     chdb_result * result = nullptr;
-    CHDB::DataFrameQueryResult * chunk_result = nullptr;
+    CHDB::ChunkQueryResult * chunk_result = nullptr;
+    bool empty_eof_result = false;
 
     SCOPE_EXIT({
         if (result)
@@ -1001,15 +1025,28 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
 
         const auto & error_msg = CHDB::chdb_result_error_string(result);
         if (!error_msg.empty())
-            throw std::runtime_error(std::string(CHDB::chdb_result_error_string(result)));
+            throw std::runtime_error(std::string(error_msg));
 
-        if (!(chunk_result = dynamic_cast<CHDB::DataFrameQueryResult *>(reinterpret_cast<CHDB::QueryResult*>(result))))
-            throw std::runtime_error("Expected DataFrameQueryResult for dataframe format");
+        auto * generic_result = reinterpret_cast<CHDB::QueryResult *>(result);
+        chunk_result = dynamic_cast<CHDB::ChunkQueryResult *>(generic_result);
+        if (!chunk_result)
+        {
+            if (generic_result && generic_result->isEmpty())
+                empty_eof_result = true;
+            else
+                throw std::runtime_error("Expected ChunkQueryResult for dataframe format");
+        }
     }
 
-    py::handle df_handle = chunk_result->dataframe;
+    if (empty_eof_result)
+    {
+        CHDB::ChunkQueryResult empty_chunks({}, nullptr, 0.0, 0, 0, 0, 0);
+        CHDB::PandasDataFrameBuilder builder(empty_chunks);
+        return builder.getDataFrame();
+    }
 
-    return py::reinterpret_steal<py::object>(df_handle);
+    CHDB::PandasDataFrameBuilder builder(*chunk_result);
+    return builder.getDataFrame();
 }
 
 void connection_wrapper::streaming_cancel_query(streaming_query_result * streaming_result)
@@ -1022,6 +1059,66 @@ void connection_wrapper::streaming_cancel_query(streaming_query_result * streami
         return;
 
     chdb_stream_cancel_query(*conn, streaming_result->get_result());
+}
+
+void connection_wrapper::tryCancelAbandonedStream(chdb_result * stream_result) noexcept
+{
+    if (!stream_result)
+        return;
+
+    /// Never re-enter this connection from a callback or operation on the same thread/query.
+    for (auto * active = current_python_operation; active; active = active->previous)
+    {
+        if (active->owner.get() == this)
+            return;
+    }
+
+    try
+    {
+        chdb_connection * conn_cell = nullptr;
+        {
+            auto & registry = PythonConnectionRegistry::instance();
+            std::lock_guard registry_lock(registry.mutex);
+            if (registry.exiting)
+                return;
+
+            std::lock_guard lock(lifecycle_mutex);
+            if (closing || !conn)
+                return;
+
+            auto lease = CHDB::acquireConnectionLease(*conn);
+            if (!lease || lease.getClient()->isActiveOnCurrentThreadOrQuery())
+                return;
+
+            ++active_operations;
+            conn_cell = conn;
+        }
+
+        Operation operation(shared_from_this(), conn_cell);
+        py::gil_scoped_release release;
+        chdb_stream_cancel_query(*conn_cell, stream_result);
+    }
+    catch (...)
+    {
+    }
+}
+
+streaming_query_result::~streaming_query_result()
+{
+    if (result)
+    {
+        auto * handle = reinterpret_cast<CHDB::QueryResult *>(result);
+        if (!handle->stream_exhausted.load(std::memory_order_acquire))
+        {
+            if (auto conn_owner = owner.lock())
+                conn_owner->tryCancelAbandonedStream(result);
+        }
+        chdb_destroy_query_result(result);
+    }
+    /// Runs on a Python thread with the GIL held; settle borrow-guard
+    /// decrefs from any still-buffered batches instead of leaving them
+    /// queued until the next query.
+    CHDB::drainPyBorrowGuardQueue();
 }
 
 streaming_insert_result * connection_wrapper::send_insert(const std::string & query_str, const std::string & format)
@@ -1304,8 +1401,18 @@ void cursor_wrapper::execute(const std::string & query_str)
     release_result();
     CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*operation.cell()), query_str);
     // Use JSONCompactEachRowWithNamesAndTypes format for better type support
-    py::gil_scoped_release release;
-    current_result = chdb_query_n(*operation.cell(), query_str.data(), query_str.size(), CURSOR_DEFAULT_FORMAT, CURSOR_DEFAULT_FORMAT_LEN);
+    chdb_result * raw_result = nullptr;
+    {
+        py::gil_scoped_release release;
+        raw_result = chdb_query_n(*operation.cell(), query_str.data(), query_str.size(), CURSOR_DEFAULT_FORMAT, CURSOR_DEFAULT_FORMAT_LEN);
+    }
+    auto wrapped = std::make_shared<local_result_wrapper>(raw_result);
+    std::shared_ptr<local_result_wrapper> displaced;
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex);
+        displaced = std::exchange(current_result, std::move(wrapped));
+    }
+    displaced.reset();
 }
 
 
@@ -1685,6 +1792,16 @@ PYBIND11_MODULE(_chdb, m)
         py::arg("udf_path") = "",
         py::arg("params") = py::dict(),
         "Query chDB and return a query_result object or DataFrame");
+
+    m.def(
+        "engine_version",
+        &chdb_engine_version,
+        "Return the embedded ClickHouse engine version without starting the engine.");
+
+    m.def(
+        "chdb_version",
+        &chdb_version,
+        "Return the linked chDB library version without starting the engine.");
 
     m.def(
         "set_signal_handlers_enabled",

@@ -3,12 +3,19 @@
 #include "ChunkCollectorOutputFormat.h"
 #include "LocalServer.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <optional>
 #include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -17,6 +24,7 @@
 #endif
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
+#include <Common/config_version.h>
 #include <Common/EventNotifier.h>
 #include <Common/MemoryTracker.h>
 #include <Common/quoteString.h>
@@ -145,17 +153,22 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
     try
     {
         std::lock_guard<std::mutex> lock(CHDB_MUTEX);
+        /// chdb_spec: Reserve exclusive process-global catalog/application state before
+        /// constructing LocalServer. Constructing LocalServer while an EmbeddedServer
+        /// connection is open trips poco_assert(_pInstance == 0) in debug builds and, in
+        /// release builds, overwrites ContextData::global_context_instance and tears down
+        /// the live EmbeddedServer's DatabaseCatalog during stack unwinding.
+        DB::EmbeddedServer::LocalServerGuard local_server_guard;
         /// chdb_spec: every call boots a LocalServer, whose global context initializes the
         /// process-wide EventNotifier (Context::makeGlobalContext), and nothing shut it down, so
         /// from the second call in a process on, startup threw "EventNotifier is initialized
-        /// twice". Shut it down once this call's server is gone, as EmbeddedServer::cleanup does
-        /// for a connection's engine -- unless a connection is open: then the notifier is that
-        /// engine's (and this server could not start, the catalog being taken).
+        /// twice". Shut it down once this call's server is gone, before releasing local_server_guard.
         SCOPE_EXIT({
-            if (!DB::EmbeddedServer::hasActiveClients())
-                DB::EventNotifier::shutdown();
+            DB::EventNotifier::shutdown();
         });
-        DB::ThreadStatus thread_status;
+        std::optional<DB::ThreadStatus> thread_status;
+        if (!DB::CurrentThread::isInitialized())
+            thread_status.emplace();
         DB::LocalServer app;
         app.init(argc, argv);
 
@@ -212,13 +225,146 @@ const std::string & chdb_streaming_result_error_string(chdb_streaming_result * r
     return stream_query_result->getError();
 }
 
+struct ChdbConnectionState
+{
+    chdb_conn raw_conn{nullptr, false};
+    std::unique_ptr<DB::ChdbClient> owned_client;
+    std::condition_variable cv;
+    size_t active_ops = 0;
+    bool closing = false;
+    bool closed = false;
+
+    explicit ChdbConnectionState(std::unique_ptr<DB::ChdbClient> client_)
+        : owned_client(std::move(client_))
+    {
+        raw_conn.server = owned_client.get();
+        raw_conn.connected = true;
+    }
+};
+
+namespace
+{
+struct ConnectionRegistry
+{
+    std::mutex mutex;
+    std::unordered_map<const chdb_conn *, std::shared_ptr<ChdbConnectionState>> by_conn;
+    std::unordered_map<const void *, std::shared_ptr<ChdbConnectionState>> by_client;
+
+    static ConnectionRegistry & instance()
+    {
+        static auto * reg = new ConnectionRegistry;
+        return *reg;
+    }
+};
+
+thread_local std::vector<const ChdbConnectionState *> active_leases_on_thread;
+
+bool isStateHeldOnCurrentThread(const ChdbConnectionState * state) noexcept
+{
+    for (const auto * s : active_leases_on_thread)
+    {
+        if (s == state)
+            return true;
+    }
+    return false;
+}
+}
+
+ChdbConnectionLease::ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::ChdbClient * client_) noexcept
+    : state(std::move(state_)), client(client_)
+{
+    if (state)
+        active_leases_on_thread.push_back(state.get());
+}
+
+ChdbConnectionLease::~ChdbConnectionLease()
+{
+    if (!state)
+        return;
+
+    for (auto it = active_leases_on_thread.rbegin(); it != active_leases_on_thread.rend(); ++it)
+    {
+        if (*it == state.get())
+        {
+            active_leases_on_thread.erase(std::next(it).base());
+            break;
+        }
+    }
+
+    auto & reg = ConnectionRegistry::instance();
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        if (--state->active_ops == 0 && state->closing)
+            notify = true;
+    }
+    if (notify)
+        state->cv.notify_all();
+}
+
+ChdbConnectionLease::ChdbConnectionLease(ChdbConnectionLease && other) noexcept
+    : state(std::move(other.state)), client(std::exchange(other.client, nullptr))
+{
+}
+
+ChdbConnectionLease & ChdbConnectionLease::operator=(ChdbConnectionLease && other) noexcept
+{
+    if (this != &other)
+    {
+        ChdbConnectionLease tmp(std::move(*this));
+        state = std::move(other.state);
+        client = std::exchange(other.client, nullptr);
+    }
+    return *this;
+}
+
+ChdbConnectionLease acquireConnectionLease(const chdb_conn * connection)
+{
+    if (!connection)
+        return {};
+
+    auto & reg = ConnectionRegistry::instance();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    auto it = reg.by_conn.find(connection);
+    if (it == reg.by_conn.end())
+        return {};
+
+    const auto & state = it->second;
+    if (state->closing || !state->raw_conn.connected || !state->owned_client)
+        return {};
+
+    ++state->active_ops;
+    return ChdbConnectionLease(state, state->owned_client.get());
+}
+
+ChdbConnectionLease acquireConnectionLeaseByClient(const void * client_ptr)
+{
+    if (!client_ptr)
+        return {};
+
+    auto & reg = ConnectionRegistry::instance();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    auto it = reg.by_client.find(client_ptr);
+    if (it == reg.by_client.end())
+        return {};
+
+    const auto & state = it->second;
+    if (state->closing || !state->raw_conn.connected || !state->owned_client)
+        return {};
+
+    ++state->active_ops;
+    return ChdbConnectionLease(state, state->owned_client.get());
+}
+
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
 
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
     try
     {
-        DB::ThreadStatus thread_status;
+        std::optional<DB::ThreadStatus> thread_status;
+        if (!DB::CurrentThread::isInitialized())
+            thread_status.emplace();
         auto & server = DB::EmbeddedServer::getInstance(argc, argv);
         std::unique_ptr<DB::ChdbClient> client;
         try
@@ -240,13 +386,16 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
             throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create ChdbClient");
         }
 
-        auto conn = std::make_unique<chdb_conn>();
-        conn->server = client.get();
-        conn->connected = true;
-        auto conn_ptr = std::make_unique<chdb_conn *>(conn.get());
+        auto state = std::make_shared<ChdbConnectionState>(std::move(client));
+        auto conn_ptr = std::make_unique<chdb_conn *>(&state->raw_conn);
 
-        client.release();
-        conn.release();
+        {
+            auto & reg = ConnectionRegistry::instance();
+            std::lock_guard<std::mutex> lock(reg.mutex);
+            reg.by_conn.emplace(&state->raw_conn, state);
+            reg.by_client.emplace(state->raw_conn.server, state);
+        }
+
         return reinterpret_cast<chdb_connection *>(conn_ptr.release());
     }
     catch (const DB::Exception & e)
@@ -271,10 +420,10 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 #if USE_PYTHON
 void cachePythonTablesFromQuery(chdb_conn * conn, const std::string & query_str)
 {
-    if (!conn || !conn->server || !conn->connected)
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return;
-    auto * client = reinterpret_cast<DB::ChdbClient *>(conn->server);
-    client->findQueryableObjFromPyCache(query_str);
+    lease.getClient()->findQueryableObjFromPyCache(query_str);
 }
 #endif
 
@@ -377,30 +526,61 @@ void close_conn(chdb_conn ** conn)
     if (!conn || !*conn)
         return;
 
-    try
+    std::shared_ptr<ChdbConnectionState> state_to_close;
+    std::unique_ptr<DB::ChdbClient> client_to_destroy;
     {
-        if ((*conn)->connected && (*conn)->server)
+        auto & reg = ConnectionRegistry::instance();
+        std::unique_lock<std::mutex> lock(reg.mutex);
+        auto it = reg.by_conn.find(*conn);
+        if (it == reg.by_conn.end())
         {
-            auto * client = static_cast<DB::ChdbClient *>((*conn)->server);
-            delete client;
-            (*conn)->server = nullptr;
+            lock.unlock();
+            *conn = nullptr;
+            delete conn;
+            return;
         }
 
-        (*conn)->connected = false;
-        delete *conn;
-        *conn = nullptr;
+        state_to_close = it->second;
+        /// Refuse self-deadlock if a callback on this thread/query attempts to close its own connection.
+        if (isStateHeldOnCurrentThread(state_to_close.get())
+            || (state_to_close->owned_client && state_to_close->owned_client->isActiveOnCurrentThreadOrQuery()))
+        {
+            return;
+        }
+
+        if (state_to_close->closing)
+        {
+            state_to_close->cv.wait(lock, [&] { return state_to_close->closed; });
+            return;
+        }
+
+        state_to_close->closing = true;
+        state_to_close->raw_conn.connected = false;
+        state_to_close->cv.wait(lock, [&] { return state_to_close->active_ops == 0; });
+
+        reg.by_client.erase(state_to_close->raw_conn.server);
+        reg.by_conn.erase(it);
+        state_to_close->raw_conn.server = nullptr;
+        client_to_destroy = std::move(state_to_close->owned_client);
+    }
+
+    try
+    {
+        client_to_destroy.reset();
     }
     catch (...)
     {
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
     }
 
-    /// Free the outer one-pointer cell itself. `conn` points at the heap cell
-    /// allocated as `new chdb_conn *(...)` in connect_chdb_with_exception(); the
-    /// inner chdb_conn (*conn) is deleted above, but the cell holding that pointer
-    /// was leaked on every connection close before this. The cell is owned solely
-    /// by close_conn's caller and is not reused after close, so deleting it here is
-    /// safe and centralizes the fix for both chdb_close_conn and direct C-API users.
+    {
+        auto & reg = ConnectionRegistry::instance();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        state_to_close->closed = true;
+    }
+    state_to_close->cv.notify_all();
+
+    *conn = nullptr;
     delete conn;
 }
 
@@ -411,12 +591,13 @@ struct local_result_v2 * query_conn(chdb_conn * conn, const char * query, const 
 
 struct local_result_v2 * query_conn_n(struct chdb_conn * conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
-    if (!checkConnectionValidity(conn))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return createErrorLocalResultV2("Invalid or closed connection");
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(conn->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeMaterializedQuery(query, query_len, format, format_len);
         return convert2LocalResultV2(query_result.get());
     }
@@ -438,7 +619,8 @@ chdb_streaming_result * query_conn_streaming(chdb_conn * conn, const char * quer
 chdb_streaming_result *
 query_conn_streaming_n(struct chdb_conn * conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
-    if (!checkConnectionValidity(conn))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * result = new StreamQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_streaming_result *>(result);
@@ -446,8 +628,7 @@ query_conn_streaming_n(struct chdb_conn * conn, const char * query, size_t query
 
     try
     {
-        // Use the client from the connection
-        auto * client = static_cast<DB::ChdbClient *>(conn->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeStreamingInit(query, query_len, format, format_len);
 
         if (!query_result)
@@ -486,7 +667,8 @@ const char * chdb_streaming_result_error(chdb_streaming_result * result)
 
 local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_result * result)
 {
-    if (!checkConnectionValidity(conn))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return createErrorLocalResultV2("Invalid or closed connection");
 
     if (!result)
@@ -504,7 +686,7 @@ local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_r
             return convert2LocalResultV2(&empty);
         }
 
-        auto * client = static_cast<DB::ChdbClient *>(conn->server);
+        auto * client = lease.getClient();
         if (!client->hasStreamingQuery())
             return createErrorLocalResultV2("No active streaming query");
         auto query_result = client->executeStreamingIterate(result, false);
@@ -529,7 +711,8 @@ local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_r
 
 void chdb_streaming_cancel_query(chdb_conn * conn, chdb_streaming_result * result)
 {
-    if (!checkConnectionValidity(conn))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return;
 
     if (!result)
@@ -543,8 +726,7 @@ void chdb_streaming_cancel_query(chdb_conn * conn, chdb_streaming_result * resul
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(conn->server);
-        client->cancelStreamingQuery(result);
+        lease.getClient()->cancelStreamingQuery(result);
     }
     catch (...)
     {
@@ -617,8 +799,8 @@ chdb_result * chdb_query_n(chdb_connection conn, const char * query, size_t quer
         return reinterpret_cast<chdb_result *>(result);
     }
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * result = new MaterializedQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_result *>(result);
@@ -626,8 +808,7 @@ chdb_result * chdb_query_n(chdb_connection conn, const char * query, size_t quer
 
     try
     {
-        // Use the client from the connection
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeMaterializedQuery(query, query_len, format, format_len);
 
         return reinterpret_cast<chdb_result *>(query_result.release());
@@ -678,8 +859,8 @@ chdb_result * chdb_stream_query_n(chdb_connection conn, const char * query, size
         return reinterpret_cast<chdb_result *>(result);
     }
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * result = new StreamQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_result *>(result);
@@ -687,7 +868,7 @@ chdb_result * chdb_stream_query_n(chdb_connection conn, const char * query, size
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeStreamingInit(query, query_len, format, format_len);
 
         if (!query_result)
@@ -800,8 +981,8 @@ chdb_result * chdb_query_with_params_n(
         return reinterpret_cast<chdb_result *>(result);
     }
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * result = new MaterializedQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_result *>(result);
@@ -809,7 +990,7 @@ chdb_result * chdb_query_with_params_n(
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         const auto params = CHDB::buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
         CHDB::CApiQueryParameterGuard guard(client, params);
 
@@ -867,8 +1048,8 @@ chdb_result * chdb_stream_query_with_params_n(
         return reinterpret_cast<chdb_result *>(result);
     }
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * result = new StreamQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_result *>(result);
@@ -876,7 +1057,7 @@ chdb_result * chdb_stream_query_with_params_n(
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         const auto params = CHDB::buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
         CHDB::CApiQueryParameterGuard guard(client, params);
 
@@ -915,8 +1096,8 @@ chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * resul
         return reinterpret_cast<chdb_result *>(query_result);
     }
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
     {
         auto * query_result = new MaterializedQueryResult("Invalid or closed connection");
         return reinterpret_cast<chdb_result *>(query_result);
@@ -933,7 +1114,7 @@ chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * resul
         if (handle->stream_exhausted.load(std::memory_order_acquire))
             return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(nullptr, 0.0, 0, 0, 0, 0));
 
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         if (!client->hasStreamingQuery())
             return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("No active streaming query"));
         auto * stream_result = reinterpret_cast<StreamQueryResult *>(result);
@@ -963,8 +1144,8 @@ void chdb_stream_cancel_query(chdb_connection conn, chdb_result * result)
     if (!result || !conn)
         return;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return;
 
     /// A naturally-finished stream has nothing left to cancel, and the state the
@@ -979,9 +1160,8 @@ void chdb_stream_cancel_query(chdb_connection conn, chdb_result * result)
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
         auto * stream_result = reinterpret_cast<StreamQueryResult *>(result);
-        client->cancelStreamingQuery(stream_result);
+        lease.getClient()->cancelStreamingQuery(stream_result);
     }
     catch (...)
     {
@@ -1010,13 +1190,13 @@ chdb_insert_stream chdb_stream_insert_n(
     if (!conn)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeInsertStreamingInit(query, query_len, format, format_len);
         if (!query_result)
             return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Insert stream initialization failed"));
@@ -1068,13 +1248,13 @@ chdb_insert_stream chdb_stream_insert_with_params_n(
     if (!conn)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         const auto params = buildParameterMap(param_names, param_name_lens, param_values, param_value_lens, param_count);
         /// The guard only needs to span init: executeInsertStreamingInit's
         /// handshake waits for the worker thread's sendQuery (which passes the
@@ -1116,13 +1296,13 @@ chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
     if (insert_stream_finalized(res))
         return CHDBError;
-    auto * client = static_cast<DB::ChdbClient *>(res->owner);
-    if (!client)
+    auto lease = acquireConnectionLeaseByClient(res->owner);
+    if (!lease)
         return CHDBError;
 
     try
     {
-        const bool ok = client->executeInsertStreamingAppend(res, static_cast<const char *>(data), len);
+        const bool ok = lease.getClient()->executeInsertStreamingAppend(res, static_cast<const char *>(data), len);
         return ok ? CHDBSuccess : CHDBError;
     }
     catch (...)
@@ -1140,13 +1320,13 @@ chdb_result * chdb_stream_done(chdb_insert_stream stream)
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
     if (insert_stream_finalized(res))
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Insert stream already finalized"));
-    auto * client = static_cast<DB::ChdbClient *>(res->owner);
-    if (!client)
-        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid insert stream"));
+    auto lease = acquireConnectionLeaseByClient(res->owner);
+    if (!lease)
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid or closed connection"));
 
     try
     {
-        auto query_result = client->executeInsertStreamingDone(res);
+        auto query_result = lease.getClient()->executeInsertStreamingDone(res);
         return reinterpret_cast<chdb_result *>(query_result.release());
     }
     catch (const std::exception & e)
@@ -1167,13 +1347,13 @@ void chdb_stream_cancel_insert(chdb_insert_stream stream)
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
     if (insert_stream_finalized(res))
         return;
-    auto * client = static_cast<DB::ChdbClient *>(res->owner);
-    if (!client)
+    auto lease = acquireConnectionLeaseByClient(res->owner);
+    if (!lease)
         return;
 
     try
     {
-        client->cancelInsertStream(res);
+        lease.getClient()->cancelInsertStream(res);
     }
     catch (...)
     {
@@ -1219,13 +1399,16 @@ void chdb_destroy_insert_stream(chdb_insert_stream stream)
     /// which case res->owner dangles and must not be dereferenced.
     if (res->context && res->owner && !insert_stream_finalized(res))
     {
-        try
+        if (auto lease = acquireConnectionLeaseByClient(res->owner))
         {
-            static_cast<DB::ChdbClient *>(res->owner)->cancelInsertStream(res);
-        }
-        catch (...)
-        {
-            DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+            try
+            {
+                lease.getClient()->cancelInsertStream(res);
+            }
+            catch (...)
+            {
+                DB::tryLogCurrentException(__PRETTY_FUNCTION__);
+            }
         }
     }
     delete res;
@@ -1424,6 +1607,11 @@ const char * chdb_version(void)
     return CHDB_VERSION;
 }
 
+const char * chdb_engine_version(void)
+{
+    return VERSION_STRING;
+}
+
 namespace CHDB
 {
 namespace
@@ -1506,8 +1694,8 @@ chdb_result * runBackupOrRestore(
     if (!conn)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Invalid or closed connection"));
 
     try
@@ -1521,9 +1709,8 @@ chdb_result * runBackupOrRestore(
         /// Neither statement returns rows; the format only names the empty
         /// buffer's encoding.
         static constexpr std::string_view result_format = "CSV";
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
         auto query_result
-            = client->executeMaterializedQuery(query.data(), query.size(), result_format.data(), result_format.size());
+            = lease.getClient()->executeMaterializedQuery(query.data(), query.size(), result_format.data(), result_format.size());
         return reinterpret_cast<chdb_result *>(query_result.release());
     }
     catch (const std::exception & e)
@@ -1577,14 +1764,13 @@ chdb_state chdb_classify_query_n(
     if (declared_size < sizeof(chdb_query_analysis_v1))
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
-        client->analyzeQuery(
+        lease.getClient()->analyzeQuery(
             sql,
             sql_len,
             std::string_view(target_database ? target_database : "", target_database ? target_database_len : 0),
@@ -1603,15 +1789,14 @@ chdb_state chdb_set(chdb_connection conn, const char * key, const char * value)
     if (!conn || !key)
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
         const std::string value_str = value ? value : "";
-        client->setConnectionSetting(key, value ? &value_str : nullptr);
+        lease.getClient()->setConnectionSetting(key, value ? &value_str : nullptr);
         return CHDBSuccess;
     }
     catch (...)
@@ -1625,16 +1810,15 @@ const char * chdb_get(chdb_connection conn, const char * key)
     if (!conn || !key)
         return nullptr;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
         return nullptr;
 
     try
     {
         /// Per thread, so the pointer outlives the connection and threads don't clobber it.
         thread_local std::string value;
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
-        if (!client->getConnectionSetting(key, value))
+        if (!lease.getClient()->getConnectionSetting(key, value))
             return nullptr;
         return value.c_str();
     }

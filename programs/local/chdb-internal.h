@@ -23,6 +23,39 @@ inline bool checkConnectionValidity(chdb_conn * connection)
 namespace CHDB
 {
 
+struct ChdbConnectionState;
+
+/// RAII active-operation guard for C ABI `chdb_conn *` / `chdb_connection` handles.
+/// Looks up the handle in the live-connection registry before dereferencing it, holds
+/// an active-operation count until destruction, and makes concurrent `chdb_close_conn`
+/// wait cleanly instead of freeing `DB::ChdbClient` under an in-flight call.
+class ChdbConnectionLease
+{
+public:
+    ChdbConnectionLease() = default;
+    ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::ChdbClient * client_) noexcept;
+    ~ChdbConnectionLease();
+
+    ChdbConnectionLease(const ChdbConnectionLease &) = delete;
+    ChdbConnectionLease & operator=(const ChdbConnectionLease &) = delete;
+    ChdbConnectionLease(ChdbConnectionLease && other) noexcept;
+    ChdbConnectionLease & operator=(ChdbConnectionLease && other) noexcept;
+
+    explicit operator bool() const noexcept { return client != nullptr; }
+    DB::ChdbClient * getClient() const noexcept { return client; }
+
+private:
+    std::shared_ptr<ChdbConnectionState> state;
+    DB::ChdbClient * client = nullptr;
+};
+
+ChdbConnectionLease acquireConnectionLease(const chdb_conn * connection);
+inline ChdbConnectionLease acquireConnectionLease(chdb_connection connection)
+{
+    return acquireConnectionLease(reinterpret_cast<const chdb_conn *>(connection));
+}
+ChdbConnectionLease acquireConnectionLeaseByClient(const void * client_ptr);
+
 std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char ** argv);
 
 const std::string & chdb_result_error_string(chdb_result * result);

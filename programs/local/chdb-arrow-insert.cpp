@@ -116,8 +116,8 @@ chdb_result * runArrowInsert(
     if (!dest_table || dest_table[0] == '\0')
         return makeErrorResult("Unexpected null dest_table");
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return makeErrorResult("Invalid or closed connection");
 
     String sql = "INSERT INTO ";
@@ -133,8 +133,7 @@ chdb_result * runArrowInsert(
         sql += options->settings;
     }
 
-    auto * client = static_cast<ChdbClient *>(connection->server);
-    auto query_result = client->executeMaterializedQuery(
+    auto query_result = lease.getClient()->executeMaterializedQuery(
         sql.data(), sql.size(),
         "Null", std::strlen("Null"));
 

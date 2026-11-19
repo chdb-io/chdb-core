@@ -14,6 +14,11 @@
 #include <optional>
 #include <vector>
 
+namespace CHDB
+{
+class ArrowStreamRegistry;
+}
+
 namespace DB
 {
 class EmbeddedServer;
@@ -97,6 +102,12 @@ public:
     size_t getStorageRowsRead() const;
     size_t getStorageBytesRead() const;
 
+    CHDB::ArrowStreamRegistry * getArrowStreamRegistry() const { return arrow_stream_registry.get(); }
+
+    /// True when the calling thread is already inside an operation on this client, or is a
+    /// pipeline worker thread executing a query belonging to this client's session.
+    bool isActiveOnCurrentThreadOrQuery() const;
+
     /// Binds per-call parameters ({name:Type}) to the queries this thread runs on `client`; returns
     /// the previous binding. Each execute applies them over the connection's own under client_mutex
     /// and restores them before releasing it, so no other call sees them.
@@ -128,6 +139,7 @@ private:
     void cleanup();
     void applyCmdSettings(int argc, char ** argv);
     void takeResultSchema(CHDB::QueryResult & res);
+    void checkNotReentrant() const;
 
     struct ReplacedQueryParameter
     {
@@ -159,6 +171,8 @@ private:
 #if USE_PYTHON
     std::shared_ptr<CHDB::PythonTableCache> python_table_cache;
 #endif
+    std::shared_ptr<CHDB::ArrowStreamRegistry> arrow_stream_registry;
+    const Context * session_context_raw = nullptr;
     CHDB::InsertStreamContextPtr streaming_insert_context;
     /// Connection settings snapshot taken before applying the streaming
     /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().

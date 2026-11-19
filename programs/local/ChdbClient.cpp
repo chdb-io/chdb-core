@@ -31,12 +31,11 @@
 #include <QueryPipeline/Pipe.h>
 #include <QueryPipeline/QueryPipeline.h>
 
+#if !defined(OS_WASM)
+#include <ArrowStreamRegistry.h>
+#endif
 #if USE_PYTHON
-#include <DataFrameQueryResult.h>
 #include <PythonTableCache.h>
-#include <PandasDataFrameBuilder.h>
-#include <pybind11/pybind11.h>
-namespace py = pybind11;
 #endif
 
 namespace DB
@@ -91,12 +90,19 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
     python_table_cache = std::make_shared<CHDB::PythonTableCache>();
     session->setPythonTableCache(python_table_cache);
 #endif
+#if !defined(OS_WASM)
+    arrow_stream_registry = std::make_shared<CHDB::ArrowStreamRegistry>();
+    session->setArrowStreamRegistry(arrow_stream_registry);
+#endif
     session->authenticate("default", "", Poco::Net::SocketAddress{});
     global_context = session->makeSessionContext();
+#if !defined(OS_WASM)
+    global_context->setArrowStreamRegistry(arrow_stream_registry);
+#endif
+    session_context_raw = global_context.get();
     global_context->setCurrentDatabase("default");
-    global_context->setApplicationType(Context::ApplicationType::LOCAL);
     applyCmdSettings(argc, argv);
-    initClientContext(global_context);
+    initClientContext(Context::createCopy(global_context));
     server_display_name = "chDB-embedded";
     query_processing_stage = QueryProcessingStage::Enum::Complete;
     is_interactive = false;
@@ -184,6 +190,11 @@ void ChdbClient::cleanup()
             streaming_insert_context.reset();
         }
 
+#if !defined(OS_WASM)
+        if (arrow_stream_registry)
+            arrow_stream_registry->clear();
+#endif
+
         connection.reset();
         client_context.reset();
         global_context.reset();
@@ -235,9 +246,99 @@ void ChdbClient::processError(std::string_view) const
         client_exception->rethrow();
 }
 
+namespace
+{
+struct ActiveClientFrame
+{
+    const ChdbClient * client;
+    ActiveClientFrame * prev;
+};
+
+thread_local ActiveClientFrame * active_client_stack = nullptr;
+
+class ClientOperationLock
+{
+public:
+    ClientOperationLock(const ChdbClient * self, std::mutex & m)
+        : lock(m), frame{self, active_client_stack}
+    {
+        active_client_stack = &frame;
+    }
+
+    ~ClientOperationLock()
+    {
+        active_client_stack = frame.prev;
+    }
+
+    ClientOperationLock(const ClientOperationLock &) = delete;
+    ClientOperationLock & operator=(const ClientOperationLock &) = delete;
+
+private:
+    std::lock_guard<std::mutex> lock;
+    ActiveClientFrame frame;
+};
+
+/// Ensures CurrentThread is initialized on the calling thread without double-constructing
+/// ThreadStatus when called from an engine worker thread (e.g. a Python UDF querying an
+/// independent second connection), and preserves any outer ThreadGroup across nested QueryScope.
+class ScopedClientThreadStatus
+{
+public:
+    ScopedClientThreadStatus()
+    {
+        if (!CurrentThread::isInitialized())
+        {
+            owned_status.emplace();
+        }
+        else if ((saved_group = CurrentThread::getGroup()) != nullptr)
+        {
+            CurrentThread::detachFromGroupIfNotDetached();
+        }
+    }
+
+    ~ScopedClientThreadStatus()
+    {
+        if (saved_group)
+            CurrentThread::attachToGroupIfDetached(saved_group);
+    }
+
+    ScopedClientThreadStatus(const ScopedClientThreadStatus &) = delete;
+    ScopedClientThreadStatus & operator=(const ScopedClientThreadStatus &) = delete;
+
+private:
+    std::optional<ThreadStatus> owned_status;
+    ThreadGroupPtr saved_group;
+};
+}
+
+bool ChdbClient::isActiveOnCurrentThreadOrQuery() const
+{
+    for (const auto * frame = active_client_stack; frame; frame = frame->prev)
+    {
+        if (frame->client == this)
+            return true;
+    }
+    if (auto current_query_ctx = CurrentThread::tryGetQueryContext())
+    {
+        if (current_query_ctx->hasSessionContext()
+            && current_query_ctx->getSessionContext().get() == session_context_raw)
+            return true;
+    }
+    return false;
+}
+
+void ChdbClient::checkNotReentrant() const
+{
+    if (isActiveOnCurrentThreadOrQuery())
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot execute an operation on a connection from its own active callback");
+}
+
 bool ChdbClient::hasStreamingQuery() const
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
+    checkNotReentrant();
+    ClientOperationLock lock(this, client_mutex);
     return streaming_query_context != nullptr;
 }
 
@@ -273,8 +374,9 @@ std::string_view connectionParameterName(std::string_view key)
 
 void ChdbClient::setConnectionSetting(const String & key, const String * value)
 {
+    checkNotReentrant();
     auto name = connectionParameterName(key);
-    std::lock_guard<std::mutex> lock(client_mutex);
+    ClientOperationLock lock(this, client_mutex);
 
     /// The insert restores its settings snapshot when it ends, undoing this.
     if (streaming_insert_context)
@@ -286,6 +388,7 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
             query_parameters.insert_or_assign(String(name), *value);
         else
             query_parameters.erase(String(name));
+        global_context->setQueryParameters(query_parameters);
         client_context->setQueryParameters(query_parameters);
         return;
     }
@@ -293,16 +396,21 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
     if (value)
     {
         SettingChange change(key, Field(*value));
-        client_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        global_context->checkSettingsConstraints(change, SettingSource::QUERY);
+        global_context->applySettingChange(change);
         client_context->applySettingChange(change);
     }
     else
     {
-        if (!client_context->getSettingsRef().has(key))
+        if (!global_context->getSettingsRef().has(key) && !client_context->getSettingsRef().has(key))
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unknown setting '{}'", key);
-        client_context->checkSettingsConstraintsForSettingsReset({key}, SettingSource::QUERY);
+        global_context->checkSettingsConstraintsForSettingsReset({key}, SettingSource::QUERY);
+        global_context->resetSettingsToDefaultValue({key});
         client_context->resetSettingsToDefaultValue({key});
     }
+
+    if (key == "database" && connection)
+        connection->setDefaultDatabase(global_context->getCurrentDatabase());
 
     /// Queries copy client_context; refresh the connection's cached format settings.
     if (connection)
@@ -311,7 +419,8 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
 
 bool ChdbClient::getConnectionSetting(const String & key, String & value) const
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
+    checkNotReentrant();
+    ClientOperationLock lock(this, client_mutex);
 
     if (auto name = connectionParameterName(key); !name.empty())
     {
@@ -323,7 +432,7 @@ bool ChdbClient::getConnectionSetting(const String & key, String & value) const
     }
 
     Field field;
-    if (!client_context->getSettingsRef().tryGet(key, field))
+    if (!global_context->getSettingsRef().tryGet(key, field))
         return false;
     if (Settings::hasBuiltin(key))
         value = Settings::valueToStringUtil(key, field);
@@ -436,6 +545,11 @@ static bool isJSONSupported(const char * format, size_t format_len)
 
 bool ChdbClient::parseQueryTextWithOutputFormat(const String & query, const String & format)
 {
+    /// Keep client_context's settings aligned with session_context (global_context) so
+    /// server-side SET profile / SET ... = DEFAULT changes are reflected cleanly without
+    /// aliasing client_context to session_context.
+    client_context->setSettings(global_context->getSettingsRef());
+
     if (!format.empty())
     {
         client_context->setDefaultFormat(format);
@@ -457,7 +571,16 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
 #if USE_PYTHON
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
-    std::lock_guard<std::mutex> lock(client_mutex);
+    if (isActiveOnCurrentThreadOrQuery())
+    {
+#if USE_PYTHON
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
+        return std::make_unique<CHDB::MaterializedQueryResult>(
+            "Cannot execute a query on a connection from its own active callback");
+    }
+
+    ClientOperationLock lock(this, client_mutex);
     const auto replaced_parameters = applyCallQueryParameters();
     SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
@@ -475,7 +598,7 @@ CHDB::QueryResultPtr ChdbClient::executeMaterializedQuery(
 
     try
     {
-        DB::ThreadStatus thread_status;
+        ScopedClientThreadStatus thread_status;
 
         /// A materialized query rebuilds this connection's LocalQueryState. An
         /// un-drained streaming read left active on the connection would then
@@ -571,10 +694,20 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
     const char * query, size_t query_len,
     const char * format, size_t format_len, bool dataframe_over_chunks)
 {
+    (void)dataframe_over_chunks;
 #if USE_PYTHON
     const UInt64 py_tables_token = takePythonTablesBindToken();
 #endif
-    std::lock_guard<std::mutex> lock(client_mutex);
+    if (isActiveOnCurrentThreadOrQuery())
+    {
+#if USE_PYTHON
+        python_table_cache->releaseQueryableObjs(py_tables_token);
+#endif
+        return std::make_unique<CHDB::StreamQueryResult>(
+            "Cannot start a streaming query on a connection from its own active callback");
+    }
+
+    ClientOperationLock lock(this, client_mutex);
     const auto replaced_parameters = applyCallQueryParameters();
     SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
@@ -592,14 +725,14 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
 
     try
     {
-        DB::ThreadStatus thread_status;
+        ScopedClientThreadStatus thread_status;
 
-#if USE_PYTHON
-        /// Starting a new stream implicitly abandons an unfinished one; its
-        /// bindings must be released with it or they leak until close.
-        if (streaming_query_context)
-            python_table_cache->releaseQueryableObjs(streaming_query_context->python_tables_bind_token);
-#endif
+        /// Starting a new stream implicitly abandons an unfinished one; cancel it
+        /// and release its Python table bindings so neither engine state nor
+        /// DataFrames leak until connection close.
+        if (streaming_query_context && streaming_query_context->streaming_result)
+            cancelStreamingQueryWithoutLock(streaming_query_context->streaming_result);
+
         streaming_query_context = std::make_shared<StreamingQueryContext>();
         /// chdb_spec: start without a buffer a failed query left behind, as above.
         resetQueryOutputVector();
@@ -613,7 +746,6 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
             return std::make_unique<CHDB::StreamQueryResult>(getErrorMsg());
         }
         streaming_query_context->thread_group = DB::CurrentThread::getGroup();
-        streaming_query_context->dataframe_over_chunks = dataframe_over_chunks;
 #if USE_PYTHON
         streaming_query_context->python_tables_bind_token = py_tables_token;
 #endif
@@ -645,14 +777,18 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingInit(
 
 CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result, bool is_canceled)
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
+    if (isActiveOnCurrentThreadOrQuery())
+        return std::make_unique<CHDB::MaterializedQueryResult>(
+            "Cannot fetch streaming results on a connection from its own active callback");
+
+    ClientOperationLock lock(this, client_mutex);
 
     if (!streaming_query_context)
         return std::make_unique<CHDB::MaterializedQueryResult>("No active streaming query");
 
     try
     {
-        DB::ThreadStatus thread_status;
+        ScopedClientThreadStatus thread_status;
 
         if (streaming_query_context->thread_group)
         {
@@ -686,7 +822,11 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
             if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
             {
                 auto rows_read = processed_rows - old_processed_rows;
-                auto chunk_result = std::make_unique<CHDB::ChunkQueryResult>(
+                /// Return raw Chunks without acquiring the Python GIL under client_mutex:
+                /// Python streaming_fetch_df builds the DataFrame after client_mutex is
+                /// released (matching query_df), avoiding client_mutex -> GIL lock-order
+                /// stalls and re-entrancy hazards.
+                res = std::make_unique<CHDB::ChunkQueryResult>(
                     std::move(collected_chunks),
                     std::move(collected_chunks_header),
                     elapsed_time - old_elapsed_time,
@@ -696,24 +836,6 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
                     storage_bytes_read - old_storage_bytes_read,
                     rows_written - old_rows_written,
                     bytes_written - old_bytes_written);
-
-#if USE_PYTHON
-                if (streaming_query_context->dataframe_over_chunks)
-                {
-                    py::gil_scoped_acquire acquire;
-                    CHDB::PandasDataFrameBuilder builder(*chunk_result);
-                    py::handle df = builder.getDataFrame().release();
-
-                    res = std::make_unique<CHDB::DataFrameQueryResult>(df, rows_read);
-                }
-                else
-                {
-                    /// Arrow C Data / ADBC consumers want raw chunks.
-                    res = std::move(chunk_result);
-                }
-#else
-                res = std::move(chunk_result);
-#endif
             }
             else
             {
@@ -796,14 +918,18 @@ CHDB::QueryResultPtr ChdbClient::executeStreamingIterate(void * streaming_result
 
 void ChdbClient::cancelStreamingQuery(void * streaming_result)
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
+    checkNotReentrant();
+    ClientOperationLock lock(this, client_mutex);
 
     cancelStreamingQueryWithoutLock(streaming_result);
 }
 
 void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
 {
-    if (streaming_query_context)
+    /// Ignore stale handles whose stream was already superseded by a later query/stream
+    /// on this connection; cancelling them must not disturb the newer stream.
+    if (streaming_query_context
+        && (!streaming_result || streaming_query_context->streaming_result == streaming_result))
     {
         try
         {
@@ -835,7 +961,11 @@ void ChdbClient::cancelStreamingQueryWithoutLock(void * streaming_result)
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
     const char * query, size_t query_len, const char * format, size_t format_len)
 {
-    std::lock_guard<std::mutex> lock(client_mutex);
+    if (isActiveOnCurrentThreadOrQuery())
+        return std::make_unique<CHDB::InsertStreamResult>(
+            "Cannot start a streaming insert on a connection from its own active callback");
+
+    ClientOperationLock lock(this, client_mutex);
     const auto replaced_parameters = applyCallQueryParameters();
     SCOPE_EXIT({ restoreCallQueryParameters(replaced_parameters); });
 
@@ -849,7 +979,8 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingInit(
 
     try
     {
-        DB::ThreadStatus thread_status;
+        ScopedClientThreadStatus thread_status;
+        client_context->setSettings(global_context->getSettingsRef());
 
         if (!connection || !connection->checkConnected(connection_parameters.timeouts))
             connect();
@@ -1101,9 +1232,10 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
 
 bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char * data, size_t len)
 {
+    checkNotReentrant();
     CHDB::InsertStreamContextPtr ctx;
     {
-        std::lock_guard<std::mutex> lock(client_mutex);
+        ClientOperationLock lock(this, client_mutex);
         auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
         if (!res || !res->context)
             return false;
@@ -1122,6 +1254,10 @@ bool ChdbClient::executeInsertStreamingAppend(void * insert_stream, const char *
 
 CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream)
 {
+    if (isActiveOnCurrentThreadOrQuery())
+        return std::make_unique<CHDB::MaterializedQueryResult>(
+            "Cannot finalize a streaming insert on a connection from its own active callback");
+
     auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
     CHDB::InsertStreamContextPtr ctx =
         (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
@@ -1138,7 +1274,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
     if (ctx->worker.joinable())
         ctx->worker.join();
 
-    std::lock_guard<std::mutex> lock(client_mutex);
+    ClientOperationLock lock(this, client_mutex);
 
     /// Guard the connection like the USE_PYTHON block below: if teardown reset
     /// it before we acquired the lock, report zero progress instead of crashing.
@@ -1181,6 +1317,7 @@ CHDB::QueryResultPtr ChdbClient::executeInsertStreamingDone(void * insert_stream
 
 void ChdbClient::cancelInsertStream(void * insert_stream)
 {
+    checkNotReentrant();
     auto * res = reinterpret_cast<CHDB::InsertStreamResult *>(insert_stream);
     CHDB::InsertStreamContextPtr ctx =
         (res && res->context) ? std::static_pointer_cast<CHDB::InsertStreamContext>(res->context) : nullptr;
@@ -1206,7 +1343,7 @@ void ChdbClient::cancelInsertStream(void * insert_stream)
     if (ctx->worker.joinable())
         ctx->worker.join();
 
-    std::lock_guard<std::mutex> lock(client_mutex);
+    ClientOperationLock lock(this, client_mutex);
     restoreSettingsAfterInsertStream();
     cancelInsertStreamWithoutLock();
 }
@@ -1281,7 +1418,8 @@ void ChdbClient::analyzeQuery(
     if (!sql || sql_len == 0)
         return;
 
-    std::lock_guard<std::mutex> lock(client_mutex);
+    checkNotReentrant();
+    ClientOperationLock lock(this, client_mutex);
 
     const String text(sql, sql_len);
     const char * pos = text.data();
@@ -1295,13 +1433,13 @@ void ChdbClient::analyzeQuery(
 
     try
     {
-        const Settings & settings = client_context->getSettingsRef();
+        const Settings & settings = global_context->getSettingsRef();
         const auto max_parser_depth = static_cast<uint32_t>(settings[Setting::max_parser_depth]);
         const auto max_parser_backtracks = static_cast<uint32_t>(settings[Setting::max_parser_backtracks]);
         /// Resolving an unqualified name is the difference between
         /// `INSERT INTO wasm_modules` being a table write and being a write
         /// into `system`; only the connection knows which.
-        const String current_database = client_context->getCurrentDatabase();
+        const String current_database = global_context->getCurrentDatabase();
         const String target(target_database);
 
         while (pos < end)

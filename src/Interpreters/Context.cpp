@@ -1174,6 +1174,9 @@ struct ContextSharedPart : boost::noncopyable
         if (is_shutdown_called)
             return;
 
+        if (async_loader)
+            async_loader->shutdown();
+
         /// Need to flush the async insert queue before shutting down the database catalog
         std::shared_ptr<AsynchronousInsertQueue> delete_async_insert_queue;
         {
@@ -1718,7 +1721,10 @@ ContextData::ContextData(const ContextData &o) :
     remote_write_query_throttler(o.remote_write_query_throttler),
     local_read_query_throttler(o.local_read_query_throttler),
     local_write_query_throttler(o.local_write_query_throttler),
-    backups_query_throttler(o.backups_query_throttler)
+    backups_query_throttler(o.backups_query_throttler),
+    is_json_supported(o.is_json_supported),
+    py_table_cache(o.py_table_cache),
+    arrow_stream_registry(o.arrow_stream_registry)
 {
     std::lock_guard lock(o.table_function_results_mutex);
     table_function_results = o.table_function_results;
@@ -1747,21 +1753,7 @@ SharedContextHolder::SharedContextHolder(std::unique_ptr<ContextSharedPart> shar
     : shared(std::move(shared_context)) {}
 
 void SharedContextHolder::reset() { shared.reset(); }
-
-SharedPtrContextHolder::SharedPtrContextHolder(SharedPtrContextHolder &&) noexcept = default;
-SharedPtrContextHolder & SharedPtrContextHolder::operator=(SharedPtrContextHolder &&) noexcept = default;
-SharedPtrContextHolder::SharedPtrContextHolder() = default;
-//chdb-todo: fix SharedPtrContextHolder.shared leak
-SharedPtrContextHolder::~SharedPtrContextHolder() = default;
-SharedPtrContextHolder::SharedPtrContextHolder(ContextSharedPart * shared_context) : shared(shared_context)
-{
-}
-
-void SharedPtrContextHolder::reset()
-{
-    delete shared;
-    shared = nullptr;
-}
+ContextSharedPart * SharedContextHolder::release() noexcept { return shared.release(); }
 
 ContextMutablePtr Context::createGlobal(ContextSharedPart * shared_part)
 {
@@ -1781,7 +1773,7 @@ SharedContextHolder Context::createShared()
 
 SharedPtrContextHolder Context::createSharedHolder()
 {
-    return SharedPtrContextHolder(new ContextSharedPart());
+    return createShared();
 }
 
 ContextMutablePtr Context::createCopy(const ContextPtr & other)

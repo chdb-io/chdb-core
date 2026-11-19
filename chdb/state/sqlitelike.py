@@ -204,6 +204,12 @@ class StreamingResult:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cancel()
 
+    def __del__(self):
+        try:
+            self.cancel()
+        except Exception:
+            pass
+
     def close(self):
         """Close the streaming result and cleanup resources.
 

@@ -45,9 +45,12 @@ if sys.version_info[:2] >= (3, 7):
                 break
     from . import _chdb  # noqa
 
-    conn = _chdb.connect()
-    engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
-    conn.close()
+    if hasattr(_chdb, "engine_version"):
+        engine_version = _chdb.engine_version()
+    else:
+        conn = _chdb.connect()
+        engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
+        conn.close()
 else:
     raise NotImplementedError("Python 3.6 or lower version is not supported")
 

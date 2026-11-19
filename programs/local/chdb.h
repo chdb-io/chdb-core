@@ -20,6 +20,12 @@ extern "C" {
  */
 CHDB_EXPORT const char * chdb_version(void);
 
+/**
+ * Returns the version of the embedded ClickHouse engine without starting it.
+ * @return Null-terminated engine version string, e.g. "26.11.1.1"
+ */
+CHDB_EXPORT const char * chdb_engine_version(void);
+
 #ifndef CHDB_NO_DEPRECATED
 // WARNING: The following structs are deprecated and will be removed in a future version.
 struct local_result

@@ -12,7 +12,9 @@
 
 #include <filesystem>
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -69,6 +71,19 @@ public:
     static bool lastCleanupSucceeded();
     static void cancelPythonQueriesIfExclusive(size_t python_clients);
 
+    /// Reserves exclusive process-global catalog/application state for a one-shot
+    /// LocalServer invocation (pyEntryClickHouseLocal). Throws BAD_ARGUMENTS without
+    /// touching Poco::Util::Application::_pInstance or DatabaseCatalog when an
+    /// EmbeddedServer connection is open or chDB has already been shut down.
+    class LocalServerGuard
+    {
+    public:
+        LocalServerGuard();
+        ~LocalServerGuard();
+        LocalServerGuard(const LocalServerGuard &) = delete;
+        LocalServerGuard & operator=(const LocalServerGuard &) = delete;
+    };
+
     std::string getPath() const { return db_path; }
 
 private:
@@ -86,7 +101,9 @@ private:
 
     static std::unique_ptr<EmbeddedServer> global_instance;
     static std::mutex instance_mutex;
+    static std::condition_variable instance_cv;
     static size_t client_ref_count;
+    static bool local_server_active;
     /// Set by beginShutdown(); guarded by instance_mutex.
     static bool engine_stopped;
     static std::atomic<bool> last_cleanup_succeeded;
@@ -97,10 +114,12 @@ private:
     ServerSettings server_settings;
     std::optional<StatusFile> status;
     std::optional<std::filesystem::path> temporary_directory_to_delete;
-    std::unique_ptr<MemoryWorker> memory_worker;
+    /// Declared before global_context and memory_worker so reverse member destruction
+    /// destroys memory_worker -> global_context -> shared_context.
+    SharedContextHolder shared_context;
     ContextMutablePtr global_context;
+    std::unique_ptr<MemoryWorker> memory_worker;
     String home_path;
     std::stringstream error_message_oss;
-    SharedPtrContextHolder shared_context;
 };
 } // namespace DB

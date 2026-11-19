@@ -31,6 +31,7 @@
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Core/UUID.h>
 #include <Databases/DatabaseAtomic.h>
+#include <Databases/DatabasesCommon.h>
 #include <Databases/DatabaseFilesystem.h>
 #include <Databases/DatabaseMemory.h>
 #include <Databases/DatabaseOverlay.h>
@@ -109,7 +110,7 @@
 #    include <azure/storage/common/internal/xml_wrapper.hpp>
 #endif
 
-bool chdb_embedded_server_initialized = false;
+std::atomic<bool> chdb_embedded_server_initialized{false};
 extern std::atomic<bool> g_memory_tracking_disabled;
 
 namespace fs = std::filesystem;
@@ -450,6 +451,27 @@ static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const Str
     return system_database;
 }
 
+static void deferDatabaseTables(IDatabase & database, std::function<void(IDatabase &)> populate)
+{
+    dynamic_cast<DatabaseWithOwnTablesBase &>(database).setDeferredPopulation(std::move(populate));
+}
+
+static void createMemoryDatabaseWithDeferredTables(ContextPtr context, const String & database_name, std::function<void(IDatabase &)> populate)
+{
+    deferDatabaseTables(*createMemoryDatabaseIfNotExists(context, database_name), std::move(populate));
+}
+
+static void deferSystemDatabaseTables(ContextPtr context, IDatabase & system_database)
+{
+    validateSystemUserQueryLog(context, system_database);
+
+    deferDatabaseTables(
+        system_database,
+        [context](IDatabase & database) { attachSystemTablesServerExceptOne(context, database, false, false); });
+
+    attachSystemTableOne(context, system_database);
+}
+
 static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPtr context)
 {
     auto overlay = std::make_shared<DatabaseOverlay>(name_, context);
@@ -638,22 +660,44 @@ void EmbeddedServer::cleanup()
     }
     catch (...) {}
 
-    /// The columns cache goes away with the context; stop resizing it.
+    /// The columns cache goes away with the context; stop resizing it, and stop the
+    /// MemoryWorker before shutting down Context/SharedContextHolder so its background
+    /// thread never races cache or tracker teardown.
     setMemoryReleasableCache(nullptr);
     if (memory_worker)
+    {
         memory_worker->setReleasableCache(nullptr);
+        memory_worker.reset();
+    }
 
     try
     {
         if (global_context)
         {
             global_context->shutdown();
+            /// On normal last-connection close every Session is already gone so
+            /// global_context has a single owner here and ContextSharedPart can be
+            /// destroyed cleanly. At process exit with an unclosed C/C++ connection,
+            /// its Session still holds a ContextPtr referencing shared_context; release
+            /// ownership instead of freeing ContextSharedPart beneath late destructors.
+            const bool sole_owner = (global_context.use_count() == 1);
             global_context.reset();
+            if (sole_owner)
+                shared_context.reset();
+            else
+                (void)shared_context.release();
             context_cleaned = true;
+        }
+        else
+        {
+            shared_context.reset();
         }
     }
     catch (const std::exception & e)
     {
+        /// If Context/DatabaseCatalog shutdown threw, keep ContextSharedPart alive
+        /// rather than freeing it out from under a still-live DatabaseCatalog.
+        (void)shared_context.release();
         /// chdb_spec: A failed Context shutdown can leave the catalog alive.
         /// Never hide it as a benign mutex error before the pool teardown.
         /// Use raw stderr: the C++ logger/iostream statics might be gone.
@@ -665,6 +709,7 @@ void EmbeddedServer::cleanup()
     }
     catch (...)
     {
+        (void)shared_context.release();
         static constexpr char message[] = "Unknown exception in global_context->shutdown()\n";
         (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
     }
@@ -809,7 +854,7 @@ try
         global_register_once_flag,
         []()
         {
-            chdb_embedded_server_initialized = true;
+            chdb_embedded_server_initialized.store(true, std::memory_order_relaxed);
 
             registerInterpreters();
             registerParsers();
@@ -909,7 +954,7 @@ void EmbeddedServer::processConfig()
     memory_worker->start();
 #endif
 
-    shared_context = Context::createSharedHolder();
+    shared_context = Context::createShared();
     global_context = Context::createGlobal(shared_context.get());
     global_context->makeGlobalContext();
     global_context->setApplicationType(Context::ApplicationType::LOCAL);
@@ -1263,8 +1308,8 @@ void EmbeddedServer::processConfig()
                 LoadTaskPtrs load_system_metadata_tasks = loadMetadataSystem(global_context);
                 waitLoad(TablesLoaderForegroundPoolId, load_system_metadata_tasks);
 
-                attachSystemTablesServer(
-                    global_context, *DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE), false, false);
+                deferSystemDatabaseTables(
+                    global_context, *DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE));
                 attached_system_database = true;
             }
 
@@ -1289,18 +1334,19 @@ void EmbeddedServer::processConfig()
         }
 
         if (!attached_system_database)
-            attachSystemTablesServer(
-                global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
+            deferSystemDatabaseTables(
+                global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE));
 
         if (fs::exists(fs::path(path) / "user_defined"))
             global_context->getUserDefinedSQLObjectsStorage().loadObjects();
     }
     else if (!config().has("no-system-tables"))
     {
-        attachSystemTablesServer(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
-        attachInformationSchema(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA));
-        attachInformationSchema(
-            global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE));
+        deferSystemDatabaseTables(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE));
+        createMemoryDatabaseWithDeferredTables(global_context, DatabaseCatalog::INFORMATION_SCHEMA,
+            [context = global_context](IDatabase & database) { attachInformationSchema(context, database); });
+        createMemoryDatabaseWithDeferredTables(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE,
+            [context = global_context](IDatabase & database) { attachInformationSchema(context, database); });
 
         /// Create background tasks necessary for DDL operations like DROP VIEW SYNC,
         /// even in temporary mode (--path not set) without persistent storage
@@ -1355,7 +1401,9 @@ void EmbeddedServer::applyCmdOptions(ContextMutablePtr context)
 
 std::unique_ptr<EmbeddedServer> EmbeddedServer::global_instance;
 std::mutex EmbeddedServer::instance_mutex;
+std::condition_variable EmbeddedServer::instance_cv;
 size_t EmbeddedServer::client_ref_count = 0;
+bool EmbeddedServer::local_server_active = false;
 bool EmbeddedServer::engine_stopped = false;
 std::atomic<bool> EmbeddedServer::last_cleanup_succeeded{true};
 
@@ -1569,9 +1617,35 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
     }
 }
 
-EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
+EmbeddedServer::LocalServerGuard::LocalServerGuard()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
+    if (engine_stopped)
+        throw DB::Exception(ErrorCodes::BAD_ARGUMENTS, "chDB has been shut down and cannot be used again in this process");
+    if (client_ref_count != 0 || global_instance != nullptr || local_server_active || DatabaseCatalog::isAvailable())
+        throw DB::Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot run one-shot LocalServer query while a chDB connection is open; "
+            "execute the query on a connection or close all open connections first");
+    local_server_active = true;
+}
+
+EmbeddedServer::LocalServerGuard::~LocalServerGuard()
+{
+    {
+        std::lock_guard<std::mutex> lock(instance_mutex);
+        local_server_active = false;
+    }
+    instance_cv.notify_all();
+}
+
+EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
+{
+    std::unique_lock<std::mutex> lock(instance_mutex);
+    /// Wait for any in-flight one-shot LocalServer call (pyEntryClickHouseLocal) to finish
+    /// tearing down its global Context and DatabaseCatalog before booting EmbeddedServer.
+    instance_cv.wait(lock, [] { return !local_server_active; });
+
     /// A warning belongs to the connection that is being made, not to an earlier one that failed after leaving it.
     connect_warning.clear();
 
@@ -1652,7 +1726,7 @@ bool EmbeddedServer::beginShutdown()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
 
-    if (client_ref_count != 0)
+    if (client_ref_count != 0 || local_server_active)
         return false;
 
     engine_stopped = true;

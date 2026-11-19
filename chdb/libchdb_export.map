@@ -54,6 +54,7 @@
         chdb_result_bytes_written;
         chdb_result_error;
         chdb_version;
+        chdb_engine_version;
 
         /* Arrow Integration */
         chdb_arrow_scan;
