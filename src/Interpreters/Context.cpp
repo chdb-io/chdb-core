@@ -723,6 +723,9 @@ struct ContextSharedPart : boost::noncopyable
     scope_guard dynamic_user_defined_executable_functions_xmls TSA_GUARDED_BY(external_user_defined_executable_functions_mutex);
 
     mutable OnceFlag user_defined_sql_objects_storage_initialized;
+    /// chdb_spec: guards the lazy creation below. Not `mutex`: createUserDefinedSQLObjectsStorage() calls setPath() and
+    /// getPath(), which take `mutex` themselves.
+    mutable std::mutex user_defined_sql_objects_storage_mutex;
     mutable std::unique_ptr<IUserDefinedSQLObjectsStorage> user_defined_sql_objects_storage;
 
     mutable OnceFlag workload_entity_storage_initialized;
@@ -5013,7 +5016,7 @@ const IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
     if (chdb_namespace && chdb_namespace->sql_objects_storage)
         return *chdb_namespace->sql_objects_storage;
 
-    std::lock_guard lock(shared->mutex);
+    std::lock_guard lock(shared->user_defined_sql_objects_storage_mutex);
     if (!shared->user_defined_sql_objects_storage)
         shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
     return *shared->user_defined_sql_objects_storage;
@@ -5024,7 +5027,7 @@ IUserDefinedSQLObjectsStorage & Context::getUserDefinedSQLObjectsStorage()
     if (chdb_namespace && chdb_namespace->sql_objects_storage)
         return *chdb_namespace->sql_objects_storage;
 
-    std::lock_guard lock(shared->mutex);
+    std::lock_guard lock(shared->user_defined_sql_objects_storage_mutex);
     if (!shared->user_defined_sql_objects_storage)
         shared->user_defined_sql_objects_storage = createUserDefinedSQLObjectsStorage(getGlobalContext());
     return *shared->user_defined_sql_objects_storage;
