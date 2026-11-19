@@ -130,6 +130,18 @@ String resolveLogicalDatabaseName(std::string_view database_name, const ChdbName
     return String(database_name);
 }
 
+/// Whether the table that the UUID map resolved to `owner` is the table `catalog_db` serves under table_id's name.
+/// A namespace's default database is a DatabaseOverlay, while the UUID map records the inner database that owns
+/// the table, so the pointers differ for every table of `default`.
+bool catalogDatabaseHasTable(const DatabasePtr & catalog_db, const DatabasePtr & owner, const StorageID & table_id)
+{
+    if (!catalog_db)
+        return false;
+    if (catalog_db.get() == owner.get())
+        return true;
+    return catalog_db->tryGetTableUUID(table_id.getTableName()) == table_id.uuid;
+}
+
 StorageID toCatalogStorageID(const StorageID & id, const ChdbNamespace * ns)
 {
     if (!ns || id.database_name.empty())
@@ -624,7 +636,7 @@ DatabaseAndTable DatabaseCatalog::getTableImpl(
                 if (auto it = databases.find(expected_catalog_db); it != databases.end())
                     ns_db = it->second;
             }
-            if (ns_db.get() != db_and_table.first.get())
+            if (!catalogDatabaseHasTable(ns_db, db_and_table.first, table_id))
                 db_and_table = {};
         }
         if (!db_and_table.first || !db_and_table.second)
@@ -1200,9 +1212,13 @@ bool DatabaseCatalog::isTableExist(const DB::StorageID & table_id, ContextPtr co
         if (ns && !table_id.database_name.empty() && !isPredefinedDatabase(table_id.database_name))
         {
             const String catalog_db_name = resolveCatalogDatabaseName(table_id.database_name, ns);
-            std::lock_guard lock{databases_mutex};
-            auto it = databases.find(catalog_db_name);
-            return it != databases.end() && it->second.get() == db_and_table.first.get();
+            DatabasePtr catalog_db;
+            {
+                std::lock_guard lock{databases_mutex};
+                if (auto it = databases.find(catalog_db_name); it != databases.end())
+                    catalog_db = it->second;
+            }
+            return catalogDatabaseHasTable(catalog_db, db_and_table.first, table_id);
         }
         return true;
     }
