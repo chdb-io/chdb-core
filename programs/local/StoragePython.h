@@ -35,6 +35,11 @@ public:
     explicit PyReader(const py::object & data) : data(data) { }
     ~PyReader()
     {
+        if (!Py_IsInitialized())
+        {
+            (void)data.release();
+            return;
+        }
         py::gil_scoped_acquire acquire;
         if (data.is_none())
             return;

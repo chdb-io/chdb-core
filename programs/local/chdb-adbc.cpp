@@ -1275,8 +1275,7 @@ AdbcStatusCode chdbConnectionInit(
         return setError(
             error,
             ADBC_STATUS_IO,
-            "[chdb] chdb_connect failed for path '" + db->path
-                + "' (note: all connections in a process must share one storage path)");
+            "[chdb] chdb_connect failed for path '" + db->path + "'");
     return ADBC_STATUS_OK;
 }
 

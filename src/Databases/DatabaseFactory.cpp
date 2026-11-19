@@ -34,9 +34,9 @@ namespace ErrorCodes
     extern const int LOGICAL_ERROR;
 }
 
-static void cckMetadataPathForOrdinary(const ASTCreateQuery & create, const String & metadata_path)
+static void cckMetadataPathForOrdinary(const ASTCreateQuery & create, const String & metadata_path, const ContextPtr & context)
 {
-    auto default_db_disk = Context::getGlobalContextInstance()->getDatabaseDisk();
+    auto default_db_disk = context ? context->getDatabaseDisk() : Context::getGlobalContextInstance()->getDatabaseDisk();
 
     if (!default_db_disk->isSymlinkSupported())
         return;
@@ -116,7 +116,7 @@ DatabasePtr DatabaseFactory::get(const ASTCreateQuery & create, const String & m
     /// if the engine is found (i.e. registered with the factory instance), then validate if the
     /// supplied engine arguments, settings and table overrides are valid for the engine.
     validate(create);
-    cckMetadataPathForOrdinary(create, metadata_path);
+    cckMetadataPathForOrdinary(create, metadata_path, context);
 
     DatabasePtr impl = getImpl(create, metadata_path, context, mode, internal, is_metadata_replay, is_restore_from_backup);
 

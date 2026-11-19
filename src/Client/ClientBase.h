@@ -492,7 +492,7 @@ public:
     /// Should be one of the first, to be destroyed the last,
     /// since other members can use them.
     /// This holder may not be initialized in case if we run the client in the embedded mode (SSH).
-    SharedPtrContextHolder shared_context;
+    SharedContextHolder shared_context;
     ContextMutablePtr global_context;
     ContextMutablePtr client_context;
 

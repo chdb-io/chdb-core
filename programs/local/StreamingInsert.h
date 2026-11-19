@@ -1,9 +1,11 @@
 #pragma once
 
 #include <IO/ReadBuffer.h>
+#include <IO/Progress.h>
 #include <Common/ConcurrentBoundedQueue.h>
 #include <Common/ThreadPool.h>
 #include <Core/Block.h>
+#include <Interpreters/Context_fwd.h>
 #include <Storages/ColumnsDescription.h>
 #include <Parsers/IAST_fwd.h>
 
@@ -79,31 +81,35 @@ private:
 /// InsertStreamResult handle returned to the C layer and the worker thread.
 ///
 /// The worker thread runs the INSERT pipeline: it pulls parsed blocks from an
-/// input format reading `queue_buf` and pushes them into the engine via
-/// LocalConnection::sendData, then finalizes. The caller-facing append()/done()/
+/// input format reading `queue_buf` and pushes them directly into the engine's
+/// pushing pipeline executor, then finalizes. The caller-facing append()/done()/
 /// cancel() feed/close `queue_buf` and observe `error`/`worker_done`.
 struct InsertStreamContext
 {
     std::shared_ptr<QueueReadBuffer> queue_buf;
+    DB::ContextMutablePtr query_context;
     DB::ASTPtr parsed_query;
     std::string full_query;
     DB::Block sample;
     DB::ColumnsDescription columns;
     std::string format;
+    DB::Progress progress;
+    std::shared_ptr<void> interrupt_slot;
 
     DB::ThreadGroupPtr thread_group;
     ThreadFromGlobalPool worker;
 
     /// Handshake so executeInsertStreamingInit() can report setup errors
-    /// (bad SQL, missing table) synchronously: the worker runs sendQuery +
-    /// receiveSampleBlock, then signals "" on success or the message on failure.
+    /// (bad SQL, missing table) synchronously: the worker runs executeQuery +
+    /// starts the pushing executor, then signals "" on success or the message on failure.
     std::promise<std::string> init_promise;
+    int init_error_code = 0;
     bool init_signaled = false;
 
     std::atomic<bool> cancelled{false};
     std::atomic<bool> worker_done{false};
     /// Set once done() or cancel() has joined the worker; makes a subsequent
-    /// cancel()/destroy() a no-op so we never sendCancel() a finished query.
+    /// cancel()/destroy() a no-op so we never cancel a finished query.
     std::atomic<bool> finalized{false};
 
     /// Set by the worker thread on failure; surfaced via chdb_stream_insert_error.
@@ -114,12 +120,12 @@ struct InsertStreamContext
     std::atomic<bool> error_set{false};
     std::exception_ptr error;
     std::string error_message;
+    int error_code = 0;
 
     /// Engine write-progress accumulated for this INSERT (filled in done()).
     uint64_t rows_written = 0;
     uint64_t bytes_written = 0;
     double elapsed = 0.0;
-
 };
 
 using InsertStreamContextPtr = std::shared_ptr<InsertStreamContext>;

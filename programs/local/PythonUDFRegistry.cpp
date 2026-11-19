@@ -102,16 +102,30 @@ bool PythonUDFRegistry::removeUDF(const String & name)
 {
     py::gil_assert();
 
-    std::unique_lock lock(mutex);
-    return udfs.erase(name) > 0;
+    /// Dropping the last reference to a UDF decrefs its Python callable and can
+    /// run __del__, so it must die outside the registry lock (see registerUDF).
+    std::shared_ptr<PythonScalarUDF> removed;
+    {
+        std::unique_lock lock(mutex);
+        auto it = udfs.find(name);
+        if (it == udfs.end())
+            return false;
+        removed = std::move(it->second);
+        udfs.erase(it);
+    }
+    return true;
 }
 
 void PythonUDFRegistry::clear()
 {
-    py::gil_assert();
+    if (Py_IsInitialized())
+        py::gil_assert();
 
-    std::unique_lock lock(mutex);
-    udfs.clear();
+    std::unordered_map<String, std::shared_ptr<PythonScalarUDF>> removed;
+    {
+        std::unique_lock lock(mutex);
+        removed.swap(udfs);
+    }
 }
 
 void registerPythonUDF(

@@ -17,7 +17,7 @@ std::atomic<bool> g_memory_tracking_disabled{false};
 constinit FiberLocal<bool, FiberLocalSlot::MEMORY_TRACKER_ALWAYS_THROW_ON_ALLOCATION> memory_tracker_always_throw_logical_error_on_allocation;
 #endif
 
-extern bool chdb_embedded_server_initialized;
+extern std::atomic<bool> chdb_embedded_server_initialized;
 
 namespace
 {
@@ -43,7 +43,7 @@ MemoryTracker * getMemoryTracker()
     if (auto * thread_memory_tracker = DB::CurrentThread::getMemoryTracker())
         return thread_memory_tracker;
 
-    if (likely(chdb_embedded_server_initialized))
+    if (likely(chdb_embedded_server_initialized.load(std::memory_order_relaxed)))
         return &total_memory_tracker;
 
     /// total_memory_tracker can be used before MainThreadStatus is initialized,

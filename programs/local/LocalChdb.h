@@ -28,12 +28,44 @@ class AIQueryProcessor;
 namespace py = pybind11;
 
 class __attribute__((visibility("default"))) local_result_wrapper;
+class __attribute__((visibility("default"))) database_wrapper;
 class __attribute__((visibility("default"))) connection_wrapper;
 class __attribute__((visibility("default"))) cursor_wrapper;
 class __attribute__((visibility("default"))) memoryview_wrapper;
 class __attribute__((visibility("default"))) query_result;
 class __attribute__((visibility("default"))) streaming_query_result;
 class __attribute__((visibility("default"))) streaming_insert_result;
+
+class database_wrapper : public std::enable_shared_from_this<database_wrapper>
+{
+private:
+    chdb_database db = nullptr;
+    mutable std::mutex lifecycle_mutex;
+    bool closed = false;
+    std::string db_path;
+    bool is_memory_db = true;
+    bool is_readonly = false;
+    std::map<std::string, std::string> default_conn_params;
+#if USE_CLIENT_AI
+    std::optional<DB::AIConfiguration> ai_config;
+#endif
+
+public:
+    database_wrapper(const std::string & conn_str, bool read_only);
+    ~database_wrapper();
+
+    static std::shared_ptr<database_wrapper> createPython(const std::string & conn_str = ":memory:", bool read_only = false);
+    std::shared_ptr<connection_wrapper> connect(const std::string & options_str = "", bool read_only = false);
+    void close();
+    bool isOpen() const;
+    bool needsExitClose() const;
+    const std::string & path() const noexcept { return db_path; }
+    const std::map<std::string, std::string> & defaultConnectionParams() const noexcept { return default_conn_params; }
+    chdb_database snapshotHandle() const;
+#if USE_CLIENT_AI
+    const std::optional<DB::AIConfiguration> & getAIConfig() const noexcept { return ai_config; }
+#endif
+};
 
 class connection_wrapper : public std::enable_shared_from_this<connection_wrapper>
 {
@@ -49,9 +81,11 @@ private:
     bool is_memory_db;
     bool is_readonly;
 #if USE_PYTHON
+    mutable std::mutex callback_mutex;
     py::object progress_callback;
 #endif
 #if USE_CLIENT_AI
+    mutable std::mutex ai_mutex;
     std::unique_ptr<AIQueryProcessor> ai_processor;
     std::optional<DB::AIConfiguration> ai_config;
 #endif
@@ -76,8 +110,11 @@ public:
     };
 
     explicit connection_wrapper(const std::string & conn_str);
+    connection_wrapper(const database_wrapper & db_owner, const std::string & options_str, bool read_only);
     ~connection_wrapper();
     static std::shared_ptr<connection_wrapper> createPython(const std::string & conn_str);
+    static std::shared_ptr<connection_wrapper> createFromDatabase(
+        const database_wrapper & db_owner, const std::string & options_str, bool read_only);
     static bool closePythonConnectionsAtExit();
     Operation startOperation();
     size_t activeOperationCount() const;
@@ -86,16 +123,39 @@ public:
     cursor_wrapper * cursor();
     void commit();
     void close();
+    void interrupt() noexcept;
+    void register_table(const std::string & name, const py::object & obj);
+    void unregister_table(const std::string & name);
     void set_progress_callback(const py::object & callback);
-    query_result * query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
-    py::object query_df(const std::string & query_str, const py::dict & params = py::dict());
-    py::object query_arrow_reader(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
-    streaming_query_result * send_query_arrow(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
+    query_result * query(
+        const std::string & query_str,
+        const std::string & format = "CSV",
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
+    py::object query_df(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
+    py::object query_arrow_reader(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & options = py::none(),
+        const py::object & tables = py::none());
+    streaming_query_result * send_query_arrow(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & options = py::none(),
+        const py::object & tables = py::none());
     py::object streaming_fetch_arrow(streaming_query_result * streaming_result);
-    streaming_query_result * send_query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
+    streaming_query_result * send_query(
+        const std::string & query_str,
+        const std::string & format = "CSV",
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
     query_result * streaming_fetch_result(streaming_query_result * streaming_result);
     py::object streaming_fetch_df(streaming_query_result * streaming_result);
     void streaming_cancel_query(streaming_query_result * streaming_result);
+    void tryCancelAbandonedStream(chdb_result * stream_result) noexcept;
     /// Streaming INSERT (write side).
     streaming_insert_result * send_insert(const std::string & query_str, const std::string & format = "CSV");
     void insert_append(streaming_insert_result * ins, const py::bytes & data);
@@ -110,10 +170,11 @@ public:
 
     // Move the private methods declarations here
     void requireOpen() const;
-    std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
+    static std::pair<std::string, std::map<std::string, std::string>> parse_connection_string(const std::string & conn_str);
     std::vector<std::string> build_clickhouse_args(const std::string & path, const std::map<std::string, std::string> & params);
 
 #if USE_CLIENT_AI
+    static std::optional<DB::AIConfiguration> extractAIParams(std::map<std::string, std::string> & params);
 private:
     void applyAIParams(std::map<std::string, std::string> & params);
 #endif
@@ -190,6 +251,10 @@ public:
     {
         return chdb_result_error(result) != nullptr;
     }
+    int error_code()
+    {
+        return chdb_result_error_code(result);
+    }
     py::str error_message()
     {
         auto error_message = chdb_result_error(result);
@@ -224,6 +289,7 @@ public:
     size_t bytes_written() { return result_wrapper->bytes_written(); }
     double elapsed() { return result_wrapper->elapsed(); }
     bool has_error() { return result_wrapper->has_error(); }
+    int error_code() { return result_wrapper->error_code(); }
     py::str error_message() { return result_wrapper->error_message(); }
     memoryview_wrapper * get_memview();
     std::shared_ptr<local_result_wrapper> get_result_wrapper() { return result_wrapper; }
@@ -233,18 +299,16 @@ class streaming_query_result
 {
 private:
     chdb_result * result;
+    std::weak_ptr<connection_wrapper> owner;
 
 public:
-    streaming_query_result(chdb_result * result_) : result(result_) {}
-    ~streaming_query_result()
-    {
-        chdb_destroy_query_result(result);
-        /// Runs on a Python thread with the GIL held; settle borrow-guard
-        /// decrefs from any still-buffered batches instead of leaving them
-        /// queued until the next query.
-        CHDB::drainPyBorrowGuardQueue();
-    }
+    explicit streaming_query_result(chdb_result * result_) : result(result_) {}
+    streaming_query_result(chdb_result * result_, std::weak_ptr<connection_wrapper> owner_)
+        : result(result_), owner(std::move(owner_))
+    {}
+    ~streaming_query_result();
     bool has_error() { return chdb_result_error(result) != nullptr; }
+    int error_code() { return chdb_result_error_code(result); }
     py::str error_message()
     {
         auto error_message = chdb_result_error(result);
@@ -325,16 +389,23 @@ class cursor_wrapper
 {
 private:
     std::shared_ptr<connection_wrapper> conn;
-    chdb_result * current_result;
+    mutable std::mutex cursor_mutex;
+    std::shared_ptr<local_result_wrapper> current_result;
+
+    std::shared_ptr<local_result_wrapper> snapshot_result() const
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex);
+        return current_result;
+    }
 
     void release_result()
     {
-        if (current_result)
+        std::shared_ptr<local_result_wrapper> old_result;
         {
-            chdb_destroy_query_result(current_result);
-
-            current_result = nullptr;
+            std::lock_guard<std::mutex> lock(cursor_mutex);
+            old_result = std::move(current_result);
         }
+        old_result.reset();
     }
 
 public:
@@ -351,66 +422,79 @@ public:
 
     void close() { release_result(); }
 
+    void interrupt() { conn->interrupt(); }
+
     py::memoryview get_memview()
     {
         conn->requireOpen();
-        if (current_result == nullptr)
+        auto res = snapshot_result();
+        if (res == nullptr)
         {
             return py::memoryview(py::memoryview::from_memory(nullptr, 0, true));
         }
-        return py::memoryview(py::memoryview::from_memory(chdb_result_buffer(current_result), chdb_result_length(current_result), true));
+        return py::memoryview(py::memoryview::from_memory(res->data(), res->size(), true));
     }
 
     size_t data_size()
     {
         conn->requireOpen();
-        return chdb_result_length(current_result);
+        auto res = snapshot_result();
+        return res ? res->size() : 0;
     }
 
     size_t rows_read()
     {
         conn->requireOpen();
-        return chdb_result_rows_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->rows_read() : 0;
     }
 
     size_t bytes_read()
     {
         conn->requireOpen();
-        return chdb_result_bytes_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->bytes_read() : 0;
     }
 
     size_t storage_rows_read()
     {
         conn->requireOpen();
-        return chdb_result_storage_rows_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->storage_rows_read() : 0;
     }
 
     size_t storage_bytes_read()
     {
         conn->requireOpen();
-        return chdb_result_storage_bytes_read(current_result);
+        auto res = snapshot_result();
+        return res ? res->storage_bytes_read() : 0;
     }
 
     double elapsed()
     {
         conn->requireOpen();
-        return chdb_result_elapsed(current_result);
+        auto res = snapshot_result();
+        return res ? res->elapsed() : 0.0;
     }
 
     bool has_error()
     {
         conn->requireOpen();
-        return chdb_result_error(current_result) != nullptr;
+        auto res = snapshot_result();
+        return res ? res->has_error() : false;
+    }
+
+    int error_code()
+    {
+        conn->requireOpen();
+        auto res = snapshot_result();
+        return res ? res->error_code() : 0;
     }
 
     py::str error_message()
     {
         conn->requireOpen();
-        auto error_message = chdb_result_error(current_result);
-        if (error_message)
-        {
-            return py::str(error_message);
-        }
-        return py::str();
+        auto res = snapshot_result();
+        return res ? res->error_message() : py::str();
     }
 };

@@ -1191,6 +1191,80 @@ void test_arrow_insert(chdb_connection conn)
     if (stream.release) stream.release(&stream);
 }
 
+void test_arrow_session_isolation(chdb_connection conn1)
+{
+    char * argv[] = {"clickhouse", "--multiquery"};
+    chdb_connection * conn2_ptr;
+    chdb_connection conn2;
+    struct ArrowSchema schema1;
+    struct ArrowArray array1;
+    struct ArrowSchema schema2;
+    struct ArrowArray array2;
+    const char * shared_name = "isolated_arrow_tbl";
+    chdb_state state;
+    chdb_result * res1;
+    chdb_result * res2;
+    const char * err;
+
+    printf("\n=== Testing Multi-Connection ArrowStream Isolation ===\n");
+
+    conn2_ptr = chdb_connect(2, argv);
+    test_assert_not_null(conn2_ptr, "Open second connection for Arrow isolation");
+    conn2 = *conn2_ptr;
+
+    create_schema(&schema1);
+    memset(&array1, 0, sizeof(array1));
+    create_arrow_array(&array1, 100);
+
+    create_schema(&schema2);
+    memset(&array2, 0, sizeof(array2));
+    create_arrow_array(&array2, 250);
+
+    /* Both connections register the exact same table name independently. */
+    state = chdb_arrow_array_scan(conn1, shared_name, (chdb_arrow_schema)&schema1, (chdb_arrow_array)&array1);
+    test_assert_chdb_state(state, "Register shared_name on conn1 (100 rows)");
+
+    state = chdb_arrow_array_scan(conn2, shared_name, (chdb_arrow_schema)&schema2, (chdb_arrow_array)&array2);
+    test_assert_chdb_state(state, "Register shared_name on conn2 (250 rows)");
+
+    res1 = chdb_query(conn1, "SELECT COUNT(*) FROM arrowstream(isolated_arrow_tbl)", "CSV");
+    test_assert_row_count(res1, 100, "conn1 reads its own 100-row Arrow table");
+    chdb_destroy_query_result(res1);
+
+    res2 = chdb_query(conn2, "SELECT COUNT(*) FROM arrowstream(isolated_arrow_tbl)", "CSV");
+    test_assert_row_count(res2, 250, "conn2 reads its own 250-row Arrow table");
+    chdb_destroy_query_result(res2);
+
+    /* Closing conn2 auto-releases conn2's registration without disturbing conn1. */
+    chdb_close_conn(conn2_ptr);
+
+    state = chdb_arrow_unregister_table(conn1, shared_name);
+    test_assert_chdb_state(state, "Unregister shared_name on conn1");
+    state = chdb_arrow_array_scan(conn1, shared_name, (chdb_arrow_schema)&schema1, (chdb_arrow_array)&array1);
+    test_assert_chdb_state(state, "Re-register shared_name on conn1 after conn2 closed");
+
+    res1 = chdb_query(conn1, "SELECT COUNT(*) FROM arrowstream(isolated_arrow_tbl)", "CSV");
+    test_assert_row_count(res1, 100, "conn1 still queries isolated_arrow_tbl after conn2 closed");
+    chdb_destroy_query_result(res1);
+
+    /* A third connection cannot see conn1's session-scoped Arrow table. */
+    conn2_ptr = chdb_connect(2, argv);
+    test_assert_not_null(conn2_ptr, "Open third connection to verify invisibility");
+    res2 = chdb_query(*conn2_ptr, "SELECT COUNT(*) FROM arrowstream(isolated_arrow_tbl)", "CSV");
+    err = chdb_result_error(res2);
+    test_assert(err != NULL, "Third connection cannot read conn1's private ArrowStream", err ? err : "no error");
+    chdb_destroy_query_result(res2);
+    chdb_close_conn(conn2_ptr);
+
+    state = chdb_arrow_unregister_table(conn1, shared_name);
+    test_assert_chdb_state(state, "Final unregister of shared_name on conn1");
+
+    if (array1.release) array1.release(&array1);
+    if (schema1.release) schema1.release(&schema1);
+    if (array2.release) array2.release(&array2);
+    if (schema2.release) schema2.release(&schema2);
+}
+
 int main(void)
 {
     char * argv[] = {"clickhouse", "--multiquery"};
@@ -1216,6 +1290,7 @@ int main(void)
     test_arrow_scan_releases_schema(conn);
     test_arrow_array_scan_failed_registration(conn);
     test_arrow_insert(conn);
+    test_arrow_session_isolation(conn);
 
     /* Clean up */
     chdb_close_conn(conn_ptr);

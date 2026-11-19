@@ -125,6 +125,7 @@ void PythonSource::insert_from_list(const py::list & obj, const MutableColumnPtr
 
 void PythonSource::insert_string_from_array(const py::handle obj, const MutableColumnPtr & column)
 {
+    py::gil_scoped_acquire acquire;
     auto array = castToPyHandleVector(obj);
     auto * string_column = static_cast<ColumnString *>(column.get());
     for (auto && item : array)
@@ -150,6 +151,10 @@ void PythonSource::convert_string_array_to_block(
     ColumnString * string_column = typeid_cast<ColumnString *>(column.get());
     if (string_column == nullptr)
         throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, "Column is not a string column");
+    if (row_count == 0)
+        return;
+
+    py::gil_scoped_acquire acquire;
     ColumnString::Chars & data = string_column->getChars();
     ColumnString::Offsets & offsets = string_column->getOffsets();
     offsets.reserve(row_count);

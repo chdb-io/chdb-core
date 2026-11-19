@@ -180,6 +180,18 @@ const void * tryGetPyArray(
         // Return the handle of py::array directly
         row_count = py::len(obj);
         py::array array = obj.cast<py::array>();
+        const char kind = array.dtype().kind();
+        if (kind == 'U' || kind == 'S')
+        {
+            /// Fixed-width NumPy string/bytes arrays store inline codepoints or
+            /// bytes rather than PyObject* slots; materialize an object array
+            /// kept alive by `tmp` so the string scan reads valid PyObject*s.
+            py::array obj_array = array.attr("astype")(py::dtype("O"));
+            result = obj_array;
+            tmp = obj_array;
+            tmp.inc_ref();
+            return obj_array.data();
+        }
         result = array;
         return array.data();
     }
@@ -246,6 +258,8 @@ const void * tryGetPyArray(
 
 void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
 {
+    py::gil_scoped_acquire acquire;
+
     /// check if the object is NaN
     if (obj == Py_None || (PyFloat_Check(obj) && std::isnan(PyFloat_AsDouble(obj))))
     {
@@ -256,7 +270,6 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
     /// if object is list, tuple, or dict, convert it to json string
     if (PyList_Check(obj) || PyTuple_Check(obj) || PyDict_Check(obj))
     {
-        py::gil_scoped_acquire acquire;
         std::string str = py::module::import("json").attr("dumps")(py::reinterpret_borrow<py::object>(obj)).cast<std::string>();
         string_column->insertData(str.data(), str.size());
         return;
@@ -264,7 +277,6 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
     /// A bytes-like object already holds the bytes of a String; str() would write its repr (b'...').
     if (PyBytes_Check(obj) || PyByteArray_Check(obj) || PyMemoryView_Check(obj))
     {
-        py::gil_scoped_acquire acquire;
         auto bytes = PyBytes_Check(obj) ? py::reinterpret_borrow<py::object>(obj) : py::reinterpret_steal<py::object>(PyBytes_FromObject(obj));
         if (!bytes)
             throw py::error_already_set();
@@ -278,7 +290,6 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
     /// try convert the object to string
     try
     {
-        py::gil_scoped_acquire acquire;
         std::string str = py::str(obj);
         string_column->insertData(str.data(), str.size());
         return;
@@ -286,7 +297,6 @@ void insertObjToStringColumn(PyObject * obj, ColumnString * string_column)
     catch (const py::error_already_set & e)
     {
         /// Get type name using stable API
-        py::gil_scoped_acquire acquire;
         std::string type_name;
         try
         {

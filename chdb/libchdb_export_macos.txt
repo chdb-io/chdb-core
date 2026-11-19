@@ -13,8 +13,12 @@ _chdb_streaming_fetch_result
 _chdb_streaming_cancel_query
 _chdb_destroy_result
 
+_chdb_open
+_chdb_close_database
+_chdb_connect_database
 _chdb_connect
 _chdb_close_conn
+_chdb_interrupt
 _chdb_query
 _chdb_query_n
 _chdb_query_with_params
@@ -48,10 +52,12 @@ _chdb_result_storage_bytes_read
 _chdb_result_rows_written
 _chdb_result_bytes_written
 _chdb_result_error
+_chdb_result_error_code
 _chdb_result_column_count
 _chdb_result_column_name
 _chdb_result_column_type
 _chdb_version
+_chdb_engine_version
 
 _chdb_arrow_scan
 _chdb_arrow_array_scan

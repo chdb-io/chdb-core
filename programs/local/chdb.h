@@ -20,6 +20,12 @@ extern "C" {
  */
 CHDB_EXPORT const char * chdb_version(void);
 
+/**
+ * Returns the version of the embedded ClickHouse engine without starting it.
+ * @return Null-terminated engine version string, e.g. "26.11.1.1"
+ */
+CHDB_EXPORT const char * chdb_engine_version(void);
+
 #ifndef CHDB_NO_DEPRECATED
 // WARNING: The following structs are deprecated and will be removed in a future version.
 struct local_result
@@ -60,11 +66,11 @@ struct local_result_v2
 
 /**
  * Connection structure for chDB
- * Contains ChdbClient instance and connection state
+ * Contains EmbeddedSession instance and connection state
  */
 struct chdb_conn
 {
-    void * server; /* ChdbClient instance */
+    void * server; /* EmbeddedSession instance */
     bool connected; /* Connection state flag */
 };
 
@@ -165,6 +171,15 @@ typedef struct chdb_result_
 	void * internal_data;
 } chdb_result;
 
+// Database instance handle owning an isolated `:memory:` namespace or a
+// mounted persistent directory path on the process-wide embedded engine.
+// Internal data structure managed by chDB implementation.
+// Users should only interact through API functions.
+typedef struct chdb_database_
+{
+	void * internal_data;
+} * chdb_database;
+
 // Connection handle wrapping database session state.
 // Internal data structure managed by chDB implementation.
 // Users should only interact through API functions.
@@ -172,6 +187,27 @@ typedef struct chdb_connection_
 {
 	void * internal_data;
 } * chdb_connection;
+
+// Options for opening a `chdb_database` via `chdb_open()`.
+// Pass NULL for defaults. Set `struct_size` to `sizeof(chdb_open_options)` (0 is
+// also accepted as `sizeof(chdb_open_options)` for zero-initialized structs).
+typedef struct chdb_open_options
+{
+	uint32_t struct_size;
+	int read_only;             // non-zero defaults connections on this database to readonly=2
+	int argc;                  // optional startup/config options count
+	const char * const * argv; // optional CLI-style "--key=value" arguments
+} chdb_open_options;
+
+// Options for opening a `chdb_connection` on an open `chdb_database` via
+// `chdb_connect_database()`. Pass NULL for defaults.
+typedef struct chdb_connect_options
+{
+	uint32_t struct_size;
+	int read_only;             // non-zero sets readonly=2 on this connection
+	int argc;                  // optional per-connection query-setting options count
+	const char * const * argv; // optional CLI-style "--<setting>=<value>" arguments
+} chdb_connect_options;
 
 // Holds an arrow array stream.
 typedef struct chdb_arrow_stream_
@@ -324,10 +360,10 @@ CHDB_EXPORT const char * chdb_streaming_result_error(chdb_streaming_result * res
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_streaming_cancel_query() or after a mid-stream error still
  *       returns an error result.
- * @note Not thread-safe per connection: a connection runs one statement at a
- *       time, so fetches (and cancel) on a streaming handle must be serialized
- *       by the caller — do not fetch the same stream from multiple threads
- *       concurrently.
+ * @note Multiple streaming handles and read queries may coexist on one
+ *       connection, but fetches (and cancel) on any single streaming handle
+ *       must be serialized by the caller — do not fetch the same stream from
+ *       multiple threads concurrently.
  */
 CHDB_EXPORT struct local_result_v2 * chdb_streaming_fetch_result(struct chdb_conn * conn, chdb_streaming_result * result);
 
@@ -350,22 +386,75 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
 #endif
 
 /**
+ * Opens a chDB database instance handle (`chdb_database`).
+ *
+ * Multiple `chdb_database` instances — including independent `:memory:`
+ * databases and distinct persistent directory paths (`/dir/A`, `/dir/B`, ...) —
+ * may coexist simultaneously in the same process on top of a single shared
+ * embedded ClickHouse engine and `DatabaseCatalog`:
+ *
+ * - Passing `NULL`, `""`, or `":memory:"` for `path` creates a private,
+ *   zero-disk `DatabaseMemory` namespace (`__chdb_ns_<id>__`). Multiple
+ *   connections opened from that `chdb_database` via `chdb_connect_database()`
+ *   share its in-memory databases, while separate `chdb_open(":memory:", ...)`
+ *   handles are completely isolated and drop all tables on close.
+ * - Passing a filesystem directory path mounts (or joins an already-mounted
+ *   in-process) persistent database directory backed by its own `StatusFile`
+ *   lock (`<path>/status`), `DiskLocal`, and `DatabaseAtomic` catalog namespace.
+ *
+ * @param path Database path (`NULL`, `""`, `":memory:"`, or directory path)
+ * @param opts Optional open options (`read_only`, CLI `--key=value` args), or NULL
+ * @param out_db Out-parameter receiving the opened handle (`NULL` on failure)
+ * @return CHDBSuccess on success, CHDBError on invalid arguments, lock conflict,
+ *         or engine initialization failure
+ */
+CHDB_EXPORT chdb_state chdb_open(const char * path, const chdb_open_options * opts, chdb_database * out_db);
+
+/**
+ * Closes a `chdb_database` handle and sets `*db = NULL`.
+ *
+ * Safe and idempotent on `NULL` or an already-closed handle. If connections
+ * created from this database are still open, the underlying catalog namespace
+ * and `<path>/status` lock stay alive until the last connection closes.
+ *
+ * @param db Address of the `chdb_database` handle to close
+ */
+CHDB_EXPORT void chdb_close_database(chdb_database * db);
+
+/**
+ * Creates a lightweight session connection (`chdb_connection`) attached to an
+ * open `chdb_database`.
+ *
+ * Close the returned connection with `chdb_close_conn(&conn)`. Connections on
+ * the same `chdb_database` share its database namespace while keeping isolated
+ * session settings (`SET`), `USE` current database, temporary tables, Arrow
+ * stream registrations, and `chdb_interrupt()` cancellation state.
+ *
+ * @param db Open `chdb_database` handle
+ * @param opts Optional per-connection options (`read_only`, `--<setting>=<val>`), or NULL
+ * @param out_conn Out-parameter receiving the new `chdb_connection` (`NULL` on failure)
+ * @return CHDBSuccess on success, CHDBError if `db` is NULL/closed or options are invalid
+ */
+CHDB_EXPORT chdb_state chdb_connect_database(chdb_database db, const chdb_connect_options * opts, chdb_connection * out_conn);
+
+/**
  * Creates a new chDB connection.
  *
- * The engine uses one storage path per process: multiple connections to that
- * same path may be open at once. Connecting with a different path requires
- * closing all existing connections first, which shuts the engine down and
- * boots a new one.
+ * Multiple persistent paths (`--path=/dir/A`, `--path=/dir/B`) and `:memory:`
+ * connections may be open simultaneously in the same process, sharing a single
+ * embedded engine. Legacy `chdb_connect` calls without `--path` (or with
+ * `--path=:memory:`) share the process's default `:memory:` namespace while at
+ * least one such connection remains open (pass `--shared=0` or use `chdb_open`
+ * for an isolated `:memory:` namespace).
  *
- * Keep at least one connection open for as long as the host needs chDB. The
- * engine is meant to start once per process: repeatedly closing the last
- * connection and reconnecting puts it through a full shutdown and boot each
+ * Keep at least one database or connection open for as long as the host needs
+ * chDB. The engine is meant to start once per process: repeatedly closing the last
+ * handle and reconnecting puts it through a full shutdown and boot each
  * time, and doing that many times in one process is known to corrupt the
  * process allocator on macOS and abort -- either in the engine's own teardown
  * or at some unrelated allocation afterwards. A host that pools connections
- * should hold one outside the pool rather than let the pool empty and
- * reconnect on the next request: an idle timeout or a maximum-lifetime policy
- * that retires the last connection puts it on that path with no indication.
+ * should hold a `chdb_database` (or spare connection) outside the pool rather
+ * than let the engine empty and reboot on the next request.
  *
  * Arguments naming a ClickHouse query-level setting (--<setting>=<value>,
  * e.g. --max_threads=4 or --output_format_json_quote_denormals=1) apply to
@@ -392,6 +481,21 @@ CHDB_EXPORT chdb_connection * chdb_connect(int argc, char ** argv);
  * @param conn Pointer to connection pointer to close
  */
  CHDB_EXPORT void chdb_close_conn(chdb_connection * conn);
+
+/**
+ * Interrupts any in-flight queries or active streams on the given connection.
+ *
+ * Non-blocking and safe to call from any thread (including watchdog timers or
+ * signal-relay threads) without acquiring the connection's query execution
+ * locks: active queries observe cancellation via `QueryStatus::cancelQuery`
+ * and finish with `QUERY_WAS_CANCELLED` (code 394).
+ *
+ * Calling `chdb_interrupt` on a NULL, idle, or already-closed connection is a
+ * safe no-op.
+ *
+ * @param conn Connection whose active operations should be interrupted
+ */
+CHDB_EXPORT void chdb_interrupt(chdb_connection conn);
 
 /**
  * Executes a query on the given connection.
@@ -566,10 +670,10 @@ CHDB_EXPORT chdb_result * chdb_stream_query_with_params_n(
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_stream_cancel_query() or after a mid-stream error still
  *       returns an error result.
- * @note Not thread-safe per connection: a connection runs one statement at a
- *       time, so fetches (and cancel) on a streaming handle must be serialized
- *       by the caller — do not fetch the same stream from multiple threads
- *       concurrently.
+ * @note Multiple streaming handles and read queries may coexist on one
+ *       connection, but fetches (and cancel) on any single streaming handle
+ *       must be serialized by the caller — do not fetch the same stream from
+ *       multiple threads concurrently.
  */
 CHDB_EXPORT chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * result);
 
@@ -783,6 +887,14 @@ CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
  * @return Null-terminated error description, NULL if no error
  */
 CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
+
+/**
+ * Retrieves the ClickHouse integer error code (`DB::ErrorCodes`) from query execution.
+ * @param result The query result handle
+ * @return 0 when `result` is NULL or succeeded without error; non-zero ClickHouse
+ *         error code when `chdb_result_error(result)` is non-NULL
+ */
+CHDB_EXPORT int chdb_result_error_code(chdb_result * result);
 
 /**
  * Gets the number of columns in the result set, the same for every output

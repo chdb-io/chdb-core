@@ -65,8 +65,17 @@ struct ColumnWrapper
 
     ~ColumnWrapper()
     {
+        if (!tmp && !registered_array)
+            return;
+        if (!Py_IsInitialized())
+        {
+            if (registered_array)
+                (void)registered_array->numpy_array.release();
+            registered_array.reset();
+            return;
+        }
         py::gil_scoped_acquire acquire;
-        if (!tmp.is_none())
+        if (tmp && !tmp.is_none())
         {
             tmp.dec_ref();
         }

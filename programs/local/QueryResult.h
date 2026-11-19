@@ -30,22 +30,31 @@ enum class QueryResultType : uint8_t
 class QueryResult
 {
 public:
-    explicit QueryResult(QueryResultType type, String error_message_ = "")
-        : result_type(type), error_message(std::move(error_message_))
+    explicit QueryResult(QueryResultType type, String error_message_ = "", int error_code_ = 0)
+        : result_type(type)
+        , error_message(std::move(error_message_))
+        , error_code(error_message.empty() ? 0 : (error_code_ != 0 ? error_code_ : 1002))
     {}
 
     virtual ~QueryResult() = default;
 
     QueryResultType getType() const { return result_type; }
     const String & getError() const { return error_message; }
+    int getErrorCode() const { return error_code; }
     virtual bool isEmpty() const = 0;
+
+    void setError(String message, int code = 0)
+    {
+        error_message = std::move(message);
+        error_code = error_message.empty() ? 0 : (code != 0 ? code : 1002);
+    }
 
     /// Set by the C ABI on a streaming-query handle when the stream reaches
     /// its natural end (the fetch that returned the final empty batch).
     /// Further fetches on the handle then short-circuit to fresh empty
-    /// results instead of the "No active streaming query" error, so
-    /// pull-style consumers may safely over-fetch past EOF. Lives on the
-    /// base class so the C ABI can test any handle without downcasting.
+    /// results instead of an error, so pull-style consumers may safely
+    /// over-fetch past EOF. Lives on the base class so the C ABI can test
+    /// any handle without downcasting.
     std::atomic<bool> stream_exhausted{false};
 
     /// For chdb_result_column_*; empty without a result set.
@@ -55,23 +64,37 @@ public:
 protected:
     QueryResultType result_type;
     String error_message;
+    int error_code = 0;
 };
 
 class StreamQueryResult : public QueryResult
 {
 public:
-    explicit StreamQueryResult(String error_message_ = "")
-        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_))
+    explicit StreamQueryResult(String error_message_ = "", int error_code_ = 0)
+        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_), error_code_)
     {}
+
+    ~StreamQueryResult() override
+    {
+        cancelStream();
+    }
 
     bool isEmpty() const override
     {
         return false;
     }
 
-    /// Records iterate-time failures (e.g. unknown table caught at
-    /// execution) so chdb_result_error() can surface the engine message.
-    void setError(String message) { error_message = std::move(message); }
+    void cancelStream() noexcept
+    {
+        if (cancel_fn && stream_state)
+            cancel_fn(stream_state.get());
+    }
+
+    /// Self-contained execution state (DB::StreamExecutionState) owning the
+    /// query's BlockIO, pipeline executor, Context, and ThreadGroup directly
+    /// on this stream handle rather than in a single per-connection slot.
+    std::shared_ptr<void> stream_state;
+    void (*cancel_fn)(void *) noexcept = nullptr;
 
     /// Opaque per-stream state slot used by streaming-output binding code
     /// (currently the Arrow C Data Interface output path) to persist a
@@ -85,26 +108,22 @@ public:
 /// reinterpret_cast as a chdb_insert_stream, mirroring how StreamQueryResult
 /// backs the read-side streaming handle. `context` is a
 /// CHDB::InsertStreamContext (opaque here to keep this header light — the
-/// thread/queue machinery lives in StreamingInsert.h / ChdbClient). On an init
-/// failure `context` is null and `error_message` carries the reason.
+/// thread/queue machinery lives in StreamingInsert.h / EmbeddedSession). On an
+/// init failure `context` is null and `error_message` carries the reason.
 class InsertStreamResult : public QueryResult
 {
 public:
-    explicit InsertStreamResult(String error_message_ = "")
-        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_))
+    explicit InsertStreamResult(String error_message_ = "", int error_code_ = 0)
+        : QueryResult(QueryResultType::RESULT_TYPE_STREAMING, std::move(error_message_), error_code_)
     {}
 
     bool isEmpty() const override { return false; }
 
-    /// Updated as append()/done() observe engine-side errors so that
-    /// chdb_stream_insert_error() reflects the latest failure.
-    void setError(String message) { error_message = std::move(message); }
-
     std::shared_ptr<void> context;
 
-    /// Back-pointer to the owning DB::ChdbClient (opaque here). The C ABI
+    /// Back-pointer to the owning DB::EmbeddedSession (opaque here). The C ABI
     /// append/done/cancel functions take only the stream handle (no conn), so
-    /// the handle must carry the client to route calls. If the connection is
+    /// the handle must carry the session to route calls. If the connection is
     /// closed while the stream is open, teardown cancels the stream and marks
     /// its context finalized; the C ABI checks that flag before dereferencing
     /// this pointer, so a stale handle degrades to error returns and a safe
@@ -137,8 +156,8 @@ public:
         bytes_written(bytes_written_)
     {}
 
-    explicit MaterializedQueryResult(String error_message_)
-        : QueryResult(QueryResultType::RESULT_TYPE_MATERIALIZED, std::move(error_message_))
+    explicit MaterializedQueryResult(String error_message_, int error_code_ = 0)
+        : QueryResult(QueryResultType::RESULT_TYPE_MATERIALIZED, std::move(error_message_), error_code_)
     {}
 
     bool isEmpty() const override
@@ -200,8 +219,8 @@ public:
         bytes_written(bytes_written_)
     {}
 
-    explicit ChunkQueryResult(String error_message_)
-        : QueryResult(QueryResultType::RESULT_TYPE_CHUNK, std::move(error_message_))
+    explicit ChunkQueryResult(String error_message_, int error_code_ = 0)
+        : QueryResult(QueryResultType::RESULT_TYPE_CHUNK, std::move(error_message_), error_code_)
     {}
 
     bool isEmpty() const override

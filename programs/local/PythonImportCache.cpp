@@ -151,6 +151,13 @@ py::handle PythonImportCacheItem::Load(PythonImportCache & cache, py::handle sou
 
 PythonImportCache::~PythonImportCache()
 {
+	if (!Py_IsInitialized())
+	{
+		for (auto & obj : owned_objects)
+			(void)obj.release();
+		owned_objects.clear();
+		return;
+	}
 	try
 	{
 		py::gil_scoped_acquire acquire;

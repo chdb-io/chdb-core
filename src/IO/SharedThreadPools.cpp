@@ -38,23 +38,21 @@ StaticThreadPool::StaticThreadPool(
 
 void StaticThreadPool::initialize(size_t max_threads, size_t max_free_threads, size_t queue_size)
 {
+    std::lock_guard lock(mutex);
     if (instance)
-        // throw Exception(ErrorCodes::LOGICAL_ERROR, "The {} is initialized twice", name);
         return;
 
-    std::call_once(init_flag, [&]
-        {
-            initializeImpl(max_threads, max_free_threads, queue_size);
-        });
+    initializeImpl(max_threads, max_free_threads, queue_size);
 }
 
 void StaticThreadPool::initializeWithDefaultSettingsIfNotInitialized()
 {
-    std::call_once(init_flag, [&]
-        {
-            size_t max_threads = getNumberOfCPUCoresToUse();
-            initializeImpl(max_threads, /*max_free_threads*/ 0, /*queue_size*/ 10000);
-        });
+    std::lock_guard lock(mutex);
+    if (instance)
+        return;
+
+    size_t max_threads = getNumberOfCPUCoresToUse();
+    initializeImpl(max_threads, /*max_free_threads*/ 0, /*queue_size*/ 10000);
 }
 
 void StaticThreadPool::initializeImpl(size_t max_threads, size_t max_free_threads, size_t queue_size)

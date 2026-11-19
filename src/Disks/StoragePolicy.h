@@ -140,6 +140,7 @@ public:
     /// Used when storage policy needs to be created on the fly, not being present in config file.
     /// Done by getOrSetStoragePolicyForSingleDisk.
     void add(StoragePolicyPtr storage_policy);
+    void remove(const String & name);
 
 private:
     StoragePoliciesMap policies;

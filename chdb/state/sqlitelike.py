@@ -204,6 +204,12 @@ class StreamingResult:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cancel()
 
+    def __del__(self):
+        try:
+            self.cancel()
+        except Exception:
+            pass
+
     def close(self):
         """Close the streaming result and cleanup resources.
 
@@ -591,11 +597,20 @@ class ChdbRecordBatchReader:
 
 
 class Connection:
-    def __init__(self, connection_string: str):
-        # print("Connection", connection_string)
+    def __init__(
+        self,
+        connection_string: str = ":memory:",
+        *,
+        _raw_conn=None,
+        _progress_mode: Optional[str] = None,
+    ):
         self._cursor: Optional[Cursor] = None
-        connection_string, progress_mode = self._strip_progress_mode(connection_string)
-        self._conn = _chdb.connect(connection_string)
+        if _raw_conn is not None:
+            self._conn = _raw_conn
+            progress_mode = _progress_mode
+        else:
+            connection_string, progress_mode = self._strip_progress_mode(connection_string)
+            self._conn = _chdb.connect(connection_string)
         self._auto_progress = False
         self._user_progress_callback = False
         self._notebook_display = None
@@ -688,7 +703,25 @@ class Connection:
         self._conn.set_progress_callback(callback)
         self._user_progress_callback = callback is not None
 
-    def query(self, query: str, format: str = "CSV", params=None) -> Any:
+    def interrupt(self) -> None:
+        """Interrupt any in-flight queries or active streams on this connection."""
+        conn = self._conn
+        if conn is not None:
+            conn.interrupt()
+
+    def register(self, name: str, obj: Any) -> None:
+        """Register a Python table object (DataFrame, PyArrow, Polars, PyReader, dict) as ``Python(name)``."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        self._conn.register(name, obj)
+
+    def unregister(self, name: str) -> None:
+        """Unregister a previously registered ``Python(name)`` table from this connection."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        self._conn.unregister(name)
+
+    def query(self, query: str, format: str = "CSV", params=None, tables=None) -> Any:
         """Execute a SQL query and return the complete results.
 
         This method executes a SQL query synchronously and returns the complete
@@ -759,15 +792,48 @@ class Connection:
 
         try:
             if lower_output_format in _df_format:
-                result = self._conn.query_df(query, params=params or {})
+                result = self._conn.query_df(query, params=params, tables=tables)
             else:
-                result = self._conn.query(query, format, params=params or {})
+                result = self._conn.query(query, format, params=params, tables=tables)
+        except ChdbError:
+            raise
         except RuntimeError as e:
             raise ChdbError(str(e)) from e.with_traceback(None)
         else:
             return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
+
+    def query_df(self, query: str, params=None, tables=None) -> Any:
+        """Execute a SQL query and return the results as a pandas DataFrame."""
+        return self.query(query, "DataFrame", params=params, tables=tables)
+
+    def query_arrow_reader(self, query: str, params=None, options=None, tables=None) -> Any:
+        """Execute a SQL query and return a PyArrow RecordBatchReader (zero-copy C Data Interface)."""
+        _require_pyarrow("query_arrow_reader()")
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        try:
+            return self._conn.query_arrow_reader(
+                query, params=params, options=options, tables=tables
+            )
+        except ChdbError:
+            raise
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
+
+    def send_query_arrow(self, query: str, params=None, options=None, tables=None):
+        """Begin an incremental Arrow C Data Interface streaming query."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        try:
+            return self._conn.send_query_arrow(
+                query, params=params, options=options, tables=tables
+            )
+        except ChdbError:
+            raise
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
 
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
@@ -798,7 +864,7 @@ class Connection:
         return self.query(generated_sql, **kwargs)
 
     def send_query(
-        self, query: str, format: str = "CSV", params=None
+        self, query: str, format: str = "CSV", params=None, tables=None
     ) -> StreamingResult:
         """Execute a SQL query and return a streaming result iterator.
 
@@ -875,7 +941,10 @@ class Connection:
 
         progress_callback = self._setup_auto_progress_callback()
         try:
-            c_stream_result = self._conn.send_query(query, format, params=params or {})
+            c_stream_result = self._conn.send_query(query, format, params=params, tables=tables)
+        except ChdbError:
+            self._cleanup_auto_progress_callback(progress_callback)
+            raise
         except RuntimeError as e:
             self._cleanup_auto_progress_callback(progress_callback)
             raise ChdbError(str(e)) from e.with_traceback(None)
@@ -1377,6 +1446,11 @@ class Cursor:
             except Exception:
                 pass
 
+    def interrupt(self) -> None:
+        """Interrupt any in-flight operation on this cursor's connection."""
+        if self._conn is not None:
+            self._conn.interrupt()
+
     def __iter__(self):
         return self
 
@@ -1470,6 +1544,103 @@ class Cursor:
             (name, type_info, None, None, None, None, None)
             for name, type_info in zip(self._column_names, self._column_types)
         ]
+
+
+class Database:
+    """Two-level chDB database instance handle owning an isolated ``:memory:``
+    namespace or a dynamically mounted persistent directory on the shared
+    embedded ClickHouse engine.
+
+    Multiple :class:`Database` instances — including independent ``:memory:``
+    databases and distinct persistent paths (``/dir/A``, ``/dir/B``) — can be
+    open simultaneously in the same process. Use :meth:`connect` to create
+    lightweight session :class:`Connection` objects sharing this database.
+    """
+
+    def __init__(self, connection_string: str = ":memory:", *, read_only: bool = False):
+        self._db = None
+        cleaned, progress_mode = Connection._strip_progress_mode(connection_string)
+        self._default_progress_mode = progress_mode
+        self._db = _chdb.Database(cleaned, read_only=read_only)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> "Database":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    @property
+    def path(self) -> str:
+        if self._db is None:
+            return ""
+        return self._db.path
+
+    def is_open(self) -> bool:
+        return self._db is not None and self._db.is_open()
+
+    def connect(
+        self,
+        options: str = "",
+        *,
+        read_only: bool = False,
+        **settings: Any,
+    ) -> Connection:
+        """Open a session :class:`Connection` attached to this database."""
+        if self._db is None or not self._db.is_open():
+            raise RuntimeError("Database is closed")
+
+        parts = []
+        progress_mode = self._default_progress_mode
+        if options:
+            raw_opt = options if options.startswith("?") else f"?{options}"
+            stripped, opt_progress = Connection._strip_progress_mode(raw_opt)
+            if opt_progress is not None:
+                progress_mode = opt_progress
+            if "?" in stripped:
+                parts.append(stripped.split("?", 1)[1])
+            elif stripped:
+                parts.append(stripped)
+
+        for key, value in settings.items():
+            if key.lower() == "progress" and isinstance(value, str) and value.lower() == "auto":
+                progress_mode = "auto"
+                if not _is_notebook() and (sys.stdout.isatty() or sys.stderr.isatty()):
+                    parts.append("progress=tty")
+                continue
+            if value == "" or value is True:
+                parts.append(f"{key}=1" if value is True else f"{key}")
+            elif value is False:
+                parts.append(f"{key}=0")
+            else:
+                parts.append(f"{key}={value}")
+
+        options_str = "&".join(p for p in parts if p)
+        raw_conn = self._db.connect(options_str, read_only=read_only)
+        return Connection(_raw_conn=raw_conn, _progress_mode=progress_mode)
+
+    def close(self) -> None:
+        """Close this database handle (idempotent)."""
+        if self._db is not None:
+            self._db.close()
+
+
+def open(connection_string: str = ":memory:", *, read_only: bool = False) -> Database:
+    """Open a :class:`Database` handle on the shared embedded engine.
+
+    - ``open(":memory:")`` creates an isolated zero-disk ``DatabaseMemory``
+      namespace shared by connections created via ``db.connect()``, and dropped
+      automatically when closed.
+    - ``open("/path/to/dir")`` mounts (or joins) that persistent directory path
+      coexisting alongside other open paths and ``:memory:`` databases.
+    """
+    return Database(connection_string, read_only=read_only)
 
 
 def connect(connection_string: str = ":memory:") -> Connection:
