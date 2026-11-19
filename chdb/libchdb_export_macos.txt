@@ -15,6 +15,7 @@ _chdb_destroy_result
 
 _chdb_connect
 _chdb_close_conn
+_chdb_interrupt
 _chdb_query
 _chdb_query_n
 _chdb_query_with_params
@@ -48,6 +49,7 @@ _chdb_result_storage_bytes_read
 _chdb_result_rows_written
 _chdb_result_bytes_written
 _chdb_result_error
+_chdb_result_error_code
 _chdb_result_column_count
 _chdb_result_column_name
 _chdb_result_column_type

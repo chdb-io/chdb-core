@@ -19,6 +19,7 @@
         /* New API */
         chdb_connect;
         chdb_close_conn;
+        chdb_interrupt;
         chdb_query;
         chdb_query_n;
         chdb_query_with_params;
@@ -53,6 +54,7 @@
         chdb_result_rows_written;
         chdb_result_bytes_written;
         chdb_result_error;
+        chdb_result_error_code;
         chdb_version;
         chdb_engine_version;
 

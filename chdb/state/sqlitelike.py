@@ -694,7 +694,25 @@ class Connection:
         self._conn.set_progress_callback(callback)
         self._user_progress_callback = callback is not None
 
-    def query(self, query: str, format: str = "CSV", params=None) -> Any:
+    def interrupt(self) -> None:
+        """Interrupt any in-flight queries or active streams on this connection."""
+        conn = self._conn
+        if conn is not None:
+            conn.interrupt()
+
+    def register(self, name: str, obj: Any) -> None:
+        """Register a Python table object (DataFrame, PyArrow, Polars, PyReader, dict) as ``Python(name)``."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        self._conn.register(name, obj)
+
+    def unregister(self, name: str) -> None:
+        """Unregister a previously registered ``Python(name)`` table from this connection."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        self._conn.unregister(name)
+
+    def query(self, query: str, format: str = "CSV", params=None, tables=None) -> Any:
         """Execute a SQL query and return the complete results.
 
         This method executes a SQL query synchronously and returns the complete
@@ -765,15 +783,42 @@ class Connection:
 
         try:
             if lower_output_format in _df_format:
-                result = self._conn.query_df(query, params=params or {})
+                result = self._conn.query_df(query, params=params, tables=tables)
             else:
-                result = self._conn.query(query, format, params=params or {})
+                result = self._conn.query(query, format, params=params, tables=tables)
         except RuntimeError as e:
             raise ChdbError(str(e)) from e.with_traceback(None)
         else:
             return result_func(result)
         finally:
             self._cleanup_auto_progress_callback(progress_callback)
+
+    def query_df(self, query: str, params=None, tables=None) -> Any:
+        """Execute a SQL query and return the results as a pandas DataFrame."""
+        return self.query(query, "DataFrame", params=params, tables=tables)
+
+    def query_arrow_reader(self, query: str, params=None, options=None, tables=None) -> Any:
+        """Execute a SQL query and return a PyArrow RecordBatchReader (zero-copy C Data Interface)."""
+        _require_pyarrow("query_arrow_reader()")
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        try:
+            return self._conn.query_arrow_reader(
+                query, params=params, options=options, tables=tables
+            )
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
+
+    def send_query_arrow(self, query: str, params=None, options=None, tables=None):
+        """Begin an incremental Arrow C Data Interface streaming query."""
+        if self._conn is None:
+            raise RuntimeError("Connection is closed")
+        try:
+            return self._conn.send_query_arrow(
+                query, params=params, options=options, tables=tables
+            )
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
 
     def generate_sql(self, prompt: str) -> str:
         """Generate SQL text from a natural language prompt using the configured AI provider."""
@@ -804,7 +849,7 @@ class Connection:
         return self.query(generated_sql, **kwargs)
 
     def send_query(
-        self, query: str, format: str = "CSV", params=None
+        self, query: str, format: str = "CSV", params=None, tables=None
     ) -> StreamingResult:
         """Execute a SQL query and return a streaming result iterator.
 
@@ -881,7 +926,7 @@ class Connection:
 
         progress_callback = self._setup_auto_progress_callback()
         try:
-            c_stream_result = self._conn.send_query(query, format, params=params or {})
+            c_stream_result = self._conn.send_query(query, format, params=params, tables=tables)
         except RuntimeError as e:
             self._cleanup_auto_progress_callback(progress_callback)
             raise ChdbError(str(e)) from e.with_traceback(None)
@@ -1382,6 +1427,11 @@ class Cursor:
                 cursor.close()
             except Exception:
                 pass
+
+    def interrupt(self) -> None:
+        """Interrupt any in-flight operation on this cursor's connection."""
+        if self._conn is not None:
+            self._conn.interrupt()
 
     def __iter__(self):
         return self

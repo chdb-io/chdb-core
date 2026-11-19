@@ -1,6 +1,6 @@
 #include "chdb.h"
 #include "chdb-internal.h"
-#include "ChdbClient.h"
+#include "EmbeddedSession.h"
 #include "QueryResult.h"
 
 #include <Common/Exception.h>
@@ -13,6 +13,11 @@
 #include <string>
 
 using namespace DB;
+
+namespace DB::ErrorCodes
+{
+extern const int BAD_ARGUMENTS;
+}
 
 namespace
 {
@@ -89,9 +94,9 @@ String columnListFromStream(chdb_arrow_stream arrow_stream)
     return cols;
 }
 
-chdb_result * makeErrorResult(String message)
+chdb_result * makeErrorResult(String message, int code = 0)
 {
-    return reinterpret_cast<chdb_result *>(new CHDB::MaterializedQueryResult(std::move(message)));
+    return reinterpret_cast<chdb_result *>(new CHDB::MaterializedQueryResult(std::move(message), code));
 }
 
 struct UnregisterGuard
@@ -114,11 +119,11 @@ chdb_result * runArrowInsert(
     const chdb_arrow_insert_options * options)
 {
     if (!dest_table || dest_table[0] == '\0')
-        return makeErrorResult("Unexpected null dest_table");
+        return makeErrorResult("Unexpected null dest_table", ErrorCodes::BAD_ARGUMENTS);
 
     auto lease = CHDB::acquireConnectionLease(conn);
     if (!lease)
-        return makeErrorResult("Invalid or closed connection");
+        return makeErrorResult("Invalid or closed connection", ErrorCodes::BAD_ARGUMENTS);
 
     String sql = "INSERT INTO ";
     sql += dest_table;
@@ -141,7 +146,7 @@ chdb_result * runArrowInsert(
         return makeErrorResult("Insert query processing failed");
 
     if (!query_result->getError().empty())
-        return makeErrorResult(query_result->getError());
+        return makeErrorResult(query_result->getError(), query_result->getErrorCode());
 
     return reinterpret_cast<chdb_result *>(query_result.release());
 }
@@ -174,7 +179,7 @@ chdb_result * chdb_insert_arrow_array(
     }
     catch (const Exception & e)
     {
-        return makeErrorResult(getExceptionMessage(e, false));
+        return makeErrorResult(getExceptionMessage(e, false), e.code());
     }
     catch (const std::exception & e)
     {
@@ -209,7 +214,7 @@ chdb_result * chdb_insert_arrow_stream(
     }
     catch (const Exception & e)
     {
-        return makeErrorResult(getExceptionMessage(e, false));
+        return makeErrorResult(getExceptionMessage(e, false), e.code());
     }
     catch (const std::exception & e)
     {

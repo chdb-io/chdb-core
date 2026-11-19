@@ -1,7 +1,7 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ArrowStreamRegistry.h"
-#include "ChdbClient.h"
+#include "EmbeddedSession.h"
 
 #include <arrow/c/abi.h>
 #include <base/defines.h>

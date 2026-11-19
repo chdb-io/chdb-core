@@ -119,7 +119,24 @@ class Session:
         except:  # noqa
             pass
 
-    def query(self, sql, fmt="CSV", udf_path="", params=None):
+    def interrupt(self):
+        """Interrupt any in-flight queries or active streams on this session."""
+        if self._conn is not None:
+            self._conn.interrupt()
+
+    def register(self, name: str, obj):
+        """Register a Python table object (DataFrame, PyArrow, Polars, PyReader, dict) as ``Python(name)``."""
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        self._conn.register(name, obj)
+
+    def unregister(self, name: str):
+        """Unregister a previously registered ``Python(name)`` table from this session."""
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        self._conn.unregister(name)
+
+    def query(self, sql, fmt="CSV", udf_path="", params=None, tables=None):
         """Execute a SQL query and return the results.
 
         This method executes a SQL query against the session's database and returns
@@ -203,7 +220,9 @@ Please try use parameters in connection string instead:
 Eg: conn = connect(f"db_path?verbose&log-level=test")"""
             )
             fmt = "CSV"
-        return self._conn.query(sql, fmt, params=params)
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        return self._conn.query(sql, fmt, params=params, tables=tables)
 
     # alias sql = query
     sql = query
@@ -223,7 +242,7 @@ Eg: conn = connect(f"db_path?verbose&log-level=test")"""
             raise RuntimeError("Session is closed.")
         return self._conn.ask(prompt, **kwargs)
 
-    def send_query(self, sql, fmt="CSV", params=None) -> StreamingResult:
+    def send_query(self, sql, fmt="CSV", params=None, tables=None) -> StreamingResult:
         """Execute a SQL query and return a streaming result iterator.
 
         This method executes a SQL query against the session's database and returns
@@ -297,7 +316,9 @@ Please try use parameters in connection string instead:
 Eg: conn = connect(f"db_path?verbose&log-level=test")"""
             )
             fmt = "CSV"
-        return self._conn.send_query(sql, fmt, params=params)
+        if self._conn is None:
+            raise RuntimeError("Session is closed.")
+        return self._conn.send_query(sql, fmt, params=params, tables=tables)
 
     def send_insert(self, query, fmt="CSV") -> StreamingInserter:
         """Begin a streaming INSERT against the session and return a StreamingInserter.

@@ -121,7 +121,7 @@ from .progress_display import (
 
 
 # wrap _chdb functions
-def query(sql, output_format="CSV", path="", udf_path="", params=None, options=None):
+def query(sql, output_format="CSV", path="", udf_path="", params=None, options=None, tables=None):
     """Execute SQL query using chDB engine.
 
     This is the main query function that executes SQL statements using the embedded
@@ -234,14 +234,14 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
 
         try:
             if lower_output_format in _df_format:
-                res = conn.query_df(sql, params=params)
+                res = conn.query_df(sql, params=params, tables=tables)
             else:
-                res = conn.query(sql, output_format, params=params)
+                res = conn.query(sql, output_format, params=params, tables=tables)
         except RuntimeError as e:
             raise ChdbError(str(e)) from e.with_traceback(None)
         else:
             if lower_output_format not in _df_format and res.has_error():
-                raise ChdbError(res.error_message())
+                raise ChdbError(res.error_message(), error_code=res.error_code())
             return result_func(res)
         finally:
             if progress_callback is not None:

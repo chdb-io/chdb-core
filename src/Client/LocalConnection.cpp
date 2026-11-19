@@ -187,6 +187,14 @@ bool chdbWasmCancelRequested()
 {
     return g_chdb_cancel_check ? g_chdb_cancel_check() : false;
 }
+
+void notifyCHDBWasmProgress(
+    uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+    uint64_t total_bytes_to_read, uint64_t elapsed_ns)
+{
+    if (g_chdb_progress_hook)
+        g_chdb_progress_hook(read_rows, total_rows_to_read, read_bytes, total_bytes_to_read, elapsed_ns);
+}
 #endif
 
 void LocalConnection::updateCHDBProgress(const Progress & value)

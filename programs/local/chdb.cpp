@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <ChdbClient.h>
+#include <EmbeddedSession.h>
 #include <EmbeddedServer.h>
 #include <Interpreters/DatabaseCatalog.h>
 #if USE_PYTHON
@@ -25,6 +25,7 @@
 #include <IO/SharedThreadPools.h>
 #include <Common/AsynchronousMetrics.h>
 #include <Common/config_version.h>
+#include <Common/CurrentThread.h>
 #include <Common/EventNotifier.h>
 #include <Common/MemoryTracker.h>
 #include <Common/quoteString.h>
@@ -187,22 +188,26 @@ std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char *
         }
         else
         {
-            result = std::make_unique<MaterializedQueryResult>(app.getErrorMsg());
+            const int code = app.server_exception ? app.server_exception->code()
+                : (app.client_exception ? app.client_exception->code() : app.error_code);
+            result = std::make_unique<MaterializedQueryResult>(app.getErrorMsg(), code);
         }
 
         return result;
     }
     catch (const DB::Exception & e)
     {
-        throw std::domain_error(DB::getExceptionMessage(e, false));
+        return std::make_unique<MaterializedQueryResult>(DB::getExceptionMessage(e, false), e.code());
     }
     catch (const boost::program_options::error & e)
     {
-        throw std::invalid_argument("Bad arguments: " + std::string(e.what()));
+        return std::make_unique<MaterializedQueryResult>(
+            "Bad arguments: " + std::string(e.what()), DB::ErrorCodes::BAD_ARGUMENTS);
     }
     catch (...)
     {
-        throw std::domain_error(DB::getCurrentExceptionMessage(true));
+        return std::make_unique<MaterializedQueryResult>(
+            DB::getCurrentExceptionMessage(true), DB::getCurrentExceptionCode());
     }
 }
 
@@ -228,14 +233,16 @@ const std::string & chdb_streaming_result_error_string(chdb_streaming_result * r
 struct ChdbConnectionState
 {
     chdb_conn raw_conn{nullptr, false};
-    std::unique_ptr<DB::ChdbClient> owned_client;
+    std::unique_ptr<DB::EmbeddedSession> owned_client;
+    std::shared_ptr<CHDB::InterruptController> interrupt_controller;
     std::condition_variable cv;
     size_t active_ops = 0;
     bool closing = false;
     bool closed = false;
 
-    explicit ChdbConnectionState(std::unique_ptr<DB::ChdbClient> client_)
+    explicit ChdbConnectionState(std::unique_ptr<DB::EmbeddedSession> client_)
         : owned_client(std::move(client_))
+        , interrupt_controller(owned_client ? owned_client->getInterruptController() : nullptr)
     {
         raw_conn.server = owned_client.get();
         raw_conn.connected = true;
@@ -270,7 +277,7 @@ bool isStateHeldOnCurrentThread(const ChdbConnectionState * state) noexcept
 }
 }
 
-ChdbConnectionLease::ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::ChdbClient * client_) noexcept
+ChdbConnectionLease::ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::EmbeddedSession * client_) noexcept
     : state(std::move(state_)), client(client_)
 {
     if (state)
@@ -366,15 +373,15 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
         if (!DB::CurrentThread::isInitialized())
             thread_status.emplace();
         auto & server = DB::EmbeddedServer::getInstance(argc, argv);
-        std::unique_ptr<DB::ChdbClient> client;
+        std::unique_ptr<DB::EmbeddedSession> client;
         try
         {
-            client = DB::ChdbClient::create(server, argc, argv);
+            client = DB::EmbeddedSession::create(server, argc, argv);
         }
         catch (...)
         {
             /// getInstance() already counted this connection, and only a fully
-            /// constructed ChdbClient releases it from its destructor — without
+            /// constructed EmbeddedSession releases it from its destructor — without
             /// this release a failed connect (e.g. an invalid --setting value)
             /// would pin the engine alive forever, blocking any later connect
             /// with a different path.
@@ -383,7 +390,7 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
         }
         if (!client)
         {
-            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create ChdbClient");
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Failed to create EmbeddedSession");
         }
 
         auto state = std::make_shared<ChdbConnectionState>(std::move(client));
@@ -424,6 +431,14 @@ void cachePythonTablesFromQuery(chdb_conn * conn, const std::string & query_str)
     if (!lease)
         return;
     lease.getClient()->findQueryableObjFromPyCache(query_str);
+}
+
+void bindPythonTablesForQuery(chdb_conn * conn, const std::string & query_str, const void * explicit_tables_pyobj)
+{
+    auto lease = acquireConnectionLease(conn);
+    if (!lease)
+        return;
+    lease.getClient()->bindPythonTablesForQuery(query_str, explicit_tables_pyobj);
 }
 #endif
 
@@ -527,7 +542,7 @@ void close_conn(chdb_conn ** conn)
         return;
 
     std::shared_ptr<ChdbConnectionState> state_to_close;
-    std::unique_ptr<DB::ChdbClient> client_to_destroy;
+    std::unique_ptr<DB::EmbeddedSession> client_to_destroy;
     {
         auto & reg = ConnectionRegistry::instance();
         std::unique_lock<std::mutex> lock(reg.mutex);
@@ -556,7 +571,17 @@ void close_conn(chdb_conn ** conn)
 
         state_to_close->closing = true;
         state_to_close->raw_conn.connected = false;
-        state_to_close->cv.wait(lock, [&] { return state_to_close->active_ops == 0; });
+        if (state_to_close->active_ops > 0)
+        {
+            auto ctrl = state_to_close->interrupt_controller;
+            if (ctrl)
+            {
+                lock.unlock();
+                ctrl->interruptAll();
+                lock.lock();
+            }
+            state_to_close->cv.wait(lock, [&] { return state_to_close->active_ops == 0; });
+        }
 
         reg.by_client.erase(state_to_close->raw_conn.server);
         reg.by_conn.erase(it);
@@ -687,9 +712,10 @@ local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_r
         }
 
         auto * client = lease.getClient();
-        if (!client->hasStreamingQuery())
+        auto * stream_result = reinterpret_cast<StreamQueryResult *>(result);
+        if (!stream_result->stream_state)
             return createErrorLocalResultV2("No active streaming query");
-        auto query_result = client->executeStreamingIterate(result, false);
+        auto query_result = client->executeStreamingIterate(stream_result, false);
         if (!query_result)
             return createErrorLocalResultV2("Failed to fetch streaming results");
 
@@ -784,6 +810,24 @@ void chdb_close_conn(chdb_connection * conn)
     auto * connection = reinterpret_cast<chdb_conn **>(conn);
 
     close_conn(connection);
+}
+
+void chdb_interrupt(chdb_connection conn)
+{
+    if (!conn)
+        return;
+
+    std::shared_ptr<CHDB::InterruptController> controller;
+    {
+        auto & reg = ConnectionRegistry::instance();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        auto it = reg.by_conn.find(reinterpret_cast<const chdb_conn *>(conn));
+        if (it != reg.by_conn.end() && it->second)
+            controller = it->second->interrupt_controller;
+    }
+
+    if (controller)
+        controller->interruptAll();
 }
 
 chdb_result * chdb_query(chdb_connection conn, const char * query, const char * format)
@@ -925,11 +969,11 @@ DB::NameToNameMap buildParameterMap(
     return params;
 }
 
-CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params)
+CApiQueryParameterGuard::CApiQueryParameterGuard(DB::EmbeddedSession * client, const DB::NameToNameMap & params)
 {
     if (client && !params.empty())
     {
-        std::tie(previous_client, previous_params) = DB::ChdbClient::setCallQueryParameters({client, &params});
+        std::tie(previous_client, previous_params) = DB::EmbeddedSession::setCallQueryParameters({client, &params});
         applied = true;
     }
 }
@@ -937,7 +981,7 @@ CApiQueryParameterGuard::CApiQueryParameterGuard(DB::ChdbClient * client, const 
 CApiQueryParameterGuard::~CApiQueryParameterGuard()
 {
     if (applied)
-        DB::ChdbClient::setCallQueryParameters({previous_client, previous_params});
+        DB::EmbeddedSession::setCallQueryParameters({previous_client, previous_params});
 }
 
 } // namespace CHDB
@@ -1115,9 +1159,10 @@ chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * resul
             return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(nullptr, 0.0, 0, 0, 0, 0));
 
         auto * client = lease.getClient();
-        if (!client->hasStreamingQuery())
-            return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("No active streaming query"));
         auto * stream_result = reinterpret_cast<StreamQueryResult *>(result);
+        if (!stream_result->stream_state)
+            return reinterpret_cast<chdb_result *>(
+                new MaterializedQueryResult("No active streaming query", DB::ErrorCodes::BAD_ARGUMENTS));
         auto query_result = client->executeStreamingIterate(stream_result, false);
         if (!query_result)
             return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Failed to fetch streaming results"));
@@ -1567,6 +1612,15 @@ const char * chdb_result_error(chdb_result * result)
         return nullptr;
 
     return query_result->getError().c_str();
+}
+
+int chdb_result_error_code(chdb_result * result)
+{
+    if (!result)
+        return 0;
+
+    auto * query_result = reinterpret_cast<QueryResult *>(result);
+    return query_result->getErrorCode();
 }
 
 namespace

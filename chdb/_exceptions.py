@@ -6,6 +6,11 @@ whichever class that file happens to define.
 """
 
 
+import re
+
+_CODE_RE = re.compile(r"^Code:\s*(-?\d+)\.")
+
+
 class ChdbError(RuntimeError):
     """Base exception class for chDB-related errors.
 
@@ -41,3 +46,14 @@ class ChdbError(RuntimeError):
         You should catch this exception when handling potentially failing
         queries to provide appropriate error handling in your application.
     """
+
+    def __init__(self, *args, error_code: int = 0):
+        super().__init__(*args)
+        if error_code:
+            self.error_code = int(error_code)
+        elif args and isinstance(args[0], str):
+            m = _CODE_RE.match(args[0])
+            self.error_code = int(m.group(1)) if m else 0
+        else:
+            self.error_code = 0
+

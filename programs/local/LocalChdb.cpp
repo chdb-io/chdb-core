@@ -10,8 +10,9 @@
 #include "ChdbGlobalFunctions.h"
 #include "PythonUDAFRegistry.h"
 #include "PythonUDFRegistry.h"
+#include "PythonTableCache.h"
 #include "StoragePython.h"
-#include "ChdbClient.h"
+#include "EmbeddedSession.h"
 #include "EmbeddedServer.h"
 #include "PyDateTimeHelper.h"
 #include "chdb.h"
@@ -142,9 +143,15 @@ std::string paramValueToString(const py::handle & value)
     return py::cast<std::string>(py::str(value));
 }
 
-DB::NameToNameMap parseParametersDict(const py::dict & params)
+DB::NameToNameMap parseParametersDict(const py::object & params_obj)
 {
     DB::NameToNameMap parsed;
+    if (!params_obj || params_obj.is_none())
+        return parsed;
+    if (!py::isinstance<py::dict>(params_obj))
+        throw py::type_error("params must be a dict or None");
+
+    auto params = py::reinterpret_borrow<py::dict>(params_obj);
     for (const auto & item : params)
     {
         const std::string key = py::cast<std::string>(item.first);
@@ -154,9 +161,15 @@ DB::NameToNameMap parseParametersDict(const py::dict & params)
     return parsed;
 }
 
-chdb_arrow_options parseArrowOptions(const py::dict & options)
+chdb_arrow_options parseArrowOptions(const py::object & options_obj)
 {
     chdb_arrow_options parsed{0, 0, 1};
+    if (!options_obj || options_obj.is_none())
+        return parsed;
+    if (!py::isinstance<py::dict>(options_obj))
+        throw py::type_error("options must be a dict or None");
+
+    auto options = py::reinterpret_borrow<py::dict>(options_obj);
     for (const auto & item : options)
     {
         const auto key = py::cast<std::string>(item.first);
@@ -186,11 +199,11 @@ py::object importArrowReader(ArrowArrayStream & stream)
 class QueryParameterGuard
 {
 public:
-    QueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params)
+    QueryParameterGuard(DB::EmbeddedSession * client, const DB::NameToNameMap & params)
     {
         if (client && !params.empty())
         {
-            previous = DB::ChdbClient::setCallQueryParameters({client, &params});
+            previous = DB::EmbeddedSession::setCallQueryParameters({client, &params});
             applied = true;
         }
     }
@@ -198,15 +211,15 @@ public:
     ~QueryParameterGuard()
     {
         if (applied)
-            DB::ChdbClient::setCallQueryParameters(previous);
+            DB::EmbeddedSession::setCallQueryParameters(previous);
     }
 
 private:
-    DB::ChdbClient::CallQueryParameters previous{nullptr, nullptr};
+    DB::EmbeddedSession::CallQueryParameters previous{nullptr, nullptr};
     bool applied = false;
 };
 
-DB::ChdbClient * getChdbClient(chdb_connection handle)
+DB::EmbeddedSession * getChdbClient(chdb_connection handle)
 {
     auto lease = CHDB::acquireConnectionLease(handle);
     return lease ? lease.getClient() : nullptr;
@@ -235,6 +248,7 @@ namespace CHDB
 {
 extern chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
 extern void cachePythonTablesFromQuery(chdb_conn * conn, const std::string & query_str);
+extern void bindPythonTablesForQuery(chdb_conn * conn, const std::string & query_str, const void * explicit_tables_pyobj);
 }
 
 const static char * CURSOR_DEFAULT_FORMAT = "JSONCompactEachRowWithNamesAndTypes";
@@ -304,9 +318,11 @@ query_result * query(
     const std::string & output_format = "CSV",
     const std::string & path = {},
     const std::string & udfPath = {},
-    const py::dict & params = py::dict())
+    const py::object & params = py::none())
 {
     CHDB::PythonRuntimeOperationGuard operation;
+    if (DB::EmbeddedServer::hasActiveClients())
+        throw std::runtime_error("Cannot run one-shot _chdb.query() while a connection is open");
     return new query_result(queryToBuffer(queryStr, output_format, path, udfPath, parseParametersDict(params)));
 }
 
@@ -640,8 +656,13 @@ void connection_wrapper::close()
         closing = true;
         if (active_operations)
         {
+            chdb_connection raw_to_interrupt = conn ? *conn : nullptr;
             {
                 py::gil_scoped_release release;
+                lock.unlock();
+                if (raw_to_interrupt)
+                    chdb_interrupt(raw_to_interrupt);
+                lock.lock();
                 lifecycle_changed.wait(lock, [this] { return !active_operations; });
                 lock.unlock();
             }
@@ -694,6 +715,39 @@ void connection_wrapper::close()
     }
     if (callback_error)
         std::rethrow_exception(callback_error);
+}
+
+void connection_wrapper::interrupt() noexcept
+{
+    chdb_connection raw_conn = nullptr;
+    {
+        std::lock_guard lock(lifecycle_mutex);
+        if (conn)
+            raw_conn = *conn;
+    }
+    if (!raw_conn)
+        return;
+
+    py::gil_scoped_release release;
+    chdb_interrupt(raw_conn);
+}
+
+void connection_wrapper::register_table(const std::string & name, const py::object & obj)
+{
+    auto operation = startOperation();
+    auto lease = CHDB::acquireConnectionLease(*operation.cell());
+    if (!lease || !lease.getClient() || !lease.getClient()->getPythonTableCache())
+        throw std::runtime_error("Connection is closed");
+    lease.getClient()->getPythonTableCache()->registerObject(name, obj);
+}
+
+void connection_wrapper::unregister_table(const std::string & name)
+{
+    auto operation = startOperation();
+    auto lease = CHDB::acquireConnectionLease(*operation.cell());
+    if (!lease || !lease.getClient() || !lease.getClient()->getPythonTableCache())
+        throw std::runtime_error("Connection is closed");
+    lease.getClient()->getPythonTableCache()->unregisterObject(name);
 }
 
 void connection_wrapper::set_progress_callback(const py::object & callback)
@@ -773,7 +827,11 @@ void connection_wrapper::commit()
     // do nothing
 }
 
-query_result * connection_wrapper::query(const std::string & query_str, const std::string & format, const py::dict & params)
+query_result * connection_wrapper::query(
+    const std::string & query_str,
+    const std::string & format,
+    const py::object & params,
+    const py::object & tables)
 {
     auto operation = startOperation();
     auto * conn = operation.cell();
@@ -784,7 +842,7 @@ query_result * connection_wrapper::query(const std::string & query_str, const st
     auto * client = getChdbClient(*conn);
     QueryParameterGuard guard(client, parsed_params);
 
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+    CHDB::bindPythonTablesForQuery(reinterpret_cast<chdb_conn *>(*conn), query_str, &tables);
     py::gil_scoped_release release;
 
     auto * result = chdb_query_n(*conn, query_str.data(), query_str.size(), format.data(), format.size());
@@ -800,7 +858,10 @@ query_result * connection_wrapper::query(const std::string & query_str, const st
     return new query_result(result, false);
 }
 
-py::object connection_wrapper::query_df(const std::string & query_str, const py::dict & params)
+py::object connection_wrapper::query_df(
+    const std::string & query_str,
+    const py::object & params,
+    const py::object & tables)
 {
     auto operation = startOperation();
     auto * conn = operation.cell();
@@ -809,11 +870,6 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     chdb_result * result = nullptr;
     CHDB::ChunkQueryResult * chunk_result = nullptr;
 
-    /// Destroy the result and settle the deferred decrefs on every exit,
-    /// including exceptions thrown by the pandas conversion (which would
-    /// otherwise leak the chunks and their borrow guards outright). The GIL
-    /// is held at scope exit on all paths: the gil_scoped_release block below
-    /// is destructed before this guard runs.
     SCOPE_EXIT({
         if (result)
         {
@@ -826,7 +882,7 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     auto * client = getChdbClient(*conn);
     QueryParameterGuard guard(client, parsed_params);
 
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+    CHDB::bindPythonTablesForQuery(reinterpret_cast<chdb_conn *>(*conn), query_str, &tables);
 
     {
         py::gil_scoped_release release;
@@ -847,14 +903,18 @@ py::object connection_wrapper::query_df(const std::string & query_str, const py:
     return df;
 }
 
-py::object connection_wrapper::query_arrow_reader(const std::string & query_str, const py::dict & params, const py::dict & options)
+py::object connection_wrapper::query_arrow_reader(
+    const std::string & query_str,
+    const py::object & params,
+    const py::object & options,
+    const py::object & tables)
 {
     auto operation = startOperation();
     auto * conn = operation.cell();
     const auto parsed_params = parseParametersDict(params);
     const auto arrow_options = parseArrowOptions(options);
     QueryParameterGuard guard(getChdbClient(*conn), parsed_params);
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+    CHDB::bindPythonTablesForQuery(reinterpret_cast<chdb_conn *>(*conn), query_str, &tables);
 
     ArrowArrayStream stream{};
     chdb_result * result = nullptr;
@@ -878,14 +938,18 @@ py::object connection_wrapper::query_arrow_reader(const std::string & query_str,
     return importArrowReader(stream);
 }
 
-streaming_query_result * connection_wrapper::send_query_arrow(const std::string & query_str, const py::dict & params, const py::dict & options)
+streaming_query_result * connection_wrapper::send_query_arrow(
+    const std::string & query_str,
+    const py::object & params,
+    const py::object & options,
+    const py::object & tables)
 {
     auto operation = startOperation();
     auto * conn = operation.cell();
     const auto parsed_params = parseParametersDict(params);
     const auto arrow_options = parseArrowOptions(options);
     QueryParameterGuard guard(getChdbClient(*conn), parsed_params);
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+    CHDB::bindPythonTablesForQuery(reinterpret_cast<chdb_conn *>(*conn), query_str, &tables);
 
     py::gil_scoped_release release;
     auto * result = chdb_stream_query_arrow_n(*conn, query_str.data(), query_str.size(), &arrow_options);
@@ -955,7 +1019,11 @@ std::string connection_wrapper::generate_sql(const std::string & prompt)
 #endif
 }
 
-streaming_query_result * connection_wrapper::send_query(const std::string & query_str, const std::string & format, const py::dict & params)
+streaming_query_result * connection_wrapper::send_query(
+    const std::string & query_str,
+    const std::string & format,
+    const py::object & params,
+    const py::object & tables)
 {
     auto operation = startOperation();
     auto * conn = operation.cell();
@@ -963,7 +1031,7 @@ streaming_query_result * connection_wrapper::send_query(const std::string & quer
     auto * client = getChdbClient(*conn);
     QueryParameterGuard guard(client, parsed_params);
 
-    CHDB::cachePythonTablesFromQuery(reinterpret_cast<chdb_conn *>(*conn), query_str);
+    CHDB::bindPythonTablesForQuery(reinterpret_cast<chdb_conn *>(*conn), query_str, &tables);
     py::gil_scoped_release release;
     auto * result = chdb_stream_query_n(*conn, query_str.data(), query_str.size(), format.data(), format.size());
     const auto & error_msg = CHDB::chdb_result_error_string(result);
@@ -1107,12 +1175,10 @@ streaming_query_result::~streaming_query_result()
 {
     if (result)
     {
-        auto * handle = reinterpret_cast<CHDB::QueryResult *>(result);
-        if (!handle->stream_exhausted.load(std::memory_order_acquire))
-        {
-            if (auto conn_owner = owner.lock())
-                conn_owner->tryCancelAbandonedStream(result);
-        }
+        /// Release the GIL while tearing down the self-contained stream handle so
+        /// joining a background pipeline worker that awaits the GIL (e.g. Python UDF)
+        /// can never deadlock against this destructor.
+        py::gil_scoped_release release;
         chdb_destroy_query_result(result);
     }
     /// Runs on a Python thread with the GIL held; settle borrow-guard
@@ -1576,6 +1642,7 @@ PYBIND11_MODULE(_chdb, m)
         .def("bytes_written", &query_result::bytes_written)
         .def("get_memview", &query_result::get_memview)
         .def("has_error", &query_result::has_error)
+        .def("error_code", &query_result::error_code)
         .def("error_message", &query_result::error_message)
         .def(
             "__arrow_c_stream__",
@@ -1596,6 +1663,7 @@ PYBIND11_MODULE(_chdb, m)
     py::class_<streaming_query_result>(m, "streaming_query_result")
         .def(py::init<chdb_result *>(), py::return_value_policy::take_ownership)
         .def("has_error", &streaming_query_result::has_error)
+        .def("error_code", &streaming_query_result::error_code)
         .def("error_message", &streaming_query_result::error_message);
 
     py::class_<streaming_insert_result>(m, "streaming_insert_result")
@@ -1637,6 +1705,7 @@ PYBIND11_MODULE(_chdb, m)
         .def("execute", &cursor_wrapper::execute)
         .def("commit", &cursor_wrapper::commit)
         .def("close", &cursor_wrapper::close)
+        .def("interrupt", &cursor_wrapper::interrupt)
         .def("get_memview", &cursor_wrapper::get_memview)
         .def("data_size", &cursor_wrapper::data_size)
         .def("rows_read", &cursor_wrapper::rows_read)
@@ -1645,14 +1714,37 @@ PYBIND11_MODULE(_chdb, m)
         .def("storage_bytes_read", &cursor_wrapper::storage_bytes_read)
         .def("elapsed", &cursor_wrapper::elapsed)
         .def("has_error", &cursor_wrapper::has_error)
+        .def("error_code", &cursor_wrapper::error_code)
         .def("error_message", &cursor_wrapper::error_message);
 
     py::class_<connection_wrapper, std::shared_ptr<connection_wrapper>>(m, "connect")
         .def(py::init(&connection_wrapper::createPython), py::arg("path") = ":memory:")
         .def("cursor", &connection_wrapper::cursor)
-        .def("execute", &connection_wrapper::query)
+        .def(
+            "execute",
+            &connection_wrapper::query,
+            py::arg("query_str"),
+            py::arg("format") = "CSV",
+            py::kw_only(),
+            py::arg("params") = py::none(),
+            py::arg("tables") = py::none())
         .def("commit", &connection_wrapper::commit)
         .def("close", &connection_wrapper::close)
+        .def(
+            "interrupt",
+            &connection_wrapper::interrupt,
+            "Interrupt any in-flight queries or active streams on this connection without blocking")
+        .def(
+            "register",
+            &connection_wrapper::register_table,
+            py::arg("name"),
+            py::arg("obj"),
+            "Register a DataFrame, Arrow, Polars, PyReader, or dict object as Python(name) on this connection")
+        .def(
+            "unregister",
+            &connection_wrapper::unregister_table,
+            py::arg("name"),
+            "Unregister a previously registered Python(name) table from this connection")
         .def(
             "set_progress_callback",
             &connection_wrapper::set_progress_callback,
@@ -1664,30 +1756,34 @@ PYBIND11_MODULE(_chdb, m)
             py::arg("query_str"),
             py::arg("format") = "CSV",
             py::kw_only(),
-            py::arg("params") = py::dict(),
+            py::arg("params") = py::none(),
+            py::arg("tables") = py::none(),
             "Execute a query and return a query_result object")
         .def(
             "query_df",
             &connection_wrapper::query_df,
             py::arg("query_str"),
             py::kw_only(),
-            py::arg("params") = py::dict(),
+            py::arg("params") = py::none(),
+            py::arg("tables") = py::none(),
             "Execute a query and return a DataFrame")
         .def(
             "query_arrow_reader",
             &connection_wrapper::query_arrow_reader,
             py::arg("query_str"),
             py::kw_only(),
-            py::arg("params") = py::dict(),
-            py::arg("options") = py::dict(),
+            py::arg("params") = py::none(),
+            py::arg("options") = py::none(),
+            py::arg("tables") = py::none(),
             "Execute a query as a materialized Arrow C stream and return a PyArrow RecordBatchReader (no IPC)")
         .def(
             "send_query_arrow",
             &connection_wrapper::send_query_arrow,
             py::arg("query_str"),
             py::kw_only(),
-            py::arg("params") = py::dict(),
-            py::arg("options") = py::dict(),
+            py::arg("params") = py::none(),
+            py::arg("options") = py::none(),
+            py::arg("tables") = py::none(),
             "Begin an incremental Arrow C Data query (no IPC)")
         .def(
             "streaming_fetch_arrow",
@@ -1707,7 +1803,8 @@ PYBIND11_MODULE(_chdb, m)
             py::arg("query_str"),
             py::arg("format") = "CSV",
             py::kw_only(),
-            py::arg("params") = py::dict(),
+            py::arg("params") = py::none(),
+            py::arg("tables") = py::none(),
             "Send a streaming query and return a streaming query result object")
         .def(
             "streaming_fetch_result",
@@ -1790,7 +1887,7 @@ PYBIND11_MODULE(_chdb, m)
         py::kw_only(),
         py::arg("path") = "",
         py::arg("udf_path") = "",
-        py::arg("params") = py::dict(),
+        py::arg("params") = py::none(),
         "Query chDB and return a query_result object or DataFrame");
 
     m.def(

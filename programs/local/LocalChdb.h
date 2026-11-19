@@ -88,13 +88,35 @@ public:
     cursor_wrapper * cursor();
     void commit();
     void close();
+    void interrupt() noexcept;
+    void register_table(const std::string & name, const py::object & obj);
+    void unregister_table(const std::string & name);
     void set_progress_callback(const py::object & callback);
-    query_result * query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
-    py::object query_df(const std::string & query_str, const py::dict & params = py::dict());
-    py::object query_arrow_reader(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
-    streaming_query_result * send_query_arrow(const std::string & query_str, const py::dict & params = py::dict(), const py::dict & options = py::dict());
+    query_result * query(
+        const std::string & query_str,
+        const std::string & format = "CSV",
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
+    py::object query_df(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
+    py::object query_arrow_reader(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & options = py::none(),
+        const py::object & tables = py::none());
+    streaming_query_result * send_query_arrow(
+        const std::string & query_str,
+        const py::object & params = py::none(),
+        const py::object & options = py::none(),
+        const py::object & tables = py::none());
     py::object streaming_fetch_arrow(streaming_query_result * streaming_result);
-    streaming_query_result * send_query(const std::string & query_str, const std::string & format = "CSV", const py::dict & params = py::dict());
+    streaming_query_result * send_query(
+        const std::string & query_str,
+        const std::string & format = "CSV",
+        const py::object & params = py::none(),
+        const py::object & tables = py::none());
     query_result * streaming_fetch_result(streaming_query_result * streaming_result);
     py::object streaming_fetch_df(streaming_query_result * streaming_result);
     void streaming_cancel_query(streaming_query_result * streaming_result);
@@ -193,6 +215,10 @@ public:
     {
         return chdb_result_error(result) != nullptr;
     }
+    int error_code()
+    {
+        return chdb_result_error_code(result);
+    }
     py::str error_message()
     {
         auto error_message = chdb_result_error(result);
@@ -227,6 +253,7 @@ public:
     size_t bytes_written() { return result_wrapper->bytes_written(); }
     double elapsed() { return result_wrapper->elapsed(); }
     bool has_error() { return result_wrapper->has_error(); }
+    int error_code() { return result_wrapper->error_code(); }
     py::str error_message() { return result_wrapper->error_message(); }
     memoryview_wrapper * get_memview();
     std::shared_ptr<local_result_wrapper> get_result_wrapper() { return result_wrapper; }
@@ -245,6 +272,7 @@ public:
     {}
     ~streaming_query_result();
     bool has_error() { return chdb_result_error(result) != nullptr; }
+    int error_code() { return chdb_result_error_code(result); }
     py::str error_message()
     {
         auto error_message = chdb_result_error(result);
@@ -358,6 +386,8 @@ public:
 
     void close() { release_result(); }
 
+    void interrupt() { conn->interrupt(); }
+
     py::memoryview get_memview()
     {
         conn->requireOpen();
@@ -416,6 +446,13 @@ public:
         conn->requireOpen();
         auto res = snapshot_result();
         return res ? res->has_error() : false;
+    }
+
+    int error_code()
+    {
+        conn->requireOpen();
+        auto res = snapshot_result();
+        return res ? res->error_code() : 0;
     }
 
     py::str error_message()

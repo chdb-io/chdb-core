@@ -1566,7 +1566,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
         auto entry = fmt::format(
             "{}={} (running: {})", name, applyVisitor(FieldVisitorToString(), value), applyVisitor(FieldVisitorToString(), running));
         /// An option given under a query setting's name applies to this connection's queries
-        /// (ChdbClient::applyCmdSettings); only its server-level use keeps the running value.
+        /// (EmbeddedSession::applyCmdSettings); only its server-level use keeps the running value.
         (query_setting_names.contains(String(name)) ? server_level_ignored : ignored).push_back(std::move(entry));
     }
 

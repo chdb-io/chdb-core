@@ -66,11 +66,11 @@ struct local_result_v2
 
 /**
  * Connection structure for chDB
- * Contains ChdbClient instance and connection state
+ * Contains EmbeddedSession instance and connection state
  */
 struct chdb_conn
 {
-    void * server; /* ChdbClient instance */
+    void * server; /* EmbeddedSession instance */
     bool connected; /* Connection state flag */
 };
 
@@ -330,10 +330,10 @@ CHDB_EXPORT const char * chdb_streaming_result_error(chdb_streaming_result * res
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_streaming_cancel_query() or after a mid-stream error still
  *       returns an error result.
- * @note Not thread-safe per connection: a connection runs one statement at a
- *       time, so fetches (and cancel) on a streaming handle must be serialized
- *       by the caller — do not fetch the same stream from multiple threads
- *       concurrently.
+ * @note Multiple streaming handles and read queries may coexist on one
+ *       connection, but fetches (and cancel) on any single streaming handle
+ *       must be serialized by the caller — do not fetch the same stream from
+ *       multiple threads concurrently.
  */
 CHDB_EXPORT struct local_result_v2 * chdb_streaming_fetch_result(struct chdb_conn * conn, chdb_streaming_result * result);
 
@@ -398,6 +398,21 @@ CHDB_EXPORT chdb_connection * chdb_connect(int argc, char ** argv);
  * @param conn Pointer to connection pointer to close
  */
  CHDB_EXPORT void chdb_close_conn(chdb_connection * conn);
+
+/**
+ * Interrupts any in-flight queries or active streams on the given connection.
+ *
+ * Non-blocking and safe to call from any thread (including watchdog timers or
+ * signal-relay threads) without acquiring the connection's query execution
+ * locks: active queries observe cancellation via `QueryStatus::cancelQuery`
+ * and finish with `QUERY_WAS_CANCELLED` (code 394).
+ *
+ * Calling `chdb_interrupt` on a NULL, idle, or already-closed connection is a
+ * safe no-op.
+ *
+ * @param conn Connection whose active operations should be interrupted
+ */
+CHDB_EXPORT void chdb_interrupt(chdb_connection conn);
 
 /**
  * Executes a query on the given connection.
@@ -572,10 +587,10 @@ CHDB_EXPORT chdb_result * chdb_stream_query_with_params_n(
  *       every further call returns a fresh empty, non-error result. Fetching
  *       after chdb_stream_cancel_query() or after a mid-stream error still
  *       returns an error result.
- * @note Not thread-safe per connection: a connection runs one statement at a
- *       time, so fetches (and cancel) on a streaming handle must be serialized
- *       by the caller — do not fetch the same stream from multiple threads
- *       concurrently.
+ * @note Multiple streaming handles and read queries may coexist on one
+ *       connection, but fetches (and cancel) on any single streaming handle
+ *       must be serialized by the caller — do not fetch the same stream from
+ *       multiple threads concurrently.
  */
 CHDB_EXPORT chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * result);
 
@@ -789,6 +804,14 @@ CHDB_EXPORT uint64_t chdb_result_bytes_written(chdb_result * result);
  * @return Null-terminated error description, NULL if no error
  */
 CHDB_EXPORT const char * chdb_result_error(chdb_result * result);
+
+/**
+ * Retrieves the ClickHouse integer error code (`DB::ErrorCodes`) from query execution.
+ * @param result The query result handle
+ * @return 0 when `result` is NULL or succeeded without error; non-zero ClickHouse
+ *         error code when `chdb_result_error(result)` is non-NULL
+ */
+CHDB_EXPORT int chdb_result_error_code(chdb_result * result);
 
 /**
  * Gets the number of columns in the result set, the same for every output

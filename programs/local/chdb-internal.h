@@ -11,7 +11,7 @@
 
 namespace DB
 {
-    class ChdbClient;
+    class EmbeddedSession;
 }
 
 /// Connection validity check function
@@ -25,15 +25,19 @@ namespace CHDB
 
 struct ChdbConnectionState;
 
+/// Internal format name used by Python DataFrame and Arrow C Data output paths
+/// to collect raw `DB::Chunk`s directly from the pipeline without serialization.
+inline constexpr const char * kChunkCollectFormatName = "dataframe";
+
 /// RAII active-operation guard for C ABI `chdb_conn *` / `chdb_connection` handles.
 /// Looks up the handle in the live-connection registry before dereferencing it, holds
 /// an active-operation count until destruction, and makes concurrent `chdb_close_conn`
-/// wait cleanly instead of freeing `DB::ChdbClient` under an in-flight call.
+/// wait cleanly instead of freeing `DB::EmbeddedSession` under an in-flight call.
 class ChdbConnectionLease
 {
 public:
     ChdbConnectionLease() = default;
-    ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::ChdbClient * client_) noexcept;
+    ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::EmbeddedSession * client_) noexcept;
     ~ChdbConnectionLease();
 
     ChdbConnectionLease(const ChdbConnectionLease &) = delete;
@@ -42,11 +46,11 @@ public:
     ChdbConnectionLease & operator=(ChdbConnectionLease && other) noexcept;
 
     explicit operator bool() const noexcept { return client != nullptr; }
-    DB::ChdbClient * getClient() const noexcept { return client; }
+    DB::EmbeddedSession * getClient() const noexcept { return client; }
 
 private:
     std::shared_ptr<ChdbConnectionState> state;
-    DB::ChdbClient * client = nullptr;
+    DB::EmbeddedSession * client = nullptr;
 };
 
 ChdbConnectionLease acquireConnectionLease(const chdb_conn * connection);
@@ -93,19 +97,19 @@ DB::NameToNameMap buildParameterMap(
     const size_t * param_value_lens,
     size_t param_count);
 
-/// Applies named parameters for one query and restores the connection's own afterwards, like the
-/// Python binding's QueryParameterGuard. Streaming only needs them during init.
+/// Applies named parameters for one query and restores the previous thread-local binding afterwards.
+/// Streaming only needs them during init.
 class CApiQueryParameterGuard
 {
 public:
-    CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params);
+    CApiQueryParameterGuard(DB::EmbeddedSession * client, const DB::NameToNameMap & params);
     ~CApiQueryParameterGuard();
 
     CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
     CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
 
 private:
-    const DB::ChdbClient * previous_client = nullptr;
+    const DB::EmbeddedSession * previous_client = nullptr;
     const DB::NameToNameMap * previous_params = nullptr;
     bool applied = false;
 };
