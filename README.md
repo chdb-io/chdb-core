@@ -115,6 +115,34 @@ curl -sSLO ${BASE}/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS   # shasum -a 256 -c --ignore-missing on macOS
 ```
 
+### Split static library (Linux)
+
+On Linux, `libchdb.a` holds a single prelinked object of over a gigabyte. That object keeps
+the bundled C++ runtime, zstd, OpenSSL and the rest out of the consumer's reach, but no
+Go module can hold it (Go caps a module at 500 MiB). So Linux releases also carry
+`<platform>-libchdb-static-split.tar.gz`, built by `chdb/build/split_static_lib.py`. It has
+the same C API and the same isolation, split into relocatable objects of at most ~200 MiB:
+
+| file | what it is |
+|---|---|
+| `libchdb.a` | an ordinary archive of the shards `libchdb_part_000.o`, `libchdb_part_001.o`, ... |
+| `libchdb-split.json` | version, source commit, link order, size and SHA-256 of every shard, system libraries |
+| `chdb.h`, `chdb.hpp`, `LICENSE.txt` | the same headers as the other tarballs, and the license |
+
+- Link the archive as usual with `-lchdb -lpthread -ldl -lm -lrt`. Every shard references the
+  next, so linking one shard pulls in all of them; `--whole-archive` is not needed.
+- Or link the shards as plain objects, for example as Go `.syso` files. Pass every shard,
+  in `link_order`. The shards do not depend on their order, but that order puts static
+  constructors in the same order as `libchdb.a`.
+- Use the shards as shipped. Symbols outside the C API are either local or hidden globals with
+  a `.chdb` suffix, which the shards use to reach each other. Do not strip, rename or localize
+  them, and do not link with `--allow-multiple-definition`. Nothing in the shards collides
+  with the system C++ runtime or with the host's own zlib, zstd or OpenSSL.
+
+`chdb/build/check_static_lib_hermetic.sh` runs the same gates on this archive as on
+`libchdb.a`. macOS needs no split archive: its `libchdb.a` is already made of ordinary
+members.
+
 ---
 
 ## Quick Start

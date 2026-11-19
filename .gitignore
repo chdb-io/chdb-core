@@ -296,6 +296,8 @@ test_main
 /examples/chdb_durable_abi_test_db
 /examples/chdb_durable_abi_test_backups
 libchdb.so
+# The split static library manifest (chdb/build/split_static_lib.py)
+libchdb_split.json
 *.gz
 *.bz2
 *.tgz

@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <unwind.h>
 
 #include "chdb.h"
@@ -80,6 +81,18 @@ int main(void)
     if (!query_failed)
     {
         fprintf(stderr, "host_unwind_probe: the failing query did not report an error\n");
+        chdb_close_conn(conn);
+        return 1;
+    }
+
+    /* And the engine still answers after it. */
+    result = chdb_query(*conn, "SELECT 40 + 2", "CSV");
+    int query_ok = result && !chdb_result_error(result) && chdb_result_length(result) == 3
+        && memcmp(chdb_result_buffer(result), "42\n", 3) == 0;
+    chdb_destroy_query_result(result);
+    if (!query_ok)
+    {
+        fprintf(stderr, "host_unwind_probe: SELECT 40 + 2 did not return 42 after the failing query\n");
         chdb_close_conn(conn);
         return 1;
     }
