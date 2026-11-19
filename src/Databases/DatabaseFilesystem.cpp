@@ -1,3 +1,4 @@
+#include <Access/LocalFilesystemAccess.h>
 #include <Databases/DatabaseFactory.h>
 #include <Databases/DatabaseFilesystem.h>
 
@@ -237,10 +238,12 @@ StoragePtr DatabaseFilesystem::tryGetTableFromCache(const std::string & name, co
 
 bool DatabaseFilesystem::isTableExist(const String & name, ContextPtr context_) const
 {
-    /// `EXISTS TABLE` requires only `SHOW TABLES`, so answering it without the read source grant turns
-    /// this database into an oracle for `user_files`. Claim the table: resolving it reports the denial.
+    /// `EXISTS TABLE` requires only `SHOW TABLES`, so answering it from the filesystem without the read source
+    /// grant would turn this database into an oracle for `user_files`. Answer without looking: no table. Claiming
+    /// every name instead would hide the tables of the other databases of an overlay, such as the `default`
+    /// database of clickhouse-local and chDB, from a user without the grant.
     if (!context_->getAccess()->isGrantedWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ ""))
-        return true;
+        return false;
 
     if (tryGetTableFromCache(name, context_))
         return true;
@@ -253,6 +256,10 @@ StoragePtr DatabaseFilesystem::getTableImpl(const String & name, ContextPtr cont
     /// Resolving a table of this database requires the read source grant. It is checked here, above the
     /// cache, because the cache is keyed on the table name alone: an entry resolved by one user is
     /// handed to every later caller. `file` reports no URI, so the grant is checked with no filter.
+    /// `tryGetTable` finds nothing instead, so an overlay goes on to its other databases.
+    if (!throw_on_error
+        && !context_->getAccess()->isGrantedWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ ""))
+        return nullptr;
     context_->getAccess()->checkAccessWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ "");
 
     /// A renaming rule belongs to the one query that set it, while a cached table is shared with the

@@ -1,5 +1,6 @@
 #include "EmbeddedServer.h"
 #include "InstancePaths.h"
+#include "LocalFilesystemRestriction.h"
 #include <Core/Settings.h>
 #include "ChdbSettingsOverrides.h"
 
@@ -772,6 +773,8 @@ void EmbeddedServer::setupUsers()
     }
     else
         throw Exception(ErrorCodes::CANNOT_LOAD_CONFIG, "Can't load config for users");
+
+    CHDB::addRestrictedLocalFilesystemUser(access_control);
 }
 
 int EmbeddedServer::main(const std::vector<std::string> & /*args*/)

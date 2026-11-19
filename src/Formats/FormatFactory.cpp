@@ -1,4 +1,5 @@
 #include <Formats/FormatFactory.h>
+#include <Access/LocalFilesystemAccess.h>
 
 #include <unistd.h>
 #include <Formats/FormatSettings.h>
@@ -343,7 +344,10 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.schema.format_schema = settings[Setting::format_schema];
     format_settings.schema.format_schema_message_name = settings[Setting::format_schema_message_name];
     format_settings.schema.format_schema_path = context->getFormatSchemaPath();
-    format_settings.schema.is_server = context->hasGlobalContext() && (context->getGlobalContext()->getApplicationType() == Context::ApplicationType::SERVER);
+    /// A user without local filesystem access gets the server's confinement of schema and template files to
+    /// `format_schema_path`, as `file()` and the like are denied to it.
+    format_settings.schema.is_server = (context->hasGlobalContext() && (context->getGlobalContext()->getApplicationType() == Context::ApplicationType::SERVER))
+        || !hasLocalFilesystemAccess(context);
     format_settings.schema.output_format_schema = settings[Setting::output_format_schema];
     format_settings.skip_unknown_fields = settings[Setting::input_format_skip_unknown_fields];
     format_settings.template_settings.resultset_format = settings[Setting::format_template_resultset];

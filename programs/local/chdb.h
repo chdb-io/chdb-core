@@ -375,6 +375,25 @@ CHDB_EXPORT void chdb_streaming_cancel_query(struct chdb_conn * conn, chdb_strea
  * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
  * the connection that boots the engine and ignored afterwards.
  *
+ * --restrict_local_filesystem_access[=1] denies this connection's SQL every
+ * access to local files and programs: file(), url('file://...'),
+ * filesystem(), INTO OUTFILE, FROM INFILE, file descriptors, SQLite, ODBC,
+ * JDBC and local data lakes, schema and template files outside
+ * format_schema_path, executable functions and engines, dictionaries with a
+ * FILE, EXECUTABLE, EXECUTABLE_POOL, LIBRARY, ODBC or JDBC source or an
+ * SSD_CACHE layout, custom disks, BACKUP and RESTORE on File or Disk, Backup
+ * databases, and restoring tables on such engines from any backup. It also
+ * denies SYSTEM SHUTDOWN and SYSTEM KILL, which would end the host process. The
+ * engine's own files (metadata, temporary data, caches), the credential files
+ * cloud clients load, and BACKUP and RESTORE on object storage keep working. The option is fixed for
+ * the connection's lifetime and covers every query function on it; no SET,
+ * SETTINGS or chdb_set() lifts it. Queries run as the user
+ * chdb_restricted_local_filesystem. chdb_get(conn,
+ * "restrict_local_filesystem_access") returns "1" on a restricted connection;
+ * versions without the option return NULL, so a host can refuse to run user
+ * SQL on them. An invalid value, or an engine that cannot set up the
+ * restriction, fails the connection.
+ *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)
  * @return Pointer to connection pointer, or NULL on failure

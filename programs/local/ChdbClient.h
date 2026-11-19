@@ -126,6 +126,7 @@ protected:
 
 private:
     void cleanup();
+    void authenticate(int argc, char ** argv);
     void applyCmdSettings(int argc, char ** argv);
     void takeResultSchema(CHDB::QueryResult & res);
 
@@ -164,6 +165,8 @@ private:
     /// INSERT's SETTINGS clause; restored by restoreSettingsAfterInsertStream().
     std::unique_ptr<Settings> insert_stream_saved_settings;
     mutable std::mutex client_mutex;
+    /// The restrict_local_filesystem_access connection option, fixed for the connection's lifetime.
+    bool restrict_local_filesystem_access = false;
 };
 
 } // namespace DB
