@@ -1198,7 +1198,7 @@ void ReadManager::scheduleTask(Task task, bool is_first_in_group, MemoryUsageDif
     /// column size; the run time is also roughly proportional to these sizes.
     /// Hope it's a good enough proxy in all cases.
     ssize_t memory_after = diff.by_stage[size_t(diff.cur_stage)];
-    task.cost_estimate_bytes = size_t(std::max(0l, memory_after - memory_before));
+    task.cost_estimate_bytes = size_t(std::max<ssize_t>(0, memory_after - memory_before));
 
     out_tasks.push_back(task);
 }

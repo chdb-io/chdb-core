@@ -112,7 +112,9 @@ set(libprotobuf_lite_files
 )
 
 add_library(_libprotobuf-lite ${libprotobuf_lite_files})
-if (NOT USE_MUSL)
+# chdb_spec: not on Windows, where the default libraries link winpthread statically and `pthread`
+# would resolve to the import library of libwinpthread-1.dll, which the module must not depend on.
+if (NOT USE_MUSL AND NOT OS_WINDOWS)
     target_link_libraries(_libprotobuf-lite pthread)
 endif()
 target_link_libraries(_libprotobuf-lite
@@ -218,7 +220,9 @@ add_library(_libprotobuf ${libprotobuf_lite_files} ${libprotobuf_files})
 if (ENABLE_FUZZING)
     target_compile_options(_libprotobuf PRIVATE "-fsanitize-recover=all")
 endif()
-if (NOT USE_MUSL)
+# chdb_spec: not on Windows, where the default libraries link winpthread statically and `pthread`
+# would resolve to the import library of libwinpthread-1.dll, which the module must not depend on.
+if (NOT USE_MUSL AND NOT OS_WINDOWS)
     target_link_libraries(_libprotobuf pthread)
 endif()
 target_link_libraries(_libprotobuf
@@ -446,7 +450,9 @@ add_library(protobuf::libprotoc ALIAS _libprotoc)
 set(protoc_files ${protobuf_source_dir}/src/google/protobuf/compiler/main.cc)
 add_executable(protoc ${protoc_files})
 target_link_libraries(protoc _libprotoc _libprotobuf)
-if (NOT USE_MUSL)
+# chdb_spec: not on Windows, where the default libraries link winpthread statically and `pthread`
+# would resolve to the import library of libwinpthread-1.dll, which the module must not depend on.
+if (NOT USE_MUSL AND NOT OS_WINDOWS)
     target_link_libraries(protoc pthread)
 endif()
 target_link_libraries(protoc

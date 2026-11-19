@@ -3,6 +3,7 @@
 #if USE_AVRO
 
 #include <Storages/ObjectStorage/DataLakes/Iceberg/SnapshotFilesTraversal.h>
+#include <base/pathToString.h>
 
 #include <Poco/JSON/Object.h>
 
@@ -98,7 +99,7 @@ void collectMetadataRootFiles(
     out.insert(metadata_path);
 
     /// version-hint.text is not a metadata path: it is a fixed object under the storage root.
-    out.insert(std::filesystem::path(resolver.getTableRoot()) / "metadata" / "version-hint.text");
+    out.insert(pathToGenericString(pathFromString(resolver.getTableRoot()) / "metadata" / "version-hint.text"));
 
     if (metadata->has(f_metadata_log))
     {

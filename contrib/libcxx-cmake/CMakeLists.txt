@@ -73,6 +73,17 @@ add_library(cxx-headers INTERFACE)
 add_dependencies(cxx-headers generate-cxx-headers)
 target_include_directories(cxx-headers INTERFACE ${LIBCXX_GENERATED_INCLUDE_DIR} ${LIBC_DIR})
 
+if (OS_WINDOWS)
+    # Windows-only pieces of libc++. `locale_win32.cpp` provides the `*_l` locale-aware CRT
+    # functions (`strtoll_l`, `snprintf_l`, ...) that the Windows CRT does not have, and
+    # `support.cpp` the `asprintf`/`vasprintf` used by `std::locale`'s number formatting.
+    # `thread_win32.cpp` is deliberately absent - see the threading backend selected below.
+    list (APPEND SRCS
+        "${LIBCXX_SOURCE_DIR}/src/support/win32/locale_win32.cpp"
+        "${LIBCXX_SOURCE_DIR}/src/support/win32/support.cpp"
+    )
+endif ()
+
 add_library(cxx ${SRCS})
 set_target_properties(cxx PROPERTIES FOLDER "contrib/libcxx-cmake")
 
@@ -82,6 +93,20 @@ target_include_directories(cxx SYSTEM BEFORE PRIVATE $<BUILD_INTERFACE:${LIBCXX_
 target_include_directories(cxx SYSTEM BEFORE PUBLIC  $<$<COMPILE_LANGUAGE:CXX>:$<BUILD_INTERFACE:${LIBCXX_SOURCE_DIR}/include>>)
 target_compile_definitions(cxx PRIVATE -D_LIBCPP_BUILDING_LIBRARY -DLIBCXX_BUILDING_LIBCXXABI -DLIBC_NAMESPACE=${LIBC_NAMESPACE})
 target_compile_definitions(cxx PUBLIC -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES=1)
+
+if (OS_WINDOWS)
+    # On Windows libc++ would otherwise default to its Win32 threading backend. Select the
+    # pthread one instead, implemented by mingw-w64's winpthreads: ClickHouse calls pthread
+    # interfaces directly in a number of places (thread naming, stack sizes,
+    # `pthread_getattr_np`, ...), and with this backend `std::thread::native_handle()` is a
+    # `pthread_t`, so those calls and the standard library agree on what a thread is. It also
+    # keeps `src/support/win32/thread_win32.cpp` out of the build.
+    #
+    # PUBLIC, and not a line in `__config_site`, because every translation unit that includes a
+    # libc++ header has to agree on the backend - it changes the layout of `std::thread` - and
+    # `__config_site` lives in the `llvm-project` submodule, which we keep at upstream.
+    target_compile_definitions(cxx PUBLIC -D_LIBCPP_HAS_THREAD_API_PTHREAD=1)
+endif ()
 
 # Enable capturing stack traces for all exceptions.
 target_compile_definitions(cxx PUBLIC -DSTD_EXCEPTION_HAS_STACK_TRACE=1)
@@ -121,4 +146,10 @@ endif ()
 if (HIDE_BUNDLED_RUNTIME)
     target_compile_definitions(cxx PRIVATE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
     hide_bundled_runtime(cxx)
+elseif (OS_WINDOWS)
+    # chdb_spec: on Windows the annotations are dllexport, so every DLL that links the runtime
+    # statically (_chdb.pyd and the pybind11 stub and shim DLLs) would export it, and a DLL linking
+    # another one's import library would then find each runtime symbol twice. Drop the annotations;
+    # there is no visibility to set on PE.
+    target_compile_definitions(cxx PRIVATE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS=)
 endif ()

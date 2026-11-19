@@ -39,6 +39,15 @@ target_compile_options(unwind PRIVATE -O3 -fno-exceptions -funwind-tables -fno-s
 
 target_compile_options(unwind PRIVATE -Wno-unused-but-set-variable)
 
+if (OS_WINDOWS)
+    # On x86_64 Windows the unwinder is driven by SEH (`Unwind-seh.cpp`), which uses
+    # `NTSTATUS`. The MSVC SDK declares that type in `winnt.h`, but mingw-w64 keeps it in
+    # `ntdef.h`, which `windows.h` does not pull in, so force-include it. Done here rather
+    # than by patching the LLVM submodule so that libunwind stays at upstream.
+    set_source_files_properties("${LIBUNWIND_SOURCE_DIR}/src/Unwind-seh.cpp"
+        PROPERTIES COMPILE_FLAGS "-include ntdef.h")
+endif ()
+
 # The library is using register variables that are bound to specific registers
 # Example: DwarfInstructions.hpp: register unsigned long long x16 __asm("x16") = cfa;
 target_compile_options(unwind PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wno-register>")
@@ -59,6 +68,9 @@ endif ()
 if (HIDE_BUNDLED_RUNTIME)
     target_compile_definitions(unwind PRIVATE -D_LIBUNWIND_HIDE_SYMBOLS)
     hide_bundled_runtime(unwind)
+elseif (OS_WINDOWS)
+    # chdb_spec: see contrib/libcxx-cmake/CMakeLists.txt.
+    target_compile_definitions(unwind PRIVATE -D_LIBUNWIND_HIDE_SYMBOLS)
 endif ()
 
 if (USE_MUSL)

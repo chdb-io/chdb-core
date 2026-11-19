@@ -47,6 +47,78 @@ message(STATUS "Using stable-ABI pybind11 from ${LIBRARY_DIR}")
 
 set(PYBIND11_LIB_SUFFIX "chdb")
 
+# chdb_spec: Windows (MinGW, cross-compiled). One configure builds the stub DLL and the shim DLL
+# of every supported Python, because each shim only needs that version's headers and import
+# library, which the build script unpacks under CHDB_PYTHON_INCLUDE_DIR_PREFIX/<X.Y>.
+# - PE has no lazily resolved symbols (lld's MinGW driver has no --unresolved-symbols), so every
+#   DLL links the import library of the Python it targets: python3.lib (stable ABI) for the stubs,
+#   python3XY.lib for the shim of X.Y.
+# - The names carry no "lib" prefix: the stubs load the shim with
+#   LoadLibraryW(<dir of _chdb.pyd> + "pybind11nonlimitedapi_chdb_X.Y.dll").
+# - MS_WIN64 must be defined: pyconfig.h of 3.9-3.11 defines it only for MSVC, and without it
+#   Py_ssize_t is 32 bits.
+# - windows_new_delete.cpp gives the DLLs the operator new/delete of _chdb.pyd, see the file.
+if (OS_WINDOWS)
+    set(CHDB_PYBIND11_SHIM_VERSIONS "3.9;3.10;3.11;3.12;3.13;3.14" CACHE STRING
+        "Python versions to build pybind11 non-limited-API shim DLLs for")
+    if (NOT DEFINED CHDB_PYTHON_LIB_DIR_PREFIX)
+        set(CHDB_PYTHON_LIB_DIR_PREFIX "${CHDB_PYTHON_INCLUDE_DIR_PREFIX}")
+    endif()
+    set(CHDB_PYBIND11_WINDOWS_NEW_DELETE "${CMAKE_CURRENT_SOURCE_DIR}/windows_new_delete.cpp")
+
+    add_library(pybind11_stubs SHARED
+        "${LIBRARY_DIR}/source/non_limited_api/non_limited_api_stubs.cpp"
+        "${CHDB_PYBIND11_WINDOWS_NEW_DELETE}")
+    target_include_directories(pybind11_stubs PRIVATE
+        ${PYBIND11_INCLUDE_DIR}
+        "${CHDB_PYTHON_INCLUDE_DIR_PREFIX}/3.9"
+        "${ClickHouse_SOURCE_DIR}/base")
+    # PYBIND11_NAMESPACE: pybind11 gives its namespace hidden visibility under any GNU compiler,
+    # which clang rejects on Windows next to the dllexport of the shim interface. Visibility means
+    # nothing for PE images (only dllexport decides what leaves a DLL), so drop the attribute. It is
+    # PUBLIC so that _chdb.pyd and the shims, which link the stubs, see the same namespace.
+    target_compile_definitions(pybind11_stubs PUBLIC
+        PYBIND11_INTERNALS_KIND="_chdb"
+        PYBIND11_NONLIMITEDAPI_LIB_SUFFIX_FOR_MODULE="${PYBIND11_LIB_SUFFIX}"
+        Py_LIMITED_API=0x03090000
+        PYBIND11_NAMESPACE=pybind11)
+    target_compile_definitions(pybind11_stubs PRIVATE "MS_WIN64=")
+    target_link_libraries(pybind11_stubs PRIVATE "${CHDB_PYTHON_LIB_DIR_PREFIX}/3.9/python3.lib")
+    set_target_properties(pybind11_stubs PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "pybind11nonlimitedapi_stubs")
+    add_library(ch_contrib::pybind11_stubs ALIAS pybind11_stubs)
+
+    foreach (_version ${CHDB_PYBIND11_SHIM_VERSIONS})
+        string(REPLACE "." "" _version_nodot "${_version}")
+        set(_shim "pybind11nonlimitedapi_${PYBIND11_LIB_SUFFIX}_${_version}")
+        if (NOT EXISTS "${CHDB_PYTHON_INCLUDE_DIR_PREFIX}/${_version}/Python.h")
+            message(FATAL_ERROR "No Python ${_version} headers in ${CHDB_PYTHON_INCLUDE_DIR_PREFIX}/${_version}")
+        endif()
+        add_library(${_shim} SHARED
+            "${LIBRARY_DIR}/source/non_limited_api/non_limited_api.cpp"
+            "${CHDB_PYBIND11_WINDOWS_NEW_DELETE}")
+        # The shim is compiled against the full (non-limited) API of its own version, so it must
+        # not inherit the stable-ABI define the stubs export to the main module.
+        target_include_directories(${_shim} PRIVATE
+            ${PYBIND11_INCLUDE_DIR}
+            "${CHDB_PYTHON_INCLUDE_DIR_PREFIX}/${_version}"
+            "${ClickHouse_SOURCE_DIR}/base")
+        target_compile_definitions(${_shim} PRIVATE
+            PYBIND11_INTERNALS_KIND="_chdb"
+            PYBIND11_NONLIMITEDAPI_LIB_SUFFIX_FOR_MODULE="${PYBIND11_LIB_SUFFIX}"
+            "MS_WIN64=")
+        target_link_libraries(${_shim} PRIVATE
+            "${CHDB_PYTHON_LIB_DIR_PREFIX}/${_version}/python${_version_nodot}.lib"
+            pybind11_stubs)
+        set_target_properties(${_shim} PROPERTIES
+            PREFIX ""
+            OUTPUT_NAME "${_shim}")
+    endforeach()
+    message(STATUS "pybind11 shim DLLs for Python: ${CHDB_PYBIND11_SHIM_VERSIONS}")
+    return()
+endif()
+
 # chdb_spec: On macOS the pybind11 stub/shim dylibs below statically link
 # ClickHouse's bundled libcxx (contrib/libcxx) and export its std::__1::*
 # methods (e.g. std::__1::basic_string) as *weak external* symbols.

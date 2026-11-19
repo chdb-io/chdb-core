@@ -1,4 +1,5 @@
-if((OS_LINUX OR OS_DARWIN) AND TARGET OpenSSL::SSL)
+# chdb_spec: Windows (mingw-w64) is supported too; its settings are in the `if (OS_WINDOWS)` blocks below.
+if((OS_LINUX OR OS_DARWIN OR OS_WINDOWS) AND TARGET OpenSSL::SSL)
     option(ENABLE_MYSQL "Enable MySQL" ${ENABLE_LIBRARIES})
 else ()
     option(ENABLE_MYSQL "Enable MySQL" FALSE)
@@ -102,6 +103,28 @@ set(SIZEOF_LONG_LONG 8)
 set(SIZEOF_SIZE_T 8)
 set(SOCKET_SIZE_TYPE socklen_t)
 
+# chdb_spec: Windows (mingw-w64, UCRT). The values above are the POSIX ones; override those that
+# differ, as the upstream connector configures WIN32: cmake/WindowsCache.cmake for the headers,
+# cmake/check_types.cmake for SOCKET_SIZE_TYPE and the WIN32 branch of the root CMakeLists.txt for
+# HAVE_DLOPEN. Unlike MSVC, mingw-w64 does ship <unistd.h>, <strings.h>, <sched.h> and <utime.h>.
+if (OS_WINDOWS)
+    set(HAVE_ALLOCA_H 0) # alloca() comes from <malloc.h>, which the sources include on _WIN32
+    set(HAVE_ARPA_INET_H 0)
+    set(HAVE_DLFCN_H 0)
+    set(HAVE_PWD_H 0)
+    set(HAVE_SYS_IOCTL_H 0)
+    set(HAVE_SYS_SELECT_H 0)
+    set(HAVE_SYS_SOCKET_H 0) # Winsock instead: ma_global.h includes <winsock2.h> on _WIN32
+    set(HAVE_SYS_UN_H 0)
+    set(HAVE_FCNTL 0)
+    set(HAVE_POLL 0) # pvio_socket waits with select() on _WIN32
+    # Maps dlopen/dlsym/dlclose onto LoadLibraryEx/GetProcAddress/FreeLibrary (ma_global.h), which
+    # ma_client_plugin.c uses for a plugin that is not built in.
+    set(HAVE_DLOPEN 1)
+    set(SIZEOF_LONG 4) # LLP64
+    set(SOCKET_SIZE_TYPE int)
+endif ()
+
 
 set(SYSTEM_LIBS ${SYSTEM_LIBS} ch_contrib::zlib)
 
@@ -134,6 +157,14 @@ endif ()
 
 if (OS_DARWIN)
   set(SYSTEM_LIBS ${SYSTEM_LIBS} iconv)
+endif ()
+
+# chdb_spec: Windows system libraries, from the upstream WIN32 list (ws2_32 advapi32 kernel32 shlwapi
+# crypt32 bcrypt): Winsock for the sockets and WSAStartup, shlwapi for PathRemoveFileSpec in
+# ma_default.c. kernel32 and advapi32 are default libraries. crypt32 and bcrypt are only for
+# Schannel and the WinCrypt auth code, not built here: TLS and RSA go through OpenSSL as on Linux.
+if (OS_WINDOWS)
+  set(SYSTEM_LIBS ${SYSTEM_LIBS} ws2_32 shlwapi)
 endif ()
 
 
@@ -176,6 +207,15 @@ SET(PLUGIN_EXTRA_FILES ${CC_SOURCE_DIR}/libmariadb/ma_errmsg.c)
 REGISTER_PLUGIN(TARGET pvio_socket
                 TYPE MARIADB_CLIENT_PLUGIN_PVIO
                 SOURCES "${CC_SOURCE_DIR}/plugins/pvio/pvio_socket.c")
+
+# chdb_spec: on Windows named pipes stand in for Unix sockets as the local transport (host "." or
+# MYSQL_PROTOCOL_PIPE). Upstream builds this plugin in statically by default on WIN32 (plugins/pvio).
+# Shared memory (pvio_shmem) is a dynamic plugin by default there, so it is left out like the others.
+if (OS_WINDOWS)
+  REGISTER_PLUGIN(TARGET pvio_npipe
+                  TYPE MARIADB_CLIENT_PLUGIN_PVIO
+                  SOURCES "${CC_SOURCE_DIR}/plugins/pvio/pvio_npipe.c")
+endif ()
 
 # SHA256 caching plugin for MySQL 8.0 connection
 REGISTER_PLUGIN(TARGET caching_sha2_password

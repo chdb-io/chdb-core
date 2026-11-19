@@ -1,11 +1,35 @@
 #!python3
 
+import functools
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
 import chdb
+
+
+_protobuf_available = None
+
+
+def _has_protobuf():
+    # Checked when the first test runs rather than at import, so loading this
+    # module does not start the engine.
+    global _protobuf_available
+    if _protobuf_available is None:
+        count = chdb.query("SELECT count() FROM system.formats WHERE name = 'Protobuf'", "CSV")
+        _protobuf_available = count.bytes().strip() == b"1"
+    return _protobuf_available
+
+
+def requires_protobuf(test):
+    @functools.wraps(test)
+    def wrapper(self, *args, **kwargs):
+        if not _has_protobuf():
+            self.skipTest("this build has no Protobuf format (USE_PROTOBUF is off)")
+        return test(self, *args, **kwargs)
+
+    return wrapper
 
 
 def _write(path, text):
@@ -41,25 +65,31 @@ class TestIssue642(unittest.TestCase):
         self.tmp.cleanup()
 
     def _query(self, data, options=None):
+        # ClickHouse unescapes backslashes in a string literal, so a Windows
+        # path goes in with forward slashes.
         sql = (
-            f"SELECT value FROM file('{data}', Protobuf, 'value UInt64') "
+            f"SELECT value FROM file('{data.as_posix()}', Protobuf, 'value UInt64') "
             "SETTINGS format_schema = 'nested/row.proto:Row'"
         )
         return chdb.query(sql, "CSV", options=options).bytes()
 
+    @requires_protobuf
     def test_schema_resolved_from_format_schema_path(self):
         self.assertEqual(self._query(self.data_a, {"format_schema_path": str(self.schemas_a)}), b"42\n")
 
+    @requires_protobuf
     def test_each_connection_uses_its_own_format_schema_path(self):
         self.assertEqual(self._query(self.data_a, {"format_schema_path": str(self.schemas_a)}), b"42\n")
         self.assertEqual(self._query(self.data_b, {"format_schema_path": str(self.schemas_b)}), b"7\n")
 
+    @requires_protobuf
     def test_without_format_schema_path_follows_working_directory(self):
         os.chdir(self.schemas_a)
         self.assertEqual(self._query(self.data_a), b"42\n")
         os.chdir(self.schemas_b)
         self.assertEqual(self._query(self.data_b), b"7\n")
 
+    @requires_protobuf
     def test_imports_resolve_from_google_protos_path(self):
         schemas = self.root / "schemas_import"
         protos = self.root / "protos"

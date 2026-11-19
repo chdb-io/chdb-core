@@ -137,10 +137,12 @@ namespace ServerSetting
     extern const ServerSettingsBool s3_load_table_anonymously_if_credentials_restricted;
 }
 
+#if USE_AWS_S3
 namespace S3RequestSetting
 {
     extern const S3RequestSettingsBool use_idempotency_id;
 }
+#endif
 
 namespace ErrorCodes
 {

@@ -134,10 +134,19 @@ if (USE_PYTHON)
     endif()
 
     # remove all warnings, because pybind11 will generate a lot of warnings
+    set(CHDB_SOURCES_COMPILE_FLAGS "-w")
+    if (OS_WINDOWS)
+        # chdb_spec: pybind11's non_limited_api.h includes <windows.h> before any ClickHouse
+        # header, which leaves macros such as DELETE, IN, OUT, ERROR, TRUE and FALSE defined for
+        # the rest of the translation unit. Including Poco's UnWindows.h first gets windows.h
+        # through its include guard with those macros undefined again.
+        string(APPEND CHDB_SOURCES_COMPILE_FLAGS
+            " -include ${ClickHouse_SOURCE_DIR}/base/poco/Foundation/include/Poco/UnWindows.h")
+    endif()
     foreach(_file ${CHDB_SOURCES})
         set_source_files_properties(${_file}
             PROPERTIES COMPILE_FLAGS
-            "-w"
+            "${CHDB_SOURCES_COMPILE_FLAGS}"
         )
     endforeach(_file)
 endif()
@@ -181,6 +190,17 @@ if (USE_PYTHON)
     # are intentionally pulled from the host (they are header-only, ABI-neutral).
     if (OS_LINUX)
         target_compile_options(clickhouse-local-lib PRIVATE -Wno-poison-system-directories)
+    endif()
+    if (OS_WINDOWS)
+        # chdb_spec: a PE module resolves every import at link time, so the stable-ABI import
+        # library python3.lib (python3.dll) is linked here; the 3.9 one, so the module never needs
+        # a function newer Pythons added. MS_WIN64 is defined by pyconfig.h of 3.9-3.11 only for
+        # MSVC; without it Py_ssize_t is 32 bits.
+        if (NOT DEFINED CHDB_PYTHON_LIB_DIR_PREFIX)
+            set(CHDB_PYTHON_LIB_DIR_PREFIX "${CHDB_PYTHON_INCLUDE_DIR_PREFIX}")
+        endif()
+        target_compile_definitions(clickhouse-local-lib PRIVATE "MS_WIN64=")
+        target_link_libraries(clickhouse-local-lib PRIVATE "${CHDB_PYTHON_LIB_DIR_PREFIX}/3.9/python3.lib")
     endif()
 endif()
 

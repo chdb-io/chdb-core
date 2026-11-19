@@ -61,6 +61,16 @@ class TimeoutTestRunner(unittest.TextTestRunner):
             print("Timeout after {} seconds".format(self.timeout))
             raise TimeoutException("Timeout after {} seconds".format(self.timeout))
 
+        if not hasattr(signal, "SIGALRM"):
+            # Windows has no SIGALRM. The Python handler could only run once
+            # chdb.query returned to the interpreter anyway, so measuring the
+            # elapsed time afterwards enforces the same limit.
+            start = time.monotonic()
+            result = super().run(test)
+            if time.monotonic() - start > self.timeout:
+                handler(None, None)
+            return result
+
         old_handler = signal.signal(signal.SIGALRM, handler)
         signal.alarm(self.timeout)
 

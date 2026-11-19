@@ -1,3 +1,4 @@
+#include <base/pathToString.h>
 #include <base/phdr_cache.h>
 #include <base/scope_guard.h>
 #include <base/defines.h>
@@ -15,6 +16,15 @@
 
 #include <unistd.h>
 
+#if defined(OS_WINDOWS)
+#include <Poco/Net/Net.h>
+#include <Poco/UnWindows.h>
+#include <shellapi.h>
+#endif
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <new>
@@ -103,11 +113,40 @@ std::pair<std::string_view, std::string_view> clickhouse_short_names[] =
 
 }
 
+/// `argv[0]` reduced to a program name: the basename, with the Windows executable suffix
+/// stripped, so that "/usr/bin/clickhouse-local", "clickhouse-local.exe" and
+/// "C:\Programs\clickhouse-local.exe" all compare equal to "clickhouse-local".
+static std::string_view programNameFromArgv0(std::string_view argv0)
+{
+#if defined(OS_WINDOWS)
+    /// Windows path components are separated by either slash; a backslash is a legal (if
+    /// unusual) file-name character on POSIX, so it is a separator only here.
+    static constexpr std::string_view separators = "/\\";
+#else
+    static constexpr std::string_view separators = "/";
+#endif
+    if (const auto pos = argv0.find_last_of(separators); pos != std::string_view::npos)
+        argv0.remove_prefix(pos + 1);
+
+#if defined(OS_WINDOWS)
+    /// Windows file names are case-insensitive, so ".EXE" spells the same suffix.
+    static constexpr std::string_view suffix = ".exe";
+    if (argv0.size() > suffix.size())
+    {
+        const auto tail = argv0.substr(argv0.size() - suffix.size());
+        if (std::equal(tail.begin(), tail.end(), suffix.begin(), [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; }))
+            argv0.remove_suffix(suffix.size());
+    }
+#endif
+
+    return argv0;
+}
+
 static bool isClickHouseApp(std::string_view app_suffix, std::vector<char *> & argv)
 {
     for (const auto & [alias, name] : clickhouse_short_names)
         if (app_suffix == name
-            && !argv.empty() && (alias == argv[0] || endsWith(argv[0], "/" + std::string(alias))))
+            && !argv.empty() && programNameFromArgv0(argv[0]) == alias)
             return true;
 
     /// Use app if the first arg 'app' is passed (the arg should be quietly removed)
@@ -126,7 +165,7 @@ static bool isClickHouseApp(std::string_view app_suffix, std::vector<char *> & a
 
     /// Use app if clickhouse binary is run through symbolic link with name clickhouse-app
     std::string app_name = "clickhouse-" + std::string(app_suffix);
-    return !argv.empty() && (app_name == argv[0] || endsWith(argv[0], "/" + app_name));
+    return !argv.empty() && programNameFromArgv0(argv[0]) == app_name;
 }
 
 // chdb_spec
@@ -220,6 +259,45 @@ __attribute__((constructor(202))) static void init_ssl()
     DB::OpenSSLInitializer::initialize();
 }
 
+#if defined(OS_WINDOWS)
+/// The C runtime's `main` receives `argv` decoded through the active code page, so an argument
+/// outside it - a non-ASCII `--query`, file name or setting value - is mangled before ClickHouse
+/// sees it, while everything past this point treats strings as UTF-8. Rebuild `argv` from the
+/// wide command line instead. The strings are static because `argv` has to outlive `main`.
+static bool getUtf8Argv(int & argc, char **& argv)
+{
+    int wide_argc = 0;
+    LPWSTR * wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+    if (!wide_argv)
+        return false;
+    SCOPE_EXIT({ LocalFree(wide_argv); });
+
+    static std::vector<std::string> utf8_args;
+    static std::vector<char *> utf8_argv;
+    utf8_args.reserve(wide_argc);
+
+    for (int i = 0; i < wide_argc; ++i)
+    {
+        /// With a length of `-1` the sizes include the terminating NUL.
+        const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, nullptr, 0, nullptr, nullptr);
+        if (size <= 0)
+            return false;
+        std::string & arg = utf8_args.emplace_back(size, '\0');
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, arg.data(), size, nullptr, nullptr) != size)
+            return false;
+        arg.resize(size - 1);
+    }
+
+    for (auto & arg : utf8_args)
+        utf8_argv.push_back(arg.data());
+    utf8_argv.push_back(nullptr);
+
+    argc = wide_argc;
+    argv = utf8_argv.data();
+    return true;
+}
+#endif
+
 /// This allows to implement assert to forbid initialization of a class in static constructors.
 /// Usage:
 ///
@@ -231,6 +309,61 @@ int main(int argc_, char ** argv_)
 {
     // inside_main = true;
     // SCOPE_EXIT({ inside_main = false; });
+
+#if defined(OS_WINDOWS)
+    /// Winsock must be started before the first socket call. Poco does that from a static
+    /// initializer in `Net.cpp`, but `_poco_net` is a static library and nothing references that
+    /// translation unit, so the linker is free to drop it - and then the first socket call fails
+    /// with `WSANOTINITIALISED`. Calling `initializeNetwork` here forces `Net.cpp` into the link
+    /// (so its initializer runs before `main` even starts) and starts Winsock even if the
+    /// initializer were compiled out. `WSAStartup` is reference-counted, so the double start is
+    /// harmless; the extra reference also keeps Winsock alive through static destruction.
+    Poco::Net::initializeNetwork();
+
+    if (!getUtf8Argv(argc_, argv_))
+    {
+        std::cerr << "Cannot read the command line as UTF-8, error code: " << GetLastError() << std::endl;
+        return 1;
+    }
+
+    /// Query results are written as UTF-8 bytes, and a console renders the bytes written to it in its
+    /// output code page. Select UTF-8 for the lifetime of the process and restore the user's code page
+    /// on exit. Redirected output has no console code page and receives the bytes as they are.
+    static const UINT original_console_output_code_page = GetConsoleOutputCP();
+    if (original_console_output_code_page != 0 && original_console_output_code_page != CP_UTF8 && SetConsoleOutputCP(CP_UTF8))
+        std::atexit([] { SetConsoleOutputCP(original_console_output_code_page); });
+
+    /// The input code page is separate. It decides the bytes that narrow reads of the console
+    /// (`ReadFile` of stdin, as by a `File` table over it in `clickhouse-local`) produce from the
+    /// characters typed. Redirected input has no console code page and is read as it is.
+    static const UINT original_console_input_code_page = GetConsoleCP();
+    if (original_console_input_code_page != 0 && original_console_input_code_page != CP_UTF8 && SetConsoleCP(CP_UTF8))
+        std::atexit([] { SetConsoleCP(original_console_input_code_page); });
+
+    /// Formatting of `Pretty` formats, the progress bar and cursor control are written as ANSI escape
+    /// sequences, and a console interprets them only with `ENABLE_VIRTUAL_TERMINAL_PROCESSING` set on
+    /// its screen buffer - otherwise it displays them as text. Set it for the lifetime of the process
+    /// and restore the original modes on exit. The line editor saves the mode it finds (already with
+    /// the flag) and restores exactly that after reading a query, so the query output keeps it too.
+    /// Standard output and standard error usually share one screen buffer: the second one then
+    /// already has the flag and is left alone. Redirected output is not a console and is skipped.
+    static std::vector<std::pair<HANDLE, DWORD>> original_console_output_modes;
+    for (DWORD std_handle : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE})
+    {
+        HANDLE handle = GetStdHandle(std_handle);
+        DWORD mode = 0;
+        if (handle == nullptr || handle == INVALID_HANDLE_VALUE || !GetConsoleMode(handle, &mode))
+            continue;
+        if ((mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0 && SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+            original_console_output_modes.emplace_back(handle, mode);
+    }
+    if (!original_console_output_modes.empty())
+        std::atexit([]
+        {
+            for (auto it = original_console_output_modes.rbegin(); it != original_console_output_modes.rend(); ++it)
+                SetConsoleMode(it->first, it->second);
+        });
+#endif
 
     /// PHDR cache is required for query profiler to work reliably
     /// It also speed up exception handling, but exceptions from dynamically loaded libraries (dlopen)
@@ -291,7 +424,7 @@ int main(int argc_, char ** argv_)
     if (main_func == printHelpOnError && !argv.empty()
         && (argv.size() < 2 || argv[1] != std::string_view("--help"))
         && (argv.size() == 1 || argv[1][0] == '-' || std::string_view(argv[1]).contains(' ')
-            || std::filesystem::is_regular_file(std::filesystem::path{argv[1]}, ec)))
+            || std::filesystem::is_regular_file(pathFromString(argv[1]), ec)))
     {
         main_func = mainEntryClickHouseLocal;
     }

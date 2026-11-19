@@ -190,7 +190,20 @@ import ctypes, mmap, sys
 import numpy as np, pandas as pd, pyarrow as pa, chdb
 
 PAGE = 4096
-libc = ctypes.CDLL(None, use_errno=True)
+if sys.platform == "win32":
+    # Windows has no mprotect: VirtualProtect does the same to a mapping's committed pages.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.VirtualProtect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+    kernel32.VirtualProtect.restype = ctypes.c_int
+
+    def make_readonly(addr, n):
+        old = ctypes.c_uint32()
+        return kernel32.VirtualProtect(ctypes.c_void_p(addr), ctypes.c_size_t(n), 0x02, ctypes.byref(old)) != 0  # PAGE_READONLY
+else:
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    def make_readonly(addr, n):
+        return libc.mprotect(ctypes.c_void_p(addr), ctypes.c_size_t(n), 1) == 0  # PROT_READ
 
 def mmap_readonly_arrow_string(values):
     arr = pa.array(values, type=pa.string())
@@ -203,7 +216,7 @@ def mmap_readonly_arrow_string(values):
         m = mmap.mmap(-1, n)
         m.write(payload)
         addr = ctypes.addressof(ctypes.c_char.from_buffer(m))
-        assert libc.mprotect(ctypes.c_void_p(addr), ctypes.c_size_t(n), 1) == 0  # PROT_READ
+        assert make_readonly(addr, n)
         return m, addr
 
     m_off, off_addr = alloc_ro(offsets_np.tobytes())
@@ -249,7 +262,7 @@ print("PROT_READ_HARNESS_OK")
 
 
 class TestZeroCopyProtRead(unittest.TestCase):
-    @unittest.skipUnless(PANDAS3 and sys.platform == "linux", "needs pandas 3 + linux mprotect")
+    @unittest.skipUnless(PANDAS3 and sys.platform in ("linux", "win32"), "needs pandas 3 + mprotect or VirtualProtect")
     def test_engine_never_writes_borrowed_buffers(self):
         env = dict(os.environ)
         res = subprocess.run(
