@@ -1,3 +1,4 @@
+#include <Access/LocalFilesystemAccess.h>
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnConst.h>
@@ -35,7 +36,8 @@ public:
     static constexpr auto name = "file";
     static FunctionPtr create(ContextPtr context)
     {
-        if (context && context->getApplicationType() != Context::ApplicationType::LOCAL)
+        /// A chDB connection that restricts local filesystem access is checked in local mode too.
+        if (context && (context->getApplicationType() != Context::ApplicationType::LOCAL || isLocalFilesystemAccessRestricted(context)))
             context->checkAccess(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE));
 
         return std::make_shared<FunctionFile>();

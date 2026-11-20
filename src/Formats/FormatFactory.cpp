@@ -1,4 +1,5 @@
 #include <Formats/FormatFactory.h>
+#include <Access/LocalFilesystemAccess.h>
 
 #include <unistd.h>
 #include <Formats/FormatSettings.h>
@@ -343,7 +344,10 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.schema.format_schema = settings[Setting::format_schema];
     format_settings.schema.format_schema_message_name = settings[Setting::format_schema_message_name];
     format_settings.schema.format_schema_path = context->getFormatSchemaPath();
-    format_settings.schema.is_server = context->hasGlobalContext() && (context->getGlobalContext()->getApplicationType() == Context::ApplicationType::SERVER);
+    const bool is_server = context->hasGlobalContext() && (context->getGlobalContext()->getApplicationType() == Context::ApplicationType::SERVER);
+    /// A chDB connection that restricts local filesystem access gets the server's confinement of schema and
+    /// template files to `format_schema_path`.
+    format_settings.schema.is_server = is_server || isLocalFilesystemAccessRestricted(context);
     format_settings.schema.output_format_schema = settings[Setting::output_format_schema];
     format_settings.skip_unknown_fields = settings[Setting::input_format_skip_unknown_fields];
     format_settings.template_settings.resultset_format = settings[Setting::format_template_resultset];
@@ -471,7 +475,7 @@ FormatSettings getFormatSettings(const ContextPtr & context, const Settings & se
     format_settings.input_format_column_matching_case_sensitivity = settings[Setting::input_format_column_name_matching_mode];
 
     /// Validate avro_schema_registry_url with RemoteHostFilter when non-empty and in Server context
-    if (format_settings.schema.is_server)
+    if (is_server)
     {
         const Poco::URI & avro_schema_registry_url = settings[Setting::format_avro_schema_registry_url];
         if (!avro_schema_registry_url.empty())

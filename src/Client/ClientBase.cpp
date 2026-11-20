@@ -102,6 +102,7 @@
 #include <Storages/StorageFile.h>
 
 #include <Access/AccessControl.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Storages/ColumnsDescription.h>
 #include <Storages/SelectQueryInfo.h>
 #include <TableFunctions/ITableFunction.h>
@@ -1155,6 +1156,7 @@ try
             String out_file;
             if (query_with_output->out_file)
             {
+                checkLocalFilesystemAccess(client_context, "INTO OUTFILE");
                 select_into_file = true;
 
                 const auto & out_file_node = query_with_output->out_file->as<ASTLiteral &>();
@@ -2854,6 +2856,7 @@ void ClientBase::sendData(Block & sample, const ColumnsDescription & columns_des
     {
         if (isEmbeeddedClient())
             throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "Reading from INFILE is disabled when you are running client embedded into server.");
+        checkLocalFilesystemAccess(client_context, "FROM INFILE");
 
         /// Get name of this file (path to file)
         const auto & in_file_node = parsed_insert_query->infile->as<ASTLiteral &>();

@@ -1,3 +1,4 @@
+#include <Access/LocalFilesystemAccess.h>
 #include <Databases/DatabaseBackup.h>
 
 #include <filesystem>
@@ -832,7 +833,12 @@ void registerDatabaseBackup(DatabaseFactory & factory)
 
         auto config = parseArguments(engine_args, args.context, /*allow_locator_in_string_literal=*/ from_existing_metadata);
         if (has_real_user && !from_existing_metadata)
+        {
+            /// The tables of the backup are attached again at every start, by a context without a user, whatever
+            /// engine they have, so one on a local file would become readable after a restart.
+            checkLocalFilesystemAccess(args.context, "A Backup database");
             BackupFactory::instance().checkSourceAccess(config.backup_info, args.context, IBackup::OpenMode::READ);
+        }
 
         return std::make_shared<DatabaseBackup>(args.database_name, args.metadata_path, config, args.context);
     };
