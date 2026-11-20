@@ -81,25 +81,28 @@ void restrictClickHouseDictionarySourceUser(const ContextPtr & context, ASTFunct
     if (!isLocalFilesystemAccessRestricted(context) || boost::algorithm::to_lower_copy(source.name) != "clickhouse")
         return;
 
+    /// Whether the source runs in-process is decided when the dictionary loads, from its host and port, so the
+    /// connection's user goes into `local_user`, which only an in-process query uses. `user` stays for a remote server.
     const String user_name = context->getUserName();
     if (!source.elements)
         source.elements = make_intrusive<ASTExpressionList>();
     for (const auto & child : source.elements->children)
     {
         const auto * pair = child->as<ASTPair>();
-        if (!pair || pair->first != "user")
+        if (!pair || pair->first != "local_user")
             continue;
         const auto * literal = pair->second ? pair->second->as<ASTLiteral>() : nullptr;
         if (!literal || literal->value.getType() != Field::Types::String || literal->value.safeGet<String>() != user_name)
             throw Exception(
                 ErrorCodes::ACCESS_DENIED,
-                "A CLICKHOUSE dictionary source on a connection that restricts local filesystem access must run as user {}",
+                "A CLICKHOUSE dictionary source on a connection that restricts local filesystem access runs in-process as "
+                "user {}",
                 user_name);
         return;
     }
 
     auto pair = make_intrusive<ASTPair>();
-    pair->first = "user";
+    pair->first = "local_user";
     pair->set(pair->second, make_intrusive<ASTLiteral>(user_name));
     source.elements->children.push_back(pair);
 }

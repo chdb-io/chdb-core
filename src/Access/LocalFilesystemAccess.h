@@ -48,8 +48,8 @@ void checkLocalFilesystemAccess(const ContextPtr & context, std::string_view ope
 void checkDictionaryLocalFilesystemAccess(const ContextPtr & context, std::string_view source, std::string_view layout);
 
 /// A CLICKHOUSE dictionary source in the same process runs its query as the USER it names, `default` unless given.
-/// On a restricted connection it must run as the connection's own user: a missing USER is set to it, another one is
-/// refused.
+/// On a restricted connection it runs as the connection's own user instead: LOCAL_USER is set to it, and another
+/// LOCAL_USER is refused. USER is left to a remote server.
 void restrictClickHouseDictionarySourceUser(const ContextPtr & context, ASTFunctionWithKeyValueArguments & source);
 
 }

@@ -106,12 +106,13 @@ void revokeGrants(User & user)
 }
 
 /// Grants of roles count towards a user's access and cannot be revoked from the user, so the restricted user gets
-/// the grants and settings of the roles of `default`, transitively, and holds no role itself. Returns those roles,
-/// whose row policies and quotas apply to it along with those of `default` (see RestrictedLocalFilesystemUser).
+/// the grants and settings of the roles `default` logs in with, and the roles those include, and holds no role
+/// itself. Returns those roles, whose row policies and quotas apply to it along with those of `default` (see
+/// RestrictedLocalFilesystemUser).
 boost::container::flat_set<UUID> mergeRoles(User & user, const AccessControl & access_control)
 {
     boost::container::flat_set<UUID> roles;
-    std::vector<UUID> pending(user.granted_roles.getGranted().begin(), user.granted_roles.getGranted().end());
+    std::vector<UUID> pending = user.granted_roles.findGranted(user.default_roles);
     while (!pending.empty())
     {
         const UUID role_id = pending.back();

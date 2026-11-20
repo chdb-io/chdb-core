@@ -391,10 +391,33 @@ class TestRestrictLocalFilesystemAccess(unittest.TestCase):
                 )
                 if err is None:
                     self.assertDenied(f"SELECT dictGet('query_dict_{i}', 'v', toUInt64(1))")
-        self.assertDenied(
-            f"CREATE DICTIONARY other_user_dict {attrs} SOURCE(CLICKHOUSE(TABLE 'dict_source' USER 'default'))"
+        # USER names a remote server's user; an in-process query runs as the connection's user whatever it says.
+        self.assertAllowed("CREATE TABLE IF NOT EXISTS dict_source (id UInt64, v String) ENGINE = MergeTree ORDER BY id")
+        self.assertAllowed("INSERT INTO dict_source VALUES (2, 'two')")
+        self.assertAllowed(
+            f"CREATE DICTIONARY user_default_dict {attrs} SOURCE(CLICKHOUSE(TABLE 'dict_source' USER 'default'))"
             " LAYOUT(FLAT()) LIFETIME(0)"
         )
+        self.assertEqual(self.assertAllowed("SELECT dictGet('user_default_dict', 'v', toUInt64(2))"), "two\n")
+        err, _ = self.restricted.query(
+            f"CREATE DICTIONARY user_default_file_dict {attrs}"
+            f" SOURCE(CLICKHOUSE(QUERY 'SELECT 1 AS id, file(''{self.secret}'') AS v' USER 'default')) LAYOUT(FLAT()) LIFETIME(0)"
+        )
+        if err is None:
+            self.assertDenied("SELECT dictGet('user_default_file_dict', 'v', toUInt64(1))")
+        self.assertDenied(
+            f"CREATE DICTIONARY local_user_dict {attrs} SOURCE(CLICKHOUSE(TABLE 'dict_source' LOCAL_USER 'default'))"
+            " LAYOUT(FLAT()) LIFETIME(0)"
+        )
+        # A remote server keeps the user it is given.
+        self.assertAllowed(
+            f"CREATE DICTIONARY remote_dict {attrs}"
+            " SOURCE(CLICKHOUSE(HOST '192.0.2.1' PORT 9000 USER 'remote_reader' TABLE 't')) LAYOUT(FLAT()) LIFETIME(0)"
+        )
+        err, ddl = self.restricted.query("SHOW CREATE DICTIONARY remote_dict", "RawBLOB")
+        self.assertIsNone(err, err)
+        self.assertIn("USER 'remote_reader'", ddl)
+        self.assertIn(f"LOCAL_USER '{RESTRICTED_USER}'", ddl)
 
     def test_custom_disks_are_denied(self):
         disk = self.path("disk") + "/"
