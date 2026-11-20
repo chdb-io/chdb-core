@@ -285,7 +285,7 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
         {
             validateNamedCollection(
                 *named_collection, {}, ValidateKeysMultiset<ExternalDatabaseEqualKeysSet>{
-                    "secure", "host", "hostname", "port", "user", "username", "password", "proto_send_chunked", "proto_recv_chunked", "quota_key", "name", "local_user",
+                    "secure", "host", "hostname", "port", "user", "username", "password", "proto_send_chunked", "proto_recv_chunked", "quota_key", "name",
                     "db", "database", "table","query", "where", "invalidate_query", "update_field", "update_lag"});
 
             const auto secure = named_collection->getOrDefault("secure", false);
@@ -341,8 +341,8 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
 
         /// chDB: the user an in-process query runs as instead of `user`, set for dictionaries of connections that restrict
         /// local filesystem access (see restrictClickHouseDictionarySourceUser). `user` stays the one of a remote server.
-        const String local_user = named_collection ? named_collection->getOrDefault<String>("local_user", "")
-                                                   : config.getString(settings_config_prefix + ".local_user", "");
+        /// Read from the dictionary itself, never from a named collection, which does not override it either.
+        const String local_user = config.getString(settings_config_prefix + ".local_user", "");
 
         ContextMutablePtr context;
         if (configuration->is_local)

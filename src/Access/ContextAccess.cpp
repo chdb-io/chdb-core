@@ -472,17 +472,23 @@ void ContextAccess::setRolesInfo(const std::shared_ptr<const EnabledRolesInfo> &
     chassert(roles_info_);
     roles_info = roles_info_;
 
-    /// chDB's restricted user gets the row policies of the user it is made from.
+    /// chDB's restricted user is another identity than the user it is made from, and holds no roles: it gets the row
+    /// policies and settings profiles of that user and of the roles that user logs in with.
+    UUID policy_user_id = *params.user_id;
+    std::shared_ptr<const EnabledRolesInfo> policy_roles_info = roles_info;
     if (const auto restricted = tryGetRestrictedLocalFilesystemUser(*params.user_id))
-        enabled_row_policies = access_control->getEnabledRowPolicies(restricted->policy_user_id, restricted->policy_roles);
-    else
-        enabled_row_policies = access_control->getEnabledRowPolicies(*params.user_id, roles_info->enabled_roles);
+    {
+        policy_user_id = restricted->policy_user_id;
+        policy_roles_info = access_control->getEnabledRolesInfo(restricted->policy_roles, {});
+    }
+
+    enabled_row_policies = access_control->getEnabledRowPolicies(policy_user_id, policy_roles_info->enabled_roles);
 #if CLICKHOUSE_CLOUD
-    enabled_masking_policies = access_control->getEnabledMaskingPolicies(*params.user_id, roles_info->enabled_roles);
+    enabled_masking_policies = access_control->getEnabledMaskingPolicies(policy_user_id, policy_roles_info->enabled_roles);
 #endif
 
     enabled_settings = access_control->getEnabledSettings(
-        *params.user_id, user->settings, roles_info->enabled_roles, roles_info->settings_from_enabled_roles);
+        policy_user_id, user->settings, policy_roles_info->enabled_roles, policy_roles_info->settings_from_enabled_roles);
 
     calculateAccessRights();
 }
@@ -634,7 +640,7 @@ std::shared_ptr<const EnabledQuota> ContextAccess::getQuota() const
             if (const auto restricted = tryGetRestrictedLocalFilesystemUser(*params.user_id))
                 enabled_quota = access_control->getEnabledQuota(restricted->policy_user_id,
                                                                 restricted->policy_user_name,
-                                                                restricted->policy_roles,
+                                                                access_control->getEnabledRolesInfo(restricted->policy_roles, {})->enabled_roles,
                                                                 params.address,
                                                                 params.forwarded_address,
                                                                 params.quota_key);

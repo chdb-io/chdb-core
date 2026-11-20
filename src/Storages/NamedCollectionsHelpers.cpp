@@ -251,7 +251,8 @@ void checkNamedCollectionOverridesInDictionarySource(
     for (const auto & key : keys)
     {
         /// The 'name' key identifies the named collection itself and is not a data key to override.
-        if (key == "name")
+        /// chDB's `local_user` is the identity of the dictionary's own in-process query, not a collection key.
+        if (key == "name" || key == "local_user")
             continue;
 
         checkNamedCollectionOverride(*collection, key, context);
@@ -386,7 +387,8 @@ MutableNamedCollectionPtr tryGetNamedCollectionWithOverrides(
     for (const auto & key : keys)
     {
         /// The 'name' key identifies the named collection itself and is not a data key to override.
-        if (key == "name")
+        /// chDB's `local_user` is the identity of the dictionary's own in-process query, not a collection key.
+        if (key == "name" || key == "local_user")
             continue;
 
         checkNamedCollectionOverrideLock(*collection, key);

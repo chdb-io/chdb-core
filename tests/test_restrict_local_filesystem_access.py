@@ -695,6 +695,20 @@ def _child_roles(lib_path, root, secret_file):
         "plain_outfile": plain.query(f"SELECT 1 INTO OUTFILE '{os.path.join(root, 'out.csv')}' FORMAT CSV"),
     }
     results["outfile_written"] = os.path.exists(os.path.join(root, "out.csv"))
+    # Settings profiles bound to `default` and to its login role, with a constraint, bind the restricted user as well.
+    results["profiles"] = [
+        plain.query("SET ROLE DEFAULT"),
+        plain.query("CREATE SETTINGS PROFILE for_default SETTINGS max_threads = 3, max_memory_usage = 1000000000 CONST TO default"),
+        plain.query("CREATE SETTINGS PROFILE for_role SETTINGS max_execution_time = 77 TO file_reader"),
+    ]
+    settings = "SELECT getSetting('max_threads'), getSetting('max_execution_time'), getSetting('max_memory_usage')"
+    fresh_plain = chdb.connect(b"--config-file=" + config.encode())
+    fresh_restricted = chdb.connect(b"--config-file=" + config.encode(), OPTION)
+    results["plain_settings"] = fresh_plain.query(settings)
+    results["restricted_settings"] = fresh_restricted.query(settings)
+    results["restricted_const"] = fresh_restricted.query("SET max_memory_usage = 5")
+    fresh_restricted.close()
+    fresh_plain.close()
     restricted.close()
     plain.close()
     return results
@@ -910,6 +924,11 @@ class TestRestrictedConnectionInternalAccess(unittest.TestCase):
         self.assertIsNone(results["plain_no_role"][0], results["plain_no_role"][0])
         self.assertIsNone(results["plain_outfile"][0], results["plain_outfile"][0])
         self.assertTrue(results["outfile_written"])
+        for err, _ in results["profiles"]:
+            self.assertIsNone(err, err)
+        self.assertEqual(results["plain_settings"], [None, "3\t77\t1000000000\n"])
+        self.assertEqual(results["restricted_settings"], results["plain_settings"])
+        self.assertRegex(results["restricted_const"][0] or "", "SETTING_CONSTRAINT_VIOLATION|should not be changed")
 
     def test_sql_cannot_end_the_host_process(self):
         results = self.run_child("shutdown")

@@ -105,30 +105,30 @@ void revokeGrants(User & user)
         revoke(user, fmt::format("REVOKE TABLE ENGINE ON {}", backQuoteIfNeed(engine)));
 }
 
-/// Grants of roles count towards a user's access and cannot be revoked from the user, so the restricted user gets
-/// the grants and settings of the roles `default` logs in with, and the roles those include, and holds no role
-/// itself. Returns those roles, whose row policies and quotas apply to it along with those of `default` (see
-/// RestrictedLocalFilesystemUser).
-boost::container::flat_set<UUID> mergeRoles(User & user, const AccessControl & access_control)
+/// Grants of roles count towards a user's access and cannot be revoked from the user, so the restricted user gets the
+/// grants of the roles `default` logs in with, and of the roles those include, and holds no role itself. Returns the
+/// login roles: ContextAccess resolves row policies, settings profiles and quotas of the restricted user with them and
+/// `default` (see RestrictedLocalFilesystemUser), so the settings of the user keep their precedence over the roles'.
+std::vector<UUID> mergeRoleGrants(User & user, const AccessControl & access_control)
 {
-    boost::container::flat_set<UUID> roles;
-    std::vector<UUID> pending = user.granted_roles.findGranted(user.default_roles);
+    const std::vector<UUID> login_roles = user.granted_roles.findGranted(user.default_roles);
+    boost::container::flat_set<UUID> seen;
+    std::vector<UUID> pending = login_roles;
     while (!pending.empty())
     {
         const UUID role_id = pending.back();
         pending.pop_back();
-        if (!roles.insert(role_id).second)
+        if (!seen.insert(role_id).second)
             continue;
         auto role = access_control.tryRead<Role>(role_id);
         if (!role)
             continue;
         user.access.makeUnion(role->access);
-        user.settings.merge(role->settings);
         pending.insert(pending.end(), role->granted_roles.getGranted().begin(), role->granted_roles.getGranted().end());
     }
     user.granted_roles = {};
     user.default_roles = RolesOrUsersSet{};
-    return roles;
+    return login_roles;
 }
 
 std::mutex restricted_user_mutex;
@@ -170,13 +170,13 @@ void addRestrictedLocalFilesystemUser(AccessControl & access_control)
 
         auto user = typeid_cast<std::shared_ptr<User>>(default_user->clone());
         user->setName(user_name);
-        const auto default_roles = mergeRoles(*user, access_control);
+        const auto login_roles = mergeRoleGrants(*user, access_control);
         revokeGrants(*user);
 
         const UUID id = UsersConfigParser::generateID(AccessEntityType::USER, user_name);
         /// Registered before the user exists, so no context of it ever resolves row policies or quotas as itself.
         setRestrictedLocalFilesystemUser(RestrictedLocalFilesystemUser{
-            .id = id, .policy_user_id = *default_id, .policy_user_name = default_user->getName(), .policy_roles = default_roles});
+            .id = id, .policy_user_id = *default_id, .policy_user_name = default_user->getName(), .policy_roles = login_roles});
         storage->insert(id, user, /*replace_if_exists=*/true, /*throw_if_exists=*/false);
         restricted_user_id = id;
     }

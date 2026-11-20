@@ -4,10 +4,9 @@
 #include <Core/UUID.h>
 #include <Interpreters/Context_fwd.h>
 
-#include <boost/container/flat_set.hpp>
-
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace DB
 {
@@ -19,15 +18,15 @@ class ASTFunctionWithKeyValueArguments;
 /// functions below cover what is not behind such a grant, such as `INTO OUTFILE` or custom disks. They apply only to
 /// that user, so other users, including ones that merely lack the grants, keep ClickHouse's behavior.
 
-/// The user of restricted connections, and the user and roles whose row policies and quotas apply to it. The
-/// restricted user is another identity than the one it is made from, and must not see more rows or use more
-/// resources than that one: a policy `TO ALL EXCEPT default` would apply to it otherwise.
+/// The user of restricted connections, and the user and login roles whose row policies, settings profiles and quotas
+/// apply to it. The restricted user is another identity than the one it is made from, and must be bound exactly as
+/// that one: a policy `TO ALL EXCEPT default` would apply to it otherwise, and a profile `TO default` would not.
 struct RestrictedLocalFilesystemUser
 {
     UUID id;
     UUID policy_user_id;
     String policy_user_name;
-    boost::container::flat_set<UUID> policy_roles;
+    std::vector<UUID> policy_roles;
 };
 
 /// Registers the user of restricted connections, or clears it with nullopt.
