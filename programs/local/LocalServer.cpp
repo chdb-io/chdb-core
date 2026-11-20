@@ -1565,6 +1565,8 @@ catch (DB::Exception & e)
     /// through getErrorMsg(); without this, a failed query came back with no data and no error.
     error_message_oss << getExceptionMessageForLogging(e, need_print_stack_trace, true) << '\n';
     auto code = DB::getCurrentExceptionCode();
+    /// chdb_spec: chdb_result_error_code() of a one-shot query reads it from here.
+    error_code = code;
     return static_cast<UInt8>(code) ? code : 1;
 }
 catch (...)
@@ -1574,6 +1576,7 @@ catch (...)
 
     error_message_oss << DB::getCurrentExceptionMessage(true) << '\n';
     auto code = DB::getCurrentExceptionCode();
+    error_code = code;
     return static_cast<UInt8>(code) ? code : 1;
 }
 
