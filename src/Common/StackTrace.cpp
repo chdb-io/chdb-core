@@ -478,18 +478,28 @@ MainObjectBounds getMainObjectBounds()
 }
 }
 #elif defined(OS_DARWIN)
+/// chdb: the engine is linked into a dylib, which has no `_mh_execute_header`. The linker defines
+/// `__dso_handle` in every Mach-O image at that image's own header, like `__ehdr_start` on ELF, so it
+/// is the executable's header in an executable and the image `SymbolIndex::thisObject` finds in both.
+/// Declared exactly as the SDK's <os/trace_base.h> declares it, in case a header brings that in.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+extern "C" struct mach_header __dso_handle; // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp)
+#pragma clang diagnostic pop
+
 namespace
 {
 /// The same range as the main executable's `SymbolIndex::Object`: the file-backed segments, so that
 /// offsets are relative to the Mach-O header, which `__TEXT` maps from file offset 0.
 MainObjectBounds getMainObjectBounds()
 {
-    const auto header = reinterpret_cast<uintptr_t>(&_mh_execute_header);
-    const auto * command = reinterpret_cast<const uint8_t *>(&_mh_execute_header + 1);
+    const auto * image_header = reinterpret_cast<const struct mach_header_64 *>(&__dso_handle);
+    const auto header = reinterpret_cast<uintptr_t>(image_header);
+    const auto * command = reinterpret_cast<const uint8_t *>(image_header + 1);
 
     uintptr_t slide = 0;
     MainObjectBounds bounds{.bias = 0, .begin = UINTPTR_MAX, .end = 0};
-    for (uint32_t i = 0; i < _mh_execute_header.ncmds; ++i)
+    for (uint32_t i = 0; i < image_header->ncmds; ++i)
     {
         const auto * load_command = reinterpret_cast<const struct load_command *>(command);
         command += load_command->cmdsize;
