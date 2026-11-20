@@ -3564,17 +3564,6 @@ FunctionBasePtr createFunctionBaseCast(
         }))
     {
     }
-<<<<<<< ours
-#if defined(CHDB_LITE) && CHDB_LITE
-    else if (castTypeToEither<
-        DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
-        DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
-        DataTypeFloat32, DataTypeFloat64,
-        DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeDateTime64, DataTypeTime, DataTypeTime64,
-        DataTypeString>(monotonicity_result_type.get(), [&](auto & type)
-#else
-||||||| base
-=======
     else if (isBool(monotonicity_result_type) || isSimpleAggregateFunctionOfBool(*monotonicity_result_type))
     {
         /// Every nonzero value becomes 1, so the cast is not injective, and unlike the cast into `UInt8`
@@ -3587,7 +3576,14 @@ FunctionBasePtr createFunctionBaseCast(
             return result;
         };
     }
->>>>>>> theirs
+#if defined(CHDB_LITE) && CHDB_LITE
+    else if (castTypeToEither<
+        DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
+        DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+        DataTypeFloat32, DataTypeFloat64,
+        DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeDateTime64, DataTypeTime, DataTypeTime64,
+        DataTypeString>(monotonicity_result_type.get(), [&](auto & type)
+#else
     else if (castTypeToEither<
         DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64, DataTypeUInt128, DataTypeUInt256,
         DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64, DataTypeInt128, DataTypeInt256,

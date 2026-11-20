@@ -87,8 +87,6 @@ public:
 
 }
 
-}
-
 REGISTER_FUNCTION(DateTimeToUUIDv7)
 {
     /// dateTimeToUUIDv7 documentation

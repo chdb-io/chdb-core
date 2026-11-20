@@ -816,13 +816,8 @@ buildField(
             }
             case TypeIndex::Variant:
             {
-<<<<<<< ours
-                if (settings.arrow.output_variant_as_string)
-||||||| base
-=======
                 /// `RecordBatchEncoder::encodeVariantAsJSONText` writes the JSON text of each value, and NULL as an Arrow null.
                 if (settings.arrow.output_variant_as_json_string)
->>>>>>> theirs
                 {
                     nullable = true;
                     type_type = flatbuf::Type_Utf8;
@@ -894,22 +889,11 @@ buildField(
         }
     }
 
-<<<<<<< ours
-||||||| base
-    /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata.
-=======
     /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata,
     /// unless `output_format_arrow_uuid_as_fixed_byte_array` asks for the plain storage type.
->>>>>>> theirs
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::KeyValue>>> custom_metadata_off = 0;
-<<<<<<< ours
     VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
-    if (!settings.arrow.output_uuid_as_fixed_byte_array && isUUID(t))
-||||||| base
-    if (isUUID(t))
-=======
     if (isUUID(t) && !settings.arrow.output_uuid_as_fixed_byte_array)
->>>>>>> theirs
     {
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.uuid")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));

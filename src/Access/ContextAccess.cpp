@@ -922,14 +922,7 @@ bool ContextAccess::checkAccessImplHelper(QueryPrivilegesInfo & privileges_info,
         const AccessFlags write_dcl_access = AccessType::ACCESS_MANAGEMENT - AccessType::SHOW_ACCESS;
 
         const AccessFlags not_readonly_flags = write_table_access | table_and_dictionary_and_function_ddl | workload_ddl | resource_ddl | named_collection_ddl | handler_ddl | write_dcl_access | AccessType::SYSTEM | AccessType::KILL_QUERY;
-<<<<<<< ours
-        const AccessFlags not_readonly_1_flags = AccessType::CREATE_TEMPORARY_TABLE;
-||||||| base
-        const AccessFlags not_readonly_flags = write_table_access | table_and_dictionary_and_function_ddl | workload_ddl | resource_ddl | handler_ddl | write_dcl_access | AccessType::SYSTEM | AccessType::KILL_QUERY;
-        const AccessFlags not_readonly_1_flags = AccessType::CREATE_TEMPORARY_TABLE;
-=======
         const AccessFlags not_readonly_1_flags = AccessType::CREATE_TEMPORARY_TABLE | AccessType::CREATE_TEMPORARY_VIEW;
->>>>>>> theirs
 
         const AccessFlags ddl_flags = table_ddl | dictionary_ddl | function_ddl | workload_ddl | resource_ddl | named_collection_ddl | handler_ddl;
         const AccessFlags introspection_flags = AccessType::INTROSPECTION;

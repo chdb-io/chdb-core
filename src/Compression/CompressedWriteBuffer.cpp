@@ -64,13 +64,7 @@ void CompressedWriteBuffer::nextImpl()
     UInt32 compressed_size = 0;
     {
         ProfileEventTimeIncrement<Time::Microseconds> watch(ProfileEvents::CompressedWriteBufferCompressMicroseconds);
-<<<<<<< ours
-        compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
-||||||| base
-    UInt32 compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr);
-=======
         compressed_size = codec->compress(working_buffer.begin(), decompressed_size, compressed_ptr, codec_state.get());
->>>>>>> theirs
 
         /// The block is stored as is if compression saves less than 1/8 of its size.
         if (uncompressed_codec && static_cast<UInt64>(compressed_size) * 8 > static_cast<UInt64>(decompressed_size) * 7)

@@ -834,15 +834,6 @@ public:
         gatherFromRows(rows, field_offset, field_size, begin, count, /*null_map=*/ nullptr);
     }
 
-<<<<<<< ours
-    /// Whether the column's storage aliases externally-owned memory (e.g.
-    /// Python buffers mounted zero-copy by chdb). Such columns are read-only;
-    /// IColumn::mutate materializes them into owned storage before handing
-    /// out a mutable reference.
-    virtual bool hasBorrowedStorage() const { return false; }
-    virtual void materializeBorrowedStorage() {}
-||||||| base
-=======
     /// Writes rows `[start, start + count)` into the row at `field_offset` of consecutive rows of `row_length` bytes.
     /// With `null_map`, the field starts with the null byte.
     virtual void gatherRangeIntoRows(char * rows, size_t row_length, size_t field_offset, size_t start, size_t count, char *& overflow_cursor, const UInt8 * null_map) const;
@@ -852,7 +843,13 @@ public:
     virtual void gatherSelectedIntoRows(std::span<const UInt32> source_rows, std::span<char * const> destination_rows, size_t field_offset, const UInt8 * null_map) const;
 
     virtual size_t rowStoreOverflowBytes(size_t /*start*/, size_t /*count*/) const { return 0; }
->>>>>>> theirs
+
+    /// Whether the column's storage aliases externally-owned memory (e.g.
+    /// Python buffers mounted zero-copy by chdb). Such columns are read-only;
+    /// IColumn::mutate materializes them into owned storage before handing
+    /// out a mutable reference.
+    virtual bool hasBorrowedStorage() const { return false; }
+    virtual void materializeBorrowedStorage() {}
 
     /// Some columns may require finalization before using of other operations.
     virtual void finalize() {}

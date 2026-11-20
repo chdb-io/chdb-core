@@ -208,7 +208,7 @@ std::shared_ptr<arrow::Table> argumentsToTable(
     chunk_columns.reserve(arguments.size());
     for (const auto & argument : arguments)
         chunk_columns.push_back(argument.column);
-    std::vector<DB::Chunk> chunks;
+    DB::Chunks chunks;
     chunks.emplace_back(std::move(chunk_columns), rows);
 
     DB::CHColumnToArrowColumn converter(arguments, ARROW_FORMAT_NAME, settings);

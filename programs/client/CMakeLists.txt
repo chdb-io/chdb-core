@@ -18,19 +18,9 @@ if (ENABLE_BUZZHOUSE)
     list(APPEND CLICKHOUSE_CLIENT_LINK PRIVATE clickhouse_buzzhouse_proto)
 endif()
 
-<<<<<<< ours
-if (TARGET ch_rust::skim)
-    list(APPEND CLICKHOUSE_CLIENT_LINK PRIVATE ch_rust::skim)
-endif()
 if (TARGET ch_rust::chdig)
     list(APPEND CLICKHOUSE_CLIENT_LINK PRIVATE ch_rust::chdig)
 endif()
-||||||| base
-if (TARGET ch_rust::skim)
-    list(APPEND CLICKHOUSE_CLIENT_LINK PRIVATE ch_rust::skim)
-endif()
-=======
->>>>>>> theirs
 
 # Always use internal readpassphrase
 list(APPEND CLICKHOUSE_CLIENT_LINK PRIVATE readpassphrase)

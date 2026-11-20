@@ -1,11 +1,7 @@
 #include <AggregateFunctions/AggregateFunctionNothing.h>
 #include <AggregateFunctions/AggregateFunctionFactory.h>
-<<<<<<< ours
 #include <AggregateFunctions/PythonUDAFFactory.h>
-||||||| base
-=======
 #include <AggregateFunctions/AggregateFunctionVariantAdapter.h>
->>>>>>> theirs
 #include <AggregateFunctions/Combinators/AggregateFunctionCombinatorFactory.h>
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeArray.h>

@@ -5,12 +5,8 @@
 #include <Processors/QueryPlan/ExpressionStep.h>
 #include <Processors/QueryPlan/FilterStep.h>
 #include <Processors/QueryPlan/LimitStep.h>
-<<<<<<< ours
-#include <Processors/QueryPlan/SortingStep.h>
-||||||| base
-=======
 #include <Processors/QueryPlan/ReadFromMergeTree.h>
->>>>>>> theirs
+#include <Processors/QueryPlan/SortingStep.h>
 #include <Processors/QueryPlan/SourceStepWithFilter.h>
 #include <Processors/QueryPlan/ObjectFilterStep.h>
 

@@ -854,11 +854,11 @@ int collectSymbols(DynamicLinkingProgramHeaderInfo * info, size_t, void * contex
     const size_t initial_symbol_count = data.symbols.size();
     const size_t initial_object_count = data.objects.size();
 
-<<<<<<< ours
-    /// Must not escape: unwinding glibc's dl_iterate_phdr frame runs its cleanup through
-    /// libgcc __gcc_personality_v0, which segfaults on a bundled LLVM libunwind context,
-    /// leaving dl_load_write_lock held. Elf() mmaps a whole object, throwing when address
-    /// space runs short. Symbol index is best-effort.
+    /// An exception must not unwind through the frames of `dl_iterate_phdr`: it is C code, and it holds
+    /// the loader lock while it calls us. Stop the iteration, and rethrow after `dl_iterate_phdr` returns.
+    /// chdb: except that the symbol index is best-effort here: an object whose symbols cannot be read
+    /// (Elf() mmaps a whole object, throwing when address space runs short) is skipped and the iteration
+    /// continues, so the exception neither escapes nor fails the whole index.
     try
     {
         collectSymbolsFromProgramHeaders(info, data);
@@ -871,39 +871,10 @@ int collectSymbols(DynamicLinkingProgramHeaderInfo * info, size_t, void * contex
         }
     }
     catch (...)
-||||||| base
-    collectSymbolsFromProgramHeaders(info, data);
-    if (!collectSymbolsFromELF(info, data))
-=======
-    /// An exception must not unwind through the frames of `dl_iterate_phdr`: it is C code, and it holds
-    /// the loader lock while it calls us. Stop the iteration, and rethrow after `dl_iterate_phdr` returns.
-    try
->>>>>>> theirs
     {
-<<<<<<< ours
         /// chdb: Whether this object is the main executable is unknown here, and offsets of another
         /// object would overlap those of the main executable, so publish none of its symbols.
         data.symbols.resize(initial_symbol_count);
-||||||| base
-        /// Offsets of different objects overlap, and only offsets inside the main executable are published.
-        if (data.objects.size() > initial_object_count)
-            data.objects.back().symbols.assign(data.symbols.begin() + initial_symbol_count, data.symbols.end());
-        data.symbols.resize(initial_symbol_count);
-=======
-        collectSymbolsFromProgramHeaders(info, data);
-        if (!collectSymbolsFromELF(info, data))
-        {
-            /// Offsets of different objects overlap, and only offsets inside the main executable are published.
-            if (data.objects.size() > initial_object_count)
-                data.objects.back().symbols.assign(data.symbols.begin() + initial_symbol_count, data.symbols.end());
-            data.symbols.resize(initial_symbol_count);
-        }
-    }
-    catch (...)
-    {
-        context.exception = std::current_exception();
-        return 1;
->>>>>>> theirs
     }
 
     /* Continue iterations */

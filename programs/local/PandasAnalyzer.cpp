@@ -10,6 +10,7 @@
 #include <DataTypes/DataTypeString.h>
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeFactory.h>
+#include <Core/DecimalFunctions.h>
 
 #include <charconv>
 

@@ -66,18 +66,10 @@ private:
     void checkMetadataFilenameAvailabilityUnlocked(const String & table_name) const TSA_REQUIRES(mutex);
 
     const String data_path;
-<<<<<<< ours
     const UUID db_uuid;
-    using NameToASTCreate = std::unordered_map<String, ASTPtr>;
-    NameToASTCreate create_queries TSA_GUARDED_BY(mutex);
-||||||| base
-    using NameToASTCreate = std::unordered_map<String, ASTPtr>;
-    NameToASTCreate create_queries TSA_GUARDED_BY(mutex);
-=======
     /// SecretString instead of an AST, so that credentials in the create query do not rest in core-dumpable memory.
     using NameToCreateQuery = std::unordered_map<String, SecretString>;
     NameToCreateQuery create_queries TSA_GUARDED_BY(mutex);
->>>>>>> theirs
 };
 
 }

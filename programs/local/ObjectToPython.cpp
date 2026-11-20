@@ -7,6 +7,7 @@
 #include <Columns/IColumn.h>
 #include <DataTypes/DataTypeObject.h>
 #include <base/defines.h>
+#include <Common/Exception.h>
 
 namespace DB
 {

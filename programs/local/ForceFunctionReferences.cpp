@@ -103,6 +103,7 @@ namespace DB
     extern void registerFunctionArrayStringConcat(FunctionFactory & factory);
     extern void registerFunctionArrayTopK(FunctionFactory & factory);
     extern void registerFunctionArrayTranspose(FunctionFactory & factory);
+    extern void registerFunctionArrayTreePreorder(FunctionFactory & factory);
     extern void registerFunctionArrayUniq(FunctionFactory & factory);
     extern void registerFunctionArrayWithConstant(FunctionFactory & factory);
     extern void registerFunctionArrayZip(FunctionFactory & factory);
@@ -299,6 +300,7 @@ namespace DB
     extern void registerFunctionGetMacro(FunctionFactory & factory);
     extern void registerFunctionGetMergeTreeSetting(FunctionFactory & factory);
     extern void registerFunctionGetOSKernelVersion(FunctionFactory & factory);
+    extern void registerFunctionGetQueryProfileEvent(FunctionFactory & factory);
     extern void registerFunctionGetScalar(FunctionFactory & factory);
     extern void registerFunctionGetServerPort(FunctionFactory & factory);
     extern void registerFunctionGetServerSetting(FunctionFactory & factory);
@@ -1005,6 +1007,7 @@ namespace DB
             &registerFunctionArrayStringConcat,
             &registerFunctionArrayTopK,
             &registerFunctionArrayTranspose,
+            &registerFunctionArrayTreePreorder,
             &registerFunctionArrayUniq,
             &registerFunctionArrayWithConstant,
             &registerFunctionArrayZip,
@@ -1201,6 +1204,7 @@ namespace DB
             &registerFunctionGetMacro,
             &registerFunctionGetMergeTreeSetting,
             &registerFunctionGetOSKernelVersion,
+            &registerFunctionGetQueryProfileEvent,
             &registerFunctionGetScalar,
             &registerFunctionGetServerPort,
             &registerFunctionGetServerSetting,

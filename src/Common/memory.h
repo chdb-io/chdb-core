@@ -40,42 +40,16 @@ inline ALWAYS_INLINE size_t alignUp(size_t size, size_t align) noexcept
     return (size + align - 1) / align * align;
 }
 
-<<<<<<< ours
-
 #if USE_JEMALLOC
+/// `flags` argument of the jemalloc `*allocx` functions for an optional `operator new` alignment.
 template <std::same_as<std::align_val_t>... TAlign>
 requires DB::OptionalArgument<TAlign...>
-inline ALWAYS_INLINE void * newImpl(std::size_t size, TAlign... align)
+inline ALWAYS_INLINE int jemallocFlags(TAlign... align [[maybe_unused]]) noexcept
 {
-    void * ptr = nullptr;
     if constexpr (sizeof...(TAlign) == 1)
-        ptr = je_aligned_alloc(alignToSizeT(align...), size);
+        return MALLOCX_ALIGN(alignToSizeT(align...));
     else
-        ptr = je_malloc(size);
-
-    if (likely(ptr != nullptr))
-        return ptr;
-
-    /// @note no std::get_new_handler logic implemented
-    throw std::bad_alloc{};
-}
-
-#else
-template <std::same_as<std::align_val_t>... TAlign>
-requires DB::OptionalArgument<TAlign...>
-inline ALWAYS_INLINE void * newImpl(std::size_t size, TAlign... align)
-{
-    void * ptr = nullptr;
-    if constexpr (sizeof...(TAlign) == 1)
-        ptr = __real_aligned_alloc(alignToSizeT(align...), alignUp(size, alignToSizeT(align...)));
-    else
-        ptr = __real_malloc(size);
-
-    if (likely(ptr != nullptr))
-        return ptr;
-
-    /// @note no std::get_new_handler logic implemented
-    throw std::bad_alloc{};
+        return 0;
 }
 #endif
 
@@ -96,21 +70,6 @@ inline ALWAYS_INLINE void deleteImpl(void * ptr) noexcept
 }
 
 #else
-||||||| base
-=======
-#if USE_JEMALLOC
-/// `flags` argument of the jemalloc `*allocx` functions for an optional `operator new` alignment.
-template <std::same_as<std::align_val_t>... TAlign>
-requires DB::OptionalArgument<TAlign...>
-inline ALWAYS_INLINE int jemallocFlags(TAlign... align [[maybe_unused]]) noexcept
-{
-    if constexpr (sizeof...(TAlign) == 1)
-        return MALLOCX_ALIGN(alignToSizeT(align...));
-    else
-        return 0;
-}
-#endif
->>>>>>> theirs
 
 inline ALWAYS_INLINE void * newNoExcept(std::size_t size) noexcept
 {
@@ -119,19 +78,12 @@ inline ALWAYS_INLINE void * newNoExcept(std::size_t size) noexcept
 
 inline ALWAYS_INLINE void * newNoExcept(std::size_t size, std::align_val_t align) noexcept
 {
-#if USE_JEMALLOC
-    /// Allocate with the same size and flags that `getActualAllocationSize` (`je_nallocx`) and `deleteSized`
-    /// (`je_sdallocx`) use, so that the charged, credited and freed size classes are the same.
-    /// Rounding `size` up to the alignment would give a larger size class for alignments above the page size.
-    return je_mallocx(size ? size : 1, jemallocFlags(align));
-#else
     size_t alignment = static_cast<size_t>(align);
     /// POSIX `aligned_alloc` requires alignment >= `sizeof(void *)` (strictly enforced on macOS).
     /// Mirror libc++'s `operator_new_aligned_impl` in `contrib/llvm-project/libcxx/src/new.cpp`.
     if (alignment < sizeof(void *))
         alignment = sizeof(void *);
     return __real_aligned_alloc(alignment, alignUp(size, alignment));
-#endif
 }
 
 inline ALWAYS_INLINE void deleteImpl(void * ptr) noexcept
@@ -149,21 +101,8 @@ inline ALWAYS_INLINE void deleteSized(void * ptr, std::size_t size, TAlign... al
 {
     if (ptr == nullptr) [[unlikely]]
         return;
-<<<<<<< ours
-    if constexpr (sizeof...(TAlign) == 1)
-        je_sdallocx(ptr, size, MALLOCX_ALIGN(alignToSizeT(align...)));
-    else
-        je_sdallocx(ptr, size, 0);
-||||||| base
-
-    if constexpr (sizeof...(TAlign) == 1)
-        je_sdallocx(ptr, size, MALLOCX_ALIGN(alignToSizeT(align...)));
-    else
-        je_sdallocx(ptr, size, 0);
-=======
 
     je_sdallocx(ptr, size, jemallocFlags(align...));
->>>>>>> theirs
 }
 
 #else

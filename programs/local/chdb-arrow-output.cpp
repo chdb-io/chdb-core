@@ -250,7 +250,10 @@ chdb_result * runMaterializedArrowQuery(
     /// Chunks pass through untouched — no DateTime widening, no
     /// per-chunk castColumn allocation. Engine column types map 1:1
     /// onto the CHColumnToArrowColumn kernel just like format="ArrowStream".
-    std::vector<Chunk> chunks_for_export = std::move(chunk_result->chunks);
+    /// CHColumnToArrowColumn takes memory-tracked `Chunks`; the collected result is a std::vector.
+    Chunks chunks_for_export(
+        std::make_move_iterator(chunk_result->chunks.begin()), std::make_move_iterator(chunk_result->chunks.end()));
+    chunk_result->chunks.clear();
 
     std::shared_ptr<arrow::Table> table;
     try
@@ -640,7 +643,10 @@ chdb_state chdb_stream_fetch_arrow(
         const auto & src_header = chunk_iter->header->getColumnsWithTypeAndName();
         ensureConverterInitialized(*state, src_header, &chunk_iter->chunks.front());
 
-        std::vector<Chunk> batch_chunks = std::move(chunk_iter->chunks);
+        /// CHColumnToArrowColumn takes memory-tracked `Chunks`; the collected batch is a std::vector.
+        Chunks batch_chunks(
+            std::make_move_iterator(chunk_iter->chunks.begin()), std::make_move_iterator(chunk_iter->chunks.end()));
+        chunk_iter->chunks.clear();
 
         std::shared_ptr<arrow::Table> table;
         state->converter->chChunkToArrowTable(table, batch_chunks, state->header_columns.size());

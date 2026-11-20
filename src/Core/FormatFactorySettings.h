@@ -1717,27 +1717,20 @@ must be shared across batches.
 Write Date values as plain 16-bit numbers (read back as UInt16), instead of converting to a 32-bit Arrow DATE32 type (read back as Date32).
 )", 0, \
         {"26.2", true, false, "Write Date as Arrow DATE32 instead of plain UInt16 by default."}) \
-<<<<<<< ours
-    DECLARE(Bool, output_format_arrow_uuid_as_fixed_byte_array, false, R"(
-Write UUID values as plain FixedSizeBinary(16), without Arrow UUID extension metadata.
-)", 0) \
-    DECLARE(Bool, output_format_arrow_variant_as_string, false, R"(
-Write Variant values as Arrow String containing JSON text instead of Arrow DenseUnion.
-)", 0) \
-||||||| base
-=======
     DECLARE(Bool, output_format_arrow_variant_as_json_string, false, R"(
 Write `Variant` values as a nullable Arrow `Utf8` column holding the JSON representation of each value (as in the `JSONEachRow`
 format, e.g. a `String` value is quoted), instead of an Arrow dense union. Use it for Arrow readers that do not support unions.
 A `NULL` value is written as an Arrow null, except in a `Map` key, which Arrow does not allow to be null: there it is the JSON `null`.
 )", 0, \
         {"26.11", false, false, "New setting to write Variant as a string with its JSON representation in a Utf8 column instead of an Arrow dense union."}) \
+    DECLARE(Bool, output_format_arrow_variant_as_string, false, R"(
+chDB's name for `output_format_arrow_variant_as_json_string`, from before that setting existed. Enabling either one writes `Variant` values as JSON text.
+)", 0) \
     DECLARE(Bool, output_format_arrow_uuid_as_fixed_byte_array, false, R"(
 Write `UUID` values as plain Arrow `FixedSizeBinary(16)`, without the `arrow.uuid` extension type in the field metadata.
 Use it for Arrow readers that do not support the `arrow.uuid` extension type.
 )", 0, \
         {"26.11", false, false, "New setting to write UUID as plain FixedSizeBinary(16) without the `arrow.uuid` extension type."}) \
->>>>>>> theirs
     DECLARE(ArrowUnsupportedTypes, output_format_arrow_unsupported_types, "binary", R"(
 What to write for a column whose type has no first-class Arrow mapping (for example `JSON`, `Dynamic`, `QBit` or `AggregateFunction`):
 

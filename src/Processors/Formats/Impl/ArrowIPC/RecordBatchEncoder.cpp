@@ -698,16 +698,9 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
         return;
     }
 
-<<<<<<< ours
-    if (settings.arrow.output_variant_as_string && isVariant(removeNullable(type)))
-    {
-        encodeVariantAsJSONText(column, type, begin, end);
-||||||| base
-=======
     if (isVariant(type) && settings.arrow.output_variant_as_json_string)
     {
         encodeVariantAsJSONText(column, type, begin, end, /*nullable=*/ true);
->>>>>>> theirs
         return;
     }
 
@@ -741,38 +734,6 @@ void RecordBatchEncoder::encodeField(const IColumn & column, const DataTypePtr &
     encodeValues(*nested, nested_type, begin, end, null_map_column);
 }
 
-<<<<<<< ours
-void RecordBatchEncoder::encodeVariantAsJSONText(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end)
-{
-    const IColumn * nested = &column;
-    DataTypePtr nested_type = type;
-    const NullMap * outer_null_map = nullptr;
-    if (type->isNullable())
-    {
-        const auto & nullable = assert_cast<const ColumnNullable &>(column);
-        outer_null_map = &nullable.getNullMapData();
-        nested = &nullable.getNestedColumn();
-        nested_type = removeNullable(type);
-    }
-
-    const auto & variant = assert_cast<const ColumnVariant &>(*nested);
-    const size_t num_rows = end - begin;
-    /// One flag per row of the range: `null_map[i]` is row `begin + i`.
-    PaddedPODArray<UInt8> null_map(num_rows);
-    bool has_nulls = false;
-    for (size_t i = 0; i < num_rows; ++i)
-    {
-        const size_t row = begin + i;
-        const UInt8 is_null = static_cast<UInt8>((outer_null_map && (*outer_null_map)[row]) || variant.isNullAt(row));
-        null_map[i] = is_null;
-        has_nulls |= is_null != 0;
-    }
-
-    const UInt8 * null_map_ptr = has_nulls ? null_map.data() : nullptr;
-    nodes.emplace_back(static_cast<Int64>(num_rows), appendValidityMap(null_map_ptr, num_rows));
-    encodeAsJSONText(variant, nested_type, begin, end, null_map_ptr);
-||||||| base
-=======
 void RecordBatchEncoder::encodeVariantAsJSONText(
     const IColumn & column, const DataTypePtr & type, size_t begin, size_t end, bool nullable)
 {
@@ -819,7 +780,6 @@ void RecordBatchEncoder::encodeVariantAsJSONText(
     }
     appendBuffer(arrow_offsets.data(), (num_rows + 1) * sizeof(Int32));
     appendBuffer(data.data(), data.size());
->>>>>>> theirs
 }
 
 void RecordBatchEncoder::encodeVariant(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end)

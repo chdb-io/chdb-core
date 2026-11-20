@@ -863,17 +863,12 @@ void SystemLogs::shutdown()
     auto logs = getAllLogs();
     for (auto & log : logs)
     {
-<<<<<<< ours
         /// Two callers. The constructor's catch below, where a throw from here would replace the
         /// real startup error with a misleading teardown one; and
         /// ContextSharedPart::shutdown() -> DatabaseCatalog::shutdown(callback) -> flushAndShutdown(),
         /// where an escaping exception aborts DatabaseCatalog::shutdownImpl before it resets the
         /// singleton, after which every later context in the process fails with "Database catalog
         /// is initialized twice". Never let one log's shutdown take the rest down with it.
-||||||| base
-        log->shutdown();
-=======
->>>>>>> theirs
         try
         {
             log->shutdown();

@@ -188,7 +188,7 @@ if (CHDB_LITE)
 
     # Opt-in: features chdb-core-lite needs to keep working
     set(_chdb_lite_libs_on
-        ENABLE_PARQUET ENABLE_THRIFT ENABLE_RAPIDJSON
+        ENABLE_PARQUET ENABLE_ARROW_LIBRARY ENABLE_THRIFT ENABLE_RAPIDJSON
         ENABLE_PROTOBUF ENABLE_BROTLI
         ENABLE_AWS_S3 ENABLE_CURL
         ENABLE_SIMDJSON
@@ -871,7 +871,6 @@ include (cmake/bundled_runtime_visibility.cmake)
 # compile without -fPIE. That only breaks with compilers that do not default to PIE
 # (clang with CLANG_DEFAULT_PIE_ON_LINUX=OFF, as configured by some distributions), because then the
 # non-relocatable objects of those libraries cannot be linked into the PIE executable.
-<<<<<<< ours
 # chdb_spec
 # chdb builds a shared library, so every object needs -fPIC (not upstream's -fPIE) and the
 # position-independent executable logic below does not apply. Upstream's current block is kept
@@ -884,9 +883,12 @@ set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 #     # -fPIE only makes the code relocatable; whether the executable itself is position independent is
 #     # the compiler driver's default unless the linker is asked explicitly, so ask it.
 #     # musl links with -static-pie instead (see cmake/linux/default_libs.cmake).
-#     # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
+#     # The FreeBSD sysroot carries no PIC startup objects (Scrt1.o).
+#     # Mach-O needs no startup objects for it, so only the linker is asked.
 #     if (OS_LINUX AND NOT USE_MUSL)
 #         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
+#     elseif (OS_DARWIN)
+#         set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-pie")
 #     endif()
 # endif()
 #
@@ -896,46 +898,6 @@ set (CMAKE_POSITION_INDEPENDENT_CODE ON)
 #     set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
 # endif()
 # chdb_spec
-||||||| base
-if (ARCH_AMD64 OR ARCH_AARCH64)
-    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
-
-    # -fPIE only makes the code relocatable; whether the executable itself is position independent is
-    # the compiler driver's default unless the linker is asked explicitly, so ask it.
-    # musl links with -static-pie instead (see cmake/linux/default_libs.cmake).
-    # The FreeBSD and Darwin sysroots carry no PIC startup objects (Scrt1.o).
-    if (OS_LINUX AND NOT USE_MUSL)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
-    endif()
-endif()
-
-if (ENABLE_POSITION_INDEPENDENT_BINARY)
-    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
-endif()
-=======
-if (ARCH_AMD64 OR ARCH_AARCH64)
-    set(ENABLE_POSITION_INDEPENDENT_BINARY 1)
-
-    # -fPIE only makes the code relocatable; whether the executable itself is position independent is
-    # the compiler driver's default unless the linker is asked explicitly, so ask it.
-    # musl links with -static-pie instead (see cmake/linux/default_libs.cmake).
-    # The FreeBSD sysroot carries no PIC startup objects (Scrt1.o).
-    # Mach-O needs no startup objects for it, so only the linker is asked.
-    if (OS_LINUX AND NOT USE_MUSL)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-pie")
-    elseif (OS_DARWIN)
-        set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-pie")
-    endif()
-endif()
-
-if (ENABLE_POSITION_INDEPENDENT_BINARY)
-    set (CMAKE_POSITION_INDEPENDENT_CODE OFF)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIE")
-    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIE")
-endif()
->>>>>>> theirs
 
 add_library(global-group INTERFACE)
 if (OS_LINUX OR OS_ANDROID)

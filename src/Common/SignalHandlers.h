@@ -1,11 +1,7 @@
 #pragma once
 #include <csignal>
-<<<<<<< ours
-#include <mutex>
-||||||| base
-=======
 #include <exception>
->>>>>>> theirs
+#include <mutex>
 
 #include <base/defines.h>
 #include <Common/Logger_fwd.h>

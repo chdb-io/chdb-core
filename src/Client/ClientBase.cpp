@@ -1069,7 +1069,8 @@ try
 {
     if (!output_format)
     {
-<<<<<<< ours
+        output_buffer_canceled = false;
+
         result_header = std::make_shared<const Block>(block.cloneEmpty());
 
         if (Poco::toLower(default_output_format) == CHUNK_COLLECT_FORMAT_NAME)
@@ -1086,10 +1087,6 @@ try
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "DataFrame output format creator not set");
             }
         }
-||||||| base
-=======
-        output_buffer_canceled = false;
->>>>>>> theirs
 
         /// Ignore all results when fuzzing as they can be huge.
         if (query_fuzzer_runs)
@@ -1116,7 +1113,6 @@ try
         }
         else
         {
-<<<<<<< ours
             /// out_buf = std_out.get();
             /// The underlying vector<char> will be freed by `free_result` from Python side.
             /// When the input query contains multiple statements, such as "SELECT 1; SELECT 2". When executing "SELECT 2",
@@ -1127,34 +1123,6 @@ try
                 query_result_buf = std::make_shared<WriteBufferFromVectorMTB<std::vector<char>>>(*query_result_memory, AppendModeTag{});
             }
             else
-||||||| base
-            underlying_buf = std_out.get();
-        }
-
-        /// The data written to stdout can mix with the progress only if it is displayed on the terminal,
-        /// either directly or through a pager. Otherwise (e.g., stdout is redirected to a pipe or a file),
-        /// clearing the progress on every flush only makes it flicker.
-        const bool output_goes_to_terminal = stdout_is_a_tty || !pager.empty();
-
-        /// Use the flush callback wrapper to prevent progress flickering
-        std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
-            underlying_buf,
-            [this, output_goes_to_terminal]()
-=======
-            underlying_buf = std_out.get();
-        }
-
-        /// The data written to stdout can mix with the progress only if it is displayed on the terminal,
-        /// either directly or through a pager. Otherwise (e.g., stdout is redirected to a pipe or a file),
-        /// clearing the progress on every flush only makes it flicker.
-        const bool output_goes_to_terminal = stdout_is_a_tty || !pager.empty();
-
-        /// Use the flush callback wrapper to prevent progress flickering
-        std_out_wrapper = std::make_unique<CancellationReportingWriteBuffer<FlushCallbackWriteBuffer>>(
-            output_buffer_canceled,
-            underlying_buf,
-            [this, output_goes_to_terminal]()
->>>>>>> theirs
             {
                 {
                     MemoryTrackerBlockerInThread blocker;
@@ -1180,7 +1148,8 @@ try
             const bool output_goes_to_terminal = stdout_is_a_tty || !pager.empty();
 
             /// Use the flush callback wrapper to prevent progress flickering
-            std_out_wrapper = std::make_unique<FlushCallbackWriteBuffer>(
+            std_out_wrapper = std::make_unique<CancellationReportingWriteBuffer<FlushCallbackWriteBuffer>>(
+                output_buffer_canceled,
                 underlying_buf,
                 [this, output_goes_to_terminal]()
                 {

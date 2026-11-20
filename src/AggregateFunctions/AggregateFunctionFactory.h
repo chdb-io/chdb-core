@@ -99,7 +99,6 @@ public:
 
     [[nodiscard]] bool isAggregateFunctionName(const String & name) const;
 
-<<<<<<< ours
     /// Hides IFactoryWithAliases::hasNameOrAlias (which is not virtual, and which every
     /// caller reaches through this concrete factory) so that the "is this name already
     /// taken by an aggregate function?" guards spread around the codebase - SQL UDFs,
@@ -107,14 +106,9 @@ public:
     /// registration - also see Python UDAFs. Those live in a separate runtime registry, so
     /// the base implementation, which only looks at `aggregate_functions`, misses them.
     /// Exact names only, matching the base semantics (`sumIf` is not a registered name).
-    bool hasNameOrAlias(const String & name) const;
+    [[nodiscard]] bool hasNameOrAlias(const String & name) const;
 
-    FunctionDocumentation getDocumentation(const String & name) const;
-||||||| base
-    FunctionDocumentation getDocumentation(const String & name) const;
-=======
     [[nodiscard]] FunctionDocumentation getDocumentation(const String & name) const;
->>>>>>> theirs
 
 private:
     /// The argument types after the conversion of the `Variant` arguments that the function, or the outermost combinator,
