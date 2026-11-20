@@ -813,8 +813,8 @@ ColumnsDescription StoragePython::getTableStructureFromData(std::vector<std::pai
     RE2 pattern_time64_us(R"(\btime64\[us\]\b|datetime64\[us\]|<M8\[us\])");
     RE2 pattern_time64_ns(R"(\btime64\[ns\]\b|datetime64\[ns\]|<M8\[ns\])");
     RE2 pattern_string_binary(
-        R"(\bstring\b|<class 'str'>|str|DataType\(string\)|DataType\(binary\)|binary\[pyarrow\]|dtype\[object_\]|
-dtype\('[<>|]?[SUO]|<class 'bytes'>|<class 'bytearray'>|<class 'memoryview'>|<class 'numpy.bytes_'>|<class 'numpy.str_'>|<class 'numpy.void)");
+        R"(\bstring\b|<class 'str'>|str|DataType\(string\)|DataType\(binary\)|binary\[pyarrow\]|dtype\[object_\]|)"
+        R"(dtype\('[<>|]?[SUO]|<class 'bytes'>|<class 'bytearray'>|<class 'memoryview'>|<class 'numpy.bytes_'>|<class 'numpy.str_'>|<class 'numpy.void)");
     RE2 pattern_null(R"(\bnull\b)");
     RE2 pattern_json(R"((?i)(\bjson\b|struct<))");
 
