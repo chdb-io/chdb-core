@@ -24,14 +24,22 @@ namespace
 {
 
 std::mutex restricted_user_mutex;
-std::optional<UUID> restricted_user_id;
+std::optional<RestrictedLocalFilesystemUser> restricted_user;
 
 }
 
-void setRestrictedLocalFilesystemUserID(std::optional<UUID> user_id)
+void setRestrictedLocalFilesystemUser(std::optional<RestrictedLocalFilesystemUser> user)
 {
     std::lock_guard lock(restricted_user_mutex);
-    restricted_user_id = user_id;
+    restricted_user = std::move(user);
+}
+
+std::optional<RestrictedLocalFilesystemUser> tryGetRestrictedLocalFilesystemUser(const UUID & user_id)
+{
+    std::lock_guard lock(restricted_user_mutex);
+    if (restricted_user && restricted_user->id == user_id)
+        return restricted_user;
+    return std::nullopt;
 }
 
 bool isLocalFilesystemAccessRestricted(const ContextPtr & context)
@@ -42,7 +50,7 @@ bool isLocalFilesystemAccessRestricted(const ContextPtr & context)
     if (!user_id)
         return false;
     std::lock_guard lock(restricted_user_mutex);
-    return restricted_user_id == user_id;
+    return restricted_user && restricted_user->id == *user_id;
 }
 
 void checkLocalFilesystemAccess(const ContextPtr & context, std::string_view operation)

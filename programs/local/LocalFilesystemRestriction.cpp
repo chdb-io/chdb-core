@@ -5,9 +5,7 @@
 #include <Access/AccessControl.h>
 #include <Access/LocalFilesystemAccess.h>
 #include <Access/MemoryAccessStorage.h>
-#include <Access/Quota.h>
 #include <Access/Role.h>
-#include <Access/RowPolicy.h>
 #include <Access/User.h>
 #include <Access/UsersConfigParser.h>
 #include <Common/Exception.h>
@@ -26,7 +24,6 @@
 #include <algorithm>
 #include <mutex>
 #include <set>
-#include <type_traits>
 #include <vector>
 
 namespace DB::ErrorCodes
@@ -62,6 +59,8 @@ constexpr const char * REVOKED_GRANTS[] = {
     "REVOKE SYSTEM RELOAD CONFIG, SYSTEM RELOAD USERS, SYSTEM RELOAD FUNCTION, SYSTEM JEMALLOC ON *.*",
     /// SYSTEM SHUTDOWN and SYSTEM KILL signal the whole process group of the host.
     "REVOKE SYSTEM SHUTDOWN ON *.*",
+    /// A `default` with access management could otherwise run EXECUTE AS default, change users or grant roles.
+    "REVOKE ACCESS MANAGEMENT ON *.*",
 };
 
 /// Sources revoked above. CREATE TABLE and RESTORE check an engine through the TABLE ENGINE grant, which ALL
@@ -107,7 +106,8 @@ void revokeGrants(User & user)
 }
 
 /// Grants of roles count towards a user's access and cannot be revoked from the user, so the restricted user gets
-/// the grants and settings of the roles of `default`, transitively, and holds no role itself. Returns those roles.
+/// the grants and settings of the roles of `default`, transitively, and holds no role itself. Returns those roles,
+/// whose row policies and quotas apply to it along with those of `default` (see RestrictedLocalFilesystemUser).
 boost::container::flat_set<UUID> mergeRoles(User & user, const AccessControl & access_control)
 {
     boost::container::flat_set<UUID> roles;
@@ -130,32 +130,6 @@ boost::container::flat_set<UUID> mergeRoles(User & user, const AccessControl & a
     return roles;
 }
 
-/// Row policies and quotas name the users and roles they apply to, so the ones of `default` and its roles are copied
-/// for the restricted user, which must not see more rows or use more resources than `default`.
-template <typename Entity>
-void copyToRestrictedUser(
-    const AccessControl & access_control,
-    IAccessStorage & storage,
-    AccessEntityType type,
-    const UUID & default_id,
-    const boost::container::flat_set<UUID> & default_roles,
-    const UUID & restricted_id)
-{
-    for (const auto & id : access_control.findAll<Entity>())
-    {
-        auto entity = access_control.tryRead<Entity>(id);
-        if (!entity || !entity->to_roles.match(default_id, default_roles) || entity->to_roles.match(restricted_id))
-            continue;
-        auto copy = typeid_cast<std::shared_ptr<Entity>>(entity->clone());
-        if constexpr (std::is_same_v<Entity, RowPolicy>)
-            copy->setShortName(copy->getShortName() + "_" + String(RESTRICTED_LOCAL_FILESYSTEM_USER));
-        else
-            copy->setName(copy->getName() + "_" + String(RESTRICTED_LOCAL_FILESYSTEM_USER));
-        copy->to_roles = RolesOrUsersSet{restricted_id};
-        storage.insert(UsersConfigParser::generateID(type, copy->getName()), copy, /*replace_if_exists=*/true, /*throw_if_exists=*/false);
-    }
-}
-
 std::mutex restricted_user_mutex;
 std::optional<UUID> restricted_user_id;
 
@@ -165,7 +139,7 @@ void addRestrictedLocalFilesystemUser(AccessControl & access_control)
 {
     std::lock_guard lock(restricted_user_mutex);
     restricted_user_id.reset();
-    setRestrictedLocalFilesystemUserID(std::nullopt);
+    setRestrictedLocalFilesystemUser(std::nullopt);
 
     auto log = getLogger("LocalFilesystemRestriction");
     try
@@ -199,14 +173,15 @@ void addRestrictedLocalFilesystemUser(AccessControl & access_control)
         revokeGrants(*user);
 
         const UUID id = UsersConfigParser::generateID(AccessEntityType::USER, user_name);
-        copyToRestrictedUser<RowPolicy>(access_control, *storage, AccessEntityType::ROW_POLICY, *default_id, default_roles, id);
-        copyToRestrictedUser<Quota>(access_control, *storage, AccessEntityType::QUOTA, *default_id, default_roles, id);
+        /// Registered before the user exists, so no context of it ever resolves row policies or quotas as itself.
+        setRestrictedLocalFilesystemUser(RestrictedLocalFilesystemUser{
+            .id = id, .policy_user_id = *default_id, .policy_user_name = default_user->getName(), .policy_roles = default_roles});
         storage->insert(id, user, /*replace_if_exists=*/true, /*throw_if_exists=*/false);
         restricted_user_id = id;
-        setRestrictedLocalFilesystemUserID(id);
     }
     catch (...)
     {
+        setRestrictedLocalFilesystemUser(std::nullopt);
         tryLogCurrentException(log, "Cannot create the user for connections that restrict local filesystem access");
     }
 }

@@ -641,7 +641,7 @@ def _child_roles(lib_path, root, secret_file):
             "<roles><file_reader><grants><query>GRANT READ, WRITE ON FILE</query></grants></file_reader></roles>"
             "<users><default><password></password><networks><ip>::/0</ip></networks>"
             "<profile>default</profile><quota>default</quota>"
-            "<grants><query>GRANT SELECT, INSERT, CREATE, DROP, SHOW, TABLE ENGINE, SYSTEM ON *.*</query>"
+            "<grants><query>GRANT SELECT, INSERT, CREATE, DROP, SHOW, TABLE ENGINE, SYSTEM, ACCESS MANAGEMENT ON *.*</query>"
             "<query>GRANT file_reader</query></grants>"
             "<databases><default><filtered><filter>x = 1</filter></filtered></default></databases>"
             "</default></users></clickhouse>"
@@ -663,6 +663,11 @@ def _child_roles(lib_path, root, secret_file):
         "restricted_rows": restricted.query("SELECT count() FROM filtered"),
         "set_role": restricted.query("SET ROLE file_reader"),
         "restricted_file_after_set_role": restricted.query(read),
+        # A policy created later for everyone but `default` must not reach the restricted user either.
+        "wide_policy": plain.query("CREATE ROW POLICY wide ON default.filtered USING 1 AS PERMISSIVE TO ALL EXCEPT default"),
+        "restricted_rows_after_wide_policy": restricted.query("SELECT count() FROM filtered"),
+        "restricted_execute_as": restricted.query(f"EXECUTE AS default {read}"),
+        "restricted_create_policy": restricted.query("CREATE ROW POLICY own ON default.filtered USING 1 TO ALL"),
         "plain_no_role": plain.query("SET ROLE NONE"),
         "plain_outfile": plain.query(f"SELECT 1 INTO OUTFILE '{os.path.join(root, 'out.csv')}' FORMAT CSV"),
     }
@@ -871,6 +876,10 @@ class TestRestrictedConnectionInternalAccess(unittest.TestCase):
             self.assertIsNone(results[step][0], results[step][0])
         self.assertEqual(results["plain_rows"], [None, "1\n"])
         self.assertEqual(results["restricted_rows"], [None, "1\n"])
+        self.assertIsNone(results["wide_policy"][0], results["wide_policy"][0])
+        self.assertEqual(results["restricted_rows_after_wide_policy"], [None, "1\n"])
+        self.assertRegex(results["restricted_execute_as"][0] or "", DENIED + "|IMPERSONATE")
+        self.assertRegex(results["restricted_create_policy"][0] or "", DENIED + "|ACCESS_MANAGEMENT")
         self.assertIsNotNone(results["set_role"][0])
         self.assertRegex(results["restricted_file_after_set_role"][0] or "", DENIED)
         # Without the role, `default` lacks the FILE grants, but is not a restricted connection: ClickHouse's own

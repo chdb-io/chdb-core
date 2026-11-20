@@ -1,7 +1,10 @@
 #pragma once
 
+#include <Core/Types.h>
 #include <Core/UUID.h>
 #include <Interpreters/Context_fwd.h>
+
+#include <boost/container/flat_set.hpp>
 
 #include <optional>
 #include <string_view>
@@ -16,8 +19,22 @@ class ASTFunctionWithKeyValueArguments;
 /// functions below cover what is not behind such a grant, such as `INTO OUTFILE` or custom disks. They apply only to
 /// that user, so other users, including ones that merely lack the grants, keep ClickHouse's behavior.
 
+/// The user of restricted connections, and the user and roles whose row policies and quotas apply to it. The
+/// restricted user is another identity than the one it is made from, and must not see more rows or use more
+/// resources than that one: a policy `TO ALL EXCEPT default` would apply to it otherwise.
+struct RestrictedLocalFilesystemUser
+{
+    UUID id;
+    UUID policy_user_id;
+    String policy_user_name;
+    boost::container::flat_set<UUID> policy_roles;
+};
+
 /// Registers the user of restricted connections, or clears it with nullopt.
-void setRestrictedLocalFilesystemUserID(std::optional<UUID> user_id);
+void setRestrictedLocalFilesystemUser(std::optional<RestrictedLocalFilesystemUser> user);
+
+/// The registered user if `user_id` is it.
+std::optional<RestrictedLocalFilesystemUser> tryGetRestrictedLocalFilesystemUser(const UUID & user_id);
 
 /// Whether queries running in `context` belong to a restricted connection. The engine's own contexts have no user.
 bool isLocalFilesystemAccessRestricted(const ContextPtr & context);
