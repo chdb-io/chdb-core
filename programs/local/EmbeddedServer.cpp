@@ -540,6 +540,23 @@ void EmbeddedServer::tryInitPath()
     }
     fs::create_directories(path);
 
+    /// Lock the directory before anything touches its contents: setupInstancePaths() removes the
+    /// leftover `tmp*` files of the temporary storage, and setupUsers() may rewrite the access storage.
+    /// Another process that holds the directory may be spilling to those files right now, so an
+    /// instance that cannot lock it must fail here, with nothing changed.
+    try
+    {
+        status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
+    }
+    catch (Exception & e)
+    {
+        e.addMessage(
+            "A directory can be used by one process at a time. To run concurrent queries on it,"
+            " open several connections or sessions with this path inside one process,"
+            " or give every process its own path");
+        throw;
+    }
+
     /// No limit on temporary data here, unlike clickhouse-local: the engine runs inside the caller's process.
     setupInstancePaths(global_context, config(), path, 0);
 }
@@ -1247,11 +1264,8 @@ void EmbeddedServer::processConfig()
         /// If it is loaded from a user-specified path, we load it as usual. If not, we create it as a memory (ephemeral) database.
         bool attached_system_database = false;
 
+        /// The directory is locked by tryInitPath().
         String path = global_context->getPath();
-
-        /// Lock path directory before read
-        fs::create_directories(fs::path(path));
-        status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
 
         const bool metadata_exists = fs::exists(fs::path(path) / "metadata");
         if (metadata_exists)
