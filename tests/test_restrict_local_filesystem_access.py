@@ -356,12 +356,16 @@ class TestRestrictLocalFilesystemAccess(unittest.TestCase):
                 ("EXECUTABLE(COMMAND 'cat' FORMAT 'TSV')", "FLAT()"),
                 ("EXECUTABLE_POOL(COMMAND 'cat' FORMAT 'TSV')", "FLAT()"),
                 ("ODBC(CONNECTION_STRING 'DSN=x' TABLE 't')", "FLAT()"),
+                (f"YAMLRegExpTree(PATH '{self.secret}')", "REGEXP_TREE"),
                 ("CLICKHOUSE(QUERY 'SELECT 1 AS id, \\'a\\' AS v')",
                  f"SSD_CACHE(PATH '{self.path('ssd')}' BLOCK_SIZE 4096 FILE_SIZE 16777216)"),
             ]
         ):
             with self.subTest(source=source, layout=layout):
-                self.assertDenied(f"CREATE DICTIONARY denied_{i} {attrs} SOURCE({source}) LAYOUT({layout}) LIFETIME(0)")
+                self.assertDenied(
+                    f"CREATE DICTIONARY denied_{i} {attrs} SOURCE({source}) LAYOUT({layout}) LIFETIME(0)",
+                    DENIED + "|Unknown dictionary source type|UNKNOWN_ELEMENT_IN_CONFIG",
+                )
         self.assertFalse(os.path.exists(self.path("ssd")))
 
     def test_dictionaries_on_tables_keep_working(self):
@@ -372,6 +376,25 @@ class TestRestrictLocalFilesystemAccess(unittest.TestCase):
             " SOURCE(CLICKHOUSE(TABLE 'dict_source')) LAYOUT(FLAT()) LIFETIME(0)"
         )
         self.assertEqual(self.assertAllowed("SELECT dictGet('table_dict', 'v', toUInt64(1))"), "one\n")
+
+    def test_clickhouse_dictionary_queries_run_as_the_connection(self):
+        attrs = "(id UInt64, v String) PRIMARY KEY id"
+        for i, query in enumerate(
+            [
+                f"SELECT 1 AS id, file(''{self.secret}'') AS v",
+                f"SELECT 1 AS id, line AS v FROM file(''{self.secret}'', ''LineAsString'', ''line String'')",
+            ]
+        ):
+            with self.subTest(query=query):
+                err, _ = self.restricted.query(
+                    f"CREATE DICTIONARY query_dict_{i} {attrs} SOURCE(CLICKHOUSE(QUERY '{query}')) LAYOUT(FLAT()) LIFETIME(0)"
+                )
+                if err is None:
+                    self.assertDenied(f"SELECT dictGet('query_dict_{i}', 'v', toUInt64(1))")
+        self.assertDenied(
+            f"CREATE DICTIONARY other_user_dict {attrs} SOURCE(CLICKHOUSE(TABLE 'dict_source' USER 'default'))"
+            " LAYOUT(FLAT()) LIFETIME(0)"
+        )
 
     def test_custom_disks_are_denied(self):
         disk = self.path("disk") + "/"
@@ -609,6 +632,46 @@ def _child_s3_credentials(lib_path, credentials_file):
     return results
 
 
+def _child_roles(lib_path, root, secret_file):
+    """`default` reads files only through a role and has a row policy: the restricted user gets neither more nor less."""
+    users = os.path.join(root, "users.xml")
+    with open(users, "w") as f:
+        f.write(
+            "<clickhouse><profiles><default/></profiles><quotas><default/></quotas>"
+            "<roles><file_reader><grants><query>GRANT READ, WRITE ON FILE</query></grants></file_reader></roles>"
+            "<users><default><password></password><networks><ip>::/0</ip></networks>"
+            "<profile>default</profile><quota>default</quota>"
+            "<grants><query>GRANT SELECT, INSERT, CREATE, DROP, SHOW, TABLE ENGINE, SYSTEM ON *.*</query>"
+            "<query>GRANT file_reader</query></grants>"
+            "<databases><default><filtered><filter>x = 1</filter></filtered></default></databases>"
+            "</default></users></clickhouse>"
+        )
+    config = os.path.join(root, "config.xml")
+    with open(config, "w") as f:
+        f.write(f"<clickhouse><users_config>{users}</users_config></clickhouse>")
+    chdb = Chdb(lib_path)
+    plain = chdb.connect(b"--config-file=" + config.encode())
+    restricted = chdb.connect(b"--config-file=" + config.encode(), OPTION)
+    read = f"SELECT * FROM file('{secret_file}', 'LineAsString')"
+    results = {
+        "plain_file": plain.query(read),
+        "restricted_file": restricted.query(read),
+        "restricted_roles": restricted.query("SELECT count() FROM system.current_roles"),
+        "create": plain.query("CREATE TABLE filtered (x UInt8) ENGINE = MergeTree ORDER BY x"),
+        "insert": plain.query("INSERT INTO filtered VALUES (1), (2)"),
+        "plain_rows": plain.query("SELECT count() FROM filtered"),
+        "restricted_rows": restricted.query("SELECT count() FROM filtered"),
+        "set_role": restricted.query("SET ROLE file_reader"),
+        "restricted_file_after_set_role": restricted.query(read),
+        "plain_no_role": plain.query("SET ROLE NONE"),
+        "plain_outfile": plain.query(f"SELECT 1 INTO OUTFILE '{os.path.join(root, 'out.csv')}' FORMAT CSV"),
+    }
+    results["outfile_written"] = os.path.exists(os.path.join(root, "out.csv"))
+    restricted.close()
+    plain.close()
+    return results
+
+
 def _child_shutdown(lib_path):
     """SYSTEM SHUTDOWN and SYSTEM KILL signal the whole process group, so this runs in a session of its own."""
     chdb = Chdb(lib_path)
@@ -794,6 +857,28 @@ class TestRestrictedConnectionInternalAccess(unittest.TestCase):
             self.assertRegex(err or "", DENIED, key)
             self.assertNotIn(SECRET, (err or "") + body)
 
+    def test_roles_and_row_policies_of_default(self):
+        tmp = tempfile.mkdtemp(prefix="chdb_restrict_fs_roles_")
+        try:
+            secret = _make_tree(tmp)
+            results = self.run_child("roles", tmp, secret)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertIn(SECRET, results["plain_file"][1], results["plain_file"])
+        self.assertRegex(results["restricted_file"][0] or "", DENIED)
+        self.assertEqual(results["restricted_roles"], [None, "0\n"])
+        for step in ["create", "insert"]:
+            self.assertIsNone(results[step][0], results[step][0])
+        self.assertEqual(results["plain_rows"], [None, "1\n"])
+        self.assertEqual(results["restricted_rows"], [None, "1\n"])
+        self.assertIsNotNone(results["set_role"][0])
+        self.assertRegex(results["restricted_file_after_set_role"][0] or "", DENIED)
+        # Without the role, `default` lacks the FILE grants, but is not a restricted connection: ClickHouse's own
+        # rules apply, and INTO OUTFILE needs no grant.
+        self.assertIsNone(results["plain_no_role"][0], results["plain_no_role"][0])
+        self.assertIsNone(results["plain_outfile"][0], results["plain_outfile"][0])
+        self.assertTrue(results["outfile_written"])
+
     def test_sql_cannot_end_the_host_process(self):
         results = self.run_child("shutdown")
         for sql in ["SYSTEM SHUTDOWN", "SYSTEM KILL"]:
@@ -823,7 +908,7 @@ class TestRestrictedConnectionInternalAccess(unittest.TestCase):
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--child":
         scenario, lib_path, *rest = sys.argv[2:]
-        handler = {"persistent": _child_persistent, "s3": _child_s3_credentials, "s3_backup": _child_s3_backup, "shutdown": _child_shutdown}[scenario]
+        handler = {"persistent": _child_persistent, "s3": _child_s3_credentials, "s3_backup": _child_s3_backup, "shutdown": _child_shutdown, "roles": _child_roles}[scenario]
         print(json.dumps(handler(lib_path, *rest)))
         sys.exit(0)
     unittest.main()

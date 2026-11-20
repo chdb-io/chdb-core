@@ -1399,7 +1399,7 @@ static StoragePtr create(const StorageFactory::Arguments & args)
     auto local_context = args.getLocalContext();
     const bool from_existing_metadata = isLoadingFromExistingMetadata(args.mode) || args.query.attach_short_syntax;
     if (!rocksdb_dir.empty() && !from_existing_metadata
-        && (local_context->getApplicationType() != Context::ApplicationType::LOCAL || !hasLocalFilesystemAccess(local_context)))
+        && (local_context->getApplicationType() != Context::ApplicationType::LOCAL || isLocalFilesystemAccessRestricted(local_context)))
     {
         bool may_create_directory = !read_only;
         if (!may_create_directory)

@@ -36,8 +36,8 @@ public:
     static constexpr auto name = "file";
     static FunctionPtr create(ContextPtr context)
     {
-        /// clickhouse-local's user holds the grant; a chDB connection that restricts local filesystem access does not.
-        if (context && (context->getApplicationType() != Context::ApplicationType::LOCAL || !hasLocalFilesystemAccess(context)))
+        /// A chDB connection that restricts local filesystem access is checked in local mode too.
+        if (context && (context->getApplicationType() != Context::ApplicationType::LOCAL || isLocalFilesystemAccessRestricted(context)))
             context->checkAccess(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE));
 
         return std::make_shared<FunctionFile>();

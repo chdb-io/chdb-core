@@ -1355,6 +1355,7 @@ InterpreterCreateQuery::TableProperties InterpreterCreateQuery::getTableProperti
         /// Runs for CREATE, ATTACH and RESTORE alike, with the user's context.
         checkDictionaryLocalFilesystemAccess(
             getContext(), create.dictionary->source->name, create.dictionary->layout ? create.dictionary->layout->layout_type : "");
+        restrictClickHouseDictionarySourceUser(getContext(), *create.dictionary->source);
 
         /// Evaluate expressions (like currentDatabase() or tcpPort()) in dictionary source definition.
         NormalizeAndEvaluateConstantsVisitor::Data visitor_data{getContext()};
