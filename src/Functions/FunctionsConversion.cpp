@@ -3335,7 +3335,7 @@ FunctionCast::WrapperType FunctionCast::prepareImpl(const DataTypePtr & from_typ
         // these types fails at the wrapper-dispatch step (no wrapper, raises
         // CANNOT_CONVERT_TYPE), matching the arithmetic/comparison trim.
         if constexpr (is_any_of<ToDataType,
-            DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
+            DataTypeUInt8, DataTypeUInt16, DataTypeUInt32, DataTypeUInt64,
             DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
             DataTypeFloat32, DataTypeFloat64,
             DataTypeDate, DataTypeDate32, DataTypeDateTime, DataTypeTime,
