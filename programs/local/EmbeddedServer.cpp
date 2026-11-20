@@ -1709,7 +1709,18 @@ void EmbeddedDatabase::unmount() noexcept
             server.onDatabaseUnmounted(logical_path);
 
         if (ns && DatabaseCatalog::isAvailable())
+        {
+            /// The namespace's tables shut down here, before the server's own shutdown would see them.
+            try
+            {
+                ChdbNamespaceScope ns_scope(ns);
+                server.logMergeTreeStateAtShutdown();
+            }
+            catch (...)
+            {
+            }
             DatabaseCatalog::instance().cleanupChdbNamespace(ns, ns_context);
+        }
 
         if (ns && (!ns->disk_name.empty() || !ns->policy_name.empty()) && server.getGlobalContext())
             server.getGlobalContext()->removeChdbDiskAndStoragePolicy(ns->disk_name, ns->policy_name);

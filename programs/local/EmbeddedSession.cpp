@@ -417,13 +417,22 @@ std::vector<StatementSlice> splitMultiQueryStatements(
     {
         Lexer lexer(cursor, all_end);
         Token tok = lexer.nextToken();
+        /// Keep comments right before the statement in its text: query_log shows them, and callers
+        /// tag queries with them.
+        const char * leading_comment = nullptr;
         while (!tok.isEnd() && (!tok.isSignificant() || tok.type == TokenType::Semicolon))
+        {
+            if (tok.type == TokenType::Semicolon)
+                leading_comment = nullptr;
+            else if (tok.type == TokenType::Comment && !leading_comment)
+                leading_comment = tok.begin;
             tok = lexer.nextToken();
+        }
 
         if (tok.isEnd())
             break;
 
-        const char * stmt_begin = tok.begin;
+        const char * stmt_begin = leading_comment ? leading_comment : tok.begin;
         bool mutates_session = false;
 
         if (tok.type == TokenType::BareWord)
