@@ -1626,6 +1626,8 @@ CHDB::QueryResultPtr EmbeddedSession::executeMaterializedQuery(
             if (interrupt_slot->interrupt_requested.load(std::memory_order_acquire))
                 throw Exception(ErrorCodes::QUERY_WAS_CANCELLED, "Query was cancelled");
 
+            const ProgressValues progress_before_statement = total_progress->getValues();
+
             std::unique_lock<std::shared_mutex> exclusive_session_lock(session_mutex, std::defer_lock);
             ContextMutablePtr query_context;
             if (stmt.mutates_session)
@@ -1934,6 +1936,11 @@ CHDB::QueryResultPtr EmbeddedSession::executeMaterializedQuery(
                             feed_blocks(executor);
                         }
 
+                        /// Formats like JSON report the statement's rows_read and bytes_read in their statistics.
+                        const ProgressValues progress_after_statement = total_progress->getValues();
+                        output_format->onProgress(Progress(
+                            progress_after_statement.read_rows - progress_before_statement.read_rows,
+                            progress_after_statement.read_bytes - progress_before_statement.read_bytes));
                         output_format->finalize();
                         output_format.reset();
                         outfile.finalizeAndCommit();
