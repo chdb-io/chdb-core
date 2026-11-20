@@ -84,7 +84,7 @@ if (CHDB_LITE)
         FunctionNaiveBayesClassifier.cpp
         FunctionShowCertificate.cpp
         FunctionFile.cpp
-        FunctionFQDN.cpp
+        # FQDN is in serverConstants.cpp since 26.11, which lite keeps; it is trimmed there.
         filesystem.cpp
         # Vector / array distance (mostly used in vector search)
         arrayDistance.cpp
@@ -316,7 +316,6 @@ list (APPEND PRIVATE_LIBS
         boost::filesystem
         ch_contrib::libdivide
         ch_contrib::xxHash
-        ch_contrib::stringzilla
 )
 
 if (TARGET OpenSSL::Crypto)

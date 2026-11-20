@@ -103,6 +103,7 @@ namespace DB
     extern void registerFunctionArrayStringConcat(FunctionFactory & factory);
     extern void registerFunctionArrayTopK(FunctionFactory & factory);
     extern void registerFunctionArrayTranspose(FunctionFactory & factory);
+    extern void registerFunctionArrayTreePreorder(FunctionFactory & factory);
     extern void registerFunctionArrayUniq(FunctionFactory & factory);
     extern void registerFunctionArrayWithConstant(FunctionFactory & factory);
     extern void registerFunctionArrayZip(FunctionFactory & factory);
@@ -246,7 +247,6 @@ namespace DB
     extern void registerFunctionExtractURLParameter(FunctionFactory & factory);
     extern void registerFunctionExtractURLParameterNames(FunctionFactory & factory);
     extern void registerFunctionExtractURLParameters(FunctionFactory & factory);
-    extern void registerFunctionFQDN(FunctionFactory & factory);
     extern void registerFunctionFactorial(FunctionFactory & factory);
     extern void registerFunctionFile(FunctionFactory & factory);
     extern void registerFunctionFilesystem(FunctionFactory & factory);
@@ -299,6 +299,7 @@ namespace DB
     extern void registerFunctionGetMacro(FunctionFactory & factory);
     extern void registerFunctionGetMergeTreeSetting(FunctionFactory & factory);
     extern void registerFunctionGetOSKernelVersion(FunctionFactory & factory);
+    extern void registerFunctionGetQueryProfileEvent(FunctionFactory & factory);
     extern void registerFunctionGetScalar(FunctionFactory & factory);
     extern void registerFunctionGetServerPort(FunctionFactory & factory);
     extern void registerFunctionGetServerSetting(FunctionFactory & factory);
@@ -764,6 +765,7 @@ namespace DB
     extern void registerFunctionseriesDecomposeSTL(FunctionFactory & factory);
     extern void registerFunctiontimezoneOffset(FunctionFactory & factory);
 #if !defined(CHDB_LITE) || !CHDB_LITE
+    extern void registerFunctionFQDN(FunctionFactory & factory);
     extern void registerFunctionJSONExtractCaseInsensitive(FunctionFactory & factory);
 #endif
 #if !defined(MD5_GTEST_UNIT_TEST)
@@ -1005,6 +1007,7 @@ namespace DB
             &registerFunctionArrayStringConcat,
             &registerFunctionArrayTopK,
             &registerFunctionArrayTranspose,
+            &registerFunctionArrayTreePreorder,
             &registerFunctionArrayUniq,
             &registerFunctionArrayWithConstant,
             &registerFunctionArrayZip,
@@ -1148,7 +1151,6 @@ namespace DB
             &registerFunctionExtractURLParameter,
             &registerFunctionExtractURLParameterNames,
             &registerFunctionExtractURLParameters,
-            &registerFunctionFQDN,
             &registerFunctionFactorial,
             &registerFunctionFile,
             &registerFunctionFilesystem,
@@ -1201,6 +1203,7 @@ namespace DB
             &registerFunctionGetMacro,
             &registerFunctionGetMergeTreeSetting,
             &registerFunctionGetOSKernelVersion,
+            &registerFunctionGetQueryProfileEvent,
             &registerFunctionGetScalar,
             &registerFunctionGetServerPort,
             &registerFunctionGetServerSetting,
@@ -1666,6 +1669,7 @@ namespace DB
             &registerFunctionseriesDecomposeSTL,
             &registerFunctiontimezoneOffset,
 #if !defined(CHDB_LITE) || !CHDB_LITE
+            &registerFunctionFQDN,
             &registerFunctionJSONExtractCaseInsensitive,
 #endif
 #if !defined(MD5_GTEST_UNIT_TEST)

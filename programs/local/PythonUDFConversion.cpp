@@ -11,6 +11,7 @@
 #include <IO/readIntText.h>
 #include <base/defines.h>
 #include <Common/Exception.h>
+#include <Core/DecimalFunctions.h>
 
 namespace DB
 {

@@ -990,7 +990,8 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
 
         Block sample;
         ColumnsDescription columns;
-        if (!receiveSampleBlock(sample, columns, ctx->parsed_query))
+        /// false: return at the first Data packet, as before; upstream passes false for local connections too.
+        if (!receiveSampleBlock(sample, columns, ctx->parsed_query, /*wait_for_timezone_update=*/ false))
         {
             /// receiveSampleBlock stored the real cause in server_exception (via
             /// onReceiveExceptionFromServer) but, unlike the query paths, does not
