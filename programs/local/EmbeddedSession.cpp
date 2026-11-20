@@ -1372,11 +1372,9 @@ ContextMutablePtr EmbeddedSession::makeQueryContextLocked(
     query_context->setArrowStreamRegistry(arrow_stream_registry);
 #endif
 
+    /// A per-call parameter overrides the connection's value of the same name for this query only.
     if (call_params && !call_params->empty())
-    {
-        for (const auto & [name, val] : *call_params)
-            query_context->setQueryParameter(name, val);
-    }
+        query_context->addQueryParameters(*call_params);
 
     return query_context;
 }
