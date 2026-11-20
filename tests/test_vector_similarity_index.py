@@ -203,10 +203,13 @@ class TestVectorSimilarityIndex(unittest.TestCase):
         # once on a macOS x86_64 runner). A denser graph makes it insensitive to that.
         self._make_table("vmerge", 12, "L2Distance",
                          index_args="'hnsw', 'L2Distance', 12, 'f32', 64, 512")
-        # several inserts -> several parts, then merge into one.
+        # several inserts -> several parts, then merge into one. A background merge could
+        # otherwise combine the parts before they are counted.
+        self.s.query("SYSTEM STOP MERGES vmerge")
         self._insert("vmerge", self._random_data(900, 12, seed=13), chunk=150)
         self.assertGreater(int(self._scalar(
             "SELECT count() FROM system.parts WHERE table='vmerge' AND active")), 1)
+        self.s.query("SYSTEM START MERGES vmerge")
         self.s.query("OPTIMIZE TABLE vmerge FINAL")
         self.assertEqual("1", self._scalar(
             "SELECT count() FROM system.parts WHERE table='vmerge' AND active"))

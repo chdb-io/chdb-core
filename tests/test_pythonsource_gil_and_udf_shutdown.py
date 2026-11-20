@@ -103,7 +103,8 @@ def build_fresh_dict(worker_id, n_rows=4096):
     expected_bytes = 0
     non_empty = 0
     for i in range(n_rows):
-        if i % 11 == 0:
+        # The first value has to be a string: the column type is inferred from it.
+        if i % 11 == 10:
             texts.append(None)
         else:
             val = "".join([PATTERNS[(i + worker_id) % len(PATTERNS)], "#", str(worker_id), "_", str(i)])
@@ -179,7 +180,7 @@ chdb.create_aggregate_function("exit_udaf_sum", ExitAcc, arg_types=[INT64], retu
 # atexit connection teardown and late UDF/UDAF registry & state cleanup are exercised.
 conn = chdb.connect(":memory:")
 res = str(conn.query(
-    "SELECT count(), exit_udaf_sum(number) FROM ("
+    "SELECT count(), exit_udaf_sum(toInt64(number)) FROM ("
     "  SELECT number, exit_udf_fmt(toInt64(number)) AS s "
     "  FROM numbers(2000)"
     ") WHERE s LIKE 'val_%' SETTINGS max_threads = 4",
@@ -191,7 +192,7 @@ conn.query("CREATE TABLE keep_udaf_state (k UInt64, st AggregateFunction(exit_ud
 conn.query(
     "INSERT INTO keep_udaf_state "
     "SELECT number % 4 AS k, exit_udaf_sumState(toInt64(number)) "
-    "FROM numbers(200)"
+    "FROM numbers(200) GROUP BY k"
 )
 merged = str(conn.query("SELECT sum(m) FROM (SELECT exit_udaf_sumMerge(st) AS m FROM keep_udaf_state GROUP BY k)", "CSV")).strip()
 assert merged == str(199 * 200 // 2), merged
