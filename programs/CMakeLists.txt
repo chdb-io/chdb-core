@@ -78,4 +78,241 @@ endfunction()
 # chdb_spec
 clickhouse_program_install(clickhouse-local local chl ch)
 clickhouse_program_install(clickhouse-server server)
+<<<<<<< ours
 # chdb_spec
+||||||| base
+clickhouse_program_install(clickhouse-static-files-disk-uploader static-files-disk-uploader)
+clickhouse_program_install(clickhouse-su su)
+clickhouse_program_install(clickhouse-zookeeper-dump-tree zookeeper-dump-tree)
+clickhouse_program_install(clickhouse-zookeeper-remove-by-list zookeeper-remove-by-list)
+
+if (TARGET ch_contrib::nuraft)
+    clickhouse_program_install(clickhouse-keeper-data-dumper keeper-data-dumper)
+    clickhouse_program_install(clickhouse-keeper-utils keeper-utils)
+endif ()
+
+if (TARGET ch_contrib::rapidjson AND TARGET ch_contrib::nuraft)
+    clickhouse_program_install(clickhouse-keeper-bench keeper-bench)
+endif ()
+
+if (ENABLE_CLICKHOUSE_KEEPER)
+    if (NOT BUILD_STANDALONE_KEEPER)
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper)
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+        clickhouse_make_empty_debug_info_for_nfpm(TARGET clickhouse BINARY clickhouse-keeper DESTINATION_DIR ${CMAKE_CURRENT_BINARY_DIR}/../${SPLIT_DEBUG_SYMBOLS_DIR})
+    endif()
+
+    # otherwise we don't build keeper
+    if (BUILD_STANDALONE_KEEPER)
+        list(APPEND CLICKHOUSE_BUNDLE clickhouse-keeper)
+    endif()
+endif ()
+if (ENABLE_CLICKHOUSE_KEEPER_CONVERTER)
+    add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper-converter)
+    install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper-converter" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+endif ()
+if (ENABLE_CLICKHOUSE_KEEPER_CLIENT)
+    if (NOT BUILD_STANDALONE_KEEPER)
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper-client)
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper-client" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    endif ()
+endif ()
+
+add_custom_target (clickhouse-bundle ALL DEPENDS ${CLICKHOUSE_BUNDLE})
+
+if (USE_BINARY_HASH)
+    add_dependencies(clickhouse hash-binary)
+
+    # When cross-compiling, use the native-built hash-binary; otherwise use the regular build output
+    if (CMAKE_CROSSCOMPILING)
+        set(HASH_BINARY_PATH "${PROJECT_BINARY_DIR}/native/utils/hash-binary/hash-binary")
+    else()
+        set(HASH_BINARY_PATH "$<TARGET_FILE:hash-binary>")
+    endif()
+
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND ${HASH_BINARY_PATH} clickhouse > hash 2> /dev/null
+        COMMENT "Computing hash of clickhouse binary" VERBATIM)
+
+    if (NOT CMAKE_CROSSCOMPILING)
+        add_custom_command(TARGET clickhouse POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E echo "Verifying hash-binary utility matches clickhouse hash-binary..."
+            COMMAND sh -c "./clickhouse hash-binary > hash.verify && diff -u hash hash.verify || (echo 'ERROR: hash-binary utility output does not match clickhouse hash-binary' && exit 1)"
+            COMMAND ${CMAKE_COMMAND} -E rm hash.verify
+            COMMENT "Verifying hash-binary output matches clickhouse hash-binary" VERBATIM)
+    endif()
+
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND ${OBJCOPY_PATH} --add-section .clickhouse.hash=hash clickhouse
+        COMMENT "Adding section '.clickhouse.hash' to clickhouse binary" VERBATIM)
+endif()
+
+if (CHECK_LARGE_OBJECT_SIZES)
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND "${CMAKE_SOURCE_DIR}/utils/check-large-objects.sh" "${CMAKE_BINARY_DIR}")
+endif ()
+
+if (SPLIT_DEBUG_SYMBOLS)
+    clickhouse_split_debug_symbols(TARGET clickhouse DESTINATION_DIR ${CMAKE_CURRENT_BINARY_DIR}/${SPLIT_DEBUG_SYMBOLS_DIR} BINARY_PATH clickhouse)
+else()
+    clickhouse_make_empty_debug_info_for_nfpm(TARGET clickhouse BINARY clickhouse DESTINATION_DIR ${CMAKE_CURRENT_BINARY_DIR}/${SPLIT_DEBUG_SYMBOLS_DIR})
+    install (TARGETS clickhouse RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+endif()
+
+if (BUILD_STRIPPED_BINARY)
+    add_custom_target(clickhouse-stripped ALL
+        COMMAND "${STRIP_PATH}" -o "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-stripped" --strip-debug --remove-section=.comment --remove-section=.note "${CMAKE_CURRENT_BINARY_DIR}/clickhouse"
+        DEPENDS clickhouse
+        COMMENT "Stripping clickhouse binary" VERBATIM)
+endif()
+
+if (ENABLE_TESTS)
+    set (CLICKHOUSE_UNIT_TESTS_TARGETS unit_tests_dbms)
+    add_custom_target (clickhouse-tests ALL DEPENDS ${CLICKHOUSE_UNIT_TESTS_TARGETS})
+    add_dependencies(clickhouse-bundle clickhouse-tests)
+endif()
+
+if (TARGET ch_contrib::protobuf)
+    get_property(google_proto_files TARGET ch_contrib::protobuf PROPERTY google_proto_files)
+    foreach (proto_file IN LISTS google_proto_files)
+        install(FILES ${proto_file} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/clickhouse/protos/google/protobuf)
+    endforeach()
+endif ()
+
+# FIXME: This should be at the end, to avoid using symbols from chdig if there
+# are the same in one of contribs (the problem was with lz4)
+if (TARGET ch_rust::chdig)
+    target_link_libraries (clickhouse PRIVATE ch_rust::chdig)
+
+    clickhouse_program_alias(clickhouse-chdig)
+    clickhouse_program_alias(chdig)
+else()
+    message(STATUS "Adding dummy chdig targets (for nfpm)")
+    foreach (chdig_path ${CMAKE_BINARY_DIR}/chdig ${CMAKE_BINARY_DIR}/clickhouse-chdig)
+        file(GENERATE OUTPUT ${chdig_path} CONTENT "#!/usr/bin/env sh\necho chdig is not enabled in this ClickHouse build >&2 && exit 1\n")
+        install(FILES ${chdig_path}
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ GROUP_EXECUTE
+                        WORLD_READ WORLD_EXECUTE
+        )
+    endforeach()
+endif ()
+=======
+clickhouse_program_install(clickhouse-static-files-disk-uploader static-files-disk-uploader)
+clickhouse_program_install(clickhouse-su su)
+clickhouse_program_install(clickhouse-zookeeper-dump-tree zookeeper-dump-tree)
+clickhouse_program_install(clickhouse-zookeeper-remove-by-list zookeeper-remove-by-list)
+
+if (TARGET ch_contrib::nuraft)
+    clickhouse_program_install(clickhouse-keeper-data-dumper keeper-data-dumper)
+    clickhouse_program_install(clickhouse-keeper-utils keeper-utils)
+endif ()
+
+if (TARGET ch_contrib::rapidjson AND TARGET ch_contrib::nuraft)
+    clickhouse_program_install(clickhouse-keeper-bench keeper-bench)
+endif ()
+
+if (ENABLE_CLICKHOUSE_KEEPER)
+    if (NOT BUILD_STANDALONE_KEEPER)
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper)
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    endif()
+
+    # otherwise we don't build keeper
+    if (BUILD_STANDALONE_KEEPER)
+        list(APPEND CLICKHOUSE_BUNDLE clickhouse-keeper)
+    endif()
+endif ()
+if (ENABLE_CLICKHOUSE_KEEPER_CONVERTER)
+    add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper-converter)
+    install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper-converter" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+endif ()
+if (ENABLE_CLICKHOUSE_KEEPER_CLIENT)
+    if (NOT BUILD_STANDALONE_KEEPER)
+        add_custom_command (TARGET clickhouse POST_BUILD COMMAND ${CMAKE_COMMAND} -E create_symlink clickhouse clickhouse-keeper-client)
+        install (FILES "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-keeper-client" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+    endif ()
+endif ()
+
+add_custom_target (clickhouse-bundle ALL DEPENDS ${CLICKHOUSE_BUNDLE})
+
+if (USE_BINARY_HASH)
+    add_dependencies(clickhouse hash-binary)
+
+    # When cross-compiling, use the native-built hash-binary; otherwise use the regular build output
+    if (CMAKE_CROSSCOMPILING)
+        set(HASH_BINARY_PATH "${PROJECT_BINARY_DIR}/native/utils/hash-binary/hash-binary")
+    else()
+        set(HASH_BINARY_PATH "$<TARGET_FILE:hash-binary>")
+    endif()
+
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND ${HASH_BINARY_PATH} clickhouse > hash 2> /dev/null
+        COMMENT "Computing hash of clickhouse binary" VERBATIM)
+
+    if (NOT CMAKE_CROSSCOMPILING)
+        add_custom_command(TARGET clickhouse POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E echo "Verifying hash-binary utility matches clickhouse hash-binary..."
+            COMMAND sh -c "./clickhouse hash-binary > hash.verify && diff -u hash hash.verify || (echo 'ERROR: hash-binary utility output does not match clickhouse hash-binary' && exit 1)"
+            COMMAND ${CMAKE_COMMAND} -E rm hash.verify
+            COMMENT "Verifying hash-binary output matches clickhouse hash-binary" VERBATIM)
+    endif()
+
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND ${OBJCOPY_PATH} --add-section .clickhouse.hash=hash clickhouse
+        COMMENT "Adding section '.clickhouse.hash' to clickhouse binary" VERBATIM)
+endif()
+
+if (CHECK_LARGE_OBJECT_SIZES)
+    add_custom_command(TARGET clickhouse POST_BUILD
+        COMMAND "${CMAKE_SOURCE_DIR}/utils/check-large-objects.sh" "${CMAKE_BINARY_DIR}")
+endif ()
+
+if (SPLIT_DEBUG_SYMBOLS)
+    clickhouse_split_debug_symbols(TARGET clickhouse DESTINATION_DIR ${CMAKE_CURRENT_BINARY_DIR}/${SPLIT_DEBUG_SYMBOLS_DIR} BINARY_PATH clickhouse)
+else()
+    clickhouse_make_empty_debug_info_for_nfpm(TARGET clickhouse BINARY clickhouse DESTINATION_DIR ${CMAKE_CURRENT_BINARY_DIR}/${SPLIT_DEBUG_SYMBOLS_DIR})
+    install (TARGETS clickhouse RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT clickhouse)
+endif()
+
+if (BUILD_STRIPPED_BINARY)
+    add_custom_target(clickhouse-stripped ALL
+        COMMAND "${STRIP_PATH}" -o "${CMAKE_CURRENT_BINARY_DIR}/clickhouse-stripped" --strip-debug --remove-section=.comment --remove-section=.note "${CMAKE_CURRENT_BINARY_DIR}/clickhouse"
+        DEPENDS clickhouse
+        COMMENT "Stripping clickhouse binary" VERBATIM)
+endif()
+
+if (ENABLE_TESTS)
+    set (CLICKHOUSE_UNIT_TESTS_TARGETS unit_tests_dbms)
+    add_custom_target (clickhouse-tests ALL DEPENDS ${CLICKHOUSE_UNIT_TESTS_TARGETS})
+    add_dependencies(clickhouse-bundle clickhouse-tests)
+endif()
+
+if (TARGET ch_contrib::protobuf)
+    get_property(google_proto_files TARGET ch_contrib::protobuf PROPERTY google_proto_files)
+    foreach (proto_file IN LISTS google_proto_files)
+        install(FILES ${proto_file} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/clickhouse/protos/google/protobuf)
+    endforeach()
+endif ()
+
+# FIXME: This should be at the end, to avoid using symbols from chdig if there
+# are the same in one of contribs (the problem was with lz4)
+if (TARGET ch_rust::chdig)
+    target_link_libraries (clickhouse PRIVATE ch_rust::chdig)
+
+    clickhouse_program_alias(clickhouse-chdig)
+    clickhouse_program_alias(chdig)
+else()
+    message(STATUS "Adding dummy chdig targets (for nfpm)")
+    foreach (chdig_path ${CMAKE_BINARY_DIR}/chdig ${CMAKE_BINARY_DIR}/clickhouse-chdig)
+        file(GENERATE OUTPUT ${chdig_path} CONTENT "#!/usr/bin/env sh\necho chdig is not enabled in this ClickHouse build >&2 && exit 1\n")
+        install(FILES ${chdig_path}
+            DESTINATION ${CMAKE_INSTALL_BINDIR}
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ GROUP_EXECUTE
+                        WORLD_READ WORLD_EXECUTE
+        )
+    endforeach()
+endif ()
+>>>>>>> theirs

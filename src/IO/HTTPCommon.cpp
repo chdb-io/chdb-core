@@ -62,8 +62,10 @@ HTTPSessionPtr makeHTTPSession(
     const Poco::URI & uri,
     const ConnectionTimeouts & timeouts,
     const ProxyConfiguration & proxy_configuration,
-    UInt64 * connect_time)
+    UInt64 * connect_time,
+    HTTPConnectionTransport transport)
 {
+<<<<<<< ours
 #if defined(OS_WASM)
     /// Raw sockets don't exist on WASM, so the pool (and Poco's socket-backed
     /// sessions) can never connect. Every HTTP client path gets a session that
@@ -75,6 +77,11 @@ HTTPSessionPtr makeHTTPSession(
     return std::make_shared<WasmHTTPSession>(uri);
 #else
     auto connection_pool = HTTPConnectionPools::instance().getPool(group, uri, proxy_configuration);
+||||||| base
+    auto connection_pool = HTTPConnectionPools::instance().getPool(group, uri, proxy_configuration);
+=======
+    auto connection_pool = HTTPConnectionPools::instance().getPool(group, uri, proxy_configuration, transport);
+>>>>>>> theirs
     return connection_pool->getConnection(timeouts, connect_time);
 #endif
 }

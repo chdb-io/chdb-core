@@ -591,7 +591,15 @@ buildMapEntriesField(
 {
     /// Arrow map child: a non-nullable struct "entries" with children "key" (non-nullable) and "value".
     VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::Field>> kv;
-    kv.push_back(buildField(b, "key", removeNullable(map_type.getKeyType()), settings, childPlan(kv_plans, 0)));
+    const DataTypePtr key_type = removeNullable(map_type.getKeyType());
+    if (isVariant(key_type) && settings.arrow.output_variant_as_json_string)
+    {
+        /// The key must not be nullable: `RecordBatchEncoder` writes a NULL `Variant` key as the JSON text `null`.
+        kv.push_back(flatbuf::CreateField(
+            b, b.CreateString("key"), /*nullable=*/ false, flatbuf::Type_Utf8, flatbuf::CreateUtf8(b).Union(), 0, 0));
+    }
+    else
+        kv.push_back(buildField(b, "key", key_type, settings, childPlan(kv_plans, 0)));
     kv.push_back(buildField(b, "value", map_type.getValueType(), settings, childPlan(kv_plans, 1)));
     auto kv_vec = b.CreateVector(kv);
     auto entries_name = b.CreateString("entries");
@@ -808,7 +816,13 @@ buildField(
             }
             case TypeIndex::Variant:
             {
+<<<<<<< ours
                 if (settings.arrow.output_variant_as_string)
+||||||| base
+=======
+                /// `RecordBatchEncoder::encodeVariantAsJSONText` writes the JSON text of each value, and NULL as an Arrow null.
+                if (settings.arrow.output_variant_as_json_string)
+>>>>>>> theirs
                 {
                     nullable = true;
                     type_type = flatbuf::Type_Utf8;
@@ -880,9 +894,22 @@ buildField(
         }
     }
 
+<<<<<<< ours
+||||||| base
+    /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata.
+=======
+    /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata,
+    /// unless `output_format_arrow_uuid_as_fixed_byte_array` asks for the plain storage type.
+>>>>>>> theirs
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::KeyValue>>> custom_metadata_off = 0;
+<<<<<<< ours
     VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
     if (!settings.arrow.output_uuid_as_fixed_byte_array && isUUID(t))
+||||||| base
+    if (isUUID(t))
+=======
+    if (isUUID(t) && !settings.arrow.output_uuid_as_fixed_byte_array)
+>>>>>>> theirs
     {
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.uuid")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));

@@ -46,14 +46,20 @@ NamedCollectionFactory::~NamedCollectionFactory()
 
 void NamedCollectionFactory::shutdown()
 {
+<<<<<<< ours
     /// Stop the background update thread (if any) first, and do so WITHOUT holding
     /// `mutex`: the update task runs reloadFromSQL() which locks `mutex`, and
     /// deactivate() blocks until the task finishes - holding the lock here would
     /// deadlock.
+||||||| base
+=======
+    /// Stop the update task without holding `mutex`: the task locks it, and `deactivate` waits for the task.
+>>>>>>> theirs
     shutdown_called = true;
     if (update_task)
         update_task->deactivate();
 
+<<<<<<< ours
     /// Reset the factory to an uninitialized state so it can be lazily reloaded
     /// later. In embedded chDB the global Context (which owns the named collection
     /// metadata storage) is shut down and recreated several times within a single
@@ -62,10 +68,21 @@ void NamedCollectionFactory::shutdown()
     /// no-op and a subsequent CREATE/DROP/ALTER NAMED COLLECTION dereferences the
     /// null `metadata_storage`, crashing (caught by the fault handler, so it looks
     /// like a hang). See https://github.com/chdb-io/chdb-core/issues/81.
+||||||| base
+=======
+    /// The factory is a process-wide singleton, but its metadata storage belongs to the global context which is
+    /// being shut down. Return to the initial state, so that the next use loads the collections again (from the
+    /// next global context, if the process creates one) instead of using the destroyed metadata storage.
+>>>>>>> theirs
     std::lock_guard lock(mutex);
     update_task = {};
     metadata_storage.reset();
     loaded_named_collections.clear();
+<<<<<<< ours
+||||||| base
+=======
+    CurrentMetrics::set(CurrentMetrics::NamedCollection, 0);
+>>>>>>> theirs
     dependencies.clear();
     loaded = false;
     shutdown_called = false;
@@ -443,6 +460,19 @@ NamedCollectionFactory::MetadataStorageProperties NamedCollectionFactory::getMet
         properties.replication_id = metadata_storage->getReplicationId();
     return properties;
 }
+
+#if CLICKHOUSE_CLOUD && USE_SSL
+NamedCollectionsEncryptionKeyInfo NamedCollectionFactory::getEncryptionKeyInfo()
+{
+    std::lock_guard lock(mutex);
+    loadIfNot(lock);
+
+    auto key_info = metadata_storage->getEncryptionKeyInfo();
+    if (!key_info)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "The metadata storage for named collections is not encrypted");
+    return std::move(*key_info);
+}
+#endif
 
 std::map<std::string, std::string> NamedCollectionFactory::getRawEntriesForBackup()
 {

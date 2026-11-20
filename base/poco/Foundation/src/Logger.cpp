@@ -279,6 +279,7 @@ struct LoggerDeleter
 
 		auto it = _pLoggerMap->find(logger->name());
 
+<<<<<<< ours
 		/// The logger may be absent from the current map during shutdown:
 		/// Logger::shutdown() (run from the AutoLoggerShutdown static dtor)
 		/// deletes _pLoggerMap and leaves shared_ptr-owned loggers alive, and
@@ -289,6 +290,15 @@ struct LoggerDeleter
 		/// there is no map entry to erase. Without this guard erase(end())
 		/// trips a libc++ hardening assertion and aborts the process.
 		if (it == _pLoggerMap->end())
+||||||| base
+		assert(it != _pLoggerMap->end());
+=======
+		/// `Logger::shutdown` deletes the map but leaves the loggers owned by shared pointers alive,
+		/// and a later `Logger::get` creates a new map. The logger released here may then be missing
+		/// from the new map, or the map may hold a different logger with the same name. In both cases
+		/// the map has no entry of this logger, so just drop the reference, like when there is no map.
+		if (it == _pLoggerMap->end() || it->second.logger != logger)
+>>>>>>> theirs
 		{
 			logger->release();
 			return;
