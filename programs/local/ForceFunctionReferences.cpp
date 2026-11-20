@@ -247,7 +247,6 @@ namespace DB
     extern void registerFunctionExtractURLParameter(FunctionFactory & factory);
     extern void registerFunctionExtractURLParameterNames(FunctionFactory & factory);
     extern void registerFunctionExtractURLParameters(FunctionFactory & factory);
-    extern void registerFunctionFQDN(FunctionFactory & factory);
     extern void registerFunctionFactorial(FunctionFactory & factory);
     extern void registerFunctionFile(FunctionFactory & factory);
     extern void registerFunctionFilesystem(FunctionFactory & factory);
@@ -766,6 +765,7 @@ namespace DB
     extern void registerFunctionseriesDecomposeSTL(FunctionFactory & factory);
     extern void registerFunctiontimezoneOffset(FunctionFactory & factory);
 #if !defined(CHDB_LITE) || !CHDB_LITE
+    extern void registerFunctionFQDN(FunctionFactory & factory);
     extern void registerFunctionJSONExtractCaseInsensitive(FunctionFactory & factory);
 #endif
 #if !defined(MD5_GTEST_UNIT_TEST)
@@ -1151,7 +1151,6 @@ namespace DB
             &registerFunctionExtractURLParameter,
             &registerFunctionExtractURLParameterNames,
             &registerFunctionExtractURLParameters,
-            &registerFunctionFQDN,
             &registerFunctionFactorial,
             &registerFunctionFile,
             &registerFunctionFilesystem,
@@ -1670,6 +1669,7 @@ namespace DB
             &registerFunctionseriesDecomposeSTL,
             &registerFunctiontimezoneOffset,
 #if !defined(CHDB_LITE) || !CHDB_LITE
+            &registerFunctionFQDN,
             &registerFunctionJSONExtractCaseInsensitive,
 #endif
 #if !defined(MD5_GTEST_UNIT_TEST)

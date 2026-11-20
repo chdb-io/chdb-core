@@ -58,6 +58,8 @@ namespace
     };
 
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
+    /// chdb: chdb-core-lite trims FQDN, which used to be FunctionFQDN.cpp on its drop list.
     /// Get the fully qualified domain name. Like `hostName`, it is constant on a single server, but not in distributed queries.
     class FunctionFQDN final : public FunctionServerConstantBase<FunctionFQDN, String, DataTypeString>
     {
@@ -66,6 +68,7 @@ namespace
         static FunctionPtr create(ContextPtr context) { return std::make_shared<FunctionFQDN>(context); }
         explicit FunctionFQDN(ContextPtr context) : FunctionServerConstantBase(getFQDNOrHostName(), context->isDistributed()) {}
     };
+#endif
 
 
     class FunctionServerUUID final : public FunctionServerConstantBase<FunctionServerUUID, UUID, DataTypeUUID>
@@ -232,6 +235,7 @@ SELECT hostName()
     factory.registerAlias("hostname", "hostName");
 }
 
+#if !defined(CHDB_LITE) || !CHDB_LITE
 REGISTER_FUNCTION(FQDN)
 {
     FunctionDocumentation::Description description = R"(
@@ -262,6 +266,7 @@ SELECT fqdn()
     factory.registerFunction<FunctionFQDN>(documentation, FunctionFactory::Case::Insensitive);
     factory.registerAlias("fullHostName", "FQDN");
 }
+#endif
 
 REGISTER_FUNCTION(ServerUUID)
 {

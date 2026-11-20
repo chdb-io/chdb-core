@@ -84,7 +84,7 @@ if (CHDB_LITE)
         FunctionNaiveBayesClassifier.cpp
         FunctionShowCertificate.cpp
         FunctionFile.cpp
-        FunctionFQDN.cpp
+        # FQDN is in serverConstants.cpp since 26.11, which lite keeps; it is trimmed there.
         filesystem.cpp
         # Vector / array distance (mostly used in vector search)
         arrayDistance.cpp
