@@ -122,7 +122,7 @@ public:
     bool isOpen() const;
     cursor_wrapper * cursor();
     void commit();
-    void close();
+    void close(bool interrupt = false);
     void interrupt() noexcept;
     void register_table(const std::string & name, const py::object & obj);
     void unregister_table(const std::string & name);

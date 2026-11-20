@@ -850,7 +850,7 @@ bool connection_wrapper::closePythonConnectionsAtExit()
     {
         try
         {
-            connection->close();
+            connection->close(/*interrupt=*/true);
         }
         catch (...)
         {
@@ -887,11 +887,11 @@ connection_wrapper::~connection_wrapper()
     }
 }
 
-void connection_wrapper::close()
+void connection_wrapper::close(bool interrupt)
 {
     for (auto * active = current_python_operation; active; active = active->previous)
         if (active->owner.get() == this)
-            throw std::runtime_error("Cannot close a connection from its active operation");
+            throw std::runtime_error("Cannot close a connection with active operations from a query callback");
 
     /// Python UDFs and readers may call back on an engine pipeline thread, not
     /// the thread that owns Operation's TLS marker. Waiting there for this
@@ -918,7 +918,8 @@ void connection_wrapper::close()
         closing = true;
         if (active_operations)
         {
-            chdb_connection raw_to_interrupt = conn ? *conn : nullptr;
+            /// Without interrupt, close waits for the running operations to finish.
+            chdb_connection raw_to_interrupt = (interrupt && conn) ? *conn : nullptr;
             {
                 py::gil_scoped_release release;
                 lock.unlock();
@@ -2031,7 +2032,11 @@ PYBIND11_MODULE(_chdb, m)
             py::arg("params") = py::none(),
             py::arg("tables") = py::none())
         .def("commit", &connection_wrapper::commit)
-        .def("close", &connection_wrapper::close)
+        .def(
+            "close",
+            &connection_wrapper::close,
+            py::arg("interrupt") = false,
+            "Close the connection. Waits for running queries, or interrupts them first if interrupt is true")
         .def(
             "interrupt",
             &connection_wrapper::interrupt,

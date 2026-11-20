@@ -1076,7 +1076,7 @@ class Connection:
 
         if conn:
             try:
-                conn.close()
+                conn.close(interrupt=True)
             except Exception:
                 pass
 
