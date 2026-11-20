@@ -1599,7 +1599,12 @@ py::dict connection_wrapper::classify_query(const std::string & sql, const std::
                 target_database.size(),
                 &analysis)
             != CHDBSuccess)
+        {
+            /// The C API has no error message here, so name the one failure a caller can cause.
+            if (auto * client = getChdbClient(*conn); client && client->isActiveOnCurrentThreadOrQuery())
+                throw std::runtime_error("Cannot execute an operation on a connection from its own active callback");
             throw std::runtime_error("Invalid or closed connection");
+        }
     }
 
     py::dict out;
