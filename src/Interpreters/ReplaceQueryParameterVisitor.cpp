@@ -209,9 +209,16 @@ bool needCastFromString(const DataTypePtr & type)
 
 /// Return true if the text of a `Field` of this type is not cast back from `String` to the same value:
 /// a `DateTime64` / `Time64` value is printed as a decimal, which a cast from `String` parses as date-time text.
-bool needExactLiteral(const DataTypePtr & type)
+bool needExactLiteral([[maybe_unused]] const DataTypePtr & type)
 {
+#if defined(CHDB_LITE) && CHDB_LITE
+    /// chdb: the exact literal goes through a `Decimal128` cast, which chdb-core-lite does not have, so
+    /// there the literal is cast straight to the parameter's type, as before. Its text then reads back
+    /// as date-time text rather than exactly, which only matters where the query is formatted and parsed again.
+    return false;
+#else
     return !needCastFromString(type) && anyInTypeTree(*type, [](const IDataType & t) { return isDateTime64(t) || isTime64(t); });
+#endif
 }
 
 /// Build an AST literal for a query parameter, optionally wrapping it in a CAST.
