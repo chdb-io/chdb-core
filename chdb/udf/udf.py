@@ -241,6 +241,7 @@ def generate_udf(func_name, args, return_type, udf_body):
         This function is typically called by the @chdb_udf decorator and should not
         be called directly by users.
     """
+    os.makedirs(chdb.g_udf_path, exist_ok=True)
     # generate python script
     with open(f"{chdb.g_udf_path}/{func_name}.py", "w") as f:
         f.write(f"#!{sys.executable}\n")

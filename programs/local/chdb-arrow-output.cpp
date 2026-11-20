@@ -1,6 +1,6 @@
 #include "chdb.h"
 #include "chdb-internal.h"
-#include "ChdbClient.h"
+#include "EmbeddedSession.h"
 #include "QueryResult.h"
 
 #include <Columns/IColumn.h>
@@ -23,12 +23,17 @@
 
 using namespace DB;
 
+namespace DB::ErrorCodes
+{
+extern const int BAD_ARGUMENTS;
+}
+
 namespace
 {
 
-/// Format name we pass to ChdbClient/ClientBase to divert query output
+/// Format name we pass to EmbeddedSession to divert query output
 /// into chunk-collection mode. Single source of truth lives in
-/// src/Client/ClientBase.h as DB::CHUNK_COLLECT_FORMAT_NAME.
+/// chdb-internal.h as CHDB::kChunkCollectFormatName.
 constexpr const char * kArrowConverterFormatName = "Arrow";
 
 CHColumnToArrowColumn::Settings buildConverterSettings(
@@ -87,9 +92,9 @@ chdb_result * makeMetricsResult(
     return reinterpret_cast<chdb_result *>(res);
 }
 
-chdb_result * makeErrorResult(String message)
+chdb_result * makeErrorResult(String message, int code = 0)
 {
-    return reinterpret_cast<chdb_result *>(new CHDB::MaterializedQueryResult(std::move(message)));
+    return reinterpret_cast<chdb_result *>(new CHDB::MaterializedQueryResult(std::move(message), code));
 }
 
 /// Releases for an ArrowArrayStream we synthesize for the one-batch fetch path.
@@ -205,7 +210,7 @@ void ensureConverterInitialized(
 /// Materialized path: collect all chunks, build a single arrow::Table, and
 /// export it as a RecordBatchReader-backed ArrowArrayStream.
 chdb_result * runMaterializedArrowQuery(
-    chdb_conn * connection,
+    DB::EmbeddedSession * client,
     const char * query,
     size_t query_len,
     ArrowArrayStream * out_stream,
@@ -214,23 +219,22 @@ chdb_result * runMaterializedArrowQuery(
     bool output_variant_as_string = false)
 {
     if (!out_stream)
-        return makeErrorResult("Unexpected null out_stream");
+        return makeErrorResult("Unexpected null out_stream", ErrorCodes::BAD_ARGUMENTS);
     if (!query)
-        return makeErrorResult("Unexpected null query");
+        return makeErrorResult("Unexpected null query", ErrorCodes::BAD_ARGUMENTS);
 
     /// Ensure caller-supplied stream is zeroed; on error we leave it released.
     std::memset(out_stream, 0, sizeof(*out_stream));
 
-    auto * client = static_cast<DB::ChdbClient *>(connection->server);
     auto query_result = client->executeMaterializedQuery(
         query, query_len,
-        CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME));
+        CHDB::kChunkCollectFormatName, std::strlen(CHDB::kChunkCollectFormatName));
 
     if (!query_result)
         return makeErrorResult("Query processing failed");
 
     if (!query_result->getError().empty())
-        return makeErrorResult(query_result->getError());
+        return makeErrorResult(query_result->getError(), query_result->getErrorCode());
 
     if (query_result->getType() != CHDB::QueryResultType::RESULT_TYPE_CHUNK)
         return makeErrorResult("Expected chunk-collecting result for Arrow output");
@@ -280,7 +284,7 @@ chdb_result * runMaterializedArrowQuery(
     }
     catch (const Exception & e)
     {
-        return makeErrorResult(getExceptionMessage(e, false));
+        return makeErrorResult(getExceptionMessage(e, false), e.code());
     }
     catch (const std::exception & e)
     {
@@ -351,17 +355,17 @@ chdb_result * chdb_query_arrow_with_settings_n(
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return makeErrorResult("Invalid or closed connection");
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         CApiQueryParameterGuard guard(client, params);
         auto * raw_stream = reinterpret_cast<ArrowArrayStream *>(out_stream);
         return runMaterializedArrowQuery(
-            connection,
+            client,
             query,
             query_len,
             raw_stream,
@@ -371,7 +375,7 @@ chdb_result * chdb_query_arrow_with_settings_n(
     }
     catch (const Exception & e)
     {
-        return makeErrorResult(getExceptionMessage(e, false));
+        return makeErrorResult(getExceptionMessage(e, false), e.code());
     }
     catch (const std::exception & e)
     {
@@ -400,18 +404,18 @@ chdb_result * chdb_query_arrow_n(
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return makeErrorResult("Invalid or closed connection");
 
     try
     {
         auto * raw_stream = reinterpret_cast<ArrowArrayStream *>(out_stream);
-        return runMaterializedArrowQuery(connection, query, query_len, raw_stream, options);
+        return runMaterializedArrowQuery(lease.getClient(), query, query_len, raw_stream, options);
     }
     catch (const Exception & e)
     {
-        return makeErrorResult(getExceptionMessage(e, false));
+        return makeErrorResult(getExceptionMessage(e, false), e.code());
     }
     catch (const std::exception & e)
     {
@@ -437,16 +441,16 @@ chdb_result * chdb_stream_query_arrow_n(
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         auto query_result = client->executeStreamingInit(
             query, query_len,
-            CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME),
+            CHDB::kChunkCollectFormatName, std::strlen(CHDB::kChunkCollectFormatName),
             /*dataframe_over_chunks=*/false);
         if (!query_result)
             return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Streaming init failed"));
@@ -467,7 +471,7 @@ chdb_result * chdb_stream_query_arrow_n(
     }
     catch (const Exception & e)
     {
-        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(getExceptionMessage(e, false)));
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(getExceptionMessage(e, false), e.code()));
     }
     catch (const std::exception & e)
     {
@@ -510,13 +514,13 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Invalid or closed connection"));
 
     try
     {
-        auto * client = static_cast<DB::ChdbClient *>(connection->server);
+        auto * client = lease.getClient();
         /// Parameters only need to be present while the statement is parsed
         /// during init — the engine captures the values then (same contract
         /// as chdb_stream_query_with_params).
@@ -526,7 +530,7 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
 
         auto query_result = client->executeStreamingInit(
             query, query_len,
-            CHUNK_COLLECT_FORMAT_NAME, std::strlen(CHUNK_COLLECT_FORMAT_NAME),
+            CHDB::kChunkCollectFormatName, std::strlen(CHDB::kChunkCollectFormatName),
             /*dataframe_over_chunks=*/false);
         if (!query_result)
             return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Streaming init failed"));
@@ -547,7 +551,7 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
     }
     catch (const Exception & e)
     {
-        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(getExceptionMessage(e, false)));
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(getExceptionMessage(e, false), e.code()));
     }
     catch (const std::exception & e)
     {
@@ -565,8 +569,8 @@ chdb_state chdb_stream_fetch_arrow(
     if (!conn || !stream_result || !out_batch)
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     auto * raw_out = reinterpret_cast<ArrowArrayStream *>(out_batch);
@@ -578,12 +582,10 @@ chdb_state chdb_stream_fetch_arrow(
 
     auto * stream = static_cast<CHDB::StreamQueryResult *>(generic_result);
     auto state = std::static_pointer_cast<ArrowStreamingState>(stream->private_data);
-    if (!state)
+    if (!state || !stream->stream_state)
         return CHDBError;
 
-    auto * client = static_cast<DB::ChdbClient *>(connection->server);
-    if (!client->hasStreamingQuery())
-        return CHDBError;
+    auto * client = lease.getClient();
 
     try
     {
@@ -598,8 +600,8 @@ chdb_state chdb_stream_fetch_arrow(
 
         if (!iter_result->getError().empty())
         {
-            /// Surface via chdb_result_error(stream_result).
-            stream->setError(iter_result->getError());
+            /// Surface via chdb_result_error(stream_result) and chdb_result_error_code(stream_result).
+            stream->setError(iter_result->getError(), iter_result->getErrorCode());
             return CHDBError;
         }
 
@@ -678,7 +680,7 @@ chdb_state chdb_stream_fetch_arrow(
     }
     catch (const Exception & e)
     {
-        stream->setError(getExceptionMessage(e, false));
+        stream->setError(getExceptionMessage(e, false), e.code());
         DB::tryLogCurrentException(__PRETTY_FUNCTION__);
         return CHDBError;
     }

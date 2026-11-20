@@ -11,7 +11,7 @@
 
 namespace DB
 {
-    class ChdbClient;
+    class EmbeddedSession;
 }
 
 /// Connection validity check function
@@ -23,7 +23,48 @@ inline bool checkConnectionValidity(chdb_conn * connection)
 namespace CHDB
 {
 
+struct ChdbConnectionState;
+
+/// Internal format name used by Python DataFrame and Arrow C Data output paths
+/// to collect raw `DB::Chunk`s directly from the pipeline without serialization.
+inline constexpr const char * kChunkCollectFormatName = "dataframe";
+
+/// RAII active-operation guard for C ABI `chdb_conn *` / `chdb_connection` handles.
+/// Looks up the handle in the live-connection registry before dereferencing it, holds
+/// an active-operation count until destruction, and makes concurrent `chdb_close_conn`
+/// wait cleanly instead of freeing `DB::EmbeddedSession` under an in-flight call.
+class ChdbConnectionLease
+{
+public:
+    ChdbConnectionLease() = default;
+    ChdbConnectionLease(std::shared_ptr<ChdbConnectionState> state_, DB::EmbeddedSession * client_) noexcept;
+    ~ChdbConnectionLease();
+
+    ChdbConnectionLease(const ChdbConnectionLease &) = delete;
+    ChdbConnectionLease & operator=(const ChdbConnectionLease &) = delete;
+    ChdbConnectionLease(ChdbConnectionLease && other) noexcept;
+    ChdbConnectionLease & operator=(ChdbConnectionLease && other) noexcept;
+
+    explicit operator bool() const noexcept { return client != nullptr; }
+    DB::EmbeddedSession * getClient() const noexcept { return client; }
+
+private:
+    std::shared_ptr<ChdbConnectionState> state;
+    DB::EmbeddedSession * client = nullptr;
+};
+
+ChdbConnectionLease acquireConnectionLease(const chdb_conn * connection);
+inline ChdbConnectionLease acquireConnectionLease(chdb_connection connection)
+{
+    return acquireConnectionLease(reinterpret_cast<const chdb_conn *>(connection));
+}
+ChdbConnectionLease acquireConnectionLeaseByClient(const void * client_ptr);
+
 std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char ** argv);
+
+chdb_database open_chdb_database_with_exception(const char * path, const chdb_open_options * opts);
+chdb_connection * connect_chdb_database_with_exception(chdb_database db, const chdb_connect_options * opts);
+chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
 
 const std::string & chdb_result_error_string(chdb_result * result);
 
@@ -60,19 +101,19 @@ DB::NameToNameMap buildParameterMap(
     const size_t * param_value_lens,
     size_t param_count);
 
-/// Applies named parameters for one query and restores the connection's own afterwards, like the
-/// Python binding's QueryParameterGuard. Streaming only needs them during init.
+/// Applies named parameters for one query and restores the previous thread-local binding afterwards.
+/// Streaming only needs them during init.
 class CApiQueryParameterGuard
 {
 public:
-    CApiQueryParameterGuard(DB::ChdbClient * client, const DB::NameToNameMap & params);
+    CApiQueryParameterGuard(DB::EmbeddedSession * client, const DB::NameToNameMap & params);
     ~CApiQueryParameterGuard();
 
     CApiQueryParameterGuard(const CApiQueryParameterGuard &) = delete;
     CApiQueryParameterGuard & operator=(const CApiQueryParameterGuard &) = delete;
 
 private:
-    const DB::ChdbClient * previous_client = nullptr;
+    const DB::EmbeddedSession * previous_client = nullptr;
     const DB::NameToNameMap * previous_params = nullptr;
     bool applied = false;
 };

@@ -76,7 +76,9 @@ Pipe StorageArrowStream::read(
         sample_block,
         format_settings,
         num_streams,
-        max_block_size
+        max_block_size,
+        stream_info.stream_mutex,
+        stream_info.owner_keepalive
     );
 
     Pipes pipes;

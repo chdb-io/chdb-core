@@ -34,8 +34,15 @@ if sys.version_info[:2] >= (3, 7):
     if sys.platform == "linux":
         import ctypes
         import importlib.machinery
+        import sysconfig
         _RTLD_DEEPBIND = 0x00008
-        for _suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        _soabi = sysconfig.get_config_var("SOABI")
+        _candidate_suffixes = list(importlib.machinery.EXTENSION_SUFFIXES)
+        if _soabi:
+            _soabi_suffix = f".{_soabi}.so"
+            if _soabi_suffix not in _candidate_suffixes:
+                _candidate_suffixes.insert(0, _soabi_suffix)
+        for _suffix in _candidate_suffixes:
             _ext_path = os.path.join(current_path, "_chdb" + _suffix)
             if os.path.exists(_ext_path):
                 try:
@@ -45,9 +52,12 @@ if sys.version_info[:2] >= (3, 7):
                 break
     from . import _chdb  # noqa
 
-    conn = _chdb.connect()
-    engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
-    conn.close()
+    if hasattr(_chdb, "engine_version"):
+        engine_version = _chdb.engine_version()
+    else:
+        conn = _chdb.connect()
+        engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
+        conn.close()
 else:
     raise NotImplementedError("Python 3.6 or lower version is not supported")
 
@@ -118,7 +128,7 @@ from .progress_display import (
 
 
 # wrap _chdb functions
-def query(sql, output_format="CSV", path="", udf_path="", params=None, options=None):
+def query(sql, output_format="CSV", path="", udf_path="", params=None, options=None, tables=None):
     """Execute SQL query using chDB engine.
 
     This is the main query function that executes SQL statements using the embedded
@@ -231,14 +241,16 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
 
         try:
             if lower_output_format in _df_format:
-                res = conn.query_df(sql, params=params)
+                res = conn.query_df(sql, params=params, tables=tables)
             else:
-                res = conn.query(sql, output_format, params=params)
+                res = conn.query(sql, output_format, params=params, tables=tables)
+        except ChdbError:
+            raise
         except RuntimeError as e:
             raise ChdbError(str(e)) from e.with_traceback(None)
         else:
             if lower_output_format not in _df_format and res.has_error():
-                raise ChdbError(res.error_message())
+                raise ChdbError(res.error_message(), error_code=res.error_code())
             return result_func(res)
         finally:
             if progress_callback is not None:
@@ -262,12 +274,14 @@ UDFType = _chdb.UDFType
 
 from . import dbapi, session, udf, utils  # noqa: E402
 from .udf import agg, func  # noqa: E402
-from .state import connect  # noqa: E402
+from .state import Database, connect, open  # noqa: E402
 
 __all__ = [
     "_chdb",
     "PyReader",
     "ChdbError",
+    "Database",
+    "open",
     "query",
     "sql",
     "func",

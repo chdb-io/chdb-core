@@ -25,13 +25,17 @@ ArrowTableReader::ArrowTableReader(
     const DB::Block & sample_block_,
     const DB::FormatSettings & format_settings_,
     size_t num_streams_,
-    size_t max_block_size_)
+    size_t max_block_size_,
+    std::shared_ptr<std::mutex> shared_stream_mutex_,
+    std::shared_ptr<void> stream_keepalive_)
     : sample_block(sample_block_),
     format_settings(format_settings_),
     arrow_stream(std::move(arrow_stream_)),
     num_streams(num_streams_),
     max_block_size(max_block_size_),
-    scan_states(num_streams_)
+    scan_states(num_streams_),
+    stream_mutex(shared_stream_mutex_ ? std::move(shared_stream_mutex_) : std::make_shared<std::mutex>()),
+    stream_keepalive(std::move(stream_keepalive_))
 {
     initializeStream();
 }
@@ -44,8 +48,12 @@ void ArrowTableReader::initializeStream()
                         "ArrowArrayStream is not valid");
     }
 
-    /// Get schema from stream
-    arrow_stream->getSchema(schema);
+    /// Get schema from stream under the shared stream mutex so concurrent
+    /// readers on the same ArrowArrayStream cannot race get_schema/get_next.
+    {
+        std::lock_guard<std::mutex> lock(*stream_mutex);
+        arrow_stream->getSchema(schema);
+    }
     auto arrow_schema_result = arrow::ImportSchema(&schema.arrow_schema);
     if (!arrow_schema_result.ok())
     {
@@ -107,7 +115,7 @@ Chunk ArrowTableReader::readNextChunk(size_t stream_index)
 
 std::unique_ptr<ArrowArrayWrapper> ArrowTableReader::getNextArrowArray()
 {
-    std::lock_guard<std::mutex> lock(stream_mutex);
+    std::lock_guard<std::mutex> lock(*stream_mutex);
 
     if (global_stream_exhausted || !arrow_stream || !arrow_stream->isValid())
     {

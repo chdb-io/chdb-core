@@ -47,6 +47,13 @@ const UInt8 * getConditionFlags(const DB::IColumn * column)
 
 PythonUDAFDescriptor::~PythonUDAFDescriptor()
 {
+    if (!Py_IsInitialized())
+    {
+        (void)factory.release();
+        (void)pickle_dumps.release();
+        (void)pickle_loads.release();
+        return;
+    }
     py::gil_scoped_acquire acquire;
     factory.release().dec_ref();
     pickle_dumps.release().dec_ref();
@@ -269,6 +276,13 @@ void PythonAggregateUDF::destroy(DB::AggregateDataPtr __restrict place) const no
     auto & target = state(place);
     if (!target.accumulator && !target.update)
         return;
+
+    if (!Py_IsInitialized())
+    {
+        target.update = nullptr;
+        target.accumulator = nullptr;
+        return;
+    }
 
     py::gil_scoped_acquire acquire;
     resetAccumulator(target);

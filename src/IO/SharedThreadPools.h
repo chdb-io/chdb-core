@@ -47,7 +47,6 @@ private:
     const CurrentMetrics::Metric threads_scheduled_metric;
 
     std::unique_ptr<ThreadPool> instance;
-    std::once_flag init_flag;
     std::mutex mutex;
     size_t max_threads_turbo = 0;
     size_t max_threads_normal = 0;

@@ -20,6 +20,15 @@ public:
 
     ~DataSourceWrapper()
     {
+        if (!Py_IsInitialized())
+        {
+            cached_arrow_stream.reset();
+            for (auto & [_, arr] : column_cache)
+                (void)arr.release();
+            column_cache.clear();
+            (void)data_source.release();
+            return;
+        }
         py::gil_scoped_acquire acquire;
         cached_arrow_stream.reset();
         column_cache.clear();

@@ -1,12 +1,6 @@
 #include "AIQueryProcessor.h"
 
 #include "chdb-internal.h"
-#include "PybindWrapper.h"
-
-#include <pybind11/pybind11.h>
-#ifndef CHDB_FREE_THREADING
-#include <pybind11/detail/non_limited_api.h>
-#endif
 
 #if USE_CLIENT_AI
 #include <Client/AI/AIClientFactory.h>
@@ -16,8 +10,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
-
-namespace py = pybind11;
 
 #if USE_CLIENT_AI
 
@@ -93,11 +85,7 @@ std::string AIQueryProcessor::generateSQLFromPrompt(const std::string & prompt)
     if (!generator)
         throw std::runtime_error("AI SQL generator is not configured. Provide ai_api_key (or set OPENAI_API_KEY/ANTHROPIC_API_KEY) when creating the connection or session.");
 
-    std::string sql;
-    {
-        py::gil_scoped_release release;
-        sql = generator->generateSQL(prompt);
-    }
+    std::string sql = generator->generateSQL(prompt);
 
     if (sql.empty())
         throw std::runtime_error("AI did not return a SQL query.");

@@ -163,7 +163,7 @@
 #   include <azure/storage/common/internal/xml_wrapper.hpp>
 #endif
 
-extern bool chdb_embedded_server_initialized;
+extern std::atomic<bool> chdb_embedded_server_initialized;
 extern std::atomic<bool> g_memory_tracking_disabled;
 
 namespace fs = std::filesystem;
@@ -1196,6 +1196,7 @@ void LocalServer::cleanup()
             global_context->shutdown();
             global_context.reset();
         }
+        shared_context.reset();
 
         /// thread status should be destructed before shared context because it relies on process list.
 
@@ -1434,7 +1435,7 @@ try
         global_register_once_flag,
         []()
         {
-            chdb_embedded_server_initialized = true;
+            chdb_embedded_server_initialized.store(true, std::memory_order_relaxed);
 
             registerInterpreters();
             registerParsers();
@@ -1564,6 +1565,8 @@ catch (DB::Exception & e)
     /// through getErrorMsg(); without this, a failed query came back with no data and no error.
     error_message_oss << getExceptionMessageForLogging(e, need_print_stack_trace, true) << '\n';
     auto code = DB::getCurrentExceptionCode();
+    /// chdb_spec: chdb_result_error_code() of a one-shot query reads it from here.
+    error_code = code;
     return static_cast<UInt8>(code) ? code : 1;
 }
 catch (...)
@@ -1573,6 +1576,7 @@ catch (...)
 
     error_message_oss << DB::getCurrentExceptionMessage(true) << '\n';
     auto code = DB::getCurrentExceptionCode();
+    error_code = code;
     return static_cast<UInt8>(code) ? code : 1;
 }
 
@@ -1630,7 +1634,7 @@ void LocalServer::processConfig()
         /// Crash reports must reach stderr, which the configured channels may not write to.
         buildLoggers(getClientConfiguration(), logger(), "clickhouse-local", {fatal_log_name});
     }
-    shared_context = Context::createSharedHolder();
+    shared_context = Context::createShared();
     global_context = Context::createGlobal(shared_context.get());
     global_context->makeGlobalContext();
     global_context->setApplicationType(Context::ApplicationType::LOCAL);
