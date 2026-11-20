@@ -82,6 +82,9 @@ jobs:
     # Skip draft pull requests, and releases that are not version tags: the
     # rolling `nightly` pre-release is created once and must not start a build.
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')) }}
+    # The build, the static library and the full and lite test suites take about six hours
+    # on this runner, GitHub's default job limit; its steps already allow 600 minutes.
+    timeout-minutes: 600
     # The nightly, main's build of a merged sync, builds and tests the Python wheel
     # only: it skips the static library, chdb-core-lite, debug symbols, the
     # libchdb/ADBC/Go checks and the checks of other packages, and tests each Python
