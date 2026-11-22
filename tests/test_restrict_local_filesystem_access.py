@@ -707,6 +707,12 @@ def _child_roles(lib_path, root, secret_file):
     results["plain_settings"] = fresh_plain.query(settings)
     results["restricted_settings"] = fresh_restricted.query(settings)
     results["restricted_const"] = fresh_restricted.query("SET max_memory_usage = 5")
+    # A policy given later to the login role binds restricted connections already open, which cannot drop the role.
+    results["role_policy"] = plain.query("CREATE ROW POLICY hide_all ON default.filtered USING 0 AS RESTRICTIVE TO file_reader")
+    results["restricted_rows_after_role_policy"] = restricted.query("SELECT count() FROM filtered")
+    results["restricted_set_role_none"] = restricted.query("SET ROLE NONE")
+    results["restricted_rows_after_set_role_none"] = restricted.query("SELECT count() FROM filtered")
+    results["restricted_file_after_set_role_none"] = restricted.query(read)
     fresh_restricted.close()
     fresh_plain.close()
     restricted.close()
@@ -929,6 +935,10 @@ class TestRestrictedConnectionInternalAccess(unittest.TestCase):
         self.assertEqual(results["plain_settings"], [None, "3\t77\t1000000000\n"])
         self.assertEqual(results["restricted_settings"], results["plain_settings"])
         self.assertRegex(results["restricted_const"][0] or "", "SETTING_CONSTRAINT_VIOLATION|should not be changed")
+        self.assertIsNone(results["role_policy"][0], results["role_policy"][0])
+        self.assertEqual(results["restricted_rows_after_role_policy"], [None, "0\n"])
+        self.assertEqual(results["restricted_rows_after_set_role_none"], [None, "0\n"])
+        self.assertRegex(results["restricted_file_after_set_role_none"][0] or "", DENIED)
 
     def test_sql_cannot_end_the_host_process(self):
         results = self.run_child("shutdown")
