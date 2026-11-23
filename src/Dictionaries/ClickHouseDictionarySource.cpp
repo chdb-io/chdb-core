@@ -339,12 +339,20 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
             });
         }
 
+        /// chDB: the user an in-process query runs as instead of `user`, set for dictionaries of connections that restrict
+        /// local filesystem access (see restrictClickHouseDictionarySourceUser). `user` stays the one of a remote server.
+        /// Read from the dictionary itself, never from a named collection, which does not override it either.
+        const String local_user = config.getString(settings_config_prefix + ".local_user", "");
+
         ContextMutablePtr context;
         if (configuration->is_local)
         {
             /// We should set user info even for the case when the dictionary is loaded in-process (without TCP communication).
             Session session(global_context, ClientInfo::Interface::LOCAL);
-            session.authenticate(configuration->user, configuration->password, Poco::Net::SocketAddress{});
+            if (local_user.empty())
+                session.authenticate(configuration->user, configuration->password, Poco::Net::SocketAddress{});
+            else
+                session.authenticate(local_user, "", Poco::Net::SocketAddress{});
             context = session.makeQueryContext();
         }
         else

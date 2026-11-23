@@ -1,4 +1,5 @@
 #include <Access/ContextAccess.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Access/AccessControl.h>
 #include <Access/EnabledRoles.h>
 #include <Access/EnabledRowPolicies.h>
@@ -436,6 +437,14 @@ void ContextAccess::setUser(const UserPtr & user_) const
         current_roles_with_admin_option.insert(current_roles_with_admin_option.end(), new_granted_with_admin_option.begin(), new_granted_with_admin_option.end());
     }
 
+    /// chDB's restricted user holds no roles, but its row policies and settings profiles follow the roles the user it
+    /// is made from logs in with (see setRolesInfo), so it subscribes to those, and changes to them reach it too.
+    if (const auto restricted = tryGetRestrictedLocalFilesystemUser(*params.user_id))
+    {
+        current_roles = restricted->policy_roles;
+        current_roles_with_admin_option.clear();
+    }
+
     subscription_for_roles_changes.reset();
     enabled_roles = access_control->getEnabledRoles(current_roles, current_roles_with_admin_option);
     subscription_for_roles_changes = enabled_roles->subscribeForChanges([weak_ptr = weak_from_this()](const std::shared_ptr<const EnabledRolesInfo> & roles_info_)
@@ -471,13 +480,26 @@ void ContextAccess::setRolesInfo(const std::shared_ptr<const EnabledRolesInfo> &
     chassert(roles_info_);
     roles_info = roles_info_;
 
-    enabled_row_policies = access_control->getEnabledRowPolicies(*params.user_id, roles_info->enabled_roles);
+    /// chDB's restricted user is another identity than the user it is made from, and holds no roles: it gets the row
+    /// policies and settings profiles of that user and of the roles that user logs in with, which `roles_info_` holds
+    /// for it (see setUser). Its access rights take nothing from those roles: their grants were merged into the user
+    /// before the revocations.
+    UUID policy_user_id = *params.user_id;
+    std::shared_ptr<const EnabledRolesInfo> policy_roles_info = roles_info;
+    if (const auto restricted = tryGetRestrictedLocalFilesystemUser(*params.user_id))
+    {
+        policy_user_id = restricted->policy_user_id;
+        static const auto no_roles = std::make_shared<const EnabledRolesInfo>();
+        roles_info = no_roles;
+    }
+
+    enabled_row_policies = access_control->getEnabledRowPolicies(policy_user_id, policy_roles_info->enabled_roles);
 #if CLICKHOUSE_CLOUD
-    enabled_masking_policies = access_control->getEnabledMaskingPolicies(*params.user_id, roles_info->enabled_roles);
+    enabled_masking_policies = access_control->getEnabledMaskingPolicies(policy_user_id, policy_roles_info->enabled_roles);
 #endif
 
     enabled_settings = access_control->getEnabledSettings(
-        *params.user_id, user->settings, roles_info->enabled_roles, roles_info->settings_from_enabled_roles);
+        policy_user_id, user->settings, policy_roles_info->enabled_roles, policy_roles_info->settings_from_enabled_roles);
 
     calculateAccessRights();
 }
@@ -625,12 +647,21 @@ std::shared_ptr<const EnabledQuota> ContextAccess::getQuota() const
     {
         if (roles_info)
         {
-            enabled_quota = access_control->getEnabledQuota(*params.user_id,
-                                                            user_name,
-                                                            roles_info->enabled_roles,
-                                                            params.address,
-                                                            params.forwarded_address,
-                                                            params.quota_key);
+            /// chDB's restricted user gets the quota of the user it is made from.
+            if (const auto restricted = tryGetRestrictedLocalFilesystemUser(*params.user_id))
+                enabled_quota = access_control->getEnabledQuota(restricted->policy_user_id,
+                                                                restricted->policy_user_name,
+                                                                enabled_roles->getRolesInfo()->enabled_roles,
+                                                                params.address,
+                                                                params.forwarded_address,
+                                                                params.quota_key);
+            else
+                enabled_quota = access_control->getEnabledQuota(*params.user_id,
+                                                                user_name,
+                                                                roles_info->enabled_roles,
+                                                                params.address,
+                                                                params.forwarded_address,
+                                                                params.quota_key);
         }
         else
         {

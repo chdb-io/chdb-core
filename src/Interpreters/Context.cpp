@@ -99,6 +99,7 @@
 #include <Core/SettingsQuirks.h>
 #include <Core/UUID.h>
 #include <Access/AccessControl.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Access/resolveSetting.h>
 #include <Access/ContextAccess.h>
 #include <Access/EnabledRolesInfo.h>
@@ -2478,7 +2479,17 @@ void Context::setUser(const UUID & user_id_, const std::vector<UUID> & external_
 
     auto default_roles = user->granted_roles.findGranted(user->default_roles);
     auto enabled_roles = access_control.getEnabledRolesInfo(default_roles, {});
-    auto enabled_profiles = access_control.getEnabledSettingsInfo(user_id_, user->settings, enabled_roles->enabled_roles, enabled_roles->settings_from_enabled_roles);
+
+    /// chDB's restricted user is another identity than the user it is made from, and holds no roles: it gets the
+    /// settings profiles of that user and of the roles that user logs in with, and is trusted as that user is.
+    UUID settings_user_id = user_id_;
+    auto settings_roles = enabled_roles;
+    if (const auto restricted = tryGetRestrictedLocalFilesystemUser(user_id_))
+    {
+        settings_user_id = restricted->policy_user_id;
+        settings_roles = access_control.getEnabledRolesInfo(restricted->policy_roles, {});
+    }
+    auto enabled_profiles = access_control.getEnabledSettingsInfo(settings_user_id, user->settings, settings_roles->enabled_roles, settings_roles->settings_from_enabled_roles);
     const auto & database = user->default_database;
     if (!database.empty())
         DatabaseCatalog::instance().assertDatabaseExists(database);
@@ -2491,7 +2502,7 @@ void Context::setUser(const UUID & user_id_, const std::vector<UUID> & external_
     /// compatibility (see `SettingsConstraints::check`).
     /// The check uses what a new session starts from, before this context changes: `setUser` also switches
     /// an existing context (`EXECUTE AS`, a view's definer), whose own settings say nothing about the target.
-    if (!isUserDefinedInConfig(user_id_))
+    if (!isUserDefinedInConfig(settings_user_id))
     {
         try
         {
@@ -2503,7 +2514,7 @@ void Context::setUser(const UUID & user_id_, const std::vector<UUID> & external_
                 new_session_settings, user->settings, SettingSource::USER, /* skip_config_defined_profiles= */ true,
                 /* actor_is_config_defined= */ false, resolved_constraints);
             new_session_constraints->constraints.check(
-                new_session_settings, enabled_roles->settings_from_enabled_roles, SettingSource::ROLE,
+                new_session_settings, settings_roles->settings_from_enabled_roles, SettingSource::ROLE,
                 /* skip_config_defined_profiles= */ true, /* actor_is_config_defined= */ false, resolved_constraints);
 
             /// A profile also reaches the user through its own `TO` clause, which neither list above holds.
