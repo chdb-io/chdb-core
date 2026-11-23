@@ -115,7 +115,7 @@ void ArrowBlockOutputFormat::initializeOnFirstChunk(const Chunk & chunk)
             .use_64_bit_indexes_for_dictionary = format_settings.arrow.use_64_bit_indexes_for_dictionary,
             .output_date_as_uint16 = format_settings.arrow.output_date_as_uint16,
             .output_uuid_as_fixed_byte_array = format_settings.arrow.output_uuid_as_fixed_byte_array,
-            .output_variant_as_string = format_settings.arrow.output_variant_as_string,
+            .output_variant_as_json_string = format_settings.arrow.output_variant_as_json_string,
             .output_max_record_batch_bytes = format_settings.arrow.output_max_record_batch_bytes,
             .output_unsupported_types = format_settings.arrow.output_unsupported_types,
             .format_settings = format_settings,

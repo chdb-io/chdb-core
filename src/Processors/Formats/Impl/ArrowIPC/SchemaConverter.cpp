@@ -808,7 +808,7 @@ buildField(
             }
             case TypeIndex::Variant:
             {
-                if (settings.arrow.output_variant_as_string)
+                if (settings.arrow.output_variant_as_json_string)
                 {
                     nullable = true;
                     type_type = flatbuf::Type_Utf8;

@@ -1626,7 +1626,7 @@ namespace DB
             }
             case TypeIndex::Variant:
             {
-                if (settings.output_variant_as_string)
+                if (settings.output_variant_as_json_string)
                 {
                     fillArrowArrayWithJSONColumnData(
                         column, column_type, null_bytemap, format_name, array_builder, start, end, true);
@@ -1965,7 +1965,7 @@ namespace DB
 
         if (isVariant(column_type))
         {
-            if (settings.output_variant_as_string)
+            if (settings.output_variant_as_json_string)
             {
                 *out_is_column_nullable = true;
                 return arrow::utf8();

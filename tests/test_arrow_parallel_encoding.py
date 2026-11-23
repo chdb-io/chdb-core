@@ -182,7 +182,7 @@ class TestArrowParallelEncoding(unittest.TestCase):
             self.assertEqual(field.type, pa.binary(16))
             self.assertNotIn(b"ARROW:extension:name", field.metadata or {})
 
-    def test_variant_as_string_option(self):
+    def test_variant_as_json_string_option(self):
         sql = (
             "SELECT multiIf("
             "number = 0, CAST(toUInt64(1), 'Variant(UInt64, String)'), "
@@ -190,18 +190,20 @@ class TestArrowParallelEncoding(unittest.TestCase):
             "CAST(NULL, 'Variant(UInt64, String)')) AS v "
             "FROM numbers(3)"
         )
-        for native_writer in (0, 1):
-            tbl = _query_arrow(
-                sql,
-                parallel=False,
-                fmt="ArrowStream",
-                extra_settings=(
-                    "output_format_arrow_variant_as_string = 1, "
-                    f"output_format_arrow_use_native_writer = {native_writer}"
-                ),
-            )
-            self.assertEqual(tbl.schema.field("v").type, pa.string())
-            self.assertEqual(tbl.column("v").to_pylist(), ["1", '"abc"', None])
+        # `output_format_arrow_variant_as_string` is the previous name of the setting, kept as an alias.
+        for setting in ("output_format_arrow_variant_as_json_string", "output_format_arrow_variant_as_string"):
+            for native_writer in (0, 1):
+                tbl = _query_arrow(
+                    sql,
+                    parallel=False,
+                    fmt="ArrowStream",
+                    extra_settings=(
+                        f"{setting} = 1, "
+                        f"output_format_arrow_use_native_writer = {native_writer}"
+                    ),
+                )
+                self.assertEqual(tbl.schema.field("v").type, pa.string())
+                self.assertEqual(tbl.column("v").to_pylist(), ["1", '"abc"', None])
 
     def test_record_batch_size_bytes_splits_chdb_types(self):
         # output_format_arrow_max_record_batch_size_bytes splits a block into several
@@ -234,7 +236,7 @@ class TestArrowParallelEncoding(unittest.TestCase):
         for native_writer in (0, 1):
             for fmt in ("Arrow", "ArrowStream"):
                 settings = (
-                    "max_block_size = 65536, output_format_arrow_variant_as_string = 1, "
+                    "max_block_size = 65536, output_format_arrow_variant_as_json_string = 1, "
                     f"output_format_arrow_use_native_writer = {native_writer}"
                 )
                 whole_batches, whole = batches_and_table(fmt, settings)

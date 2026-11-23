@@ -53,7 +53,7 @@ private:
     /// Encodes a Variant column as an Arrow dense union (no validity buffer; a types and an offsets
     /// buffer, the variant children in global order, and a trailing single-element null child).
     void encodeVariant(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end);
-    /// chdb: `output_format_arrow_variant_as_string` writes a Variant as JSON text instead of a dense union.
+    /// chdb: `output_format_arrow_variant_as_json_string` writes a Variant as JSON text instead of a dense union.
     void encodeVariantAsJSONText(const IColumn & column, const DataTypePtr & type, size_t begin, size_t end);
     /// Writes a column with no first-class Arrow mapping as a variable-width Arrow column (an int32
     /// offsets buffer and the concatenated per-row serialized values). `arrowOpaqueValueIsText` chooses
