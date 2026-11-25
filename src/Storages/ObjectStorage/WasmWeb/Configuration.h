@@ -25,7 +25,6 @@ public:
     static constexpr auto type_name = "web";
 
     StorageWasmWebConfiguration() = default;
-    StorageWasmWebConfiguration(const StorageWasmWebConfiguration & other) = default;
 
     ObjectStorageType getType() const override { return type; }
     std::string getTypeName() const override { return type_name; }
@@ -33,14 +32,7 @@ public:
 
     Path getRawPath() const override { return path; }
     void setRawPath(const Path & p) override { path = p; }
-    const String & getRawURI() const override { return raw_uri; }
-
-    const Paths & getPaths() const override { return paths; }
-    void setPaths(const Paths & paths_) override
-    {
-        paths = paths_;
-        path = paths_[0];
-    }
+    std::string_view getRawURI() const override { return raw_uri; }
 
     String getNamespace() const override { return bucket; }
     String getDataSourceDescription() const override { return base_url; }
@@ -53,6 +45,13 @@ public:
     bool supportsWrites() const override { return false; }
 
 protected:
+    const Paths & getPathsImpl() const override TSA_REQUIRES_SHARED(paths_mutex) { return paths; }
+    void setPathsImpl(const Paths & paths_) override TSA_REQUIRES(paths_mutex)
+    {
+        paths = paths_;
+        path = paths_[0];
+    }
+
     void fromAST(ASTs & args, ContextPtr context, bool with_structure) override;
     void fromNamedCollection(const NamedCollection & collection, ContextPtr context) override;
 
@@ -75,7 +74,7 @@ private:
 
     /// Key prefix of the table inside base_url (what IcebergMetadata sees as table_path).
     Path path;
-    Paths paths;
+    Paths paths TSA_GUARDED_BY(paths_mutex);
 };
 
 }

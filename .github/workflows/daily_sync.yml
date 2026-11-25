@@ -147,8 +147,8 @@ jobs:
           mkdir -p patchelf
           tar -xf patchelf.tar.gz -C patchelf
           sudo cp patchelf/bin/patchelf /usr/bin/
-          rustup toolchain install nightly-2026-03-22
-          rustup default nightly-2026-03-22
+          rustup toolchain install nightly-2026-11-02
+          rustup default nightly-2026-11-02
           rustup component add rust-src
 
       - name: Install Python 3.9 and 3.14

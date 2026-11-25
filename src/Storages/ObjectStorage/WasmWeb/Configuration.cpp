@@ -153,7 +153,7 @@ void StorageWasmWebConfiguration::fromAST(ASTs & args, ContextPtr context, bool 
     }
 
     path = key_prefix;
-    paths = {path};
+    setPaths({path});
 }
 
 void StorageWasmWebConfiguration::fromNamedCollection(const NamedCollection &, ContextPtr)

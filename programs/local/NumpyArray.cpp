@@ -30,6 +30,9 @@
 #include <base/Decimal.h>
 #include <base/types.h>
 #include <Common/formatIPv6.h>
+#include <Common/exp10_i32.h>
+#include <Core/DecimalFunctions.h>
+#include <IO/WriteHelpers.h>
 #include <pybind11/pytypes.h>
 
 namespace DB
