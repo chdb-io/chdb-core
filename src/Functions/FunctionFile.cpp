@@ -1,3 +1,4 @@
+#include <Access/LocalFilesystemAccess.h>
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnConst.h>
@@ -41,7 +42,8 @@ public:
 
     explicit FunctionFile(const ContextPtr & context)
     {
-        if (context && context->getApplicationType() != Context::ApplicationType::LOCAL)
+        /// A chDB connection that restricts local filesystem access is checked in local mode too.
+        if (context && (context->getApplicationType() != Context::ApplicationType::LOCAL || isLocalFilesystemAccessRestricted(context)))
             access_check.emplace(context);
     }
 

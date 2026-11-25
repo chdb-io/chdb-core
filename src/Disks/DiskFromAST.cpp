@@ -1,4 +1,5 @@
 #include <Disks/DiskFromAST.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Disks/getDiskConfigurationFromAST.h>
 #include <Disks/DiskSelector.h>
 #include <Disks/IStoragePolicy.h>
@@ -511,6 +512,10 @@ std::string DiskFromAST::createCustomDisk(
 {
     if (!isDiskFunction(disk_function_ast))
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Expected a disk function");
+
+    /// A custom disk is a path or an object storage chosen by the query. Loading tables at startup runs in a
+    /// context without a user, so only queries of a user without local filesystem access are refused here.
+    checkLocalFilesystemAccess(context, "Defining a custom disk");
 
     /// On a fresh create, persist the credential opt-in into the definition (a `_server_credentials_allowed`
     /// marker) so the disk keeps working across restart. This must happen BEFORE flattening, because the custom

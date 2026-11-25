@@ -950,6 +950,18 @@ jobs:
           cp programs/local/chdb.hpp chdb.hpp
           chmod 0644 chdb.h chdb.hpp
           tar -czvf linux-aarch64-libchdb-static.tar.gz libchdb.a chdb.h chdb.hpp
+      # The split static library for Go modules (chdb-io/chdb-core#342): the same C API and
+      # isolation as libchdb.a, in shards of at most ~200 MiB. Shipped as libchdb.a so that
+      # -lchdb keeps working; libchdb-split.json lists the shards and how to link them.
+      - name: Package split libchdb.a
+        if: (env.EFFECTIVE_DEBUG_MODE != 'true') && env.WHEEL_ONLY != 'true'
+        run: |
+          rm -rf split-static && mkdir split-static
+          cp libchdb_split.a split-static/libchdb.a
+          cp libchdb_split.json split-static/libchdb-split.json
+          cp programs/local/chdb.h programs/local/chdb.hpp LICENSE.txt split-static/
+          chmod 0644 split-static/*
+          tar -C split-static -czvf linux-aarch64-libchdb-static-split.tar.gz libchdb.a libchdb-split.json chdb.h chdb.hpp LICENSE.txt
       - name: Upload libchdb.so to release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -960,6 +972,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && env.EFFECTIVE_DEBUG_MODE != 'true'
         run: |
           gh release upload ${{ github.ref_name }} linux-aarch64-libchdb-static.tar.gz --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Upload split libchdb.a to release
+        if: startsWith(github.ref, 'refs/tags/v') && env.EFFECTIVE_DEBUG_MODE != 'true'
+        run: |
+          gh release upload ${{ github.ref_name }} linux-aarch64-libchdb-static-split.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Upload debug symbols to release
@@ -986,6 +1004,7 @@ jobs:
             ./dist/*.whl
             ./linux-aarch64-libchdb.tar.gz
             ./linux-aarch64-libchdb-static.tar.gz
+            ./linux-aarch64-libchdb-static-split.tar.gz
             ./linux-aarch64-debuginfo.tar.xz
           overwrite: true
       # The build of a merged sync feeds the nightly release directly;

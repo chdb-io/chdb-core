@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <Access/LocalFilesystemAccess.h>
 #include <Formats/FormatSettings.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Interpreters/Context.h>
@@ -52,6 +53,8 @@ InputFormatPtr getInputFormatFromASTInsertQuery(
 
     if (ast_insert_query->infile && context->getApplicationType() == Context::ApplicationType::SERVER)
         throw Exception(ErrorCodes::UNKNOWN_TYPE_OF_QUERY, "Query has infile and was send directly to server");
+    if (ast_insert_query->infile)
+        checkLocalFilesystemAccess(context, "FROM INFILE");
 
     const Settings & settings = context->getSettingsRef();
 
