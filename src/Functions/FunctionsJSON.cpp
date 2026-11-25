@@ -1527,17 +1527,6 @@ public:
     }
 };
 
-<<<<<<< ours
-#if defined(CHDB_LITE) && CHDB_LITE
-/// chdb-core-lite: drop niche JSON variants. Keep core extract/has/length/type;
-/// drop CaseInsensitive variants + KeysAndValues/ArrayRaw/Keys/KeysAndValuesRaw.
-/// Variadic so commas inside template arguments don't break macro parsing.
-#define CHDB_LITE_JSON(...) (void)0
-#else
-#define CHDB_LITE_JSON(...) __VA_ARGS__
-#endif
-||||||| base
-=======
 /// Walks a JSON object and emits one entry per scalar leaf (`null` is not a leaf).
 /// Arguments after the JSON are options (not path keys): `skip_regex` and `arrays`, both constant strings.
 /// With `with_paths` the result is `Array(Tuple(path String, value String))`, otherwise `Array(String)`.
@@ -1793,7 +1782,15 @@ using JSONExtractLeafValuesImpl = JSONExtractLeafImpl<JSONParser, false>;
 
 template <typename JSONParser>
 using JSONExtractLeafPathsAndValuesImpl = JSONExtractLeafImpl<JSONParser, true>;
->>>>>>> theirs
+
+#if defined(CHDB_LITE) && CHDB_LITE
+/// chdb-core-lite: drop niche JSON variants. Keep core extract/has/length/type;
+/// drop CaseInsensitive variants + KeysAndValues/ArrayRaw/Keys/KeysAndValuesRaw.
+/// Variadic so commas inside template arguments don't break macro parsing.
+#define CHDB_LITE_JSON(...) (void)0
+#else
+#define CHDB_LITE_JSON(...) __VA_ARGS__
+#endif
 
 REGISTER_FUNCTION(JSON)
 {
