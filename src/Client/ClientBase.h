@@ -36,6 +36,8 @@
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -52,12 +54,17 @@ namespace DB
 
 static constexpr std::string_view DEFAULT_CLIENT_NAME = "client";
 
-static const NameSet exit_strings
+constexpr std::array<std::string_view, 20> exit_strings
 {
     "exit", "quit", "logout", "учше", "йгше", "дщпщге",
     "exit;", "quit;", "logout;", "учшеж", "йгшеж", "дщпщгеж",
     "q", "й", "\\q", "\\Q", "\\й", "\\Й", ":q", "Жй"
 };
+
+inline bool isExitString(std::string_view text)
+{
+    return std::ranges::find(exit_strings, text) != exit_strings.end();
+}
 
 namespace ErrorCodes
 {
