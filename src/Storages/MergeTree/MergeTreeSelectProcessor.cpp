@@ -20,6 +20,7 @@
 #include <Storages/MergeTree/IMergeTreeDataPart.h>
 #include <Storages/MergeTree/IMergeTreeReader.h>
 #include <Storages/MergeTree/MergeTreeBlockReadUtils.h>
+#include <Storages/MergeTree/MergeTreeIndexConditionText.h>
 #include <Storages/MergeTree/MergeTreeIndexReadResultPool.h>
 #include <Storages/MergeTree/MergeTreeRangeReader.h>
 #include <Storages/MergeTree/MergeTreeVirtualColumns.h>
@@ -377,6 +378,32 @@ static void addIndexReadSteps(PrewhereExprSteps & steps, const IndexReadTasks & 
         {
             if (auto it = first_step_using_column.find(name); it != first_step_using_column.end())
                 it->second = std::min(it->second, i);
+        }
+    }
+
+    /// The BM25 score column of a predicate and its match column are filled in one pass over the scoring cursors
+    /// (see `MergeTreeReaderTextIndex`), so both are read at the first step that uses either of them.
+    for (const auto & [_, index_task] : index_read_tasks)
+    {
+        if (!index_task.bm25_params)
+            continue;
+
+        std::map<UInt128, size_t> first_step_using_query;
+        for (const auto & column : index_task.columns)
+        {
+            if (!column.search_query)
+                continue;
+
+            size_t step_pos = first_step_using_column.at(column.name);
+            auto [it, inserted] = first_step_using_query.emplace(column.search_query->getHash(), step_pos);
+            if (!inserted)
+                it->second = std::min(it->second, step_pos);
+        }
+
+        for (const auto & column : index_task.columns)
+        {
+            if (column.search_query)
+                first_step_using_column.at(column.name) = first_step_using_query.at(column.search_query->getHash());
         }
     }
 
