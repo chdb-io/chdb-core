@@ -143,6 +143,7 @@ public:
     static std::pair<MarkRanges, RangesInDataPartReadHints> filterMarksUsingIndex(
         MergeTreeIndexPtr index_helper,
         MergeTreeIndexConditionPtr condition,
+        const IndexReadTask * index_read_task,
         const KeyCondition * key_condition_rpn_template,
         const MergeTreeDataPartInfoForReaderPtr & part_info,
         const MarkRanges & ranges,
@@ -319,6 +320,7 @@ public:
         const SelectQueryInfo & query_info;
         const ContextPtr & context;
         const ReadFromMergeTree::Indexes & indexes;
+        const IndexReadTasks & index_read_tasks;
         const std::optional<TopKFilterInfo> & top_k_filter_info;
         const MergeTreeReaderSettings & reader_settings;
         LoggerPtr log;
@@ -385,6 +387,8 @@ public:
         bool stop_at_first_match = false;
 
         const UsefulSkipIndexes & skip_indexes;
+        /// Direct read tasks of the query by index name, for the indexes that are filtered here.
+        const IndexReadTasks * index_read_tasks = nullptr;
         const ConditionTemplate<KeyCondition> * key_condition_rpn_template = nullptr;
         /// The result of `useSkipIndexesForDisjunctions`.
         bool use_skip_indexes_for_disjunctions = false;

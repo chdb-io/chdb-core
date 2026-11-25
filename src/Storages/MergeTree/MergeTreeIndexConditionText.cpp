@@ -543,6 +543,16 @@ std::optional<String> MergeTreeIndexConditionText::tryGetVirtualColumnName(const
     return fmt::format("{}{}_{}_{}", TEXT_INDEX_VIRTUAL_COLUMN_PREFIX, index_name, query.getFunctionName(), hash_str);
 }
 
+String MergeTreeIndexConditionText::getScoreVirtualColumnName(const TextSearchQuery & query, const String & index_name) const
+{
+    auto query_hash = query.getHash();
+    if (!all_search_queries.contains(query_hash))
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Text search query {} is not a query of the text index condition", query.getFunctionName());
+
+    auto hash_str = getSipHash128AsHexString(query_hash);
+    return fmt::format("{}{}_bm25_{}", TEXT_INDEX_VIRTUAL_COLUMN_PREFIX, index_name, hash_str);
+}
+
 bool MergeTreeIndexConditionText::alwaysUnknownOrTrue() const
 {
     return rpnEvaluatesAlwaysUnknownOrTrue(

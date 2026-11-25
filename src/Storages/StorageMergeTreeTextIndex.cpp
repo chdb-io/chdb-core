@@ -120,7 +120,7 @@ private:
         else
         {
             postings_buf->seek(static_cast<off_t>(token_info.offsets[segment_index]), SEEK_SET);
-            postings_serialization.deserializeToArray(*postings_buf, token_info, segment_index, row_ids);
+            postings_serialization.deserializeToArray(*postings_buf, token_info, segment_index, row_ids, /*term_frequencies=*/ nullptr);
         }
 
         if (positions_buf)

@@ -183,6 +183,9 @@ public:
     /// Returns the name of the virtual column that replaces the function node of the query,
     /// or nothing if the query is not one of this condition or cannot be read directly.
     [[nodiscard]] std::optional<String> tryGetVirtualColumnName(const TextSearchQuery & query, const String & index_name) const;
+    /// Returns the name of the BM25 score virtual column of the query (`__text_index_<index>_bm25_<hash>`).
+    /// The reader fills it with the query's score for the rows the query matches and 0 elsewhere.
+    [[nodiscard]] String getScoreVirtualColumnName(const TextSearchQuery & query, const String & index_name) const;
 
     [[nodiscard]] TextIndexTokensCachePtr tokensCache() const { return tokens_cache; }
     [[nodiscard]] TextIndexHeaderCachePtr headerCache() const { return header_cache; }
