@@ -3039,6 +3039,22 @@ std::unordered_map<String, ASTPtr> convertArgumentsToOptionsMap(const ASTPtr & a
 
 }
 
+/// The posting list codec of the index: the index argument, or else the table setting.
+/// An index with scoring stores the term frequencies in the blocks of a codec, so when the definition names no
+/// codec and the setting is `none` (it can be changed by `ALTER TABLE ... MODIFY SETTING` at any time), the index
+/// uses `pfor` instead of becoming invalid. The parts record the codec they were written with.
+static String getPostingListCodecName(const std::optional<String> & argument, const MergeTreeSettings & settings, TextIndexScoringKind scoring)
+{
+    if (argument)
+        return *argument;
+
+    String name = settings[MergeTreeSetting::text_index_posting_list_codec].toString();
+    if (scoring != TextIndexScoringKind::None && name == "none")
+        return PostingListCodecPFor::getName();
+
+    return name;
+}
+
 MergeTreeIndexPtr textIndexCreator(StorageMetadataPtr metadata_snapshot, const IndexDescription & index, const MergeTreeSettings & settings)
 {
     auto options = convertArgumentsToOptionsMap(index.arguments);
@@ -3062,8 +3078,7 @@ MergeTreeIndexPtr textIndexCreator(StorageMetadataPtr metadata_snapshot, const I
     bool enable_positions = extractFieldOption<UInt64>(options, ARGUMENT_POSITIONS).value_or(DEFAULT_POSITIONS) != 0;
     TextIndexScoringKind scoring = parseTextIndexScoringKind(extractFieldOption<String>(options, ARGUMENT_SCORING).value_or("none"));
 
-    String posting_list_codec_name = extractFieldOption<String>(options, ARGUMENT_POSTING_LIST_CODEC)
-        .value_or(settings[MergeTreeSetting::text_index_posting_list_codec].toString());
+    String posting_list_codec_name = getPostingListCodecName(extractFieldOption<String>(options, ARGUMENT_POSTING_LIST_CODEC), settings, scoring);
 
     auto posting_list_codec = PostingListCodecFactory::createPostingListCodec(posting_list_codec_name, index.name);
     bool has_codec = posting_list_codec && posting_list_codec->getType() != IPostingListCodec::Type::None;
@@ -3174,11 +3189,9 @@ void textIndexValidator(const IndexDescription & index, bool attach, const Merge
             reject_argument(ARGUMENT_POSITIONS);
     }
 
-    auto posting_list_codec_argument = extractFieldOption<String>(options, ARGUMENT_POSTING_LIST_CODEC);
-    String posting_list_codec_name = posting_list_codec_argument.value_or(settings[MergeTreeSetting::text_index_posting_list_codec].toString());
-
-    auto posting_list_codec = PostingListCodecFactory::createPostingListCodec(posting_list_codec_name, index.name);
     TextIndexScoringKind scoring = parseTextIndexScoringKind(extractFieldOption<String>(options, ARGUMENT_SCORING).value_or("none"));
+    String posting_list_codec_name = getPostingListCodecName(extractFieldOption<String>(options, ARGUMENT_POSTING_LIST_CODEC), settings, scoring);
+    auto posting_list_codec = PostingListCodecFactory::createPostingListCodec(posting_list_codec_name, index.name);
 
     if (!options.empty())
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Unexpected text index arguments: {}", fmt::join(std::views::keys(options), ", "));
@@ -3197,16 +3210,6 @@ void textIndexValidator(const IndexDescription & index, bool attach, const Merge
             throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
                 "Text index scoring '{}' is experimental. Enable it with the MergeTree setting "
                 "`allow_experimental_text_index_scoring = 1`.", toString(scoring));
-        }
-
-        /// The table setting can be changed by `ALTER TABLE ... MODIFY SETTING`, e.g. to `none`, which would make
-        /// the stored index definition invalid, so the codec of a scoring index must be a part of the definition.
-        if (!attach && !posting_list_codec_argument)
-        {
-            throw Exception(ErrorCodes::BAD_ARGUMENTS,
-                "Text index scoring '{}' requires the '{}' argument in the index definition: "
-                "the codec cannot be taken from the MergeTree setting `text_index_posting_list_codec`",
-                toString(scoring), ARGUMENT_POSTING_LIST_CODEC);
         }
 
         /// BM25 scoring relies on the per-block term-frequency payload that cannot be stored in the `none` codec.
