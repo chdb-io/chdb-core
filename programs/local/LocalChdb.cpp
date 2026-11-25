@@ -114,10 +114,24 @@ private:
 thread_local connection_wrapper::Operation * current_python_operation = nullptr;
 /// chdb_spec: end Python connection exit ownership.
 
-std::string paramValueToString(const py::handle & value)
+/// The text of a query parameter value. A string is passed as is at the top level, and as a quoted literal
+/// inside a list or a tuple: an element of `Array(String)` is parsed as a quoted string.
+std::string paramValueToString(const py::handle & value, bool is_nested = false)
 {
     if (value.is_none())
         return "NULL";
+    if (is_nested && py::isinstance<py::str>(value))
+    {
+        std::string quoted = "'";
+        for (char c : py::cast<std::string>(value))
+        {
+            if (c == '\\' || c == '\'')
+                quoted += '\\';
+            quoted += c;
+        }
+        quoted += '\'';
+        return quoted;
+    }
     if (py::isinstance<py::bool_>(value))
         return py::cast<bool>(value) ? "1" : "0";
 
@@ -126,7 +140,7 @@ std::string paramValueToString(const py::handle & value)
         std::vector<std::string> parts;
         parts.reserve(static_cast<size_t>(py::len(value)));
         for (const auto & item : value)
-            parts.emplace_back(paramValueToString(item));
+            parts.emplace_back(paramValueToString(item, /*is_nested=*/ true));
 
         std::ostringstream out;
         out << '[';

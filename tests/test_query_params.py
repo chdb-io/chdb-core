@@ -97,6 +97,16 @@ class TestQueryParams(unittest.TestCase):
         )
         self.assertTrue(pd.isna(df["n"][0]))
 
+    def test_query_with_string_array_param(self):
+        res = chdb.query(
+            "SELECT hasAll({allowed:Array(String)}, ['a', 'it''s']) AS ok, length({allowed:Array(String)}) AS n",
+            params={"allowed": ["a", "it's", "b\\c", ""]},
+        )
+        self.assertEqual(res.bytes().decode().strip(), "1,4")
+
+        res = chdb.query("SELECT {ids:Array(UInt32)} AS ids, {empty:Array(String)} AS e", params={"ids": [1, 2], "empty": []})
+        self.assertEqual(res.bytes().decode().strip(), '"[1,2]","[]"')
+
     def test_query_with_bool_param(self):
         df_true = chdb.query(
             "SELECT {flag:Bool} AS flag",
