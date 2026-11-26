@@ -71,10 +71,14 @@ void LogFrequencyLimiterImpl::cleanup(time_t too_old_threshold_s)
 std::mutex LogSeriesLimiter::mutex;
 time_t LogSeriesLimiter::last_cleanup = 0;
 
+/// chdb_spec: constructed when the library loads, not on first use. The first merge selection
+/// constructed a function-local static after the engine had registered its exit teardown, so a
+/// process exiting with a MergeTree table open destroyed it while merges were still running.
+static std::unordered_map<UInt64, std::tuple<time_t, size_t, size_t>> log_series_records;
+
 LogSeriesLimiter::SeriesRecords & LogSeriesLimiter::getSeriesRecords()
 {
-    static SeriesRecords records;
-    return records;
+    return log_series_records;
 }
 
 LogSeriesLimiter::LogSeriesLimiter(LoggerPtr logger_, size_t allowed_count_, time_t interval_s_)
