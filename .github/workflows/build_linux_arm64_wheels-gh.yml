@@ -11,6 +11,11 @@ on:
         required: false
         default: 'true'
         type: boolean
+      WHEEL_ONLY:
+        description: 'Build and test the Python wheel only, as the nightly does'
+        required: false
+        default: false
+        type: boolean
   release:
     types: [published]
   push:
@@ -91,7 +96,7 @@ jobs:
     # version against one pandas line (3.14 against both). The sync pull request's own
     # CI ran all of it on every platform. Everything else builds as before.
     env:
-      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' }}
+      WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' || inputs.WHEEL_ONLY == true }}
     steps:
       - name: Record the crash-diagnostics cutoff
         if: always()
