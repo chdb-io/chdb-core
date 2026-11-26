@@ -11,7 +11,9 @@
 
 set -euo pipefail
 
-so_path () { ldconfig -p 2>/dev/null | awk -v so="$1" '$1 == so { print $NF; exit }'; }
+# Reads all of ldconfig's output: an awk that exited at the first match would leave ldconfig
+# to die of SIGPIPE, and pipefail would fail the script with it.
+so_path () { ldconfig -p 2>/dev/null | awk -v so="$1" '$1 == so && !found { print $NF; found = 1 }'; }
 
 libc=$(so_path libc.so.6)
 [ -n "${libc}" ] || { echo "Error: ldconfig does not know libc.so.6" >&2; exit 1; }

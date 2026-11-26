@@ -8,6 +8,8 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTFunction.h>
+#include <Parsers/ParserCreateQuery.h>
+#include <Parsers/parseQuery.h>
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
 #include <Common/quoteString.h>
 #include <Storages/IStorage.h>
@@ -29,6 +31,12 @@ namespace ErrorCodes
     extern const int TABLE_ALREADY_EXISTS;
     extern const int NOT_IMPLEMENTED;
     extern const int INCORRECT_QUERY;
+}
+
+static ASTPtr parseCreateQuery(std::string_view query)
+{
+    ParserCreateQuery parser;
+    return parseQueryFromText(parser, query);
 }
 
 DatabaseMemory::DatabaseMemory(const String & name_, ContextPtr context_)
@@ -86,7 +94,7 @@ void DatabaseMemory::createTable(
         cleanupObjectDefinitionFromTemporaryFlags(*create);
     }
 
-    create_queries.emplace(table_name, query_to_store);
+    create_queries.emplace(table_name, query_to_store ? query_to_store->formatWithSecretsOneLine<SecretString>() : SecretString());
 }
 
 void DatabaseMemory::dropTable(
@@ -175,7 +183,7 @@ void DatabaseMemory::renameTable(
         throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {}.{} doesn't exist", backQuote(database_name), backQuote(table_name));
 
     auto query_it = create_queries.find(table_name);
-    ASTPtr query = query_it != create_queries.end() ? query_it->second : nullptr;
+    ASTPtr query = (query_it != create_queries.end() && !query_it->second.empty()) ? parseCreateQuery(query_it->second) : nullptr;
 
     if (!exchange)
     {
@@ -188,11 +196,8 @@ void DatabaseMemory::renameTable(
         tables.emplace(to_table_name, table);
         create_queries.erase(table_name);
         if (query)
-        {
-            query = query->clone();
             query->as<ASTCreateQuery &>().setTable(to_table_name);
-        }
-        create_queries.emplace(to_table_name, query);
+        create_queries.emplace(to_table_name, query ? query->formatWithSecretsOneLine<SecretString>() : SecretString());
         return;
     }
 
@@ -201,7 +206,8 @@ void DatabaseMemory::renameTable(
         throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {}.{} doesn't exist", backQuote(database_name), backQuote(to_table_name));
 
     auto other_query_it = create_queries.find(to_table_name);
-    ASTPtr other_query = other_query_it != create_queries.end() ? other_query_it->second : nullptr;
+    ASTPtr other_query
+        = (other_query_it != create_queries.end() && !other_query_it->second.empty()) ? parseCreateQuery(other_query_it->second) : nullptr;
 
     /// The data directories trade places, so move the first one out of the way.
     const String scratch_path = getTableDataPath("_exchange_" + toString(UUIDHelpers::generateV4()));
@@ -211,19 +217,13 @@ void DatabaseMemory::renameTable(
 
     std::swap(it->second, other_it->second);
     if (query)
-    {
-        query = query->clone();
         query->as<ASTCreateQuery &>().setTable(to_table_name);
-    }
     if (other_query)
-    {
-        other_query = other_query->clone();
         other_query->as<ASTCreateQuery &>().setTable(table_name);
-    }
     create_queries.erase(table_name);
     create_queries.erase(to_table_name);
-    create_queries.emplace(table_name, other_query);
-    create_queries.emplace(to_table_name, query);
+    create_queries.emplace(table_name, other_query ? other_query->formatWithSecretsOneLine<SecretString>() : SecretString());
+    create_queries.emplace(to_table_name, query ? query->formatWithSecretsOneLine<SecretString>() : SecretString());
 }
 
 ASTPtr DatabaseMemory::getCreateDatabaseQueryImpl() const
@@ -246,13 +246,13 @@ ASTPtr DatabaseMemory::getCreateTableQueryImpl(const String & table_name, Contex
     ensurePopulated();
     std::lock_guard lock{mutex};
     auto it = create_queries.find(table_name);
-    if (it == create_queries.end() || !it->second)
+    if (it == create_queries.end() || it->second.empty())
     {
         if (throw_on_error)
             throw Exception(ErrorCodes::UNKNOWN_TABLE, "There is no metadata of table {} in database {}", table_name, database_name);
         return {};
     }
-    return it->second->clone();
+    return parseCreateQuery(it->second);
 }
 
 void DatabaseMemory::checkMetadataFilenameAvailability(const String & table_name) const
@@ -309,10 +309,10 @@ void DatabaseMemory::alterTable(ContextPtr local_context, const StorageID & tabl
             throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {} doesn't exist", table_id.getNameForLogs());
 
         auto it_query = create_queries.find(table_id.table_name);
-        if (it_query == create_queries.end() || !it_query->second)
+        if (it_query == create_queries.end() || it_query->second.empty())
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot alter: There is no metadata of table {}", table_id.getNameForLogs());
 
-        create_query = it_query->second->clone();
+        create_query = parseCreateQuery(it_query->second);
     }
 
     /// Apply metadata changes to the cloned AST without holding a lock to avoid possible deadlock
@@ -321,12 +321,12 @@ void DatabaseMemory::alterTable(ContextPtr local_context, const StorageID & tabl
 
     /// The create query of the table has been just changed, we need to update dependencies too.
     auto ref_dependencies = getDependenciesFromCreateQuery(local_context->getGlobalContext(), table_id.getQualifiedName(), create_query, local_context->getCurrentDatabase());
-    auto loading_dependencies = getLoadingDependenciesFromCreateQuery(local_context->getGlobalContext(), table_id.getQualifiedName(), create_query, local_context->getCurrentDatabase());
+    auto loading_dependencies = getLoadingDependenciesFromCreateQuery(local_context->getGlobalContext(), table_id.getQualifiedName(), create_query);
     DatabaseCatalog::instance().checkTableCanBeAddedWithNoCyclicDependencies(table_id.getQualifiedName(), ref_dependencies.dependencies, loading_dependencies);
 
     {
         std::lock_guard lock{mutex};
-        create_queries[table_id.table_name] = create_query;
+        create_queries[table_id.table_name] = create_query->formatWithSecretsOneLine<SecretString>();
     }
 
     DatabaseCatalog::instance().updateDependencies(table_id, ref_dependencies.dependencies, loading_dependencies, ref_dependencies.mv_from_dependency ? TableNamesSet{ref_dependencies.mv_from_dependency->getQualifiedName()} : TableNamesSet{});

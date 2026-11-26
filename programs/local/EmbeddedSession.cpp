@@ -1,8 +1,10 @@
 #include <EmbeddedSession.h>
 #include <EmbeddedServer.h>
+#include <LocalFilesystemRestriction.h>
 #include <QueryClassifier.h>
 #include <chdb-internal.h>
 
+#include <Access/LocalFilesystemAccess.h>
 #include <Common/CurrentThread.h>
 #include <Common/Exception.h>
 #include <Common/MemoryTrackerBlockerInThread.h>
@@ -685,6 +687,7 @@ QueryPipeline createPipeFromInsertInfile(
     const Block & sample,
     ContextPtr context)
 {
+    checkLocalFilesystemAccess(context, "FROM INFILE");
     const auto in_file = insert.infile->as<ASTLiteral &>().value.safeGet<String>();
 
     String compression_method;
@@ -834,6 +837,8 @@ OutfileTargetState prepareOutfileIfAny(
     const auto * query_with_output = dynamic_cast<const ASTQueryWithOutput *>(parsed_query.get());
     if (!query_with_output || !query_with_output->out_file)
         return out;
+
+    checkLocalFilesystemAccess(query_context, "INTO OUTFILE");
 
     out.into_file = true;
     out.into_file_and_stdout = query_with_output->isIntoOutfileWithStdout();
@@ -1198,7 +1203,7 @@ EmbeddedSession::EmbeddedSession(
     session->setArrowStreamRegistry(arrow_stream_registry);
 #endif
 
-    session->authenticate("default", "", Poco::Net::SocketAddress{});
+    authenticate(argc, argv);
     session_context = session->makeSessionContext();
 #if !defined(OS_WASM)
     session_context->setArrowStreamRegistry(arrow_stream_registry);
@@ -1221,6 +1226,31 @@ EmbeddedSession::~EmbeddedSession()
     EmbeddedServer::unregisterActiveSession();
     cleanup();
     database.reset();
+}
+
+void EmbeddedSession::authenticate(int argc, char ** argv)
+{
+    restrict_local_filesystem_access = CHDB::parseRestrictLocalFilesystemAccess(argc, argv);
+    if (!restrict_local_filesystem_access)
+    {
+        session->authenticate("default", "", Poco::Net::SocketAddress{});
+        return;
+    }
+
+    const auto restricted_user_id = CHDB::getRestrictedLocalFilesystemUserID();
+    if (!restricted_user_id)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot honor {}: the engine has no user without local filesystem access, see the log for the reason",
+            CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION);
+
+    session->authenticate(String(CHDB::RESTRICTED_LOCAL_FILESYSTEM_USER), "", Poco::Net::SocketAddress{});
+    if (session->getUserID() != restricted_user_id)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot honor {}: user {} is not the one the engine created",
+            CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION,
+            CHDB::RESTRICTED_LOCAL_FILESYSTEM_USER);
 }
 
 void EmbeddedSession::applyCmdSettings(int argc, char ** argv)
@@ -1516,6 +1546,9 @@ void EmbeddedSession::setConnectionSetting(const String & key, const String * va
     ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     std::unique_lock<std::shared_mutex> lock(session_mutex);
 
+    if (key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "{} is fixed when the connection is created", key);
+
     if (streaming_insert_context)
         throw Exception(
             ErrorCodes::BAD_ARGUMENTS,
@@ -1551,6 +1584,13 @@ bool EmbeddedSession::getConnectionSetting(const String & key, String & value) c
     checkNotReentrant();
     ChdbNamespaceScope ns_scope(database ? database->getNamespace() : nullptr);
     std::shared_lock<std::shared_mutex> lock(session_mutex);
+
+    /// Lets a host confirm the restriction is in force: versions without the option know no such key.
+    if (key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+    {
+        value = restrict_local_filesystem_access ? "1" : "0";
+        return true;
+    }
 
     if (auto name = connectionParameterName(key); !name.empty())
     {

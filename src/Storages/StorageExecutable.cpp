@@ -1,3 +1,4 @@
+#include <Access/LocalFilesystemAccess.h>
 #include <Storages/StorageExecutable.h>
 
 #include <filesystem>
@@ -232,6 +233,8 @@ void registerStorageExecutable(StorageFactory & factory)
     auto register_storage = [](const StorageFactory::Arguments & args, bool is_executable_pool) -> StoragePtr
     {
         auto local_context = args.getLocalContext();
+        /// Tables loaded at startup are created with a context without a user, which passes.
+        checkLocalFilesystemAccess(local_context, is_executable_pool ? "The ExecutablePool engine" : "The Executable engine");
 
         if (args.engine_args.size() < 2)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH,

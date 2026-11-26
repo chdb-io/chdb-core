@@ -1,4 +1,5 @@
 
+#include <Access/LocalFilesystemAccess.h>
 #include <Analyzer/TableFunctionNode.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/evaluateConstantExpression.h>
@@ -95,6 +96,9 @@ VectorWithMemoryTracking<size_t> TableFunctionExecutable::skipAnalysisForArgumen
 
 void TableFunctionExecutable::parseArguments(const ASTPtr & ast_function, ContextPtr context)
 {
+    /// The TABLE ENGINE grant is implicit for engines without a source, so a user without local filesystem
+    /// access is refused here, with the context of the query rather than the one the storage may be built with.
+    checkLocalFilesystemAccess(context, "The executable table function");
     const auto * function = ast_function->as<ASTFunction>();
 
     if (!function->arguments)

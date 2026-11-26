@@ -1,5 +1,6 @@
 #include "EmbeddedServer.h"
 #include "InstancePaths.h"
+#include "LocalFilesystemRestriction.h"
 #include <Core/Settings.h>
 #include "ChdbSettingsOverrides.h"
 
@@ -908,6 +909,8 @@ void EmbeddedServer::setupUsers()
     }
     else
         throw Exception(ErrorCodes::CANNOT_LOAD_CONFIG, "Can't load config for users");
+
+    CHDB::addRestrictedLocalFilesystemUser(access_control);
 }
 
 int EmbeddedServer::main(const std::vector<std::string> & /*args*/)
@@ -1551,7 +1554,8 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
 
     for (const auto & [key, value] : parseOptions(argc, argv))
     {
-        if (key == "path" || key == "backups.allowed_path" || key == "shared" || key == "isolated" || key == "database")
+        if (key == "path" || key == "backups.allowed_path" || key == "shared" || key == "isolated" || key == "database"
+            || key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
             continue;
 
         const bool is_path = std::ranges::find(instance_path_options, key) != std::end(instance_path_options);
@@ -1606,6 +1610,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
     if (!function_paths.empty())
     {
         /// The functions are shared by every connection: a connection that is going to fail must not replace them.
+        (void)CHDB::parseRestrictLocalFilesystemAccess(argc, argv);
         if (auto changes = parseQuerySettingChanges(argc, argv); !changes.empty())
             global_context->getSettingsCopy().applyChanges(changes);
 

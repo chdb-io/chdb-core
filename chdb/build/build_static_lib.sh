@@ -29,7 +29,9 @@ if [ "$(uname)" == "Darwin" ]; then
     ICU="-DENABLE_ICU=0"
     CPU_FEATURES="-DENABLE_AVX=0 -DENABLE_AVX2=0"
 elif [ "$(uname)" == "Linux" ]; then
-    GLIBC_COMPATIBILITY="-DGLIBC_COMPATIBILITY=1"
+    # The Linux toolchain files default to a fully static musl build (USE_MUSL=ON) since
+    # ClickHouse 26.11. chDB is loaded into glibc processes, so it keeps the glibc sysroot.
+    GLIBC_COMPATIBILITY="-DGLIBC_COMPATIBILITY=1 -DUSE_MUSL=0"
     UNWIND="-DUSE_UNWIND=1"
     ICU="-DENABLE_ICU=1"
     if [ "$(uname -m)" == "x86_64" ]; then
@@ -64,7 +66,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} -DENABLE_THINLTO=0 -DENABLE_TESTS=0
     ${GLIBC_COMPATIBILITY} \
     -DENABLE_UTILS=0 ${LLVM} ${UNWIND} \
     ${ICU} -DENABLE_UTF8PROC=1 ${JEMALLOC} \
-    -DENABLE_PARQUET=1 -DENABLE_ROCKSDB=1 -DENABLE_SQLITE=1 -DENABLE_VECTORSCAN=1 \
+    -DENABLE_PARQUET=1 -DENABLE_ARROW_LIBRARY=1 -DENABLE_ROCKSDB=1 -DENABLE_SQLITE=1 -DENABLE_VECTORSCAN=1 \
     -DENABLE_PROTOBUF=1 -DENABLE_THRIFT=1 -DENABLE_MSGPACK=1 \
     -DENABLE_BROTLI=1 -DENABLE_H3=1 -DENABLE_CURL=1 \
     -DENABLE_CLICKHOUSE_ALL=0 -DUSE_STATIC_LIBRARIES=1 -DSPLIT_SHARED_LIBRARIES=0 \
@@ -158,7 +160,16 @@ fi
 # is renamed instead.
 # After minimisation, which needs the per-member layout and the original names, and before
 # the Go test and the gates, which must see the archive as shipped.
+#
+# Linux also gets the split archive chdb-go ships in Go modules (chdb-io/chdb-core#342): the
+# same isolation, in shards of a bounded size rather than one object of over a gigabyte. It is
+# made from the same minimised archive, so before prelinking rewrites that in place.
 if [ "$(uname)" == "Linux" ]; then
+    # The transformation itself, on small fixtures, in seconds: before it runs on the real
+    # archive.
+    bash ${MY_DIR}/test_split_static_lib.sh
+    python3 ${MY_DIR}/split_static_lib.py ${MY_DIR}/libchdb_minimal.a ${MY_DIR}/libchdb_split.a \
+        --manifest ${MY_DIR}/libchdb_split.json --version "${CHDB_VERSION}"
     bash ${MY_DIR}/prelink_static_lib.sh ${MY_DIR}/libchdb_minimal.a
 else
     python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
@@ -168,6 +179,11 @@ fi
 
 # Test with Go example
 bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_minimal.a
+if [ "$(uname)" == "Linux" ]; then
+    # With a plain -lchdb rather than --whole-archive: the shards' anchor ring has to pull
+    # them all in, and the example's registration checks fail if it does not.
+    GO_BUILD_TAGS=chdb_plain_link bash ${MY_DIR}/test_go_example.sh ${MY_DIR}/libchdb_split.a
+fi
 
 # Copy final library to project root
 echo "Copying libchdb_minimal.a to project root as libchdb.a..."
@@ -181,3 +197,14 @@ ls -lh ${PROJ_DIR}/libchdb.a
 # Symbol gate for the archive: the bundled runtime must stay hidden and the C API must stay
 # reachable. Runs on both platforms - see chdb/build/check_static_lib_hermetic.sh.
 bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb.a ${PROJ_DIR}/programs/local/chdb.h
+
+# The split archive, as shipped: libchdb_split.a and its manifest at the project root, gated
+# like libchdb.a.
+if [ "$(uname)" == "Linux" ]; then
+    mv -f ${MY_DIR}/libchdb_split.a ${MY_DIR}/libchdb_split.json ${PROJ_DIR}/
+    echo "Final libchdb_split.a created at ${PROJ_DIR}/libchdb_split.a:"
+    ls -lh ${PROJ_DIR}/libchdb_split.a
+    bash ${MY_DIR}/check_static_lib_hermetic.sh ${PROJ_DIR}/libchdb_split.a ${PROJ_DIR}/programs/local/chdb.h
+    # Same registrations and query results as the prelinked libchdb.a of this build.
+    bash ${MY_DIR}/check_static_lib_parity.sh ${PROJ_DIR}/libchdb.a ${PROJ_DIR}/libchdb_split.a ${PROJ_DIR}/programs/local/chdb.h
+fi

@@ -256,11 +256,10 @@ std::string ClickHouseDictionarySource::doInvalidateQuery(const std::string & re
         return result;
     }
 
-    /// We pass empty block to RemoteQueryExecutor, because we don't know the structure of the result.
-    auto invalidate_sample_block = std::make_shared<const Block>(Block{});
-    QueryPipeline pipeline(std::make_shared<RemoteSource>(
-        std::make_shared<RemoteQueryExecutor>(pool, request, invalidate_sample_block, context_copy), false, false, false));
-    return readInvalidateQuery(pipeline);
+    /// The structure of the result is not known in advance, so the executor gets an empty header
+    /// and is read directly, not through a `RemoteSource`.
+    RemoteQueryExecutor executor(pool, request, std::make_shared<const Block>(Block{}), context_copy);
+    return readInvalidateQuery(executor);
 }
 
 void registerDictionarySourceClickHouse(DictionarySourceFactory & factory);
@@ -296,7 +295,7 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
             configuration.emplace(Configuration{
                 .host = host,
                 .user = named_collection->getAnyOrDefault<String>({"user", "username"}, "default"),
-                .password = named_collection->getOrDefault<String>("password", ""),
+                .password = named_collection->getOrDefault<SecretString>("password"),
                 .proto_send_chunked = named_collection->getOrDefault<String>("proto_send_chunked", "notchunked"),
                 .proto_recv_chunked = named_collection->getOrDefault<String>("proto_recv_chunked", "notchunked"),
                 .quota_key = named_collection->getOrDefault<String>("quota_key", ""),
@@ -322,7 +321,7 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
             configuration.emplace(Configuration{
                 .host = host,
                 .user = config.getString(settings_config_prefix + ".user", "default"),
-                .password = config.getString(settings_config_prefix + ".password", ""),
+                .password = SecretString(config.getString(settings_config_prefix + ".password", "")),
                 .proto_send_chunked = config.getString(settings_config_prefix + ".proto_caps.send", "notchunked"),
                 .proto_recv_chunked = config.getString(settings_config_prefix + ".proto_caps.recv", "notchunked"),
                 .quota_key = config.getString(settings_config_prefix + ".quota_key", ""),
@@ -339,13 +338,26 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
             });
         }
 
+        /// chDB: the user an in-process query runs as instead of `user`, set for dictionaries of connections that restrict
+        /// local filesystem access (see restrictClickHouseDictionarySourceUser). `user` stays the one of a remote server.
+        /// Read from the dictionary itself, never from a named collection, which does not override it either.
+        const String local_user = config.getString(settings_config_prefix + ".local_user", "");
+
         ContextMutablePtr context;
         if (configuration->is_local)
         {
             /// We should set user info even for the case when the dictionary is loaded in-process (without TCP communication).
             Session session(global_context, ClientInfo::Interface::LOCAL);
-            session.authenticate(configuration->user, configuration->password, Poco::Net::SocketAddress{});
+            if (local_user.empty())
+                session.authenticate(configuration->user, String(configuration->password), Poco::Net::SocketAddress{});
+            else
+                session.authenticate(local_user, "", Poco::Net::SocketAddress{});
             context = session.makeQueryContext();
+            if (!context->getChdbNamespace())
+            {
+                if (auto query_ctx = CurrentThread::tryGetQueryContext(); query_ctx && query_ctx->getChdbNamespace())
+                    context->setChdbNamespace(query_ctx->getChdbNamespace());
+            }
         }
         else
         {

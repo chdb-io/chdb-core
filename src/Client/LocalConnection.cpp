@@ -3,6 +3,7 @@
 #include <Client/ClientApplicationBase.h>
 #include <Client/ClientBase.h>
 #include <Client/LocalConnection.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Core/Protocol.h>
 #include <Core/Settings.h>
 #include <Formats/FormatFactory.h>
@@ -263,6 +264,7 @@ void LocalConnection::captureCurrentException()
 static QueryPipeline createPipeFromInsertInfile(
     const ASTInsertQuery & insert, const String & format, const ColumnsDescription & columns_description, const Block & sample, ContextPtr context)
 {
+    checkLocalFilesystemAccess(context, "FROM INFILE");
     const auto in_file = insert.infile->as<ASTLiteral &>().value.safeGet<String>();
 
     String compression_method;
@@ -1151,6 +1153,9 @@ Packet LocalConnection::receivePacket()
         {
             packet.exception.reset(state->exception->clone());
             next_packet_type.reset();
+            /// An exception is the last packet of the query, as `EndOfStream` is.
+            state.reset();
+            last_sent_snapshots.clear();
             break;
         }
         case Protocol::Server::Progress:

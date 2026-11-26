@@ -19,6 +19,7 @@
 #include <vector>
 #include <EmbeddedSession.h>
 #include <EmbeddedServer.h>
+#include <LocalFilesystemRestriction.h>
 #include <Interpreters/DatabaseCatalog.h>
 #if USE_PYTHON
 #    include <PythonTableCache.h>
@@ -426,6 +427,17 @@ chdb_database open_chdb_database_with_exception(const char * path, const chdb_op
             thread_status.emplace();
 
         auto norm = normalizeOptionArgv(opts ? opts->argc : 0, opts ? opts->argv : nullptr);
+        if (!norm.ptrs.empty())
+        {
+            for (const auto & [key, _] : DB::EmbeddedServer::parseOptions(static_cast<int>(norm.ptrs.size()), norm.ptrs.data()))
+            {
+                if (key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+                    throw DB::Exception(
+                        DB::ErrorCodes::BAD_ARGUMENTS,
+                        "{} is a per-connection option; pass it in chdb_connect_options to chdb_connect_database(), or to chdb_connect()",
+                        CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION);
+            }
+        }
         const bool read_only = opts && opts->read_only != 0;
         const std::string target_path = (path && path[0] != '\0') ? std::string(path) : std::string(":memory:");
 

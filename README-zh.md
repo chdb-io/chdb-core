@@ -114,6 +114,31 @@ curl -sSLO ${BASE}/SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS   # macOS 上用 shasum -a 256 -c --ignore-missing
 ```
 
+### 拆分的静态库（Linux）
+
+Linux 上的 `libchdb.a` 只有一个超过 1 GB 的预链接目标文件。它能把内置的 C++ 运行时、zstd、
+OpenSSL 等与使用方隔离开，但 Go module 上限为 500 MiB，放不下它。因此 Linux release 还附带
+`<platform>-libchdb-static-split.tar.gz`，由 `chdb/build/split_static_lib.py` 生成：C API
+和隔离方式都相同，只是拆成了若干个不超过约 200 MiB 的可重定位目标文件：
+
+| 文件 | 内容 |
+|---|---|
+| `libchdb.a` | 由分片 `libchdb_part_000.o`、`libchdb_part_001.o`…… 组成的普通 archive |
+| `libchdb-split.json` | 版本、源码 commit、链接顺序、每个分片的大小和 SHA-256、所需系统库 |
+| `chdb.h`、`chdb.hpp`、`LICENSE.txt` | 与其他 tarball 相同的头文件，以及许可证 |
+
+- 照常用 `-lchdb -lpthread -ldl -lm -lrt` 链接即可。每个分片都引用下一个分片，链接进任意
+  一个就会拉入全部分片，不需要 `--whole-archive`。
+- 也可以把分片当作普通目标文件链接，例如作为 Go 的 `.syso` 文件：按 `link_order` 传入全部
+  分片。分片之间不依赖顺序，按这个顺序链接时，静态构造函数的执行顺序与 `libchdb.a` 相同。
+- 分片须原样使用：C API 以外的符号要么是局部符号，要么是带 `.chdb` 后缀的隐藏全局符号，
+  分片之间靠后者互相引用。不要 strip、重命名或局部化这些符号，也不要用
+  `--allow-multiple-definition` 链接。分片中没有任何符号与系统 C++ 运行时或宿主自带的
+  zlib、zstd、OpenSSL 冲突。
+
+`chdb/build/check_static_lib_hermetic.sh` 对这个 archive 执行与 `libchdb.a` 相同的检查。
+macOS 不需要拆分：它的 `libchdb.a` 本来就由普通成员组成。
+
 ---
 
 ## 快速开始

@@ -431,7 +431,8 @@ CHDB_EXPORT void chdb_close_database(chdb_database * db);
  * stream registrations, and `chdb_interrupt()` cancellation state.
  *
  * @param db Open `chdb_database` handle
- * @param opts Optional per-connection options (`read_only`, `--<setting>=<val>`), or NULL
+ * @param opts Optional per-connection options (`read_only`, `--<setting>=<val>`,
+ *             `--restrict_local_filesystem_access[=1]`), or NULL
  * @param out_conn Out-parameter receiving the new `chdb_connection` (`NULL` on failure)
  * @return CHDBSuccess on success, CHDBError if `db` is NULL/closed or options are invalid
  */
@@ -463,6 +464,30 @@ CHDB_EXPORT chdb_state chdb_connect_database(chdb_database db, const chdb_connec
  * An invalid value for a known setting fails the connection. Server-level
  * options (--path=..., --user_scripts_path=..., logging options, ...) are consumed by
  * the connection that boots the engine and ignored afterwards.
+ *
+ * --restrict_local_filesystem_access[=1] denies this connection's SQL the
+ * local files and programs it reaches through: file(), url('file://...'),
+ * filesystem(), INTO OUTFILE, FROM INFILE, file descriptors, SQLite, ODBC,
+ * JDBC and local data lakes, schema and template files outside
+ * format_schema_path, executable functions and engines, dictionaries with a
+ * FILE, EXECUTABLE, EXECUTABLE_POOL, LIBRARY, ODBC, JDBC or YAMLREGEXPTREE
+ * source or an SSD_CACHE layout, custom disks, BACKUP and RESTORE on File or
+ * Disk, Backup databases, restoring tables on such engines, and SYSTEM
+ * SHUTDOWN and KILL. The engine's own files (metadata, temporary data,
+ * caches), the credential files cloud clients load, and BACKUP and RESTORE on
+ * object storage keep working. Queries run as the user
+ * chdb_restricted_local_filesystem, a copy of default with the grants of its
+ * roles and its row policies and quotas; a CLICKHOUSE dictionary source runs
+ * as that user too. The option is fixed for the connection's lifetime and
+ * covers every query function on it; no SET, SETTINGS or chdb_set() lifts it.
+ *
+ * It is not a sandbox. Tables and SQL SECURITY DEFINER views that another
+ * connection created keep the access they were created with, and client
+ * libraries of network sources read the local files their own options name
+ * (e.g. TLS certificates). chdb_get(conn, "restrict_local_filesystem_access")
+ * returns "1" when the option is in force; versions without the option
+ * return NULL. An invalid value, or an engine that cannot set up the
+ * restriction, fails the connection.
  *
  * @param argc Number of command-line arguments
  * @param argv Command-line arguments array (--path=<db_path> to specify database location)

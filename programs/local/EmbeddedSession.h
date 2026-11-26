@@ -144,6 +144,7 @@ public:
 
 private:
     void cleanup() noexcept;
+    void authenticate(int argc, char ** argv);
     void applyCmdSettings(int argc, char ** argv);
     void checkNotReentrant() const;
     const NameToNameMap * currentCallParameters() const noexcept;
@@ -174,6 +175,8 @@ private:
     const Context * session_context_raw = nullptr;
     NameToNameMap query_parameters;
     bool print_stack_trace = false;
+    /// Set once from `--restrict_local_filesystem_access` in `EmbeddedSession::authenticate`.
+    bool restrict_local_filesystem_access = false;
 
 #if USE_PYTHON
     std::shared_ptr<CHDB::PythonTableCache> python_table_cache;
