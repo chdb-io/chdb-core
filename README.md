@@ -36,7 +36,7 @@
 
 | Artifact | How to get it | Target / runtime | Best for |
 |---|---|---|---|
-| **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS) | Default full build — everything included |
+| **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS); CPython 3.9–3.14 (Windows x86_64) | Default full build — everything included (on Windows, see [its limitations](#windows)) |
 | **chdb-core-lite** | PyPI when published — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
 | **chdb-core (free-threaded)** | CI artifact (release upload currently disabled) | Free-threaded Python 3.14t on Linux x86_64 (no GIL) | Running chDB without the GIL |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
@@ -91,11 +91,39 @@ The chdb-core-lite PyPI upload is currently disabled in the release workflow; ch
 
 ## Installation
 
-Currently, chdb-core supports Python 3.9+ on macOS and Linux (x86_64 and ARM64).
+chdb-core supports Python 3.9+ on macOS and Linux (x86_64 and ARM64), and CPython 3.9 to 3.14 on
+Windows x86_64.
 
 ```bash
 pip install chdb-core
 ```
+
+### Windows
+
+The Windows wheel (`win_amd64`) is one abi3 wheel for CPython 3.9 to 3.14, published to PyPI
+starting with the first chdb-core release that includes Windows support. It needs:
+
+- Windows 10 version 1607 / Windows Server 2016 or later.
+- An x86_64 CPU with AVX2 (x86-64-v3, the same baseline as the Linux x86_64 wheels). Without
+  AVX2 the process dies with an illegal instruction and no error message.
+- A 64-bit CPython that is not a free-threaded build (3.13t/3.14t). Windows on ARM64 is not
+  supported; there, and on 32-bit or free-threaded Pythons, pip installs the 0.0.1 placeholder
+  and `import chdb` fails.
+
+No Visual C++ runtime is needed: the module uses the Universal C Runtime built into Windows 10
+and later.
+
+`pip install chdb` (the DataStore package) is pure Python and requires chdb-core 26.11.1 or
+later, so it works on Windows once a Windows chdb-core wheel of that version or later is on PyPI.
+
+Not available on Windows: S3, Azure Blob Storage, GCS, HDFS, Kafka, PostgreSQL and other
+network-backed storage and services (the MySQL and MongoDB integrations are available); Delta
+Lake; WebAssembly UDFs; executable UDFs, including the legacy `@chdb_udf` (use `@chdb.udf.func`);
+atomic `RENAME EXCHANGE` (`EXCHANGE TABLES`, `CREATE OR REPLACE TABLE` of an existing table);
+and `libchdb.dll` with the language bindings built on it. Inside SQL string literals, write
+paths with forward slashes, `file('C:/data/x.parquet')`. See the
+[installation guide](docs/installation.rst#windows) for the full list and the
+[troubleshooting guide](docs/troubleshooting.rst#windows-issues) for common problems.
 
 ### Verifying a release download
 

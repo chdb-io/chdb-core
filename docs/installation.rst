@@ -6,9 +6,9 @@ chdb-core is the in-process ClickHouse engine and Python SQL API for chDB.
 Requirements
 ------------
 
-- **Python**: 3.9 or higher
+- **Python**: 3.9 or higher (on Windows: CPython 3.9 to 3.14, not free-threaded builds)
 - **Architecture**: 64-bit systems only
-- **Platforms**: macOS and Linux (x86_64 and ARM64)
+- **Platforms**: macOS and Linux (x86_64 and ARM64), Windows (x86_64)
 
 Quick Installation
 ------------------
@@ -36,7 +36,98 @@ chdb-core supports the following platforms:
   - x86_64 (Intel processors)
   - ARM64 (Apple Silicon: M1, M2, M3)
 
-**Note**: Windows is not currently supported.
+**Windows**
+  - x86_64 (Intel/AMD 64-bit with AVX2), Windows 10 version 1607 / Windows Server 2016 or later
+
+**Note**: Windows on ARM64 is not supported. Windows has its own requirements and
+limitations; see `Windows`_ below.
+
+.. _windows-support:
+
+Windows
+-------
+
+chdb-core has a Windows x86_64 wheel, ``chdb_core-<version>-cp39-abi3-win_amd64.whl``: one
+wheel for CPython 3.9 to 3.14.
+
+**Requirements**
+
+- Windows 10 version 1607 or later, or Windows Server 2016 or later.
+- An x86_64 CPU with AVX2 (x86-64-v3, the same baseline as the Linux x86_64 wheels). On a CPU
+  without AVX2 the Python process dies with an illegal instruction, without an error message.
+- 64-bit CPython 3.9 to 3.14. Free-threaded builds (3.13t, 3.14t) are not supported.
+- Windows on ARM64 is not supported.
+- No Microsoft Visual C++ runtime is needed: the module uses the Universal C Runtime that is
+  part of Windows 10 and later.
+
+On a free-threaded or 32-bit Python, or on ARM64, pip finds no matching wheel and installs the
+0.0.1 placeholder release instead, after which ``import chdb`` fails. See
+:ref:`windows-troubleshooting`.
+
+**Installation**
+
+Windows wheels are published to PyPI starting with the first chdb-core release that includes
+Windows support.
+
+.. code-block:: bat
+
+   pip install chdb-core
+
+For the pandas-compatible DataStore API, install ``chdb``. It is pure Python and requires
+chdb-core 26.11.1 or later, so it works on Windows once a Windows chdb-core wheel of that
+version or later is on PyPI:
+
+.. code-block:: bat
+
+   pip install chdb
+
+**Quick check**
+
+.. code-block:: python
+
+   import chdb
+
+   print(chdb.__version__)
+   print(chdb.query("SELECT 'chDB is working!' AS message, version() AS engine", "CSV"))
+   print(chdb.query("SELECT number, number * 2 AS doubled FROM numbers(3)", "DataFrame"))
+
+**Available on Windows**
+
+- Parquet, Arrow, CSV, the JSON formats, Protobuf and Avro
+- Iceberg tables on local files, through ``icebergLocal()``
+- Backups and archives through libarchive (tar, tar.gz, 7z, ...)
+- The MySQL and MongoDB table functions and table engines
+- Vector similarity indexes
+- Querying pandas DataFrames with ``Python(df)``, and DataFrame and Arrow output
+- In-process Python UDFs (``@chdb.udf.func``) and aggregate functions (``@chdb.udf.agg``)
+- Sessions and MergeTree tables on disk
+- The ADBC driver: point the driver manager at the installed module, ``chdb._chdb.__file__``,
+  with ``entrypoint = chdb_adbc_init`` (see :doc:`adbc`)
+
+**Limitations on Windows**
+
+- **Paths in SQL**: ClickHouse unescapes backslashes in SQL string literals, so write paths
+  inside SQL with forward slashes, ``file('C:/data/x.parquet')``, or double the backslashes,
+  ``file('C:\\data\\x.parquet')``. In Python, ``path.replace("\\", "/")`` converts a path.
+- **Network-backed storage and services** are not available: S3, Azure Blob Storage, GCS,
+  HDFS, Kafka, PostgreSQL and similar. The MySQL and MongoDB integrations are available.
+- **Delta Lake and WebAssembly UDFs** are not available. They need Rust components that are
+  not built for Windows.
+- **Executable UDFs** are not available, because running external commands is not implemented
+  on Windows. This covers the legacy ``@chdb_udf`` decorator and functions defined through
+  ``user_defined_executable_functions_config``. Use the in-process ``@chdb.udf.func`` decorator
+  instead.
+- **Atomic table exchange** (``RENAME EXCHANGE``) is not available. ``EXCHANGE TABLES``,
+  ``CREATE OR REPLACE TABLE`` of a table that already exists, refreshable materialized views
+  without ``APPEND``, and ADBC ingest with ``mode="replace"`` fail with ``NOT_IMPLEMENTED``.
+- **DataLakeCatalog** cannot yet read tables whose location is a local Windows path.
+- **libchdb** (``libchdb.dll``), the C library, and the language bindings built on it are not
+  built for Windows. Only the Python module is.
+- **Crashes** print no stack trace.
+- **Time zone**: the default time zone is UTC, not the Windows time zone. To use another one,
+  set the ``session_timezone`` setting, for example ``SET session_timezone = 'Europe/Berlin'``.
+  Setting the ``TZ`` environment variable to such a name also works for chDB, but the Windows C
+  runtime reads ``TZ`` too, in its own format, so Python's own local time would then be wrong.
 
 System Requirements
 -------------------
@@ -159,3 +250,8 @@ The build script generates:
 
 - **Linux x86_64**: Enables full feature set including Rust components and embedded compiler
 - **Linux ARM64**: Disables AVX instructions and embedded compiler for compatibility
+- **Windows x86_64**: Cross-compiled on a Linux x86_64 host with
+  ``bash chdb/build_windows_on_linux.sh`` (host clang/lld 21 and the mingw-w64 13 UCRT headers
+  and import libraries), then packaged with ``CHDB_TARGET_OS=windows python -m build --wheel``.
+  The build produces ``chdb/_chdb.pyd``, ``pybind11nonlimitedapi_stubs.dll`` and one
+  ``pybind11nonlimitedapi_chdb_3.X.dll`` per supported Python, and no ``libchdb``.
