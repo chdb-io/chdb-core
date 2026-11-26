@@ -805,6 +805,9 @@ ReplxxLineReader::ReplxxLineReader(ReplxxLineReader::Options && options)
     if (options.interactive_history_legacy_keymap)
         std::swap(key_fuzzy, key_regular);
 
+#if !defined(OS_WINDOWS)
+    /// The picker reads the terminal as a stream of bytes with escape sequences and expects it in raw mode.
+    /// The Windows console is read as input records instead, so there Ctrl-R stays the incremental search of `replxx`.
     if (!options.embedded_mode)
     {
         auto interactive_history_search = [this, key_regular, in_fd = options.in_fd, out_fd = options.out_fd](char32_t code)
@@ -861,6 +864,7 @@ ReplxxLineReader::ReplxxLineReader(ReplxxLineReader::Options && options)
 
         bind_non_editing_key(Replxx::KEY::control(key_fuzzy), interactive_history_search);
     }
+#endif
 
     /// Rebind regular incremental search.
     ///

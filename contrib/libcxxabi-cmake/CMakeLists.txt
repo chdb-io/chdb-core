@@ -50,6 +50,12 @@ if (OS_WINDOWS)
     # libc++'s Win32 threading API and asks for `__libcpp_mutex_lock(void **)`, which the rest of
     # the build - compiled against the pthread API that winpthreads provides - never defines.
     target_compile_definitions(cxxabi PRIVATE -D_LIBCPP_HAS_THREAD_API_PTHREAD=1)
+
+    # `getentropy` for `cxa_thread_atexit.cpp`, see the header. chdb_spec: chDB compiles that file
+    # through `cxa_thread_atexit_chdb.cpp`, which includes it, so the header goes there.
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/cxa_thread_atexit_chdb.cpp" PROPERTIES
+        COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/getentropy_windows.h")
+    target_link_libraries(cxxabi PRIVATE advapi32)
 endif ()
 
 target_compile_definitions(cxxabi PUBLIC -DSTD_EXCEPTION_HAS_STACK_TRACE=1)
