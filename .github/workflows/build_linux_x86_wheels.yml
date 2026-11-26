@@ -94,8 +94,8 @@ jobs:
     # CI ran all of it on every platform. Everything else builds as before.
     env:
       WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' || inputs.WHEEL_ONLY == true }}
-      # A manual wheel-only run builds a wheel for a proof of concept of BM25 scoring:
-      # it tests that feature on every Python and skips the rest of the suite.
+      # A manual wheel-only run builds a wheel for a proof of concept of BM25 scoring and
+      # cluster-organized vector search: it tests those on every Python and skips the rest.
       BM25_ONLY: ${{ inputs.WHEEL_ONLY == true }}
     steps:
       # First step in the job: a cutoff recorded later is skipped when an
@@ -565,8 +565,8 @@ jobs:
 
               if [ "$BM25_ONLY" == "true" ]; then
                 python -m pip install -q pytest
-                (cd tests && python -m pytest -q test_bm25_scoring.py)
-                echo "BM25 scoring tests PASSED on Python $version"
+                (cd tests && python -m pytest -q test_bm25_scoring.py test_cluster_layout_vector_search.py)
+                echo "BM25 and cluster-layout tests PASSED on Python $version"
                 continue
               fi
 
