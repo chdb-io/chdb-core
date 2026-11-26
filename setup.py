@@ -110,7 +110,8 @@ def get_latest_git_tag(minor_ver_auto=False):
 
 # When CHDB_LITE=1 in environment, rewrite pyproject.toml so the wheel is
 # published as chdb-core-lite with its own PyPI-facing metadata (name,
-# description, keywords). The long-description README is shared with chdb-core.
+# description, keywords, classifiers). The long-description README is shared
+# with chdb-core.
 # Idempotent and safe to call multiple times.
 def maybe_rewrite_pyproject_name_for_lite():
     if os.environ.get("CHDB_LITE", "0") != "1":
@@ -136,10 +137,17 @@ def maybe_rewrite_pyproject_name_for_lite():
         new_content,
         flags=re.MULTILINE,
     )
+    # No Windows build of chdb-core-lite (chdb/build_windows_on_linux.sh rejects CHDB_LITE).
+    new_content = re.sub(
+        r'^\s*"Operating System :: Microsoft :: Windows",\s*\n',
+        '',
+        new_content,
+        flags=re.MULTILINE,
+    )
     if new_content != content:
         with open(pyproject_file, "w") as f:
             f.write(new_content)
-        print("CHDB_LITE=1: rewrote pyproject.toml for chdb-core-lite (name, description, keywords)")
+        print("CHDB_LITE=1: rewrote pyproject.toml for chdb-core-lite (name, description, keywords, classifiers)")
 
 
 # Update version in pyproject.toml
