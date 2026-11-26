@@ -117,6 +117,7 @@ namespace DB
     extern void registerFunctionAtanh(FunctionFactory & factory);
     extern void registerFunctionAuthenticatedUser(FunctionFactory & factory);
     extern void registerFunctionAvg2(FunctionFactory & factory);
+    extern void registerFunctionBM25(FunctionFactory & factory);
     extern void registerFunctionBar(FunctionFactory & factory);
     extern void registerFunctionBase32Decode(FunctionFactory & factory);
     extern void registerFunctionBase32Encode(FunctionFactory & factory);
@@ -1021,6 +1022,7 @@ namespace DB
             &registerFunctionAtanh,
             &registerFunctionAuthenticatedUser,
             &registerFunctionAvg2,
+            &registerFunctionBM25,
             &registerFunctionBar,
             &registerFunctionBase32Decode,
             &registerFunctionBase32Encode,
