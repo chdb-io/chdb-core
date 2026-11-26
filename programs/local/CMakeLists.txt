@@ -39,8 +39,10 @@ else()
         chdb-arrow-insert.cpp
         chdb-arrow-output.cpp
         chdb-adbc.cpp
+        chdb-udf.cpp
         ArrowStreamSource.cpp
         ArrowUDFConversion.cpp
+        CApiScalarUDF.cpp
         StorageArrowStream.cpp
         TableFunctionArrowStream.cpp
     )

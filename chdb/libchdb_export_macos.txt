@@ -65,6 +65,8 @@ _chdb_stream_query_arrow_n
 _chdb_stream_query_arrow_with_params
 _chdb_stream_query_arrow_with_params_n
 _chdb_stream_fetch_arrow
+_chdb_create_scalar_function
+_chdb_drop_scalar_function
 _chdb_adbc_init
 _AdbcDriverInit
 

@@ -69,6 +69,10 @@
         chdb_stream_query_arrow_with_params_n;
         chdb_stream_fetch_arrow;
 
+        /* Scalar User-Defined Functions */
+        chdb_create_scalar_function;
+        chdb_drop_scalar_function;
+
         /* ADBC driver entrypoint */
         chdb_adbc_init;
         AdbcDriverInit;
