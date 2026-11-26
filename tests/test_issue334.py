@@ -30,12 +30,14 @@ class TestIssue334(unittest.TestCase):
     @classmethod
     def _write(cls, name, sep, header):
         path = os.path.join(cls.tmp_dir, name)
-        with open(path, "w") as f:
+        # newline="": "\n" line ends on Windows too, where text mode writes "\r\n" and TSV refuses "\r".
+        with open(path, "w", newline="") as f:
             for line in header:
                 f.write(line + "\n")
             for i in range(ROWS):
                 f.write(f"{i}{sep}abcdefghij\n")
-        return path
+        # The path goes into SQL string literals, where ClickHouse unescapes backslashes.
+        return path.replace(os.sep, "/")
 
     def _check(self, source, settings=""):
         sql = f"SELECT count(), countIf(_row_number != id) FROM {source} {SETTINGS}{settings}"

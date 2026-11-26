@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <base/pathToString.h>
 #include <map>
 #include <memory>
 #include <optional>
@@ -899,7 +900,7 @@ PaimonTableStatePtr PaimonMetadata::loadStateForSnapshot(Int64 snapshot_id) cons
 {
     /// Get snapshot by ID
     /// Build snapshot file path: `table_location/snapshot/snapshot-<id>`
-    const String snapshot_path = (std::filesystem::path(persistent_components.table_location)
+    const String snapshot_path = pathToGenericString(pathFromString(persistent_components.table_location)
         / PAIMON_SNAPSHOT_DIR
         / fmt::format("{}{}", PAIMON_SNAPSHOT_PREFIX, snapshot_id));
     auto snapshot = table_client->getSnapshot({snapshot_id, snapshot_path});
@@ -1304,7 +1305,7 @@ PaimonMetadata::DataFilesToRead PaimonMetadata::collectDataFilesFromManifests(
             for (const auto & entry : manifest->entries)
             {
                 Paimon::checkPathIsRelativeToTable(entry.file.file_name, "data file");
-                String file_path = (std::filesystem::path(persistent_components.table_path)
+                String file_path = pathToGenericString(pathFromString(persistent_components.table_path)
                     / entry.file.bucket_path / entry.file.file_name);
                 String identifier = (deduplicate || track_deletes) ? getManifestEntryIdentifier(entry) : String{};
 

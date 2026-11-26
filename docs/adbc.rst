@@ -10,6 +10,11 @@ to ``libchdb.so``:
    driver     = /path/to/libchdb.so
    entrypoint = chdb_adbc_init
 
+The chdb-core Python module also exports the entrypoint, so the driver can be the installed
+module, ``chdb._chdb.__file__``. On Windows, where ``libchdb`` is not built, this is the only
+option. Bulk ingest with ``mode="replace"`` fails on Windows with ``NOT_IMPLEMENTED``, because
+it needs an atomic table exchange that Windows builds do not have.
+
 Read-Only Connections
 ---------------------
 

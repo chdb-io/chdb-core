@@ -11,7 +11,9 @@
 #include <base/errnoToString.h>
 #include <base/getPageSize.h>
 
+#if !defined(OS_WINDOWS)
 #include <sys/mman.h> /// MADV_POPULATE_WRITE
+#endif
 #include <Poco/Environment.h>
 #include <Poco/Logger.h>
 

@@ -120,6 +120,12 @@ target_include_directories(_bsoncxx SYSTEM PUBLIC
         "${BSONCXX_BINARY_DIR}/lib/bsoncxx/v_noabi"
 )
 target_link_libraries(_bsoncxx ch_contrib::libbson)
+# chdb_spec: on Windows (mingw-w64) the library sources include <bson/bson.h> after CRT headers have set
+# __USE_MINGW_ANSI_STDIO to 0, which <bson/compat.h> rejects with an #error (see
+# contrib/mongo-c-driver-cmake). PRIVATE, because the public headers do not include the C driver.
+if(OS_WINDOWS)
+    target_compile_definitions(_bsoncxx PRIVATE __USE_MINGW_ANSI_STDIO=1)
+endif()
 
 # Taken from mongo-cxx-driver/src/bsoncxx/CMakeLists.txt
 set(bsoncxx_export_header_custom_content "")
@@ -413,6 +419,10 @@ target_include_directories(_mongocxx SYSTEM PUBLIC
         "${MONGOCXX_BINARY_DIR}/lib/mongocxx/v_noabi"
 )
 target_link_libraries(_mongocxx ch_contrib::bsoncxx ch_contrib::libmongoc)
+# chdb_spec: see _bsoncxx above.
+if(OS_WINDOWS)
+    target_compile_definitions(_mongocxx PRIVATE __USE_MINGW_ANSI_STDIO=1)
+endif()
 
 # Taken from mongo-cxx-driver/src/mongocxx/CMakeLists.txt
 set(mongocxx_export_header_custom_content "")

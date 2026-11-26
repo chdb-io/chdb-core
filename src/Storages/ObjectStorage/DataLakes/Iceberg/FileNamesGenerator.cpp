@@ -1,6 +1,7 @@
 #include <Storages/ObjectStorage/DataLakes/Iceberg/FileNamesGenerator.h>
 
 #include <Common/Exception.h>
+#include <base/pathToString.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <fmt/format.h>
@@ -70,7 +71,7 @@ FileNamesGenerator & FileNamesGenerator::operator=(const FileNamesGenerator & ot
 void FileNamesGenerator::setBaseMetadataFile(Int32 base_version, const String & base_metadata_path)
 {
     initial_version = base_version + 1;
-    base_metadata_file_name = std::filesystem::path(base_metadata_path).filename();
+    base_metadata_file_name = pathToGenericString(pathFromString(base_metadata_path).filename());
 }
 
 Iceberg::IcebergPathFromMetadata FileNamesGenerator::generateDataFileName()

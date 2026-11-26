@@ -1,7 +1,7 @@
 # Attach one SHA256SUMS to every release (chdb-io/chdb-core#217).
 #
-# The four platform builds each upload their own assets, hours apart, from four runners that
-# never see each other's output. No one of them can write a file describing the release as a
+# The platform builds each upload their own assets, hours apart, from runners that never see
+# each other's output. No one of them can write a file describing the release as a
 # whole, so this runs after each of them finishes and rewrites SHA256SUMS from whatever the
 # release holds at that moment. The run that follows the last upload is the complete one;
 # the earlier ones are partial and are replaced. That is the deliberate trade - a partial
@@ -25,6 +25,7 @@ on:
       - Build & Test Linux arm64
       - Build & Test macOS x86_64
       - Build & Test macOS arm64
+      - Build & Test Windows x86_64
     types: [completed]
   workflow_dispatch:
     inputs:

@@ -130,7 +130,13 @@ foreach (file parquet_types.h parquet_types.tcc)
     configure_file("${ARROW_SRC_DIR}/generated/${file}" "${PARQUET_FORMAT_INCLUDE_DIR}/generated/${file}" COPYONLY)
 endforeach()
 # The only Arrow header included by the generated code. It does nothing outside Windows.
-file(WRITE "${PARQUET_FORMAT_INCLUDE_DIR}/parquet/windows_compatibility.h" "#pragma once\n")
+if (OS_WINDOWS)
+    # chdb_spec: on Windows it undefines what parquet/windows_fixup.h does: <windows.h>, which the Thrift
+    # headers include there, defines OPTIONAL, and the generated FieldRepetitionType has a member of that name.
+    file(WRITE "${PARQUET_FORMAT_INCLUDE_DIR}/parquet/windows_compatibility.h" "#pragma once\n#ifdef OPTIONAL\n#undef OPTIONAL\n#endif\n")
+else ()
+    file(WRITE "${PARQUET_FORMAT_INCLUDE_DIR}/parquet/windows_compatibility.h" "#pragma once\n")
+endif ()
 
 add_library(_parquet_format "${ARROW_SRC_DIR}/generated/parquet_types.cpp")
 target_include_directories(_parquet_format SYSTEM PUBLIC "${PARQUET_FORMAT_INCLUDE_DIR}")

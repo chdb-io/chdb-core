@@ -12,6 +12,13 @@ Python UDFs in chDB provide:
 - **External Library Integration**: Use any Python library within your SQL queries
 - **Stateless Operations**: Functions are called for each row of input data
 
+.. note::
+
+   The ``@chdb_udf`` decorator on this page defines executable UDFs: chDB runs the function as
+   an external Python command. Running external commands is not implemented on Windows, so
+   ``@chdb_udf`` is not available there. Use the in-process ``@chdb.udf.func`` decorator
+   instead (``@chdb.udf.agg`` for aggregate functions).
+
 API Reference
 -------------
 

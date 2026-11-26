@@ -136,12 +136,14 @@ class TestArrowRecordReaderDeltaLake(unittest.TestCase):
         self.assertTrue(os.path.exists(delta_table_path))
         self.assertTrue(any(f.endswith('.parquet') for f in os.listdir(delta_table_path)))
 
-        # Read back using chdb to verify data integrity
+        # Read back using chdb to verify data integrity. ClickHouse unescapes backslashes in
+        # the SQL literal, so pass a Windows path with forward slashes.
+        sql_path = delta_table_path.replace(os.sep, "/")
         read_query = f"""
             SELECT
                 id, name, value, category,
                 COUNT(*) as total_count
-            FROM file('{delta_table_path}/*.parquet', 'Parquet')
+            FROM file('{sql_path}/*.parquet', 'Parquet')
             GROUP BY id, name, value, category
             ORDER BY id
         """

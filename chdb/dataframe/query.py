@@ -7,6 +7,19 @@ import pyarrow as pa
 from chdb import query as chdb_query
 
 
+def _sql_path(path) -> str:
+    """A file path as it can be written inside a quoted SQL literal.
+
+    ClickHouse string literals treat a backslash as an escape, so a Windows path such as
+    C:\\Users\\me\\Temp\\tmpab12 would lose its separators (`\\t` is a tab). Windows accepts
+    forward slashes in paths, so use those there. On POSIX the path is returned unchanged.
+    """
+    path = os.fspath(path)
+    if os.sep == "\\":
+        path = path.replace("\\", "/")
+    return path
+
+
 class Table:
     """Wrapper for multiple data formats enabling SQL queries on DataFrames, Parquet files, and Arrow tables.
 
@@ -256,7 +269,7 @@ class Table:
         print(self.to_pandas())
 
     def _query_on_path(self, path, sql, **kwargs):
-        new_sql = sql.replace("__table__", f'file("{path}", Parquet)')
+        new_sql = sql.replace("__table__", f'file("{_sql_path(path)}", Parquet)')
         res = chdb_query(new_sql, "Parquet", **kwargs)
         tbl = Table(parquet_memoryview=res.get_memview())
         tbl._rows_read = res.rows_read()
@@ -399,10 +412,10 @@ class Table:
                     f"Table {tableName} should be an instance of Table or DataFrame")
 
             if tbl._parquet_path is not None:
-                return f'file("{tbl._parquet_path}", Parquet)'
+                return f'file("{_sql_path(tbl._parquet_path)}", Parquet)'
 
             if tbl._temp_parquet_path is not None:
-                return f'file("{tbl._temp_parquet_path}", Parquet)'
+                return f'file("{_sql_path(tbl._temp_parquet_path)}", Parquet)'
 
             temp_path = None
             data_fd = -1
@@ -416,25 +429,28 @@ class Table:
 
             ffd = os.fdopen(data_fd, "wb")
             ffds.append(ffd)
+            # A memfd has no name, so the engine reads it through /dev/fd. A temporary file has one,
+            # which is also the only way on Windows, where there is no /dev/fd.
+            source = f"/dev/fd/{data_fd}" if temp_path is None else _sql_path(temp_path)
 
             if tbl._parquet_memoryview is not None:
                 ffd.write(tbl._parquet_memoryview.tobytes())
                 ffd.flush()
                 os.lseek(data_fd, 0, os.SEEK_SET)
-                return f'file("/dev/fd/{data_fd}", Parquet)'
+                return f'file("{source}", Parquet)'
 
             if tbl._dataframe is not None:
                 ffd.write(tbl._dataframe.to_parquet(engine="pyarrow", compression=None))
                 ffd.flush()
                 os.lseek(data_fd, 0, os.SEEK_SET)
-                return f'file("/dev/fd/{data_fd}", Parquet)'
+                return f'file("{source}", Parquet)'
 
             if tbl._arrow_table is not None:
                 with pa.RecordBatchFileWriter(ffd, tbl._arrow_table.schema) as writer:
                     writer.write_table(tbl._arrow_table)
                 ffd.flush()
                 os.lseek(data_fd, 0, os.SEEK_SET)
-                return f'file("/dev/fd/{data_fd}", Arrow)'
+                return f'file("{source}", Arrow)'
 
             raise ValueError(f"Table {tableName} is not initialized correctly")
 
@@ -463,7 +479,7 @@ class Table:
     ) -> "Table":
         # replace "__table__" with file("temp_path", Parquet) or file("/dev/fd/{parquet_fd}", Parquet)
         if temp_path is not None:
-            new_sql = sql.replace("__table__", f'file("{temp_path}", {fmt})')
+            new_sql = sql.replace("__table__", f'file("{_sql_path(temp_path)}", {fmt})')
         else:
             os.lseek(fd, 0, os.SEEK_SET)
             new_sql = sql.replace("__table__", f'file("/dev/fd/{fd}", {fmt})')

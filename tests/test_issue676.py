@@ -54,11 +54,19 @@ def _run(body):
         os.unlink(script.name)
 
 
+# Executable UDFs run as external commands, which the Windows engine cannot start: every call fails
+# with this error there, so the cases that call one are skipped, and only on that error.
+NO_EXTERNAL_COMMANDS = "Code: 48. DB::Exception: Running external commands is not implemented on Windows"
+
+
 class TestIssue676(unittest.TestCase):
     """A connection that joins a running engine never loses its startup options silently."""
 
-    def _check(self, body):
+    def _check(self, body, runs_executable_udf=False):
         proc = _run(body)
+        if runs_executable_udf and proc.returncode != 0 and NO_EXTERNAL_COMMANDS in proc.stdout + proc.stderr:
+            self.skipTest("executable UDFs need external commands, which this build cannot run "
+                          "(Running external commands is not implemented on Windows)")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("OK", proc.stdout, proc.stdout + proc.stderr)
 
@@ -162,7 +170,7 @@ class TestIssue676(unittest.TestCase):
                 raise AssertionError("from_second was loaded")
             held.close()
             print("OK")
-        """)
+        """, runs_executable_udf=True)
 
     def test_other_udf_path_runs_its_own_scripts(self):
         # Both directories define the same function, so only the scripts they run differ.
@@ -175,7 +183,7 @@ class TestIssue676(unittest.TestCase):
             conn.close()
             held.close()
             print("OK")
-        """)
+        """, runs_executable_udf=True)
 
     def test_query_setting_that_is_also_a_server_setting(self):
         self._check("""
@@ -243,7 +251,7 @@ class TestIssue676(unittest.TestCase):
             assert chdb.query("SELECT shout('ab')", "CSV").bytes() == b'"AB"\\n'
             held.close()
             print("OK")
-        """)
+        """, runs_executable_udf=True)
 
     def test_session_then_datastore_style_options(self):
         # The options the DataStore layer passes on every connection, while a Session holds the engine.

@@ -7,10 +7,14 @@ set(LIBFIU_DIR "${ClickHouse_SOURCE_DIR}/contrib/libfiu/")
 
 set(LIBFIU_SOURCES
     ${LIBFIU_DIR}/libfiu/fiu.c
-    ${LIBFIU_DIR}/libfiu/fiu-rc.c
     ${LIBFIU_DIR}/libfiu/backtrace.c
     ${LIBFIU_DIR}/libfiu/wtable.c
 )
+# chdb_spec: fiu-rc.c is libfiu's remote control (fiu_rc_fifo), which talks over POSIX named pipes
+# (mkfifo). ClickHouse never uses it, so Windows builds the core without it.
+if (NOT OS_WINDOWS)
+    list(APPEND LIBFIU_SOURCES ${LIBFIU_DIR}/libfiu/fiu-rc.c)
+endif ()
 
 set(LIBFIU_HEADERS "${LIBFIU_DIR}/libfiu")
 

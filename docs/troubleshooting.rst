@@ -7,13 +7,16 @@ Installation Issues
 Platform Compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-chdb-core currently supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64). Windows support is not available yet.
+chdb-core supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64), and CPython 3.9 to 3.14 on **Windows x86_64**.
 
 **Supported Platforms:**
 
 - macOS (x86_64 and ARM64)
 - Linux (x86_64 and ARM64)
+- Windows x86_64: Windows 10 version 1607 / Windows Server 2016 or later, a CPU with AVX2, and CPython 3.9 to 3.14 (not free-threaded builds). Windows on ARM64 is not supported.
 - Python 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
+
+For Windows requirements and limitations, see :ref:`windows-support`. For Windows-specific problems, see `Windows Issues`_.
 
 Import Errors
 ~~~~~~~~~~~~~
@@ -68,6 +71,124 @@ If you get Python version compatibility errors:
    
    # Use Python 3.9+ explicitly
    python3.9 -m pip install chdb-core
+
+.. _windows-troubleshooting:
+
+Windows Issues
+--------------
+
+DLL Load Failed on Import
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: text
+
+   ImportError: DLL load failed while importing _chdb
+
+The module needs Windows 10 version 1607 or later, or Windows Server 2016 or later. It imports
+``SetThreadDescription``, which older Windows versions do not have, so they cannot load it.
+
+**Solution**: Check the Windows version, and upgrade Windows if it is older than 10 version 1607
+(build 14393):
+
+.. code-block:: python
+
+   import platform
+   print(platform.version())   # for example 10.0.14393; the build number must be 14393 or higher
+
+Python Dies Without an Error (Illegal Instruction)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The x86_64 wheels, for Windows and for Linux, are built for x86-64-v3 and need a CPU with AVX2.
+On a CPU without AVX2 the Python process dies with an illegal instruction. There is no Python
+exception and no error message, and on Windows no stack trace. The exit code on Windows is
+``0xC000001D`` (``STATUS_ILLEGAL_INSTRUCTION``), shown as ``-1073741795`` by ``%ERRORLEVEL%``
+or ``$LASTEXITCODE``.
+
+**Solution**: Run chDB on a CPU with AVX2. In a virtual machine, check that the hypervisor
+passes AVX2 through to the guest.
+
+``import chdb`` Fails After pip Installs chdb-core 0.0.1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When no chdb-core wheel matches your Python, pip installs the 0.0.1 placeholder release
+instead, and ``import chdb`` then fails. On Windows this happens with a free-threaded Python
+(3.13t, 3.14t), with a 32-bit Python and on ARM64.
+
+**Check** the installed version (``Version: 0.0.1`` is the placeholder) and the interpreter:
+
+.. code-block:: bat
+
+   pip show chdb-core
+
+.. code-block:: python
+
+   import sys, sysconfig
+
+   print(sys.version)
+   print(sysconfig.get_platform())                     # must be win-amd64
+   print(sysconfig.get_config_var("Py_GIL_DISABLED"))  # 1 means a free-threaded build
+
+**Solution**: Uninstall the placeholder and install chdb-core with a 64-bit CPython 3.9 to
+3.14 that is not a free-threaded build, on Windows x86_64, for example through the ``py``
+launcher:
+
+.. code-block:: bat
+
+   pip uninstall chdb-core
+   py -3.12 -m pip install chdb-core
+
+Backslashes in File Paths
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ClickHouse treats a backslash in an SQL string literal as an escape character, so a Windows
+path such as ``'C:\data\new.parquet'`` reaches the engine as a different path (``\n`` becomes
+a newline) and the query fails or reads the wrong file.
+
+**Solution**: Inside SQL string literals, write paths with forward slashes, or double the
+backslashes:
+
+.. code-block:: python
+
+   import os
+   import chdb
+
+   path = os.path.abspath("data.parquet").replace("\\", "/")
+   chdb.query(f"SELECT count() FROM file('{path}', Parquet)")
+
+   chdb.query("SELECT count() FROM file('C:/data/data.parquet', Parquet)")
+   chdb.query(r"SELECT count() FROM file('C:\\data\\data.parquet', Parquet)")
+
+Paths passed as Python arguments, such as a session path, are not SQL and need no change.
+
+Unsupported Features (NOT_IMPLEMENTED)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some features are not available on Windows and fail with ``NOT_IMPLEMENTED``, for example:
+
+.. code-block:: text
+
+   Running external commands is not implemented on Windows
+   RENAME EXCHANGE is not supported because exchanging files is not supported by the OS
+   Can't create refreshable materialized view because exchanging files is not supported by the OS
+
+**Solutions**:
+
+- **Executable UDFs**, including the legacy ``@chdb_udf`` decorator and
+  ``user_defined_executable_functions_config``: use the in-process ``@chdb.udf.func``
+  decorator instead (``@chdb.udf.agg`` for aggregate functions).
+- **EXCHANGE TABLES**, **CREATE OR REPLACE TABLE** of an existing table and ADBC ingest with
+  ``mode="replace"`` need an atomic exchange that Windows builds do not have. Drop the table and
+  create it again instead (for ADBC ingest, ``mode="create"``); this is not atomic.
+- **Refreshable materialized views**: only ``APPEND`` refreshable materialized views work on
+  Windows.
+
+Features that are not built for Windows, such as S3, Azure Blob Storage, GCS, HDFS, Kafka,
+PostgreSQL, Delta Lake and WebAssembly UDFs, fail with an error such as an unknown table
+function or table engine. They are not available on Windows; see :ref:`windows-support`. The
+MySQL and MongoDB integrations are available.
+
+DataLakeCatalog cannot yet read tables whose location is a local Windows path. To read an
+Iceberg table on local files, use ``icebergLocal()``.
 
 Query Execution Issues
 ----------------------
@@ -160,8 +281,8 @@ If you encounter file access errors:
    if not os.path.exists(file_path):
        print(f"File does not exist: {file_path}")
    
-   # Use absolute path
-   abs_path = os.path.abspath(file_path)
+   # Use absolute path (with forward slashes, for Windows)
+   abs_path = os.path.abspath(file_path).replace("\\", "/")
    result = chdb.query(f"SELECT * FROM file('{abs_path}', 'CSV')")
 
 2. **Supported File Formats**
@@ -342,6 +463,9 @@ UDF (User Defined Functions) Issues
 
 **UDF Import/Registration Problems**
 
+The ``@chdb_udf`` examples below are executable UDFs, which are not available on Windows. There,
+use the in-process ``@chdb.udf.func`` decorator instead.
+
 .. code-block:: python
 
    from chdb.udf import chdb_udf
@@ -511,12 +635,18 @@ Reinstall chdb-core: ``pip uninstall chdb-core && pip install chdb-core``
 **"Python version not supported"**
 chDB requires Python 3.9+. Upgrade your Python installation.
 
+**"DLL load failed while importing _chdb"**
+On Windows, the module needs Windows 10 version 1607 / Windows Server 2016 or later. See `DLL Load Failed on Import`_.
+
+**"Running external commands is not implemented on Windows"**
+Executable UDFs, including ``@chdb_udf``, are not available on Windows. Use ``@chdb.udf.func`` instead.
+
 Frequently Asked Questions
 --------------------------
 
 **Q: What platforms does chDB support?**
 
-A: chDB supports Python 3.9+ on macOS and Linux (x86_64 and ARM64). Windows support is not available yet.
+A: chDB supports Python 3.9+ on macOS and Linux (x86_64 and ARM64), and CPython 3.9 to 3.14 on Windows x86_64 (Windows 10 version 1607 / Windows Server 2016 or later, a CPU with AVX2, no free-threaded builds). Some features are not available on Windows; see :ref:`windows-support`.
 
 **Q: Can chDB work with large datasets?**
 
