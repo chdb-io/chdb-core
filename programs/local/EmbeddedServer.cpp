@@ -1,4 +1,5 @@
 #include "EmbeddedServer.h"
+#include "ForkGuard.h"
 #include "InstancePaths.h"
 #include "LocalFilesystemRestriction.h"
 #include <Core/Settings.h>
@@ -251,11 +252,18 @@ static void applySettingsOverridesForLocal(ContextMutablePtr context)
 
 EmbeddedServer::~EmbeddedServer()
 {
+    if (CHDB::isForkedAfterEngineInit())
+    {
+        (void)memory_worker.release();
+        temporary_directory_to_delete.reset();
+        return;
+    }
     cleanup();
 }
 
 void EmbeddedServer::initialize(Poco::Util::Application & self)
 {
+    CHDB::markEngineInitialized();
     setShuttingDown(false);
 
     Poco::Util::Application::initialize(self);
@@ -349,6 +357,21 @@ void EmbeddedServer::initialize(Poco::Util::Application & self)
     (void)std::atexit([]
     {
         g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+        if (CHDB::isForkedAfterEngineInit())
+        {
+            /// Never lock instance_mutex, run global_context->shutdown(), join
+            /// vanished background/jemalloc threads, or unlink the parent's
+            /// status file / temporary DB directory. Abandon static owners of
+            /// thread-bearing singletons so C++ static destructors do not
+            /// deadlock when exit() continues past atexit handlers.
+            (void)global_instance.release();
+            DatabaseCatalog::abandonAfterFork();
+            EventNotifier::abandonAfterFork();
+            NamedCollectionFactory::instance().abandonAfterFork();
+            StaticThreadPool::abandonAllAfterFork();
+            GlobalThreadPool::abandonAfterFork();
+            return;
+        }
         /// If a connection is still open at interpreter exit, destroy the server
         /// here, before the global pool teardown, while logging and the statics
         /// its shutdown touches are still alive. Waiting for global_instance's
@@ -607,6 +630,9 @@ void EmbeddedServer::logMergeTreeStateAtShutdown() const
 
 void EmbeddedServer::cleanup()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     bool context_cleaned = !global_context;
     try
     {
@@ -1574,6 +1600,9 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
 
 EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        throw DB::Exception(ErrorCodes::BAD_ARGUMENTS, "{}", CHDB::forkedAfterEngineInitError());
+
     std::lock_guard<std::mutex> lock(instance_mutex);
     /// A warning belongs to the connection that is being made, not to an earlier one that failed after leaving it.
     connect_warning.clear();
@@ -1613,6 +1642,7 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
         return *global_instance;
     }
 
+    CHDB::markEngineInitialized();
     last_cleanup_succeeded.store(false, std::memory_order_release);
     global_instance = std::make_unique<EmbeddedServer>();
     try
@@ -1639,6 +1669,9 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
 
 void EmbeddedServer::releaseInstance()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     std::lock_guard<std::mutex> lock(instance_mutex);
 
     if (client_ref_count == 0)
@@ -1653,6 +1686,9 @@ void EmbeddedServer::releaseInstance()
 
 bool EmbeddedServer::beginShutdown()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return false;
+
     std::lock_guard<std::mutex> lock(instance_mutex);
 
     if (client_ref_count != 0)
@@ -1664,6 +1700,9 @@ bool EmbeddedServer::beginShutdown()
 
 bool EmbeddedServer::hasActiveClients()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return false;
+
     std::lock_guard<std::mutex> lock(instance_mutex);
     return client_ref_count != 0;
 }
@@ -1675,6 +1714,9 @@ bool EmbeddedServer::lastCleanupSucceeded()
 
 void EmbeddedServer::cancelPythonQueriesIfExclusive(size_t python_clients)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     std::lock_guard<std::mutex> lock(instance_mutex);
     /// chdb_spec: Do not cancel a C/Go host's query when its connection shares
     /// this embedded server with a finalizing Python interpreter.

@@ -1,4 +1,5 @@
 #include "LocalServer.h"
+#include "ForkGuard.h"
 #include "InstancePaths.h"
 #include "ChdbSettingsOverrides.h"
 #include "chdb-internal.h"
@@ -10,6 +11,7 @@
 #include "TableFunctionArrowStream.h"
 #endif
 
+#include <Common/EventNotifier.h>
 #include <Common/SignalHandlers.h>
 #include <TableFunctions/TableFunctionFactory.h>
 #include <Formats/FormatFactory.h>
@@ -507,6 +509,7 @@ void LocalServer::initialize(Poco::Util::Application & self)
     /// server. Without this `clickhouse-local` would ignore `jemalloc_merge_tree_arenas`.
     JemallocMergeTreeArena::initialize(server_settings[ServerSetting::jemalloc_merge_tree_arenas]);
 
+    CHDB::markEngineInitialized();
     GlobalThreadPool::initialize(
         server_settings[ServerSetting::max_thread_pool_size],
         server_settings[ServerSetting::max_thread_pool_free_size],
@@ -515,9 +518,24 @@ void LocalServer::initialize(Poco::Util::Application & self)
     static std::once_flag atexit_registered;
     std::call_once(atexit_registered, []
     {
+        /// Construct the static thread pools before registering std::atexit() so
+        /// the exit handler runs before their static destructors (LIFO order),
+        /// allowing post-fork abandonment before ~StaticThreadPool() can join.
+#define CONSTRUCT_STATIC_THREAD_POOL(SUFFIX, NAME, METRIC) (void)get##SUFFIX##ThreadPool();
+        APPLY_FOR_STATIC_THREAD_POOLS(CONSTRUCT_STATIC_THREAD_POOL)
+#undef CONSTRUCT_STATIC_THREAD_POOL
+
         (void)std::atexit([]
         {
             g_memory_tracking_disabled.store(true, std::memory_order_relaxed);
+            if (CHDB::isForkedAfterEngineInit())
+            {
+                DatabaseCatalog::abandonAfterFork();
+                EventNotifier::abandonAfterFork();
+                StaticThreadPool::abandonAllAfterFork();
+                GlobalThreadPool::abandonAfterFork();
+                return;
+            }
             GlobalThreadPool::shutdown();
         });
 

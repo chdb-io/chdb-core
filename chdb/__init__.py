@@ -45,9 +45,7 @@ if sys.version_info[:2] >= (3, 7):
                 break
     from . import _chdb  # noqa
 
-    conn = _chdb.connect()
-    engine_version = str(conn.query("SELECT version();", "CSV").bytes())[3:-4]
-    conn.close()
+    engine_version = _chdb.engine_version()
 else:
     raise NotImplementedError("Python 3.6 or lower version is not supported")
 
@@ -110,6 +108,15 @@ def to_datastore(df):
 
 # global connection lock, for multi-threading use of legacy chdb.query()
 g_conn_lock = threading.Lock()
+
+
+def _reset_after_fork():
+    global g_conn_lock
+    g_conn_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
 
 from .progress_display import (
     is_notebook as _is_notebook,
@@ -222,7 +229,10 @@ def query(sql, output_format="CSV", path="", udf_path="", params=None, options=N
         output_format = "Arrow"
 
     with g_conn_lock:
-        conn = _chdb.connect(conn_str)
+        try:
+            conn = _chdb.connect(conn_str)
+        except RuntimeError as e:
+            raise ChdbError(str(e)) from e.with_traceback(None)
         progress_callback = None
         if progress_mode == "auto":
             progress_callback = _create_auto_progress_callback()

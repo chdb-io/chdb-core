@@ -23,6 +23,11 @@ BackgroundSchedulePoolTaskHolder::~BackgroundSchedulePoolTaskHolder()
         task_info->deactivate();
 }
 
+void BackgroundSchedulePoolTaskHolder::abandonAfterFork() noexcept
+{
+    task_info.reset();
+}
+
 BackgroundSchedulePoolTaskHolder::operator bool() const
 {
     return task_info != nullptr;

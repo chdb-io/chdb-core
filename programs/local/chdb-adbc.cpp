@@ -20,6 +20,7 @@
 
 #include "chdb.h"
 #include "chdb-internal.h"
+#include "ForkGuard.h"
 
 #include <Core/Settings.h>
 #include <Parsers/Lexer.h>
@@ -1245,6 +1246,9 @@ AdbcStatusCode chdbConnectionSetOption(
 AdbcStatusCode chdbConnectionInit(
     AdbcConnection * connection, AdbcDatabase * database, AdbcError * error)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return setError(error, ADBC_STATUS_INVALID_STATE, std::string("[chdb] ") + CHDB::forkedAfterEngineInitError());
+
     if (!connection || !connection->private_data)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not allocated");
     if (!database || !database->private_data)
@@ -1284,6 +1288,11 @@ AdbcStatusCode chdbConnectionRelease(AdbcConnection * connection, AdbcError * er
 {
     if (!connection || !connection->private_data)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not allocated");
+    if (CHDB::isForkedAfterEngineInit())
+    {
+        connection->private_data = nullptr;
+        return ADBC_STATUS_OK;
+    }
     auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
     /// Defensive: an outstanding stream must release the engine before the
     /// connection closes and stop pointing at the impl we delete below.
@@ -1325,6 +1334,8 @@ AdbcStatusCode chdbConnectionRollback(AdbcConnection *, AdbcError * error)
 /// stream to stop.
 AdbcStatusCode chdbConnectionCancel(AdbcConnection * connection, AdbcError * error)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return ADBC_STATUS_OK;
     if (!connection || !connection->private_data)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] connection is not initialized");
     auto * impl = static_cast<ConnectionImpl *>(connection->private_data);
@@ -2732,6 +2743,8 @@ AdbcStatusCode executeStreamingSelect(
 AdbcStatusCode chdbStatementExecuteQuery(
     AdbcStatement * statement, ArrowArrayStream * out, int64_t * rows_affected, AdbcError * error)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return setError(error, ADBC_STATUS_INVALID_STATE, std::string("[chdb] ") + CHDB::forkedAfterEngineInitError());
     if (!statement || !statement->private_data)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] statement is not allocated");
     auto * impl = static_cast<StatementImpl *>(statement->private_data);
@@ -2794,6 +2807,8 @@ AdbcStatusCode chdbStatementExecuteQuery(
 /// already") — and the statement is immediately reusable afterwards.
 AdbcStatusCode chdbStatementCancel(AdbcStatement * statement, AdbcError * error)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return ADBC_STATUS_OK;
     if (!statement || !statement->private_data)
         return setError(error, ADBC_STATUS_INVALID_STATE, "[chdb] statement is not allocated");
     auto * impl = static_cast<StatementImpl *>(statement->private_data);

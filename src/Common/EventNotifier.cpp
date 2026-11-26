@@ -37,6 +37,11 @@ void EventNotifier::shutdown()
       event_notifier.reset();
 }
 
+void EventNotifier::abandonAfterFork() noexcept
+{
+    auto * leaked [[maybe_unused]] = event_notifier.release();
+}
+
 size_t EventNotifier::calculateIdentifier(size_t a, size_t b)
 {
     size_t result = 0;

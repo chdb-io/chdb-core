@@ -1219,6 +1219,11 @@ void DatabaseCatalog::shutdown(std::function<void()> shutdown_system_logs)
     database_catalog.reset();
 }
 
+void DatabaseCatalog::abandonAfterFork() noexcept
+{
+    auto * leaked [[maybe_unused]] = database_catalog.release();
+}
+
 DatabasePtr DatabaseCatalog::getDatabase(const String & database_name, ContextPtr local_context) const
 {
     String resolved_database = local_context->resolveDatabase(database_name);

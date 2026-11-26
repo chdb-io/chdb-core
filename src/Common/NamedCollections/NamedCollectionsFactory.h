@@ -123,6 +123,7 @@ public:
     void loadIfNot();
 
     void shutdown();
+    void abandonAfterFork() noexcept;
 
     void addDependency(const String & collection_name, const StorageID & table_id);
     void removeDependencies(const StorageID & table_id);
@@ -138,6 +139,7 @@ protected:
 
     bool loaded = false;
     std::atomic<bool> shutdown_called = false;
+    std::atomic<bool> abandoned_after_fork = false;
     std::unique_ptr<NamedCollectionsMetadataStorage> metadata_storage;
     BackgroundSchedulePoolTaskHolder update_task;
 

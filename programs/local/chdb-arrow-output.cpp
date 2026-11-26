@@ -1,6 +1,7 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ChdbClient.h"
+#include "ForkGuard.h"
 #include "QueryResult.h"
 
 #include <Columns/IColumn.h>
@@ -351,6 +352,9 @@ chdb_result * chdb_query_arrow_with_settings_n(
     bool output_variant_as_string,
     const DB::NameToNameMap & params)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return makeErrorResult(CHDB::forkedAfterEngineInitError());
+
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
@@ -400,6 +404,9 @@ chdb_result * chdb_query_arrow_n(
     chdb_connection conn, const char * query, size_t query_len,
     chdb_arrow_stream out_stream, const chdb_arrow_options * options)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return makeErrorResult(CHDB::forkedAfterEngineInitError());
+
     if (!conn)
         return makeErrorResult("Unexpected null connection");
 
@@ -437,6 +444,9 @@ chdb_result * chdb_stream_query_arrow_n(
     chdb_connection conn, const char * query, size_t query_len,
     const chdb_arrow_options * options)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(CHDB::forkedAfterEngineInitError()));
+
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
@@ -510,6 +520,9 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
     const size_t * param_value_lens,
     size_t param_count)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult(CHDB::forkedAfterEngineInitError()));
+
     if (!conn)
         return reinterpret_cast<chdb_result *>(new CHDB::StreamQueryResult("Unexpected null connection"));
 
@@ -565,7 +578,7 @@ chdb_result * chdb_stream_query_arrow_with_params_n(
 chdb_state chdb_stream_fetch_arrow(
     chdb_connection conn, chdb_result * stream_result, chdb_arrow_stream out_batch)
 {
-    if (!conn || !stream_result || !out_batch)
+    if (CHDB::isForkedAfterEngineInit() || !conn || !stream_result || !out_batch)
         return CHDBError;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);

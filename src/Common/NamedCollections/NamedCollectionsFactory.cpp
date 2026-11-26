@@ -41,7 +41,18 @@ NamedCollectionFactory & NamedCollectionFactory::instance()
 
 NamedCollectionFactory::~NamedCollectionFactory()
 {
+    if (abandoned_after_fork.load(std::memory_order_acquire))
+    {
+        update_task.abandonAfterFork();
+        (void)metadata_storage.release();
+        return;
+    }
     shutdown();
+}
+
+void NamedCollectionFactory::abandonAfterFork() noexcept
+{
+    abandoned_after_fork.store(true, std::memory_order_release);
 }
 
 void NamedCollectionFactory::shutdown()

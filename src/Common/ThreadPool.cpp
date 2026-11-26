@@ -1370,6 +1370,11 @@ void GlobalThreadPool::shutdown()
     }
 }
 
+void GlobalThreadPool::abandonAfterFork() noexcept
+{
+    auto * leaked [[maybe_unused]] = the_instance.release();
+}
+
 namespace
 {
 
