@@ -40,6 +40,7 @@ else()
         chdb-arrow-output.cpp
         chdb-adbc.cpp
         ArrowStreamSource.cpp
+        ArrowUDFConversion.cpp
         StorageArrowStream.cpp
         TableFunctionArrowStream.cpp
     )
