@@ -12,7 +12,7 @@ if (OS_WASM)
         EmbeddedServer.cpp
         InstancePaths.cpp
         LocalFilesystemRestriction.cpp
-        ChdbClient.cpp
+        EmbeddedSession.cpp
         QueryClassifier.cpp
     )
 else()
@@ -27,7 +27,7 @@ else()
         EmbeddedServer.cpp
         InstancePaths.cpp
         LocalFilesystemRestriction.cpp
-        ChdbClient.cpp
+        EmbeddedSession.cpp
         QueryClassifier.cpp
     )
 
@@ -64,7 +64,7 @@ if (USE_PYTHON)
         EmbeddedServer.cpp
         InstancePaths.cpp
         LocalFilesystemRestriction.cpp
-        ChdbClient.cpp
+        EmbeddedSession.cpp
         NumpyArray.cpp
         NumpyNestedTypes.cpp
         NumpyType.cpp

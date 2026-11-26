@@ -9,15 +9,18 @@ from utils import is_musl_linux
 
 
 test_concurrent_dir = ".tmp_test_session_concurrency"
+test_concurrent_dir_2 = ".tmp_test_session_concurrency_different"
 
 
 class TestSessionConcurrency(unittest.TestCase):
     def setUp(self) -> None:
         shutil.rmtree(test_concurrent_dir, ignore_errors=True)
+        shutil.rmtree(test_concurrent_dir_2, ignore_errors=True)
         return super().setUp()
 
     def tearDown(self) -> None:
         shutil.rmtree(test_concurrent_dir, ignore_errors=True)
+        shutil.rmtree(test_concurrent_dir_2, ignore_errors=True)
         return super().tearDown()
 
     def test_multiple_sessions_same_path(self):
@@ -126,18 +129,21 @@ class TestSessionConcurrency(unittest.TestCase):
     @unittest.skipIf(is_musl_linux(), "Skip test on musl systems")
     def test_session_path_consistency(self):
         sess1 = session.Session(test_concurrent_dir)
-        sess1.query("SELECT 1")
-
-        # Attempting to create a session with a different path will fail
+        sess2 = session.Session(test_concurrent_dir_2)
         try:
-            sess2 = session.Session(test_concurrent_dir + "_different")
-            sess2.close()
-            self.fail("Should have raised an exception for different path")
-        except RuntimeError as e:
-            self.assertIn("already initialized", str(e).lower())
-            self.assertIn("path", str(e).lower())
+            sess1.query("CREATE TABLE items (id Int32, src String) ENGINE = MergeTree() ORDER BY id")
+            sess1.query("INSERT INTO items VALUES (1, 'path_one')")
 
-        sess1.close()
+            sess2.query("CREATE TABLE items (id Int32, src String) ENGINE = MergeTree() ORDER BY id")
+            sess2.query("INSERT INTO items VALUES (2, 'path_two')")
+
+            res1 = str(sess1.query("SELECT id, src FROM items", "CSV")).strip()
+            res2 = str(sess2.query("SELECT id, src FROM items", "CSV")).strip()
+            self.assertEqual(res1, '1,"path_one"')
+            self.assertEqual(res2, '2,"path_two"')
+        finally:
+            sess2.close()
+            sess1.close()
 
     def test_session_usage_after_close(self):
         sess = session.Session(test_concurrent_dir)

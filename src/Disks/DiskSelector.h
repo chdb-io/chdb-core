@@ -46,6 +46,7 @@ public:
     [[nodiscard]] const DisksMap & getDisksMap() const;
 
     void addToDiskMap(const String & name, DiskPtr disk);
+    void removeFromDiskMap(const String & name);
 
     void shutdown();
 

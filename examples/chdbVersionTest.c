@@ -68,6 +68,10 @@ static void check_version(chdb_connection conn, const char * label, const char *
 
 int main(void)
 {
+    const char * compile_time_engine = chdb_engine_version();
+    CHECK(compile_time_engine != NULL && compile_time_engine[0] != '\0',
+          "chdb_engine_version() is non-empty before chdb_connect");
+
     char arg0[] = "chdb";
     char * argv[] = {arg0};
     chdb_connection * conn = chdb_connect(1, argv);
@@ -78,6 +82,21 @@ int main(void)
 
     check_version(*conn, "chdb()", "SELECT chdb()");
     check_version(*conn, "version()", "SELECT version()");
+
+    {
+        chdb_result * r = chdb_query(*conn, "SELECT version()", "TabSeparated");
+        if (r && !chdb_result_error(r)) {
+            size_t len = chdb_result_length(r);
+            const char * buf = chdb_result_buffer(r);
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+                len--;
+            CHECK(strlen(compile_time_engine) == len && memcmp(compile_time_engine, buf, len) == 0,
+                  "chdb_engine_version() matches SELECT version()");
+        } else {
+            CHECK(0, "SELECT version() succeeded for comparison");
+        }
+        chdb_destroy_query_result(r);
+    }
 
     chdb_close_conn(conn);
 

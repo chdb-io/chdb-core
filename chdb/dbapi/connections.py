@@ -139,7 +139,24 @@ class Connection(object):
             return Cursor(self)
         return Cursor(self)
 
-    def query(self, sql, fmt="CSV"):
+    def interrupt(self):
+        """Interrupt any in-flight queries on this connection."""
+        if not self._closed and self._conn is not None:
+            self._conn.interrupt()
+
+    def register(self, name, obj):
+        """Register a Python table object as ``Python(name)`` on this connection."""
+        if self._closed:
+            raise err.InterfaceError("Connection closed")
+        self._conn.register(name, obj)
+
+    def unregister(self, name):
+        """Unregister a previously registered ``Python(name)`` table."""
+        if self._closed:
+            raise err.InterfaceError("Connection closed")
+        self._conn.unregister(name)
+
+    def query(self, sql, fmt="CSV", params=None, tables=None):
         """Execute a SQL query directly and return raw results.
 
         This method bypasses the cursor interface and executes queries directly.
@@ -169,7 +186,7 @@ class Connection(object):
             sql = sql.encode(self.encoding, "surrogateescape")
 
         try:
-            result = self._conn.query(sql.decode(), fmt)
+            result = self._conn.query(sql.decode(), fmt, params=params, tables=tables)
             self._resp = result
             return result
         except Exception as error:

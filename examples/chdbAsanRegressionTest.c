@@ -24,6 +24,7 @@
  * wrapper it allocated instead of leaking it.
  */
 #include <dlfcn.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -367,6 +368,162 @@ static void test_failed_arrow_array_scan_leak(void)
     chdb_close_conn(conn);
 }
 
+/* [C1] Calling chdb_query_cmdline / query_stable* while a connection is open must fail
+ * cleanly BEFORE constructing LocalServer, leaving the live EmbeddedServer catalog intact. */
+static void test_query_cmdline_refused_while_connection_open(void)
+{
+    printf("test_query_cmdline_refused_while_connection_open\n");
+    chdb_connection * conn = open_memory_connection();
+    CHECK(conn != NULL, "connection opens");
+    if (!conn)
+        return;
+
+    chdb_destroy_query_result(
+        chdb_query(*conn, "CREATE TABLE keep_alive_tbl (x Int32) ENGINE = Memory", "CSV"));
+    chdb_destroy_query_result(
+        chdb_query(*conn, "INSERT INTO keep_alive_tbl VALUES (77)", "CSV"));
+
+    char arg0[] = "clickhouse";
+    char arg1[] = "--output-format=CSV";
+    char arg2[] = "--query=SELECT 1";
+    char * cmd_args[] = {arg0, arg1, arg2};
+
+    chdb_result * cmd_res = chdb_query_cmdline(3, cmd_args);
+    CHECK(cmd_res != NULL && chdb_result_error(cmd_res) != NULL,
+          "chdb_query_cmdline is refused while a connection is open");
+    chdb_destroy_query_result(cmd_res);
+
+    struct local_result_v2 * v2_res = query_stable_v2(3, cmd_args);
+    CHECK(v2_res != NULL && v2_res->error_message != NULL,
+          "query_stable_v2 is refused while a connection is open");
+    free_result_v2(v2_res);
+
+    struct local_result * v1_res = query_stable(3, cmd_args);
+    CHECK(v1_res == NULL, "query_stable returns NULL while a connection is open");
+
+    /* The live connection and its DatabaseCatalog must still work normally. */
+    chdb_result * check_res = chdb_query(*conn, "SELECT x FROM keep_alive_tbl", "CSV");
+    const char * expected = "77\n";
+    CHECK(check_res != NULL && chdb_result_error(check_res) == NULL
+              && chdb_result_length(check_res) == strlen(expected)
+              && memcmp(chdb_result_buffer(check_res), expected, strlen(expected)) == 0,
+          "existing connection and catalog survive refused LocalServer calls");
+    chdb_destroy_query_result(check_res);
+
+    chdb_close_conn(conn);
+
+    /* Once all connections are closed, chdb_query_cmdline works again. */
+    cmd_res = chdb_query_cmdline(3, cmd_args);
+    CHECK(cmd_res != NULL && chdb_result_error(cmd_res) == NULL,
+          "chdb_query_cmdline succeeds again once all connections are closed");
+    chdb_destroy_query_result(cmd_res);
+}
+
+struct close_race_ctx
+{
+    chdb_connection conn;
+    int started;
+};
+
+static void * close_race_query_worker(void * arg)
+{
+    struct close_race_ctx * ctx = (struct close_race_ctx *)arg;
+    __atomic_store_n(&ctx->started, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < 20; ++i)
+    {
+        chdb_result * r = chdb_query(ctx->conn, "SELECT sum(number) FROM numbers(50000)", "CSV");
+        if (r)
+            chdb_destroy_query_result(r);
+    }
+    return NULL;
+}
+
+/* [C7] Concurrent chdb_query vs chdb_close_conn, plus post-close stale handle rejection. */
+static void test_concurrent_close_and_stale_handle(void)
+{
+    printf("test_concurrent_close_and_stale_handle\n");
+    /* Keep a background connection open so the loop tests connection lifecycle, not engine churn. */
+    chdb_connection * anchor = open_memory_connection();
+    CHECK(anchor != NULL, "anchor connection opens");
+    if (!anchor)
+        return;
+
+    for (int round = 0; round < 5; ++round)
+    {
+        chdb_connection * victim = open_memory_connection();
+        if (!victim)
+        {
+            CHECK(0, "victim connection opens");
+            break;
+        }
+        chdb_connection stale_copy = *victim;
+        struct close_race_ctx ctx = {stale_copy, 0};
+        pthread_t worker;
+        pthread_create(&worker, NULL, close_race_query_worker, &ctx);
+        while (!__atomic_load_n(&ctx.started, __ATOMIC_ACQUIRE))
+        {
+        }
+        chdb_close_conn(victim);
+        pthread_join(worker, NULL);
+
+        /* Using stale_copy AFTER chdb_close_conn freed the handle must return an error, never UAF. */
+        chdb_result * after = chdb_query(stale_copy, "SELECT 1", "CSV");
+        CHECK(after != NULL && chdb_result_error(after) != NULL,
+              "query on stale closed connection handle returns clean error");
+        chdb_destroy_query_result(after);
+    }
+
+    chdb_close_conn(anchor);
+}
+
+/* [C6] Closing a connection without unregistering chdb_arrow_array_scan frees its owned wrapper. */
+static void test_unregistered_arrow_array_freed_on_close(void)
+{
+    size_t (*live_bytes)(void) = (size_t (*)(void))dlsym(RTLD_DEFAULT, "__sanitizer_get_current_allocated_bytes");
+
+    printf("test_unregistered_arrow_array_freed_on_close\n");
+    if (!live_bytes)
+    {
+        printf("  skip (not an AddressSanitizer build)\n");
+        return;
+    }
+
+    chdb_connection * anchor = open_memory_connection();
+    if (!anchor)
+        return;
+
+    struct ArrowSchema schema;
+    struct ArrowArray array;
+    memset(&schema, 0, sizeof(schema));
+    memset(&array, 0, sizeof(array));
+    schema.format = "+s";
+    schema.release = noop_schema_release;
+    array.release = noop_array_release;
+
+    /* Warm up */
+    for (int i = 0; i < 5; ++i)
+    {
+        chdb_connection * c = open_memory_connection();
+        chdb_arrow_array_scan(*c, "leaked_on_close", (chdb_arrow_schema)&schema, (chdb_arrow_array)&array);
+        chdb_close_conn(c);
+    }
+
+    const int cycles = 200;
+    size_t before = live_bytes();
+    for (int i = 0; i < cycles; ++i)
+    {
+        chdb_connection * c = open_memory_connection();
+        chdb_arrow_array_scan(*c, "leaked_on_close", (chdb_arrow_schema)&schema, (chdb_arrow_array)&array);
+        chdb_close_conn(c);
+    }
+    size_t after = live_bytes();
+    double per_cycle = ((double)after - (double)before) / (double)cycles;
+    printf("  %.1f bytes retained per un-unregistered arrow_array_scan close cycle\n", per_cycle);
+    CHECK(per_cycle < 16.0, "closing a connection frees owned ArrowStreamRegistry entries");
+
+    chdb_close_conn(anchor);
+}
+
 int main(int argc, char ** argv)
 {
     if (argc > 3 && strcmp(argv[1], "--exit-with-connection-open") == 0)
@@ -381,6 +538,9 @@ int main(int argc, char ** argv)
     test_exit_with_connection_open(argv[0]);
     test_engine_start_leak_budget();
     test_failed_arrow_array_scan_leak();
+    test_query_cmdline_refused_while_connection_open();
+    test_concurrent_close_and_stale_handle();
+    test_unregistered_arrow_array_freed_on_close();
     printf("\nfailures: %d\n", failures);
     return failures == 0 ? 0 : 1;
 }

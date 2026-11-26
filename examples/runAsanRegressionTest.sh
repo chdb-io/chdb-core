@@ -17,7 +17,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd $DIR
 
 echo "Compile and link"
-${CC:-clang} chdbAsanRegressionTest.c -o chdbAsanRegressionTest -I../programs/local/ -L../ -lchdb
+${CC:-clang} chdbAsanRegressionTest.c -o chdbAsanRegressionTest -I../programs/local/ -L../ -lchdb -lpthread
 
 export ${LIB_PATH}=..
 ${LDD} chdbAsanRegressionTest

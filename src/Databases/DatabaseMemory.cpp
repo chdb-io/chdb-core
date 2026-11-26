@@ -13,16 +13,24 @@
 #include <Common/ZooKeeper/ZooKeeperCommon.h>
 #include <Common/quoteString.h>
 #include <Storages/IStorage.h>
+#include <Core/Settings.h>
 #include <Core/UUID.h>
 
 namespace DB
 {
+
+namespace Setting
+{
+    extern const SettingsSeconds lock_acquire_timeout;
+}
 
 namespace ErrorCodes
 {
     extern const int UNKNOWN_TABLE;
     extern const int LOGICAL_ERROR;
     extern const int TABLE_ALREADY_EXISTS;
+    extern const int NOT_IMPLEMENTED;
+    extern const int INCORRECT_QUERY;
 }
 
 static ASTPtr parseCreateQuery(std::string_view query)
@@ -44,7 +52,12 @@ DatabaseMemory::DatabaseMemory(const String & name_, ContextPtr context_)
 
 DatabaseMemory::DatabaseMemory(const String & name_, UUID uuid, ContextPtr context_)
     : DatabaseWithOwnTablesBase(name_, "DatabaseMemory(" + name_ + ")", context_)
-    , data_path(DatabaseCatalog::getDataDirPath(name_) / "")
+    , data_path(
+          DatabaseCatalog::getDataDirPath(
+              (name_ != DatabaseCatalog::TEMPORARY_DATABASE && context_ && context_->getChdbNamespace())
+                  ? (context_->getChdbNamespace()->catalog_prefix + name_)
+                  : name_)
+          / "")
     , db_uuid(uuid)
 {
     auto component_guard = Coordination::setCurrentComponent("DatabaseMemory::DatabaseMemory");
@@ -122,6 +135,95 @@ void DatabaseMemory::dropTable(
     UUID table_uuid = table->getStorageID().uuid;
     if (table_uuid != UUIDHelpers::Nil)
         DatabaseCatalog::instance().removeUUIDMappingFinally(table_uuid);
+}
+
+/// A Memory database has a UUID, so `CREATE TABLE ... AS SELECT` and `CREATE OR REPLACE TABLE` populate a
+/// temporary table and publish it under the final name with RENAME or EXCHANGE. Only renames inside the
+/// same database are supported. Tables that keep data on disk move it with the name.
+void DatabaseMemory::renameTable(
+    ContextPtr local_context,
+    const String & table_name,
+    IDatabase & to_database,
+    const String & to_table_name,
+    bool exchange,
+    bool dictionary)
+{
+    if (&to_database != this)
+        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Moving tables out of a Memory database is not supported");
+
+    auto component_guard = Coordination::setCurrentComponent("DatabaseMemory::renameTable");
+    ensurePopulated();
+
+    StoragePtr table = getTable(table_name, local_context);
+    StoragePtr other_table = exchange ? getTable(to_table_name, local_context) : nullptr;
+    for (const auto & storage : {table, other_table})
+    {
+        if (storage && storage->isDictionary() != dictionary)
+            throw Exception(ErrorCodes::INCORRECT_QUERY, "Use RENAME/EXCHANGE DICTIONARY for dictionaries and RENAME/EXCHANGE TABLE for tables");
+    }
+
+    const auto lock_timeout = local_context->getSettingsRef()[Setting::lock_acquire_timeout];
+    TableExclusiveLockHolder table_lock;
+    TableExclusiveLockHolder other_table_lock;
+    if (table->storesDataOnDisk())
+        table_lock = table->lockExclusively(local_context->getCurrentQueryId(), lock_timeout);
+    if (other_table && other_table->storesDataOnDisk())
+        other_table_lock = other_table->lockExclusively(local_context->getCurrentQueryId(), lock_timeout);
+
+    auto renamed_id = [](const StoragePtr & storage, const String & name)
+    {
+        StorageID id = storage->getStorageID();
+        id.table_name = name;
+        return id;
+    };
+
+    std::lock_guard lock{mutex};
+    auto it = tables.find(table_name);
+    if (it == tables.end() || it->second != table)
+        throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {}.{} doesn't exist", backQuote(database_name), backQuote(table_name));
+
+    auto query_it = create_queries.find(table_name);
+    ASTPtr query = (query_it != create_queries.end() && !query_it->second.empty()) ? parseCreateQuery(query_it->second) : nullptr;
+
+    if (!exchange)
+    {
+        if (tables.contains(to_table_name))
+            throw Exception(ErrorCodes::TABLE_ALREADY_EXISTS, "Table {}.{} already exists", backQuote(database_name), backQuote(to_table_name));
+        checkMetadataFilenameAvailabilityUnlocked(to_table_name);
+
+        table->rename(getTableDataPath(to_table_name), renamed_id(table, to_table_name));
+        tables.erase(it);
+        tables.emplace(to_table_name, table);
+        create_queries.erase(table_name);
+        if (query)
+            query->as<ASTCreateQuery &>().setTable(to_table_name);
+        create_queries.emplace(to_table_name, query ? query->formatWithSecretsOneLine<SecretString>() : SecretString());
+        return;
+    }
+
+    auto other_it = tables.find(to_table_name);
+    if (other_it == tables.end() || other_it->second != other_table)
+        throw Exception(ErrorCodes::UNKNOWN_TABLE, "Table {}.{} doesn't exist", backQuote(database_name), backQuote(to_table_name));
+
+    auto other_query_it = create_queries.find(to_table_name);
+    ASTPtr other_query
+        = (other_query_it != create_queries.end() && !other_query_it->second.empty()) ? parseCreateQuery(other_query_it->second) : nullptr;
+
+    /// The data directories trade places, so move the first one out of the way.
+    const String scratch_path = getTableDataPath("_exchange_" + toString(UUIDHelpers::generateV4()));
+    table->rename(scratch_path, renamed_id(table, to_table_name));
+    other_table->rename(getTableDataPath(table_name), renamed_id(other_table, table_name));
+    table->rename(getTableDataPath(to_table_name), renamed_id(table, to_table_name));
+
+    std::swap(it->second, other_it->second);
+    if (query)
+        query->as<ASTCreateQuery &>().setTable(to_table_name);
+    if (other_query)
+        other_query->as<ASTCreateQuery &>().setTable(table_name);
+    create_queries.erase(table_name);
+    create_queries.erase(to_table_name);
+    create_queries.emplace(table_name, other_query ? other_query->formatWithSecretsOneLine<SecretString>() : SecretString());
+    create_queries.emplace(to_table_name, query ? query->formatWithSecretsOneLine<SecretString>() : SecretString());
 }
 
 ASTPtr DatabaseMemory::getCreateDatabaseQueryImpl() const

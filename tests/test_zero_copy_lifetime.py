@@ -197,6 +197,7 @@ class TestErrorPathStateReset(unittest.TestCase):
             s2 = conn.send_query("SELECT count() FROM Python(adf)", "CSV")
             list(s2)  # drain second stream to completion
             del s1, s2, adf
+            refresh_frame_locals()
             gc.collect()
             self.assertIsNone(wr_pa(), "abandoned stream leaked its name binding")
         finally:

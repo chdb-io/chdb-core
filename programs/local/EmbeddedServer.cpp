@@ -4,6 +4,15 @@
 #include <Core/Settings.h>
 #include "ChdbSettingsOverrides.h"
 
+namespace DB
+{
+namespace Setting
+{
+extern const SettingsUInt64 max_parser_backtracks;
+extern const SettingsUInt64 max_parser_depth;
+}
+}
+
 #include "ChunkCollectorOutputFormat.h"
 #if USE_PYTHON
 #include "TableFunctionPython.h"
@@ -32,15 +41,21 @@
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Core/UUID.h>
 #include <Databases/DatabaseAtomic.h>
+#include <Databases/DatabasesCommon.h>
 #include <Databases/DatabaseFilesystem.h>
 #include <Databases/DatabaseMemory.h>
 #include <Databases/DatabaseOverlay.h>
 #include <Databases/registerDatabases.h>
 #include <Dictionaries/registerDictionaries.h>
+#include <Disks/DiskLocal.h>
+#include <Disks/SingleDiskVolume.h>
+#include <Disks/StoragePolicy.h>
 #include <Disks/registerDisks.h>
 #include <Formats/registerFormats.h>
 #include <Functions/UserDefined/ExternalUserDefinedExecutableFunctionsLoader.h>
 #include <Functions/UserDefined/IUserDefinedSQLObjectsStorage.h>
+#include <Functions/UserDefined/UserDefinedSQLObjectsDiskStorage.h>
+#include <Functions/UserDefined/UserDefinedSQLObjectsStorageBase.h>
 #include <Functions/registerFunctions.h>
 #include <IO/ReadBufferFromFile.h>
 #include <IO/ReadBufferFromString.h>
@@ -60,7 +75,11 @@
 #include <Loggers/OwnSplitChannel.h>
 #include <Parsers/registerParsers.h>
 #include <Parsers/ASTAlterQuery.h>
+#include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Parsers/ParserCreateQuery.h>
+#include <Parsers/parseQuery.h>
+#include <base/scope_guard.h>
 #include <Processors/QueryPlan/QueryPlanStepRegistry.h>
 #include <Storages/MergeTree/ColumnsCache.h>
 #include <Storages/MergeTree/MergeList.h>
@@ -71,6 +90,7 @@
 #include <TableFunctions/registerTableFunctions.h>
 #include <base/argsToConfig.h>
 #include <base/getMemoryAmount.h>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/program_options/options_description.hpp>
@@ -110,7 +130,7 @@
 #    include <azure/storage/common/internal/xml_wrapper.hpp>
 #endif
 
-bool chdb_embedded_server_initialized = false;
+std::atomic<bool> chdb_embedded_server_initialized{false};
 extern std::atomic<bool> g_memory_tracking_disabled;
 
 namespace fs = std::filesystem;
@@ -451,41 +471,145 @@ static DatabasePtr createMemoryDatabaseIfNotExists(ContextPtr context, const Str
     return system_database;
 }
 
-static DatabasePtr createClickHouseLocalDatabaseOverlay(const String & name_, ContextPtr context)
+static void deferDatabaseTables(IDatabase & database, std::function<void(IDatabase &)> populate)
 {
-    auto overlay = std::make_shared<DatabaseOverlay>(name_, context);
+    dynamic_cast<DatabaseWithOwnTablesBase &>(database).setDeferredPopulation(std::move(populate));
+}
 
-    UUID default_database_uuid;
+static void createMemoryDatabaseWithDeferredTables(ContextPtr context, const String & database_name, std::function<void(IDatabase &)> populate)
+{
+    deferDatabaseTables(*createMemoryDatabaseIfNotExists(context, database_name), std::move(populate));
+}
 
-    fs::path existing_path_symlink = fs::weakly_canonical(context->getPath()) / "metadata" / "default";
+static void deferSystemDatabaseTables(ContextPtr context, IDatabase & system_database)
+{
+    validateSystemUserQueryLog(context, system_database);
+
+    deferDatabaseTables(
+        system_database,
+        [context](IDatabase & database) { attachSystemTablesServerExceptOne(context, database, false, false); });
+
+    attachSystemTableOne(context, system_database);
+}
+
+namespace
+{
+
+class UserDefinedSQLObjectsMemoryStorage final : public UserDefinedSQLObjectsStorageBase
+{
+public:
+    explicit UserDefinedSQLObjectsMemoryStorage(const ContextPtr & global_context_)
+        : UserDefinedSQLObjectsStorageBase(global_context_)
+    {
+    }
+
+    void loadObjects() override {}
+    void reloadObjects() override {}
+    void reloadObject(UserDefinedSQLObjectType, const String &) override {}
+
+protected:
+    bool storeObjectImpl(
+        const ContextPtr &,
+        UserDefinedSQLObjectType,
+        const String &,
+        ASTPtr,
+        bool,
+        bool,
+        const Settings &) override
+    {
+        return true;
+    }
+
+    bool removeObjectImpl(
+        const ContextPtr &,
+        UserDefinedSQLObjectType,
+        const String &,
+        bool) override
+    {
+        return true;
+    }
+};
+
+UUID tryReadAtomicDatabaseUUIDFromDisk(const String & name_, const DiskPtr & db_disk, const ContextPtr & context)
+{
+    const auto metadata_file = DatabaseCatalog::getMetadataFilePath(name_);
+    if (!db_disk || !db_disk->existsFile(metadata_file))
+        return UUIDHelpers::Nil;
+
+    try
+    {
+        const String query = readMetadataFile(db_disk, metadata_file);
+        ParserCreateQuery parser;
+        ASTPtr ast = parseQuery(
+            parser,
+            query.data(),
+            query.data() + query.size(),
+            "in file " + metadata_file.string(),
+            0,
+            context->getSettingsRef()[Setting::max_parser_depth],
+            context->getSettingsRef()[Setting::max_parser_backtracks]);
+        if (const auto * create = ast ? ast->as<ASTCreateQuery>() : nullptr)
+            return create->uuid;
+    }
+    catch (...)
+    {
+    }
+    return UUIDHelpers::Nil;
+}
+
+DatabasePtr createPersistentDatabaseOverlay(const String & name_, const ContextPtr & ns_context)
+{
+    auto overlay = std::make_shared<DatabaseOverlay>(name_, ns_context);
+    auto db_disk = ns_context->getDatabaseDisk();
+
+    UUID default_database_uuid = UUIDHelpers::Nil;
+    const fs::path existing_path_symlink = fs::path(ns_context->getPath()) / DatabaseCatalog::getMetadataDirPath(name_);
     if (FS::isSymlinkNoThrow(existing_path_symlink))
-        default_database_uuid = parse<UUID>(FS::readSymlink(existing_path_symlink).filename());
-    else
+    {
+        auto symlink_path = FS::readSymlink(existing_path_symlink);
+        if (!symlink_path.has_filename() && symlink_path.has_parent_path())
+            symlink_path = symlink_path.parent_path();
+        tryParse(default_database_uuid, symlink_path.filename().string());
+    }
+    if (default_database_uuid == UUIDHelpers::Nil)
+        default_database_uuid = tryReadAtomicDatabaseUUIDFromDisk(name_, db_disk, ns_context);
+    if (default_database_uuid == UUIDHelpers::Nil)
         default_database_uuid = UUIDHelpers::generateV4();
 
-    fs::path default_database_metadata_path
-        = fs::weakly_canonical(context->getPath()) / "store" / DatabaseCatalog::getPathForUUID(default_database_uuid);
-
-    overlay->registerNextDatabase(std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, context));
-    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(name_, "", context,
-        /// v26.9 added this: true downgrades a missing path to a warning, for the server's own
-        /// metadata replay. chdb is not replaying metadata, and v26.7 always threw, so keep that.
-        /*is_internal_metadata_replay=*/ false));
+    const String default_database_metadata_path = DatabaseCatalog::getStoreDirPath(default_database_uuid);
+    overlay->registerNextDatabase(
+        std::make_shared<DatabaseAtomic>(name_, default_database_metadata_path, default_database_uuid, ns_context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(
+        name_,
+        "",
+        ns_context,
+        /*is_internal_metadata_replay=*/false));
     return overlay;
 }
 
-/// If path is specified and not empty, will try to setup server environment and load existing metadata
+DatabasePtr createMemoryDatabaseOverlay(const String & name_, const ContextPtr & ns_context)
+{
+    auto overlay = std::make_shared<DatabaseOverlay>(name_, ns_context);
+    overlay->registerNextDatabase(std::make_shared<DatabaseMemory>(name_, ns_context));
+    overlay->registerNextDatabase(std::make_shared<DatabaseFilesystem>(
+        name_,
+        "",
+        ns_context,
+        /*is_internal_metadata_replay=*/false));
+    return overlay;
+}
+
+} // namespace
+
 void EmbeddedServer::tryInitPath()
 {
-    std::string path;
-
+    boot_explicit_path.clear();
     if (config().has("path"))
     {
-        /// User-supplied path.
-        path = config().getString("path");
-        Poco::trimInPlace(path);
+        boot_explicit_path = config().getString("path");
+        Poco::trimInPlace(boot_explicit_path);
 
-        if (path.empty())
+        if (boot_explicit_path.empty())
         {
             throw Exception(
                 ErrorCodes::BAD_ARGUMENTS,
@@ -494,55 +618,48 @@ void EmbeddedServer::tryInitPath()
                 " correct the --path.");
         }
     }
+
+    /// Reserve a lazy scratch path name without creating any directory on disk:
+    /// `:memory:` namespaces use `DatabaseMemory` and never materialize `/tmp/clickhouse-embedded-*`
+    /// unless an explicit external spill or `:memory:` MergeTree table writes to the fallback disk.
+    LoggerRawPtr log = &logger();
+    std::filesystem::path parent_folder;
+    try
+    {
+        parent_folder = std::filesystem::temp_directory_path();
+    }
+    catch (const fs::filesystem_error & e)
+    {
+        LOG_DEBUG(log, "Can not get temporary folder: {}", e.what());
+        std::error_code cwd_ec;
+        parent_folder = std::filesystem::current_path(cwd_ec);
+        if (cwd_ec || parent_folder.empty())
+            parent_folder = "/tmp";
+    }
+
+    std::filesystem::path default_path = parent_folder / fmt::format("clickhouse-embedded-{}", UUIDHelpers::generateV4());
+    if (fs::exists(default_path))
+        throw Exception(
+            ErrorCodes::FILE_ALREADY_EXISTS,
+            "Unsuccessful attempt to set up the working directory: {} already exists.",
+            default_path.string());
+
+    temporary_directory_to_delete = default_path;
+
+    std::string engine_root_path = default_path.string();
+    if (!boot_explicit_path.empty() && config_file_passed_explicitly && hasAnySystemLogConfigured(config()))
+    {
+        fs::create_directories(boot_explicit_path);
+        engine_root_path = boot_explicit_path;
+    }
     else
     {
-        /// The user requested to use a temporary path - use a unique path in the system temporary directory
-        /// (or in the current dir if a temporary doesn't exist)
-        LoggerRawPtr log = &logger();
-        std::filesystem::path parent_folder;
-        std::filesystem::path default_path;
-
-        try
-        {
-            /// Try to guess a tmp folder name, and check if it's a directory (throw an exception otherwise).
-            parent_folder = std::filesystem::temp_directory_path();
-        }
-        catch (const fs::filesystem_error & e)
-        {
-            // The tmp folder doesn't exist? Is it a misconfiguration? Or chroot?
-            LOG_DEBUG(log, "Can not get temporary folder: {}", e.what());
-            parent_folder = std::filesystem::current_path();
-
-            (void)std::filesystem::is_directory(parent_folder); // checks the path is accessible (may throw on I/O error)
-            LOG_DEBUG(log, "Will create working directory inside current directory: {}", parent_folder.string());
-        }
-
-        /// we can have another clickhouse-embedded running simultaneously, even with the same PID (for ex. - several dockers mounting the same folder)
-        /// or it can be some leftovers from other clickhouse-embedded runs
-        /// as we can't accurately distinguish those situations we don't touch any existent folders
-        /// we just try to pick some free name for our working folder
-
-        default_path = parent_folder / fmt::format("clickhouse-embedded-{}", UUIDHelpers::generateV4());
-
-        if (fs::exists(default_path))
-            throw Exception(
-                ErrorCodes::FILE_ALREADY_EXISTS,
-                "Unsuccessful attempt to set up the working directory: {} already exists.",
-                default_path.string());
-
-        /// The directory can be created lazily during the runtime.
-        temporary_directory_to_delete = default_path;
-
-        path = default_path.string();
-
-        LOG_DEBUG(log, "Working directory will be created as needed: {}", path);
-
-        config().setString("path", path);
+        config().setString("path", engine_root_path);
     }
-    fs::create_directories(path);
 
     /// No limit on temporary data here, unlike clickhouse-local: the engine runs inside the caller's process.
-    setupInstancePaths(global_context, config(), path, 0);
+    /// `default_path` is NOT created here — zero `/tmp/clickhouse-embedded-*` directories for `:memory:`.
+    setupInstancePaths(global_context, config(), engine_root_path, 0);
 }
 
 
@@ -639,22 +756,44 @@ void EmbeddedServer::cleanup()
     }
     catch (...) {}
 
-    /// The columns cache goes away with the context; stop resizing it.
+    /// The columns cache goes away with the context; stop resizing it, and stop the
+    /// MemoryWorker before shutting down Context/SharedContextHolder so its background
+    /// thread never races cache or tracker teardown.
     setMemoryReleasableCache(nullptr);
     if (memory_worker)
+    {
         memory_worker->setReleasableCache(nullptr);
+        memory_worker.reset();
+    }
 
     try
     {
         if (global_context)
         {
             global_context->shutdown();
+            /// On normal last-connection close every Session is already gone so
+            /// global_context has a single owner here and ContextSharedPart can be
+            /// destroyed cleanly. At process exit with an unclosed C/C++ connection,
+            /// its Session still holds a ContextPtr referencing shared_context; release
+            /// ownership instead of freeing ContextSharedPart beneath late destructors.
+            const bool sole_owner = (global_context.use_count() == 1);
             global_context.reset();
+            if (sole_owner)
+                shared_context.reset();
+            else
+                (void)shared_context.release();
             context_cleaned = true;
+        }
+        else
+        {
+            shared_context.reset();
         }
     }
     catch (const std::exception & e)
     {
+        /// If Context/DatabaseCatalog shutdown threw, keep ContextSharedPart alive
+        /// rather than freeing it out from under a still-live DatabaseCatalog.
+        (void)shared_context.release();
         /// chdb_spec: A failed Context shutdown can leave the catalog alive.
         /// Never hide it as a benign mutex error before the pool teardown.
         /// Use raw stderr: the C++ logger/iostream statics might be gone.
@@ -666,23 +805,20 @@ void EmbeddedServer::cleanup()
     }
     catch (...)
     {
+        (void)shared_context.release();
         static constexpr char message[] = "Unknown exception in global_context->shutdown()\n";
         (void)::write(STDERR_FILENO, message, sizeof(message) - 1);
     }
     last_cleanup_succeeded.store(context_cleaned, std::memory_order_release);
 
-    try
-    {
-        status.reset();
-    }
-    catch (...) {}
-
-    // Delete the temporary directory if needed.
+    // Delete the temporary directory if it was lazily materialized.
     try
     {
         if (temporary_directory_to_delete)
         {
-            fs::remove_all(*temporary_directory_to_delete);
+            std::error_code ec;
+            if (fs::exists(*temporary_directory_to_delete, ec))
+                fs::remove_all(*temporary_directory_to_delete, ec);
             temporary_directory_to_delete.reset();
         }
     }
@@ -812,7 +948,7 @@ try
         global_register_once_flag,
         []()
         {
-            chdb_embedded_server_initialized = true;
+            chdb_embedded_server_initialized.store(true, std::memory_order_relaxed);
 
             registerInterpreters();
             registerParsers();
@@ -912,7 +1048,7 @@ void EmbeddedServer::processConfig()
     memory_worker->start();
 #endif
 
-    shared_context = Context::createSharedHolder();
+    shared_context = Context::createShared();
     global_context = Context::createGlobal(shared_context.get());
     global_context->makeGlobalContext();
     global_context->setApplicationType(Context::ApplicationType::LOCAL);
@@ -1230,100 +1366,31 @@ void EmbeddedServer::processConfig()
     DatabaseCatalog::instance().initializeAndLoadTemporaryDatabase();
 
     std::string server_default_database = server_settings[ServerSetting::default_database];
-    if (!server_default_database.empty())
+    if (server_default_database.empty())
+        server_default_database = DatabaseCatalog::DEFAULT_DATABASE;
+
+    /// Attach a zero-disk internal `DatabaseMemory` placeholder on the un-namespaced global catalog
+    /// for engine-internal tasks; every user `chdb_database` / `chdb_connection` mounts its own
+    /// isolated `DatabaseMemory` or path-backed `DatabaseAtomic` namespace via `openDatabase()`.
+    createMemoryDatabaseIfNotExists(global_context, server_default_database);
+    global_context->setCurrentDatabase(server_default_database);
+
+    if (!config().has("no-system-tables"))
     {
-        DatabasePtr database = createClickHouseLocalDatabaseOverlay(server_default_database, global_context);
-        if (UUID uuid = database->getUUID(); uuid != UUIDHelpers::Nil)
-            DatabaseCatalog::instance().addUUIDMapping(uuid);
-        DatabaseCatalog::instance().attachDatabase(server_default_database, database);
-        global_context->setCurrentDatabase(server_default_database);
+        deferSystemDatabaseTables(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE));
+        createMemoryDatabaseWithDeferredTables(global_context, DatabaseCatalog::INFORMATION_SCHEMA,
+            [context = global_context](IDatabase & database) { attachInformationSchema(context, database); });
+        createMemoryDatabaseWithDeferredTables(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE,
+            [context = global_context](IDatabase & database) { attachInformationSchema(context, database); });
     }
 
-    if (config().has("path"))
+    if (!config().has("only-system-tables"))
     {
-        attachInformationSchema(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA));
-        attachInformationSchema(
-            global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE));
-
-        /// Attaching "automatic" tables in the system database is done after attaching the system database.
-        /// Consequently, it depends on whether we load it from the path.
-        /// If it is loaded from a user-specified path, we load it as usual. If not, we create it as a memory (ephemeral) database.
-        bool attached_system_database = false;
-
-        String path = global_context->getPath();
-
-        /// Lock path directory before read
-        fs::create_directories(fs::path(path));
-        status.emplace(fs::path(path) / "status", StatusFile::write_full_info);
-
-        const bool metadata_exists = fs::exists(fs::path(path) / "metadata");
-        if (metadata_exists)
-        {
-            LOG_DEBUG(log, "Loading metadata from {}", path);
-
-            if (fs::exists(std::filesystem::path(path) / "metadata" / "system.sql"))
-            {
-                LoadTaskPtrs load_system_metadata_tasks = loadMetadataSystem(global_context);
-                waitLoad(TablesLoaderForegroundPoolId, load_system_metadata_tasks);
-
-                attachSystemTablesServer(
-                    global_context, *DatabaseCatalog::instance().tryGetDatabase(DatabaseCatalog::SYSTEM_DATABASE), false, false);
-                attached_system_database = true;
-            }
-
-            if (!config().has("only-system-tables"))
-            {
-                DatabaseCatalog::instance().loadMarkedAsDroppedTables();
-                DatabaseCatalog::instance().createBackgroundTasks();
-                waitLoad(loadMetadata(global_context));
-                DatabaseCatalog::instance().startupBackgroundTasks();
-            }
-
-            LOG_DEBUG(log, "Loaded metadata.");
-        }
-
-        /// A fresh persistent path has no metadata directory yet. DDL executed by
-        /// the first session can create it, so start the cleanup tasks even when
-        /// there was no metadata to load. Otherwise DROP ... SYNC waits forever.
-        if (!metadata_exists && !config().has("only-system-tables"))
-        {
-            DatabaseCatalog::instance().createBackgroundTasks();
-            DatabaseCatalog::instance().startupBackgroundTasks();
-        }
-
-        if (!attached_system_database)
-            attachSystemTablesServer(
-                global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
-
-        if (fs::exists(fs::path(path) / "user_defined"))
-            global_context->getUserDefinedSQLObjectsStorage().loadObjects();
-    }
-    else if (!config().has("no-system-tables"))
-    {
-        attachSystemTablesServer(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::SYSTEM_DATABASE), false, false);
-        attachInformationSchema(global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA));
-        attachInformationSchema(
-            global_context, *createMemoryDatabaseIfNotExists(global_context, DatabaseCatalog::INFORMATION_SCHEMA_UPPERCASE));
-
-        /// Create background tasks necessary for DDL operations like DROP VIEW SYNC,
-        /// even in temporary mode (--path not set) without persistent storage
-        DatabaseCatalog::instance().createBackgroundTasks();
-        DatabaseCatalog::instance().startupBackgroundTasks();
-    }
-    else
-    {
-        /// Similarly, for other cases, create background tasks for DDL operations like
-        /// DROP VIEW SYNC in temporaty mode (--path not set) without persistent storage
         DatabaseCatalog::instance().createBackgroundTasks();
         DatabaseCatalog::instance().startupBackgroundTasks();
     }
 
     setupSystemLogs();
-
-    std::string default_database = config().getString("database", server_default_database);
-    if (default_database.empty())
-        throw Exception(ErrorCodes::BAD_ARGUMENTS, "default_database cannot be empty");
-    global_context->setCurrentDatabase(default_database);
 }
 
 void EmbeddedServer::setupSystemLogs()
@@ -1358,9 +1425,13 @@ void EmbeddedServer::applyCmdOptions(ContextMutablePtr context)
 
 std::unique_ptr<EmbeddedServer> EmbeddedServer::global_instance;
 std::mutex EmbeddedServer::instance_mutex;
+std::condition_variable EmbeddedServer::instance_cv;
 size_t EmbeddedServer::client_ref_count = 0;
+std::atomic<size_t> EmbeddedServer::active_session_count{0};
+bool EmbeddedServer::local_server_active = false;
 bool EmbeddedServer::engine_stopped = false;
 std::atomic<bool> EmbeddedServer::last_cleanup_succeeded{true};
+std::atomic<uint64_t> EmbeddedServer::next_namespace_id{1};
 
 std::vector<std::pair<std::string, std::string>> EmbeddedServer::parseOptions(int argc, char ** argv)
 {
@@ -1483,6 +1554,10 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
 
     for (const auto & [key, value] : parseOptions(argc, argv))
     {
+        if (key == "path" || key == "backups.allowed_path" || key == "shared" || key == "isolated" || key == "database"
+            || key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+            continue;
+
         const bool is_path = std::ranges::find(instance_path_options, key) != std::end(instance_path_options);
         if (is_path)
         {
@@ -1521,7 +1596,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
         auto entry = fmt::format(
             "{}={} (running: {})", name, applyVisitor(FieldVisitorToString(), value), applyVisitor(FieldVisitorToString(), running));
         /// An option given under a query setting's name applies to this connection's queries
-        /// (ChdbClient::applyCmdSettings); only its server-level use keeps the running value.
+        /// (EmbeddedSession::applyCmdSettings); only its server-level use keeps the running value.
         (query_setting_names.contains(String(name)) ? server_level_ignored : ignored).push_back(std::move(entry));
     }
 
@@ -1535,6 +1610,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
     if (!function_paths.empty())
     {
         /// The functions are shared by every connection: a connection that is going to fail must not replace them.
+        (void)CHDB::parseRestrictLocalFilesystemAccess(argc, argv);
         if (auto changes = parseQuerySettingChanges(argc, argv); !changes.empty())
             global_context->getSettingsCopy().applyChanges(changes);
 
@@ -1572,43 +1648,272 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
     }
 }
 
-EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
+EmbeddedServer::LocalServerGuard::LocalServerGuard()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
+    if (engine_stopped)
+        throw DB::Exception(ErrorCodes::BAD_ARGUMENTS, "chDB has been shut down and cannot be used again in this process");
+    if (client_ref_count != 0 || global_instance != nullptr || local_server_active || DatabaseCatalog::isAvailable())
+        throw DB::Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot run one-shot LocalServer query while a chDB connection is open; "
+            "execute the query on a connection or close all open connections first");
+    local_server_active = true;
+}
+
+EmbeddedServer::LocalServerGuard::~LocalServerGuard()
+{
+    {
+        std::lock_guard<std::mutex> lock(instance_mutex);
+        local_server_active = false;
+    }
+    instance_cv.notify_all();
+}
+
+EmbeddedDatabase::EmbeddedDatabase(
+    EmbeddedServer & server_,
+    ChdbNamespacePtr ns_,
+    ContextMutablePtr ns_context_,
+    String default_database_name_,
+    String logical_path_,
+    bool default_read_only_,
+    std::unique_ptr<StatusFile> status_file_)
+    : server(server_)
+    , ns(std::move(ns_))
+    , ns_context(std::move(ns_context_))
+    , default_database_name(std::move(default_database_name_))
+    , logical_path(std::move(logical_path_))
+    , default_read_only(default_read_only_)
+    , status_file(std::move(status_file_))
+{
+}
+
+EmbeddedDatabase::~EmbeddedDatabase()
+{
+    unmount();
+    EmbeddedServer::releaseInstance();
+}
+
+void EmbeddedDatabase::addBackupsAllowedPaths(const std::vector<String> & paths)
+{
+    if (paths.empty() || !ns)
+        return;
+    std::lock_guard<std::mutex> lock(metadata_mutex);
+    for (const auto & p : paths)
+    {
+        if (std::ranges::find(ns->backups_allowed_paths, p) == ns->backups_allowed_paths.end())
+            ns->backups_allowed_paths.push_back(p);
+    }
+}
+
+void EmbeddedDatabase::unmount() noexcept
+{
+    try
+    {
+        if (!isMemory() && !logical_path.empty())
+            server.onDatabaseUnmounted(logical_path);
+
+        if (ns && DatabaseCatalog::isAvailable())
+        {
+            /// The namespace's tables shut down here, before the server's own shutdown would see them.
+            try
+            {
+                ChdbNamespaceScope ns_scope(ns);
+                server.logMergeTreeStateAtShutdown();
+            }
+            catch (...)
+            {
+            }
+            DatabaseCatalog::instance().cleanupChdbNamespace(ns, ns_context);
+        }
+
+        if (ns && (!ns->disk_name.empty() || !ns->policy_name.empty()) && server.getGlobalContext())
+            server.getGlobalContext()->removeChdbDiskAndStoragePolicy(ns->disk_name, ns->policy_name);
+
+        if (ns)
+        {
+            ns->sql_objects_storage.reset();
+            ns->storage_policy.reset();
+            ns->disk.reset();
+        }
+        ns_context.reset();
+    }
+    catch (...)
+    {
+        tryLogCurrentException(__PRETTY_FUNCTION__);
+    }
+
+    try
+    {
+        status_file.reset();
+    }
+    catch (...)
+    {
+    }
+}
+
+void EmbeddedServer::onDatabaseUnmounted(const String & canonical_path) noexcept
+{
+    try
+    {
+        std::lock_guard<std::mutex> lock(mounts_mutex);
+        auto it = mounted_paths.find(canonical_path);
+        if (it != mounted_paths.end() && it->second.expired())
+            mounted_paths.erase(it);
+    }
+    catch (...)
+    {
+    }
+}
+
+EmbeddedDatabasePtr EmbeddedServer::createMemoryDatabase(
+    const String & default_db_name,
+    bool default_read_only,
+    const std::vector<String> & backups_allowed_paths)
+{
+    const uint64_t id = next_namespace_id.fetch_add(1, std::memory_order_relaxed);
+    auto ns = std::make_shared<ChdbNamespace>();
+    ns->catalog_prefix = fmt::format("__chdb_ns_{}__", id);
+    ns->is_memory = true;
+    ns->backups_allowed_paths = backups_allowed_paths;
+
+    ContextMutablePtr ns_context = Context::createCopy(global_context);
+    ns_context->setChdbNamespace(ns);
+    ns_context->markAsNamespaceGlobalContext();
+    ns->sql_objects_storage = std::make_shared<UserDefinedSQLObjectsMemoryStorage>(ns_context);
+
+    String server_default_db = server_settings[ServerSetting::default_database];
+    if (server_default_db.empty())
+        server_default_db = DatabaseCatalog::DEFAULT_DATABASE;
+    const String effective_default_db = default_db_name.empty() ? server_default_db : default_db_name;
+
+    bool mounted_ok = false;
+    SCOPE_EXIT({
+        if (!mounted_ok && DatabaseCatalog::isAvailable())
+            DatabaseCatalog::instance().cleanupChdbNamespace(ns, ns_context);
+    });
+
+    {
+        ChdbNamespaceScope ns_scope(ns);
+        DatabasePtr default_db = createMemoryDatabaseOverlay(server_default_db, ns_context);
+        if (UUID u = default_db->getUUID(); u != UUIDHelpers::Nil && !DatabaseCatalog::instance().hasUUIDMapping(u))
+            DatabaseCatalog::instance().addUUIDMapping(u);
+        DatabaseCatalog::instance().attachDatabase(server_default_db, default_db);
+        ns_context->setCurrentDatabase(effective_default_db);
+    }
+
+    mounted_ok = true;
+    return std::make_shared<EmbeddedDatabase>(
+        *this, std::move(ns), std::move(ns_context), effective_default_db, ":memory:", default_read_only, nullptr);
+}
+
+EmbeddedDatabasePtr EmbeddedServer::mountPersistentDatabase(
+    const String & canonical_path,
+    const String & default_db_name,
+    bool default_read_only,
+    bool allow_readonly_os_dir,
+    const std::vector<String> & backups_allowed_paths)
+{
+    fs::create_directories(fs::path(canonical_path));
+
+    /// Acquire `<path>/status` flock BEFORE touching any files inside `<path>`, so a second
+    /// process attempting to open a locked directory fails immediately without disturbing spill
+    /// or metadata files owned by the lock holder.
+    std::unique_ptr<StatusFile> path_status;
+    if (!(default_read_only || allow_readonly_os_dir) || FS::canWrite(canonical_path, /*allow_throw=*/false))
+        path_status = std::make_unique<StatusFile>(fs::path(canonical_path) / "status", StatusFile::write_full_info);
+
+    const uint64_t id = next_namespace_id.fetch_add(1, std::memory_order_relaxed);
+    auto ns = std::make_shared<ChdbNamespace>();
+    ns->catalog_prefix = fmt::format("__chdb_ns_{}__", id);
+    ns->data_path = (fs::path(canonical_path) / "").string();
+    ns->disk_name = fmt::format("__chdb_disk_{}", id);
+    ns->policy_name = fmt::format("__chdb_policy_{}", id);
+    ns->is_memory = false;
+    ns->backups_allowed_paths = backups_allowed_paths;
+
+    ContextMutablePtr ns_context;
+    bool mounted_ok = false;
+    SCOPE_EXIT({
+        if (!mounted_ok)
+        {
+            if (DatabaseCatalog::isAvailable())
+                DatabaseCatalog::instance().cleanupChdbNamespace(ns, ns_context);
+            if (global_context)
+                global_context->removeChdbDiskAndStoragePolicy(ns->disk_name, ns->policy_name);
+        }
+    });
+
+    DiskPtr disk = global_context->getOrCreateDisk(ns->disk_name, [&](const DisksMap &) -> DiskPtr
+    {
+        auto d = std::make_shared<DiskLocal>(
+            ns->disk_name, ns->data_path, 0, global_context, config(), "storage_configuration.disks");
+        d->startup(/*skip_access_check=*/false);
+        return d;
+    });
+    ns->disk = disk;
+
+    StoragePolicyPtr policy = global_context->getOrCreateStoragePolicy(ns->policy_name, [&](const StoragePoliciesMap &) -> StoragePolicyPtr
+    {
+        VolumePtr vol = std::make_shared<SingleDiskVolume>("_volume_" + ns->disk_name, disk);
+        return std::make_shared<StoragePolicy>(ns->policy_name, Volumes{vol}, 0.0);
+    });
+    ns->storage_policy = policy;
+
+    ns_context = Context::createCopy(global_context);
+    ns_context->setChdbNamespace(ns);
+    ns_context->markAsNamespaceGlobalContext();
+
+    auto udf_storage = std::make_shared<UserDefinedSQLObjectsDiskStorage>(
+        ns_context, (fs::path(canonical_path) / "user_defined" / "").string());
+    ns->sql_objects_storage = udf_storage;
+
+    String server_default_db = server_settings[ServerSetting::default_database];
+    if (server_default_db.empty())
+        server_default_db = DatabaseCatalog::DEFAULT_DATABASE;
+    const String effective_default_db = default_db_name.empty() ? server_default_db : default_db_name;
+
+    {
+        ChdbNamespaceScope ns_scope(ns);
+        DatabasePtr default_db = createPersistentDatabaseOverlay(server_default_db, ns_context);
+        if (UUID u = default_db->getUUID(); u != UUIDHelpers::Nil && !DatabaseCatalog::instance().hasUUIDMapping(u))
+            DatabaseCatalog::instance().addUUIDMapping(u);
+        DatabaseCatalog::instance().attachDatabase(server_default_db, default_db);
+
+        if (fs::exists(fs::path(canonical_path) / "metadata") && !config().has("only-system-tables"))
+        {
+            DatabaseCatalog::instance().loadMarkedAsDroppedTablesForDisk(disk, ns_context);
+            waitLoad(loadMetadata(ns_context));
+        }
+
+        if (fs::exists(fs::path(canonical_path) / "user_defined"))
+            udf_storage->loadObjects();
+
+        ns_context->setCurrentDatabase(effective_default_db);
+    }
+
+    mounted_ok = true;
+    return std::make_shared<EmbeddedDatabase>(
+        *this, std::move(ns), std::move(ns_context), effective_default_db, canonical_path, default_read_only, std::move(path_status));
+}
+
+EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
+{
+    std::unique_lock<std::mutex> lock(instance_mutex);
+    /// Wait for any in-flight one-shot LocalServer call (pyEntryClickHouseLocal) to finish
+    /// tearing down its global Context and DatabaseCatalog before booting EmbeddedServer.
+    instance_cv.wait(lock, [] { return !local_server_active; });
+
     /// A warning belongs to the connection that is being made, not to an earlier one that failed after leaving it.
     connect_warning.clear();
 
-    /// The pools this instance needs have been joined and cannot be rebuilt, so a
-    /// new client would run on a dead engine. Refusing here is also what makes the
-    /// shutdown refusal contract hold under a concurrent connect: whichever of the
-    /// two takes this lock first, the other sees a decided state.
     if (engine_stopped)
         throw DB::Exception(ErrorCodes::BAD_ARGUMENTS, "chDB has been shut down and cannot be used again in this process");
 
     if (global_instance)
     {
         if (argc > 0 && argv)
-        {
-            std::string path = ":memory:"; // Default path
-            for (int i = 1; i < argc; i++)
-            {
-                if (strncmp(argv[i], "--path=", 7) == 0)
-                {
-                    path = argv[i] + 7;
-                    break;
-                }
-            }
-            if (!global_instance->db_path.empty() && global_instance->db_path != path)
-            {
-                throw DB::Exception(
-                    ErrorCodes::BAD_ARGUMENTS,
-                    "EmbeddedServer already initialized with path '{}', cannot connect with different path '{}'",
-                    global_instance->db_path,
-                    path);
-            }
-
             global_instance->reconcileStartupOptions(argc, argv);
-        }
         ++client_ref_count;
         return *global_instance;
     }
@@ -1637,6 +1942,138 @@ EmbeddedServer & EmbeddedServer::getInstance(int argc, char ** argv)
     return *global_instance;
 }
 
+EmbeddedDatabasePtr EmbeddedServer::openDatabase(
+    const std::string & path,
+    int argc,
+    char ** argv,
+    bool isolated_memory,
+    bool default_read_only,
+    bool explicit_path_arg,
+    bool allow_readonly_os_dir)
+{
+    String trimmed_path = path;
+    Poco::trimInPlace(trimmed_path);
+    if (explicit_path_arg && trimmed_path.empty())
+    {
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot work with empty storage path that is explicitly specified"
+            " by the --path option. Please check the program options and"
+            " correct the --path.");
+    }
+
+    String requested_default_db;
+    std::vector<String> backups_allowed_paths;
+    for (const auto & [key, value] : parseOptions(argc, argv))
+    {
+        if (key == "database")
+            requested_default_db = value;
+        else if (key == "backups.allowed_path" && !value.empty())
+            backups_allowed_paths.push_back(value);
+        else if (key == "shared")
+            isolated_memory = (value == "0" || boost::iequals(value, "false") || boost::iequals(value, "no"));
+        else if (key == "isolated")
+            isolated_memory = !(value == "0" || boost::iequals(value, "false") || boost::iequals(value, "no"));
+        else if (key == "readonly" && (value == "1" || value == "2"))
+            allow_readonly_os_dir = true;
+    }
+
+    EmbeddedServer & srv = getInstance(argc, argv);
+    bool pin_transferred = false;
+    SCOPE_EXIT({
+        if (!pin_transferred)
+            releaseInstance();
+    });
+
+    const bool is_memory = trimmed_path.empty() || trimmed_path == ":memory:";
+    if (is_memory)
+    {
+        if (isolated_memory)
+        {
+            auto db = srv.createMemoryDatabase(requested_default_db, default_read_only, backups_allowed_paths);
+            pin_transferred = true;
+            return db;
+        }
+
+        std::lock_guard<std::mutex> mount_lock(srv.mounts_mutex);
+        if (auto existing = srv.shared_memory_db.lock())
+        {
+            existing->addBackupsAllowedPaths(backups_allowed_paths);
+            return existing;
+        }
+
+        auto db = srv.createMemoryDatabase(requested_default_db, /*default_read_only=*/false, backups_allowed_paths);
+        srv.shared_memory_db = db;
+        pin_transferred = true;
+        return db;
+    }
+
+    fs::path resolved_fs_path(trimmed_path);
+    if (!resolved_fs_path.is_absolute())
+    {
+        std::error_code abs_ec;
+        auto abs_p = fs::absolute(resolved_fs_path, abs_ec);
+        if (abs_ec)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Failed to resolve database path '{}': {}", trimmed_path, abs_ec.message());
+        resolved_fs_path = std::move(abs_p);
+    }
+    const String canonical_path = normalizePath(resolved_fs_path.string());
+
+    std::lock_guard<std::mutex> mount_lock(srv.mounts_mutex);
+    if (auto it = srv.mounted_paths.find(canonical_path); it != srv.mounted_paths.end())
+    {
+        if (auto existing = it->second.lock())
+        {
+            existing->addBackupsAllowedPaths(backups_allowed_paths);
+            return existing;
+        }
+        srv.mounted_paths.erase(it);
+    }
+
+    auto db = srv.mountPersistentDatabase(
+        canonical_path, requested_default_db, default_read_only, allow_readonly_os_dir, backups_allowed_paths);
+    srv.mounted_paths[canonical_path] = db;
+    pin_transferred = true;
+    return db;
+}
+
+EmbeddedDatabasePtr EmbeddedServer::openDatabaseFromArgs(int argc, char ** argv)
+{
+    std::string path = ":memory:";
+    bool explicit_path = false;
+    bool allow_ro_dir = false;
+    for (const auto & [key, value] : parseOptions(argc, argv))
+    {
+        if (key == "path")
+        {
+            path = value;
+            explicit_path = true;
+        }
+        else if (key == "readonly" && (value == "1" || value == "2"))
+        {
+            allow_ro_dir = true;
+        }
+    }
+    return openDatabase(
+        path,
+        argc,
+        argv,
+        /*isolated_memory=*/false,
+        /*default_read_only=*/false,
+        explicit_path,
+        allow_ro_dir);
+}
+
+void EmbeddedServer::registerActiveSession() noexcept
+{
+    active_session_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void EmbeddedServer::unregisterActiveSession() noexcept
+{
+    active_session_count.fetch_sub(1, std::memory_order_relaxed);
+}
+
 void EmbeddedServer::releaseInstance()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
@@ -1655,7 +2092,7 @@ bool EmbeddedServer::beginShutdown()
 {
     std::lock_guard<std::mutex> lock(instance_mutex);
 
-    if (client_ref_count != 0)
+    if (client_ref_count != 0 || local_server_active)
         return false;
 
     engine_stopped = true;
@@ -1678,7 +2115,8 @@ void EmbeddedServer::cancelPythonQueriesIfExclusive(size_t python_clients)
     std::lock_guard<std::mutex> lock(instance_mutex);
     /// chdb_spec: Do not cancel a C/Go host's query when its connection shares
     /// this embedded server with a finalizing Python interpreter.
-    if (python_clients && client_ref_count == python_clients && global_instance && global_instance->global_context)
+    const size_t current_sessions = active_session_count.load(std::memory_order_acquire);
+    if (python_clients && current_sessions == python_clients && global_instance && global_instance->global_context)
         global_instance->global_context->getProcessList().killAllQueries();
     /// chdb_spec: end Python-only exit cancellation.
 }

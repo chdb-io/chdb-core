@@ -201,8 +201,8 @@ DiskSelectorPtr DiskSelector::updateFromConfig(
         int num_disks_removed_from_config = 0;
         for (const auto & [name, disk] : old_disks_minus_new_disks)
         {
-            /// Custom disks are not present in config.
-            if (disk->isCustomDisk())
+            /// Custom disks and dynamically mounted chDB path disks are not present in config.
+            if (disk->isCustomDisk() || name.starts_with("__chdb_disk_"))
                 continue;
 
             if (num_disks_removed_from_config++ > 0)
@@ -250,6 +250,19 @@ void DiskSelector::addToDiskMap(const String & name, DiskPtr disk)
 {
     assertInitialized();
     recordDisk(name, disk);
+}
+
+void DiskSelector::removeFromDiskMap(const String & name)
+{
+    if (!is_initialized)
+        return;
+    auto it = disks.find(name);
+    if (it == disks.end())
+        return;
+    DiskPtr disk = std::move(it->second);
+    disks.erase(it);
+    if (disk)
+        disk->shutdown();
 }
 
 void DiskSelector::shutdown()

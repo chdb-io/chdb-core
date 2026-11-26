@@ -37,10 +37,13 @@ class TestStreamThenQuery(unittest.TestCase):
                 conn.query("SELECT count() FROM numbers(10)", "CSV").bytes(), b"10\n"
             )
 
-            # The abandoned stream has been retired: fetching again reports it
-            # cleanly instead of crashing.
-            with self.assertRaises(RuntimeError):
-                stream.fetch()
+            # With self-contained streaming handles on EmbeddedSession, an
+            # interleaved materialized query on the same connection does not
+            # clobber the active stream: fetching continues cleanly.
+            next_chunk = stream.fetch()
+            self.assertIsNotNone(next_chunk)
+            stream.close()
+            self.assertIsNone(stream.fetch())
         finally:
             conn.close()
 

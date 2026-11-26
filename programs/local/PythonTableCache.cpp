@@ -7,7 +7,11 @@
 #include "PythonArrowStream.h"
 #include "PythonUtils.h"
 
+#include <Common/CurrentThread.h>
+#include <Interpreters/Context.h>
 #include <Common/re2.h>
+
+#include <atomic>
 
 namespace CHDB {
 
@@ -31,13 +35,39 @@ static py::object makeWeakref(const py::handle & obj)
     return weakref_ref(obj);
 }
 
+static bool isQueryablePythonObject(const py::object & obj)
+{
+    if (!obj || obj.is_none())
+        return false;
+    PyObject * raw = obj.ptr();
+    if (PyUnicode_Check(raw) || PyBytes_Check(raw) || PyByteArray_Check(raw))
+        return false;
+    return DB::isInheritsFromPyReader(obj) || DB::isPandasDf(obj)
+        || CHDB::PyArrowTable::isPyArrowObject(obj)
+        || CHDB::hasArrowCStreamMethod(obj) || DB::hasGetItem(obj);
+}
+
+static py::object normalizeAndValidateQueryableObj(const String & name, const py::handle & raw_obj)
+{
+    if (!raw_obj || raw_obj.is_none())
+        throw py::type_error("Cannot bind None for Python table '" + name + "'");
+
+    py::object obj = py::reinterpret_borrow<py::object>(raw_obj);
+    obj = PolarsDataFrame::normalize(obj);
+    if (!isQueryablePythonObject(obj))
+    {
+        throw py::type_error(
+            "Unsupported Python table object for '" + name
+            + "': expected pandas DataFrame, pyarrow Table/RecordBatch/Dataset, "
+              "polars DataFrame/LazyFrame/Series, PyReader, dict, or an object implementing __arrow_c_stream__");
+    }
+    return obj;
+}
+
 PandasTableMeta::~PandasTableMeta()
 {
     if (!Py_IsInitialized())
     {
-        /// Interpreter is gone: decref / GIL are unusable. Leak the Python
-        /// references (and the wrappers, whose destructors take the GIL)
-        /// instead of crashing at teardown.
         weak_ref.release();
         columns_index.release();
         for (auto & dtype_obj : dtype_objs)
@@ -69,28 +99,85 @@ PythonTableCache::~PythonTableCache()
     {
         auto * leaked = new std::list<PandasTableMetaPtr>(std::move(meta_lru));
         (void)leaked;
-        for (auto & [name, entry] : py_table_cache)
-            entry.obj.release();
+        for (auto & [_, obj] : registered_tables)
+            obj.release();
+        for (auto & [_, table_map] : bound_objs_by_token)
+            for (auto & [__, obj] : table_map)
+                obj.release();
         return;
     }
     try
     {
         py::gil_scoped_acquire acquire;
         std::list<PandasTableMetaPtr> metas;
-        std::unordered_map<String, NamedEntry> bindings;
+        std::unordered_map<String, py::object> reg_bindings;
+        std::unordered_map<UInt64, std::unordered_map<String, py::object>> token_bindings;
         {
             std::lock_guard lock(state_mutex);
             metas.swap(meta_lru);
-            bindings.swap(py_table_cache);
-            bound_names_by_token.clear();
+            reg_bindings.swap(registered_tables);
+            token_bindings.swap(bound_objs_by_token);
+            token_by_query_context.clear();
         }
         metas.clear();
-        bindings.clear();
+        reg_bindings.clear();
+        token_bindings.clear();
         drainPyBorrowGuardQueue();
     }
     catch (...)
     {
     }
+}
+
+void PythonTableCache::registerObject(const String & name, const py::object & obj)
+{
+    py::gil_assert();
+    if (name.empty())
+        throw py::value_error("Table name must not be empty");
+
+    py::object normalized = normalizeAndValidateQueryableObj(name, obj);
+    dropMeta(normalized.ptr());
+
+    py::object displaced;
+    {
+        std::lock_guard lock(state_mutex);
+        auto it = registered_tables.find(name);
+        if (it != registered_tables.end())
+        {
+            displaced = std::move(it->second);
+            it->second = std::move(normalized);
+        }
+        else
+        {
+            registered_tables.emplace(name, std::move(normalized));
+        }
+    }
+    displaced = py::object{};
+    drainPyBorrowGuardQueue();
+}
+
+void PythonTableCache::unregisterObject(const String & name)
+{
+    py::gil_assert();
+    if (name.empty())
+        throw py::value_error("Table name must not be empty");
+
+    py::object removed;
+    PyObject * removed_ptr = nullptr;
+    {
+        std::lock_guard lock(state_mutex);
+        auto it = registered_tables.find(name);
+        if (it != registered_tables.end())
+        {
+            removed_ptr = it->second.ptr();
+            removed = std::move(it->second);
+            registered_tables.erase(it);
+        }
+    }
+    if (removed_ptr)
+        dropMeta(removed_ptr);
+    removed = py::object{};
+    drainPyBorrowGuardQueue();
 }
 
 /// Function to find instance of PyReader, pandas DataFrame, or PyArrow Table, filtered by variable name
@@ -101,50 +188,36 @@ static py::object findQueryableObj(const String & var_name)
 
     while (!current_frame.is_none())
     {
-        // Get f_locals and f_globals
         py::object locals_obj = current_frame.attr("f_locals");
         py::object globals_obj = current_frame.attr("f_globals");
 
-        // For each namespace (locals and globals)
         for (const auto & namespace_obj : {locals_obj, globals_obj})
         {
-            // Use Python's __contains__ method to check if the key exists
-            // This works with both regular dicts and FrameLocalsProxy (Python 3.13+)
             if (py::bool_(namespace_obj.attr("__contains__")(var_name)))
             {
                 py::object obj;
                 try
                 {
-                    // Get the object using Python's indexing syntax
                     obj = namespace_obj[py::cast(var_name)];
-                    if (DB::isInheritsFromPyReader(obj) || DB::isPandasDf(obj)
-                        || CHDB::PyArrowTable::isPyArrowObject(obj)
-                        || CHDB::hasArrowCStreamMethod(obj) || DB::hasGetItem(obj))
-                    {
+                    if (isQueryablePythonObject(obj))
                         return obj;
-                    }
                 }
                 catch (const py::error_already_set &)
                 {
-                    continue; // If getting the value fails, continue to the next namespace
+                    continue;
                 }
             }
         }
 
-        // Move to the parent frame
         current_frame = current_frame.attr("f_back");
     }
 
-    // Object not found
     return py::none();
 }
 
 /// Unique Python(...) table names referenced by the query, in match order.
-/// The object name is extracted from the query string, referenced as
-/// Python(var_name) / Python('var_name') / python("var_name").
 static std::vector<String> extractPythonTableNames(const String & query_str)
 {
-    // RE2 pattern to match Python()/python() patterns with single/double quotes or no quotes
     static const RE2 pattern(R"([Pp]ython\s*\(\s*(?:['"]([^'"]+)['"]|([a-zA-Z_][a-zA-Z0-9_]*))\s*\))");
 
     std::vector<String> names;
@@ -159,46 +232,17 @@ static std::vector<String> extractPythonTableNames(const String & query_str)
     return names;
 }
 
-UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
+UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str, const py::object & explicit_tables)
 {
-    // Find the queriable object in the Python environment
-    // return nullptr if no Python obj is referenced in query string
-    // return py::none if the obj referenced not found
-    // return the Python object if found
-    // The object name is extracted from the query string, must referenced by
-    // Python(var_name) or Python('var_name') or python("var_name") or python('var_name')
-    // such as:
-    //  - `SELECT * FROM Python('PyReader')`
-    //  - `SELECT * FROM Python(PyReader_instance)`
-    //  - `SELECT * FROM Python(some_var_with_type_pandas_DataFrame_or_pyarrow_Table)`
-    // The object can be any thing that Python Table supported, like PyReader, pandas DataFrame, or PyArrow Table
-    // The object should be in the global or local scope
-
     py::gil_assert();
 
-    const auto names = extractPythonTableNames(query_str);
-
-    /// Nothing under state_mutex may run Python bytecode: a query thread can
-    /// block on the mutex while holding the GIL, so a mutex holder yielding
-    /// the GIL mid-bytecode would deadlock. Dead metadata entries are only
-    /// unlinked under the lock (weakref liveness via the C API, no bytecode)
-    /// and destroyed after it is released.
     std::list<PandasTableMetaPtr> dead_meta;
     {
         std::lock_guard lock(state_mutex);
-
-        /// New query: cached-metadata witnesses must be re-checked once per query.
         ++query_epoch;
 
-        /// Unlink entries whose DataFrame died, so cached backing arrays are
-        /// not kept alive longer than one query boundary.
         for (auto it = meta_lru.begin(); it != meta_lru.end();)
         {
-            /// PyWeakref_GetObject is deprecated in favour of PyWeakref_GetRef,
-            /// but the abi3 wheel is built against the 3.9 limited API where
-            /// GetRef (3.13+) does not exist. The borrowed pointer is only
-            /// COMPARED to Py_None under the GIL, never dereferenced, so the
-            /// borrowed-reference hazard does not apply here.
             PyObject * wr = (*it)->weak_ref.ptr();
             if (wr != nullptr && PyWeakref_GetObject(wr) == Py_None)
                 dead_meta.splice(dead_meta.end(), meta_lru, it++);
@@ -209,91 +253,97 @@ UInt64 PythonTableCache::findQueryableObjFromQuery(const String & query_str)
     dead_meta.clear();
     drainPyBorrowGuardQueue();
 
-    if (names.empty())
-        return 0;
+    std::unordered_map<String, py::object> local_bindings;
 
-    std::vector<String> bound;
-    bound.reserve(names.size());
-    try
+    if (explicit_tables && !explicit_tables.is_none())
     {
-        for (const auto & matched : names)
+        auto bind_entry = [&](const py::handle & k, const py::handle & v)
         {
+            if (!py::isinstance<py::str>(k))
+                throw py::type_error("tables keys must be strings");
+            String key = py::cast<String>(k);
+            if (key.empty())
+                throw py::value_error("tables key must not be empty");
+            local_bindings.insert_or_assign(key, normalizeAndValidateQueryableObj(key, v));
+        };
+
+        if (py::isinstance<py::dict>(explicit_tables))
+        {
+            auto d = py::reinterpret_borrow<py::dict>(explicit_tables);
+            local_bindings.reserve(static_cast<size_t>(py::len(d)));
+            for (const auto & item : d)
+                bind_entry(item.first, item.second);
+        }
+        else if (py::hasattr(explicit_tables, "items"))
+        {
+            py::object items = explicit_tables.attr("items")();
+            for (const auto & pair_handle : items)
             {
-                /// A name another in-flight query already bound is reused (and
-                /// kept alive by its refcount); the expensive inspect frame walk
-                /// only runs for names not currently bound.
-                std::lock_guard lock(state_mutex);
-                if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
-                {
-                    ++it->second.refcount;
-                    bound.push_back(matched);
-                    continue;
-                }
+                auto seq = py::reinterpret_borrow<py::sequence>(pair_handle);
+                if (py::len(seq) != 2)
+                    throw py::type_error("tables.items() must yield (name, object) pairs");
+                bind_entry(seq[0], seq[1]);
             }
-
-            auto obj = findQueryableObj(matched); /// frame walk: GIL only, no lock
-            if (obj.is_none())
-                continue;
-
-            /// A polars LazyFrame or Series is only scannable once collected
-            /// or widened to a frame. Do it here, once per bind, so schema
-            /// inference and the scan are handed the very same object.
-            obj = PolarsDataFrame::normalize(obj);
-
-            std::lock_guard lock(state_mutex);
-            if (auto it = py_table_cache.find(matched); it != py_table_cache.end())
-                ++it->second.refcount; /// another thread bound it meanwhile
-            else
-                py_table_cache.emplace(matched, NamedEntry{std::move(obj), 1});
-            bound.push_back(matched);
+        }
+        else
+        {
+            throw py::type_error("tables must be a dict mapping table names to table objects, or None");
         }
     }
-    catch (...)
+
+    const auto names = extractPythonTableNames(query_str);
+    for (const auto & matched : names)
     {
-        /// A frame-walk failure mid-loop must not strand the bumps already
-        /// made: no token would record them, pinning the objects until close.
-        releaseBoundNames(bound);
-        throw;
+        if (local_bindings.contains(matched))
+            continue;
+
+        py::object reg_obj;
+        {
+            std::lock_guard lock(state_mutex);
+            if (auto it = registered_tables.find(matched); it != registered_tables.end())
+                reg_obj = it->second;
+        }
+        if (reg_obj && !reg_obj.is_none())
+        {
+            local_bindings.emplace(matched, std::move(reg_obj));
+            continue;
+        }
+
+        auto obj = findQueryableObj(matched);
+        if (obj.is_none())
+            continue;
+
+        obj = PolarsDataFrame::normalize(obj);
+        local_bindings.emplace(matched, std::move(obj));
     }
 
-    if (bound.empty())
+    if (local_bindings.empty())
         return 0;
 
-    /// Process-global: a stale thread-local token (prefill whose execute never
-    /// ran, e.g. connection closed in between) can be consumed by a later
-    /// query on another connection; distinct values make that a no-op instead
-    /// of releasing an unrelated in-flight query's bindings.
     static std::atomic<UInt64> global_bind_token{0};
+    const UInt64 token = ++global_bind_token;
 
     std::lock_guard lock(state_mutex);
-    const UInt64 token = ++global_bind_token;
-    bound_names_by_token.emplace(token, std::move(bound));
+    bound_objs_by_token.emplace(token, std::move(local_bindings));
     return token;
 }
 
-void PythonTableCache::releaseBoundNames(const std::vector<String> & names)
+void PythonTableCache::attachQueryContext(const void * query_ctx, UInt64 token)
 {
-    /// No GIL required: erased references go through the deferred-decref
-    /// queue, so this is safe from any exit path regardless of lock/GIL context.
-    std::vector<py::object> released;
-    {
-        std::lock_guard lock(state_mutex);
-        for (const auto & name : names)
-        {
-            auto it = py_table_cache.find(name);
-            if (it == py_table_cache.end())
-                continue;
-            if (it->second.refcount <= 1)
-            {
-                released.push_back(std::move(it->second.obj));
-                py_table_cache.erase(it);
-            }
-            else
-                --it->second.refcount;
-        }
-    }
-    for (auto & obj : released)
-        enqueuePyDecref(obj.release().ptr());
+    if (!query_ctx || token == 0)
+        return;
+
+    std::lock_guard lock(state_mutex);
+    token_by_query_context[query_ctx] = token;
+}
+
+void PythonTableCache::detachQueryContext(const void * query_ctx) noexcept
+{
+    if (!query_ctx)
+        return;
+
+    std::lock_guard lock(state_mutex);
+    token_by_query_context.erase(query_ctx);
 }
 
 void PythonTableCache::releaseQueryableObjs(UInt64 token)
@@ -301,30 +351,75 @@ void PythonTableCache::releaseQueryableObjs(UInt64 token)
     if (token == 0)
         return;
 
-    std::vector<String> names;
+    std::unordered_map<String, py::object> released;
     {
         std::lock_guard lock(state_mutex);
-        auto rec = bound_names_by_token.find(token);
-        if (rec == bound_names_by_token.end())
+        for (auto it = token_by_query_context.begin(); it != token_by_query_context.end();)
+        {
+            if (it->second == token)
+                it = token_by_query_context.erase(it);
+            else
+                ++it;
+        }
+        auto rec = bound_objs_by_token.find(token);
+        if (rec == bound_objs_by_token.end())
             return;
-        names = std::move(rec->second);
-        bound_names_by_token.erase(rec);
+        released = std::move(rec->second);
+        bound_objs_by_token.erase(rec);
     }
-    releaseBoundNames(names);
+
+    for (auto & [_, obj] : released)
+        enqueuePyDecref(obj.release().ptr());
 }
 
 py::object PythonTableCache::getQueryableObj(const String & table_name)
 {
-    /// The returned copy increfs, which is only safe under the GIL - the
-    /// state_mutex serializes map access, not refcount manipulation.
     py::gil_assert();
+
+    const void * qctx_ptr = nullptr;
+    const void * root_qctx_ptr = nullptr;
+    if (auto cur = DB::CurrentThread::tryGetQueryContext())
+    {
+        qctx_ptr = cur.get();
+        if (cur->hasQueryContext())
+            root_qctx_ptr = cur->getQueryContext().get();
+    }
 
     std::lock_guard lock(state_mutex);
 
-    auto iter = py_table_cache.find(table_name);
+    auto lookup_for_ctx = [&](const void * ctx_key) -> py::object
+    {
+        if (!ctx_key)
+            return py::none();
+        auto tok_it = token_by_query_context.find(ctx_key);
+        if (tok_it == token_by_query_context.end())
+            return py::none();
+        auto map_it = bound_objs_by_token.find(tok_it->second);
+        if (map_it == bound_objs_by_token.end())
+            return py::none();
+        auto obj_it = map_it->second.find(table_name);
+        if (obj_it == map_it->second.end())
+            return py::none();
+        return obj_it->second;
+    };
 
-    if (iter != py_table_cache.end())
-        return iter->second.obj;
+    if (py::object found = lookup_for_ctx(qctx_ptr); !found.is_none())
+        return found;
+    if (root_qctx_ptr != qctx_ptr)
+    {
+        if (py::object found = lookup_for_ctx(root_qctx_ptr); !found.is_none())
+            return found;
+    }
+
+    if (auto reg_it = registered_tables.find(table_name); reg_it != registered_tables.end())
+        return reg_it->second;
+
+    /// Fallback when invoked outside an attached query context.
+    for (const auto & [_, table_map] : bound_objs_by_token)
+    {
+        if (auto it = table_map.find(table_name); it != table_map.end())
+            return it->second;
+    }
 
     return py::none();
 }
@@ -334,13 +429,16 @@ void PythonTableCache::clear()
     try
     {
         py::gil_scoped_acquire acquire;
-        std::unordered_map<String, NamedEntry> dropped;
+        std::unordered_map<String, py::object> dropped_reg;
+        std::unordered_map<UInt64, std::unordered_map<String, py::object>> dropped_tokens;
         {
             std::lock_guard lock(state_mutex);
-            dropped.swap(py_table_cache);
-            bound_names_by_token.clear();
+            dropped_reg.swap(registered_tables);
+            dropped_tokens.swap(bound_objs_by_token);
+            token_by_query_context.clear();
         }
-        dropped.clear();
+        dropped_reg.clear();
+        dropped_tokens.clear();
         drainPyBorrowGuardQueue();
     }
     catch (...)
@@ -361,7 +459,7 @@ void PythonTableCache::dropMeta(PyObject * df_ptr)
                 ++it;
         }
     }
-    dropped.clear(); /// entry destructors run outside the lock
+    dropped.clear();
 }
 
 PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & df)
@@ -387,9 +485,6 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
         epoch_at_validation = query_epoch;
     }
 
-    /// Witness checks call into Python (pandas properties), so they must run
-    /// without state_mutex: a mutex holder yielding the GIL mid-bytecode
-    /// would deadlock against a GIL-holding thread blocked on the mutex.
     bool valid = false;
     try
     {
@@ -448,15 +543,13 @@ PandasTableMetaPtr PythonTableCache::findValidatedPandasMeta(const py::handle & 
     std::lock_guard lock(state_mutex);
     auto it = std::find_if(meta_lru.begin(), meta_lru.end(), [&](const PandasTableMetaPtr & e) { return e.get() == entry.get(); });
     if (it == meta_lru.end())
-        return nullptr; /// concurrently invalidated while we validated
+        return nullptr;
     if (!valid)
     {
         meta_lru.erase(it);
         return nullptr;
     }
 
-    /// Stamp the epoch the witnesses were checked against, not the current
-    /// one: a prefill may have bumped it while validation ran unlocked.
     entry->validated_epoch = epoch_at_validation;
     meta_lru.splice(meta_lru.begin(), meta_lru, it);
     return entry;
@@ -471,8 +564,6 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
 
     try
     {
-        /// Built entirely outside state_mutex: witness construction calls
-        /// into Python (see findValidatedPandasMeta for the lock rule).
         auto entry = std::make_shared<PandasTableMeta>();
         entry->df_ptr = df.ptr();
         entry->schema = schema;
@@ -492,7 +583,7 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
             {
                 case NumpyNullableType::OBJECT:
                 case NumpyNullableType::CATEGORY:
-                    return; /// value-derived schema / per-query wrapper side effects: not cacheable
+                    return;
                 case NumpyNullableType::STRING:
                 {
                     py::object series = df[name_obj];
@@ -526,11 +617,10 @@ void PythonTableCache::storePandasMeta(const py::handle & df, const DB::ColumnsD
                 displaced.splice(displaced.end(), meta_lru, std::prev(meta_lru.end()));
             }
         }
-        displaced.clear(); /// destroyed outside the lock
+        displaced.clear();
     }
     catch (...)
     {
-        /// Building the witness set failed: skip caching, behavior stays per-query.
     }
 }
 

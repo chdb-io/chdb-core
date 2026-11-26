@@ -16,12 +16,11 @@
 
 namespace Poco::Net { class SocketAddress; }
 
-#if USE_PYTHON
 namespace CHDB
 {
 class PythonTableCache;
+class ArrowStreamRegistry;
 }
-#endif
 
 namespace DB
 {
@@ -128,12 +127,14 @@ public:
     /// Closes and removes session
     void closeSession(const String & session_id);
 
-#if USE_PYTHON
     bool isJSONSupported() const { return is_json_supported; }
     void setJSONSupport(bool support) { is_json_supported = support; }
+#if USE_PYTHON
     std::shared_ptr<CHDB::PythonTableCache> & getPythonTableCache() { return py_table_cache; }
-    void setPythonTableCache(std::shared_ptr<CHDB::PythonTableCache> py_table_cache_) { py_table_cache = py_table_cache_; }
+    void setPythonTableCache(std::shared_ptr<CHDB::PythonTableCache> py_table_cache_) { py_table_cache = std::move(py_table_cache_); }
 #endif
+    const std::shared_ptr<CHDB::ArrowStreamRegistry> & getArrowStreamRegistry() const { return arrow_stream_registry; }
+    void setArrowStreamRegistry(std::shared_ptr<CHDB::ArrowStreamRegistry> registry_) { arrow_stream_registry = std::move(registry_); }
 
 private:
     std::shared_ptr<SessionLog> getSessionLog() const;
@@ -177,10 +178,10 @@ private:
 
     LoggerPtr log = nullptr;
 
-#if USE_PYTHON
+    /// Unconditional so sizeof(Session) is identical across USE_PYTHON=0 and USE_PYTHON=1 TUs.
     bool is_json_supported = true;
     std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
-#endif
+    std::shared_ptr<CHDB::ArrowStreamRegistry> arrow_stream_registry;
 };
 
 }

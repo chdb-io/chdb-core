@@ -1,5 +1,6 @@
 #include <memory>
 #include <Databases/IDatabase.h>
+#include <Common/CurrentThread.h>
 #include <Databases/RenderedCreateQuery.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -276,6 +277,8 @@ RenderedCreateQueryPtr IDatabase::getRenderedCreateTableQueryImpl(
 
 DiskPtr IDatabase::getDisk() const
 {
+    if (auto query_ctx = CurrentThread::tryGetQueryContext())
+        return query_ctx->getDatabaseDisk();
     return Context::getGlobalContextInstance()->getDatabaseDisk();
 }
 }

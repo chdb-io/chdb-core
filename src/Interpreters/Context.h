@@ -23,6 +23,7 @@
 #include <IO/WriteSettings.h>
 #include <Disks/IO/getThreadPoolReader.h>
 #include <Interpreters/ClientInfo.h>
+#include <Interpreters/ChdbNamespace.h>
 #include <Interpreters/Context_fwd.h>
 #include <Interpreters/StorageID.h>
 #include <Interpreters/DistributedPlanLocalObject.h>
@@ -72,6 +73,7 @@ struct OvercommitTracker;
 namespace CHDB
 {
 class PythonTableCache;
+class ArrowStreamRegistry;
 }
 
 namespace DB
@@ -392,26 +394,13 @@ struct SharedContextHolder
 
     [[nodiscard]] ContextSharedPart * get() const { return shared.get(); }
     void reset();
+    ContextSharedPart * release() noexcept;
 
 private:
     std::unique_ptr<ContextSharedPart> shared;
 };
 
-struct SharedPtrContextHolder
-{
-    ~SharedPtrContextHolder();
-    SharedPtrContextHolder();
-    explicit SharedPtrContextHolder(ContextSharedPart *);
-    SharedPtrContextHolder(SharedPtrContextHolder &&) noexcept;
-
-    SharedPtrContextHolder & operator=(SharedPtrContextHolder &&) noexcept;
-
-    ContextSharedPart * get() const { return shared; }
-    void reset();
-
-private:
-    ContextSharedPart * shared;
-};
+using SharedPtrContextHolder = SharedContextHolder;
 
 class ContextSharedMutex : public SharedMutexHelper<ContextSharedMutex>
 {
@@ -875,6 +864,8 @@ protected:
     /// Python headers; null shared_ptr destruction never dereferences the pointed-to type.
     bool is_json_supported = true;
     std::shared_ptr<CHDB::PythonTableCache> py_table_cache;
+    std::shared_ptr<CHDB::ArrowStreamRegistry> arrow_stream_registry;
+    ChdbNamespacePtr chdb_namespace;
 };
 
 /** A set of known objects that can be used in the query.
@@ -1027,6 +1018,12 @@ public:
     CHDB::PythonTableCache * getPythonTableCache() const { return py_table_cache.get(); }
     void setPythonTableCache(const std::shared_ptr<CHDB::PythonTableCache> & cache) { this->py_table_cache = cache; }
 #endif
+    CHDB::ArrowStreamRegistry * getArrowStreamRegistry() const { return arrow_stream_registry.get(); }
+    void setArrowStreamRegistry(const std::shared_ptr<CHDB::ArrowStreamRegistry> & registry) { this->arrow_stream_registry = registry; }
+    const ChdbNamespacePtr & getChdbNamespace() const { return chdb_namespace; }
+    void setChdbNamespace(ChdbNamespacePtr ns) { this->chdb_namespace = std::move(ns); }
+    void markAsNamespaceGlobalContext();
+    void removeChdbDiskAndStoragePolicy(const String & disk_name, const String & policy_name);
 
     AccessControl & getAccessControl();
     const AccessControl & getAccessControl() const;

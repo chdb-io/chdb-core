@@ -551,13 +551,20 @@ Pipe StoragePython::readImpl(
 
 IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
 {
-    std::lock_guard lock(column_sizes_mutex);
-    if (column_sizes_computed)
-        return column_sizes;
-
     if (!is_pandas_df)
         return {};
 
+    {
+        std::lock_guard lock(column_sizes_mutex);
+        if (column_sizes_computed)
+            return column_sizes;
+    }
+
+    /// Compute outside column_sizes_mutex so we never acquire the GIL or run
+    /// Python bytecode while holding a C++ mutex (preserving GIL -> state_mutex
+    /// ordering with PythonTableCache and avoiding free-threading GC safepoint
+    /// deadlocks).
+    ColumnSizeByName computed;
     try
     {
         py::gil_scoped_acquire acquire;
@@ -570,30 +577,30 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
                     meta = table_cache->findValidatedPandasMeta(data_source);
         if (meta && meta->has_column_sizes)
         {
-            column_sizes = meta->column_sizes;
-            column_sizes_computed = true;
-            return column_sizes;
+            computed = meta->column_sizes;
         }
-
-        /// memory_usage(deep=False) is O(ncols) and counts Arrow buffers for
-        /// arrow-backed columns; good enough to order PREWHERE conditions.
-        py::object usage = data_source.attr("memory_usage")(py::arg("index") = false, py::arg("deep") = false);
-        py::object names = usage.attr("index");
-        py::object values = usage.attr("values");
-        const size_t n = py::len(names);
-        for (size_t i = 0; i < n; ++i)
+        else
         {
-            auto name = py::str(names.attr("__getitem__")(i)).cast<std::string>();
-            auto bytes = values.attr("__getitem__")(i).cast<UInt64>();
-            ColumnSize size;
-            size.data_compressed = bytes;
-            size.data_uncompressed = bytes;
-            column_sizes[name] = size;
-        }
-        if (meta)
-        {
-            meta->column_sizes = column_sizes;
-            meta->has_column_sizes = true;
+            /// memory_usage(deep=False) is O(ncols) and counts Arrow buffers for
+            /// arrow-backed columns; good enough to order PREWHERE conditions.
+            py::object usage = data_source.attr("memory_usage")(py::arg("index") = false, py::arg("deep") = false);
+            py::object names = usage.attr("index");
+            py::object values = usage.attr("values");
+            const size_t n = py::len(names);
+            for (size_t i = 0; i < n; ++i)
+            {
+                auto name = py::str(names.attr("__getitem__")(i)).cast<std::string>();
+                auto bytes = values.attr("__getitem__")(i).cast<UInt64>();
+                ColumnSize size;
+                size.data_compressed = bytes;
+                size.data_uncompressed = bytes;
+                computed[name] = size;
+            }
+            if (meta)
+            {
+                meta->column_sizes = computed;
+                meta->has_column_sizes = true;
+            }
         }
     }
     catch (...)
@@ -601,10 +608,15 @@ IStorage::ColumnSizeByName StoragePython::getColumnSizes() const
         /// Best-effort cost data: returning empty is fine for correctness (PREWHERE cost
         /// ordering simply falls back), so a missing memory_usage attribute / failed cast
         /// is swallowed here.
-        column_sizes.clear();
+        computed.clear();
     }
 
-    column_sizes_computed = true;
+    std::lock_guard lock(column_sizes_mutex);
+    if (!column_sizes_computed)
+    {
+        column_sizes = std::move(computed);
+        column_sizes_computed = true;
+    }
     return column_sizes;
 }
 
@@ -801,8 +813,8 @@ ColumnsDescription StoragePython::getTableStructureFromData(std::vector<std::pai
     RE2 pattern_time64_us(R"(\btime64\[us\]\b|datetime64\[us\]|<M8\[us\])");
     RE2 pattern_time64_ns(R"(\btime64\[ns\]\b|datetime64\[ns\]|<M8\[ns\])");
     RE2 pattern_string_binary(
-        R"(\bstring\b|<class 'str'>|str|DataType\(string\)|DataType\(binary\)|binary\[pyarrow\]|dtype\[object_\]|
-dtype\('S|dtype\('O|<class 'bytes'>|<class 'bytearray'>|<class 'memoryview'>|<class 'numpy.bytes_'>|<class 'numpy.str_'>|<class 'numpy.void)");
+        R"(\bstring\b|<class 'str'>|str|DataType\(string\)|DataType\(binary\)|binary\[pyarrow\]|dtype\[object_\]|)"
+        R"(dtype\('[<>|]?[SUO]|<class 'bytes'>|<class 'bytearray'>|<class 'memoryview'>|<class 'numpy.bytes_'>|<class 'numpy.str_'>|<class 'numpy.void)");
     RE2 pattern_null(R"(\bnull\b)");
     RE2 pattern_json(R"((?i)(\bjson\b|struct<))");
 
@@ -977,23 +989,23 @@ std::vector<std::pair<std::string, std::string>> PyReader::getSchemaFromPyObj(co
         return schema;
     }
 
-    /// TODO: current implementation maybe cause dictionary update sequence error
     if (type_name == "recarray")
     {
-        // if it's numpy.recarray
+        /// numpy.recarray: dtype.fields is a mappingproxy keyed by field name
+        /// (each value is (field_dtype, byte_offset[, title])); dtype.names
+        /// preserves the declared column order.
         py::object dtype = data.attr("dtype");
-        py::list fields = dtype.attr("fields");
-        py::dict fields_dict = fields.cast<py::dict>();
-        // fields_dict looks like:
-        //   {'TIME': (dtype('int64'), 0),
-        //    'FX' : (dtype('int64'), 8),
-        //    'FY' : (dtype('int64'), 16),
-        //    'FZ' : (dtype('S68'), 24)}
-        for (auto field : fields_dict)
+        py::object fields = dtype.attr("fields");
+        py::object names = dtype.attr("names");
+        if (!fields.is_none() && !names.is_none())
         {
-            std::string name = field.first.cast<std::string>();
-            std::string dtype_str = py::str(field.second).cast<std::string>();
-            schema.emplace_back(name, dtype_str);
+            for (auto name_handle : names)
+            {
+                std::string name = py::str(name_handle).cast<std::string>();
+                py::tuple field_info = fields[name_handle].cast<py::tuple>();
+                std::string dtype_str = py::str(py::repr(field_info[0])).cast<std::string>();
+                schema.emplace_back(name, dtype_str);
+            }
         }
         return schema;
     }

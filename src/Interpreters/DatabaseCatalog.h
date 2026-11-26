@@ -2,6 +2,7 @@
 
 #include <Core/UUID.h>
 #include <Databases/TablesDependencyGraph.h>
+#include <Interpreters/ChdbNamespace.h>
 #include <Interpreters/Context_fwd.h>
 #include <Interpreters/DDLGuard.h>
 #include <Interpreters/StorageID.h>
@@ -305,6 +306,9 @@ public:
 
     /// chdb: chdb session query need to fix the path 
     void fixPath(const String & path);
+    void loadMarkedAsDroppedTablesForDisk(const DiskPtr & db_disk, ContextMutablePtr ns_context);
+    void cleanupChdbNamespace(const ChdbNamespacePtr & ns, ContextMutablePtr ns_context);
+    void removeUUIDMappingFinallyIfPresent(const UUID & uuid);
 
 private:
     // The global instance of database catalog. unique_ptr is to allow

@@ -302,9 +302,9 @@ BlockIO InterpreterCreateQuery::createDatabase(ASTCreateQuery & create)
     }
 
     auto default_db_disk = getContext()->getDatabaseDisk();
+    const auto & chdb_ns = getContext()->getChdbNamespace();
+    const bool is_chdb_memory_ns = chdb_ns && chdb_ns->is_memory;
 
-    /// Will write file with database metadata, if needed.
-    default_db_disk->createDirectories(DatabaseCatalog::getMetadataDirPath());
     auto metadata_file_path = DatabaseCatalog::getMetadataFilePath(database_name);
     auto metadata_tmp_file_path = DatabaseCatalog::getMetadataTmpFilePath(database_name);
 
@@ -342,10 +342,16 @@ BlockIO InterpreterCreateQuery::createDatabase(ASTCreateQuery & create)
             create.set(create.storage, storage);
         }
         auto engine = make_intrusive<ASTFunction>();
-        engine->name = "Atomic";
+        engine->name = (is_chdb_memory_ns && !create.attach && !create.storage->settings) ? "Memory" : "Atomic";
         engine->setNoEmptyArgs(true);
         create.storage->set(create.storage->engine, engine);
         create.storage->normalizeChildrenOrder();
+    }
+    else if (is_chdb_memory_ns && !create.attach && create.storage->engine->name == "Atomic" && !create.storage->settings)
+    {
+        /// chdb_spec: Inside a zero-disk `:memory:` namespace, map `ENGINE = Atomic` without custom
+        /// database-disk settings to `Memory` so `CREATE DATABASE` never materializes `/tmp` metadata dirs.
+        create.storage->engine->name = "Memory";
     }
     else if ((create.columns_list
               && ((create.columns_list->indices && !create.columns_list->indices->children.empty())
@@ -357,6 +363,13 @@ BlockIO InterpreterCreateQuery::createDatabase(ASTCreateQuery & create)
 
     if (create.storage && !create.storage->engine)
         throw Exception(ErrorCodes::INCORRECT_QUERY, "Database engine must be specified");
+
+    const bool skip_disk_metadata_for_chdb_memory = is_chdb_memory_ns && create.storage->engine->name == "Memory";
+    if (!skip_disk_metadata_for_chdb_memory)
+    {
+        /// Will write file with database metadata, if needed.
+        default_db_disk->createDirectories(DatabaseCatalog::getMetadataDirPath());
+    }
 
     if (create.storage->engine->name == "Atomic"
         || create.storage->engine->name == "Replicated"
@@ -394,8 +407,8 @@ BlockIO InterpreterCreateQuery::createDatabase(ASTCreateQuery & create)
                         "Enable setting `enable_database_materialized_postgresql` to use it");
     }
 
-    bool need_write_metadata = !create.attach || !default_db_disk->existsFile(metadata_file_path);
-    bool need_lock_uuid = internal || need_write_metadata;
+    bool need_write_metadata = !skip_disk_metadata_for_chdb_memory && (!create.attach || !default_db_disk->existsFile(metadata_file_path));
+    bool need_lock_uuid = !skip_disk_metadata_for_chdb_memory && (internal || need_write_metadata);
     auto mode = getLoadingStrictnessLevel(create.attach, force_attach, has_force_restore_data_flag, /*secondary*/ false);
 
     /// Lock uuid, so we will known it's already in use.
@@ -408,6 +421,9 @@ BlockIO InterpreterCreateQuery::createDatabase(ASTCreateQuery & create)
 
     DatabasePtr database = DatabaseFactory::instance().get(
         create, metadata_path / "", getContext(), mode, internal, is_metadata_replay, is_restore_from_backup);
+
+    if (UUID db_uuid = database->getUUID(); db_uuid != UUIDHelpers::Nil && !DatabaseCatalog::instance().hasUUIDMapping(db_uuid))
+        DatabaseCatalog::instance().addUUIDMapping(db_uuid);
 
     if (create.uuid != UUIDHelpers::Nil)
         create.setDatabase(TABLE_WITH_UUID_NAME_PLACEHOLDER);

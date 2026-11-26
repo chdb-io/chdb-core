@@ -278,6 +278,9 @@ void setCHDBProgressHook(
 /// SharedArrayBuffer flag the page sets. Returns false when unset (native: never cancels).
 void setCHDBCancelCheck(std::function<bool()> check);
 bool chdbWasmCancelRequested();
+void notifyCHDBWasmProgress(
+    uint64_t read_rows, uint64_t total_rows_to_read, uint64_t read_bytes,
+    uint64_t total_bytes_to_read, uint64_t elapsed_ns);
 #endif
 
 }

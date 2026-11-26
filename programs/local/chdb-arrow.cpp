@@ -1,10 +1,13 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ArrowStreamRegistry.h"
+#include "EmbeddedSession.h"
 
 #include <arrow/c/abi.h>
 #include <base/defines.h>
 
+#include <atomic>
+#include <cstring>
 #include <memory>
 
 namespace CHDB
@@ -14,7 +17,7 @@ struct PrivateData
 {
     ArrowSchema * schema;
     ArrowArray * array;
-    bool done = false;
+    std::atomic<bool> done{false};
 };
 
 static void EmptySchemaRelease(ArrowSchema * schema)
@@ -41,17 +44,17 @@ static int GetSchema(struct ArrowArrayStream * stream, struct ArrowSchema * out)
 static int GetNext(struct ArrowArrayStream * stream, struct ArrowArray * out)
 {
 	auto * private_data = static_cast<PrivateData *>((stream->private_data));
-	*out = *private_data->array;
-	if (private_data->done)
+	if (private_data->done.exchange(true, std::memory_order_acq_rel))
     {
+        std::memset(out, 0, sizeof(*out));
 		out->release = nullptr;
     }
 	else
     {
+		*out = *private_data->array;
 		out->release = EmptyArrayRelease;
     }
 
-	private_data->done = true;
 	return CHDBSuccess;
 }
 
@@ -90,8 +93,8 @@ static chdb_state chdb_inner_arrow_scan(
     if (!table_name || !arrow_stream)
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     auto * stream = reinterpret_cast<ArrowArrayStream *>(arrow_stream);
@@ -108,8 +111,11 @@ static chdb_state chdb_inner_arrow_scan(
 
     try
     {
-        return CHDB::ArrowStreamRegistry::instance().registerArrowStream(String(table_name), stream, is_owner)
-            ? CHDBSuccess : CHDBError;
+        auto * registry = lease.getClient()->getArrowStreamRegistry();
+        const bool registered = registry
+            ? registry->registerArrowStream(String(table_name), stream, is_owner)
+            : CHDB::ArrowStreamRegistry::instance().registerArrowStream(String(table_name), stream, is_owner);
+        return registered ? CHDBSuccess : CHDBError;
     }
     catch (...)
     {
@@ -162,13 +168,16 @@ chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_
     if (!table_name)
         return CHDBError;
 
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
+    auto lease = CHDB::acquireConnectionLease(conn);
+    if (!lease)
         return CHDBError;
 
     try
     {
-        CHDB::ArrowStreamRegistry::instance().unregisterArrowStream(String(table_name));
+        if (auto * registry = lease.getClient()->getArrowStreamRegistry())
+            registry->unregisterArrowStream(String(table_name));
+        else
+            CHDB::ArrowStreamRegistry::instance().unregisterArrowStream(String(table_name));
         return CHDBSuccess;
     }
     catch (...)

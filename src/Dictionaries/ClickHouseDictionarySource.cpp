@@ -353,6 +353,11 @@ void registerDictionarySourceClickHouse(DictionarySourceFactory & factory)
             else
                 session.authenticate(local_user, "", Poco::Net::SocketAddress{});
             context = session.makeQueryContext();
+            if (!context->getChdbNamespace())
+            {
+                if (auto query_ctx = CurrentThread::tryGetQueryContext(); query_ctx && query_ctx->getChdbNamespace())
+                    context->setChdbNamespace(query_ctx->getChdbNamespace());
+            }
         }
         else
         {

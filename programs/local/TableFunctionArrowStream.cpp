@@ -7,6 +7,7 @@
 #include <TableFunctions/TableFunctionFactory.h>
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTLiteral.h>
+#include <Interpreters/Context.h>
 #include <Interpreters/evaluateConstantExpression.h>
 #include <arrow/c/abi.h>
 
@@ -45,7 +46,18 @@ void TableFunctionArrowStream::parseArguments(const ASTPtr & ast_function, Conte
                           [](char c) { return c == '\'' || c == '\"' || c == '`'; }),
             stream_name.end());
 
-        auto stream_opt = CHDB::ArrowStreamRegistry::instance().getArrowStream(stream_name);
+        std::optional<CHDB::ArrowStreamRegistry::ArrowStreamInfo> stream_opt;
+        CHDB::ArrowStreamRegistry * session_registry = context->getArrowStreamRegistry();
+        if (!session_registry && context->hasQueryContext())
+            session_registry = context->getQueryContext()->getArrowStreamRegistry();
+        if (!session_registry && context->hasSessionContext())
+            session_registry = context->getSessionContext()->getArrowStreamRegistry();
+
+        if (session_registry)
+            stream_opt = session_registry->getArrowStream(stream_name);
+        if (!stream_opt)
+            stream_opt = CHDB::ArrowStreamRegistry::instance().getArrowStream(stream_name);
+
         if (!stream_opt)
         {
             throw Exception(ErrorCodes::UNKNOWN_IDENTIFIER,
@@ -98,7 +110,18 @@ ColumnsDescription TableFunctionArrowStream::getActualTableStructure(
     auto * arrow_stream = reinterpret_cast<ArrowArrayStream *>(stream_info.stream);
     CHDB::ArrowSchemaWrapper schema;
 
-    if (arrow_stream->get_schema(arrow_stream, &schema.arrow_schema) != 0)
+    int schema_rc = 0;
+    if (stream_info.stream_mutex)
+    {
+        std::lock_guard<std::mutex> lock(*stream_info.stream_mutex);
+        schema_rc = arrow_stream->get_schema(arrow_stream, &schema.arrow_schema);
+    }
+    else
+    {
+        schema_rc = arrow_stream->get_schema(arrow_stream, &schema.arrow_schema);
+    }
+
+    if (schema_rc != 0)
     {
         throw Exception(ErrorCodes::BAD_ARGUMENTS,
                         "Failed to get schema from ArrowStream '{}'", stream_name);
