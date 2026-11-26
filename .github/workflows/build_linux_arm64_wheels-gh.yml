@@ -97,6 +97,9 @@ jobs:
     # CI ran all of it on every platform. Everything else builds as before.
     env:
       WHEEL_ONLY: ${{ needs.nightly_gate.outputs.nightly == 'true' || inputs.WHEEL_ONLY == true }}
+      # A manual wheel-only run builds a wheel for a proof of concept of BM25 scoring:
+      # it tests that feature on every Python and skips the rest of the suite.
+      BM25_ONLY: ${{ inputs.WHEEL_ONLY == true }}
     steps:
       - name: Record the crash-diagnostics cutoff
         if: always()
@@ -578,6 +581,13 @@ jobs:
               python -c "import pandas; print(pandas.__version__)"
               python -c "import chdb; res = chdb.query('select 1112222222,555', 'CSV'); print(f'Python $version: {res}')"
 
+              if [ "$BM25_ONLY" == "true" ]; then
+                python -m pip install -q pytest
+                (cd tests && python -m pytest -q test_bm25_scoring.py)
+                echo "BM25 scoring tests PASSED on Python $version"
+                continue
+              fi
+
               if [ "$DEBUG_MODE" == "true" ]; then
                 python -m pip install pytest pytest-cov pytest-timeout
                 REAL_PYTHON=$(pyenv which python)
@@ -641,6 +651,7 @@ jobs:
           pyenv shell --unset
         continue-on-error: true
       - name: Test torch compatibility on Python 3.11
+        if: env.BM25_ONLY != 'true'
         run: |
           # ulimit does not survive a step boundary, so the core limit set
           # beside kern.corefile / core_pattern never reaches here.
