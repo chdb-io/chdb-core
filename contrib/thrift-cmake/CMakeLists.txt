@@ -108,6 +108,10 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 add_library(_thrift_minimal ${thriftcpp_minimal_SOURCES})
 add_library(ch_contrib::thrift_minimal ALIAS _thrift_minimal)
 target_include_directories(_thrift_minimal SYSTEM PUBLIC "${ClickHouse_SOURCE_DIR}/contrib/thrift/lib/cpp/src" ${CMAKE_CURRENT_BINARY_DIR})
+if (OS_WINDOWS)
+    # chdb_spec: on _WIN32 TProtocol.h takes the byte order from boost/predef.
+    target_link_libraries(_thrift_minimal PUBLIC boost::headers_only)
+endif ()
 
 option(ENABLE_THRIFT "Enable Thrift" ${ENABLE_LIBRARIES})
 
