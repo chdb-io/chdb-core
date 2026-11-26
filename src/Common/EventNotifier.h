@@ -48,6 +48,7 @@ public:
     static EventNotifier & init();
     static EventNotifier & instance();
     static void shutdown();
+    static void abandonAfterFork() noexcept;
 
     template <typename EventType, typename Callback>
     [[ nodiscard ]] HandlerPtr subscribe(EventType event, Callback && callback)

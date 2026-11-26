@@ -124,6 +124,8 @@ public:
     static DatabaseCatalog & instance();
     static bool isAvailable();  /// Check if catalog is initialized and not being destroyed
     static void shutdown(std::function<void()> shutdown_system_logs);
+    /// Lock-free teardown for a POSIX fork() child created after engine init.
+    static void abandonAfterFork() noexcept;
 
     void createBackgroundTasks();
     void initializeAndLoadTemporaryDatabase();

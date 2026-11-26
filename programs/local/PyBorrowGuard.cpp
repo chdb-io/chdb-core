@@ -1,4 +1,5 @@
 #include "PyBorrowGuard.h"
+#include "ForkGuard.h"
 #include "PybindWrapper.h"
 
 #include <atomic>
@@ -50,6 +51,9 @@ static int drainPendingCallTrampoline(void *)
 /// remain as belt-and-braces.
 void enqueuePyDecref(PyObject * obj)
 {
+    if (isForkedAfterEngineInit())
+        return;
+
     {
         std::lock_guard lock(pendingDecrefsMutex());
         pendingDecrefs().push_back(obj);
@@ -73,7 +77,7 @@ std::shared_ptr<void> makePyBorrowGuard(PyObject * obj)
 
 void drainPyBorrowGuardQueue()
 {
-    if (!Py_IsInitialized())
+    if (isForkedAfterEngineInit() || !Py_IsInitialized())
         return;
 
     std::vector<PyObject *> drained;

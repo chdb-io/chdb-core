@@ -1,4 +1,5 @@
 #include "LocalChdb.h"
+#include "ForkGuard.h"
 #include "PyBorrowGuard.h"
 
 #include <base/scope_guard.h>
@@ -25,6 +26,7 @@
 #include <IO/Progress.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Common/CurrentThread.h>
+#include <Common/config_version.h>
 #include <Poco/String.h>
 #include <Common/logger_useful.h>
 #include <sstream>
@@ -220,6 +222,9 @@ DB::ChdbClient * getChdbClient(chdb_connection handle)
 
 CHDB::PythonRuntimeOperationGuard::PythonRuntimeOperationGuard()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        throw std::runtime_error(CHDB::forkedAfterEngineInitError());
+
     auto & registry = PythonConnectionRegistry::instance();
     std::lock_guard lock(registry.mutex);
     if (registry.exiting)
@@ -229,6 +234,9 @@ CHDB::PythonRuntimeOperationGuard::PythonRuntimeOperationGuard()
 
 CHDB::PythonRuntimeOperationGuard::~PythonRuntimeOperationGuard()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     auto & registry = PythonConnectionRegistry::instance();
     std::lock_guard lock(registry.mutex);
     if (!--registry.active_stateless_queries)
@@ -452,6 +460,9 @@ connection_wrapper::build_clickhouse_args(const std::string & path, const std::m
 
 connection_wrapper::connection_wrapper(const std::string & conn_str)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        throw std::runtime_error(CHDB::forkedAfterEngineInitError());
+
     is_readonly = false;
     auto [path, params] = parse_connection_string(conn_str);
 
@@ -474,6 +485,9 @@ connection_wrapper::connection_wrapper(const std::string & conn_str)
 
 std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::string & conn_str)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        throw std::runtime_error(CHDB::forkedAfterEngineInitError());
+
     std::shared_ptr<connection_wrapper> result;
     std::string warning;
     {
@@ -496,6 +510,9 @@ std::shared_ptr<connection_wrapper> connection_wrapper::createPython(const std::
 
 connection_wrapper::Operation connection_wrapper::startOperation()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        throw std::runtime_error(CHDB::forkedAfterEngineInitError());
+
     auto & registry = PythonConnectionRegistry::instance();
     std::lock_guard registry_lock(registry.mutex);
     if (registry.exiting)
@@ -525,6 +542,9 @@ connection_wrapper::Operation::~Operation()
 
 void connection_wrapper::finishOperation()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     std::lock_guard lock(lifecycle_mutex);
     --active_operations;
     if (!active_operations)
@@ -533,24 +553,36 @@ void connection_wrapper::finishOperation()
 
 bool connection_wrapper::isOpen() const
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return false;
+
     std::lock_guard lock(lifecycle_mutex);
     return conn && !closing;
 }
 
 size_t connection_wrapper::activeOperationCount() const
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return 0;
+
     std::lock_guard lock(lifecycle_mutex);
     return active_operations;
 }
 
 bool connection_wrapper::needsExitClose() const
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return false;
+
     std::lock_guard lock(lifecycle_mutex);
     return !closed;
 }
 
 bool connection_wrapper::closePythonConnectionsAtExit()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return false;
+
     auto & registry = PythonConnectionRegistry::instance();
     std::vector<std::shared_ptr<connection_wrapper>> live;
     {
@@ -615,6 +647,14 @@ connection_wrapper::~connection_wrapper()
 
 void connection_wrapper::close()
 {
+    if (CHDB::isForkedAfterEngineInit())
+    {
+        conn = nullptr;
+        closed = true;
+        closing = false;
+        return;
+    }
+
     for (auto * active = current_python_operation; active; active = active->previous)
         if (active->owner.get() == this)
             throw std::runtime_error("Cannot close a connection from its active operation");
@@ -1014,6 +1054,9 @@ py::object connection_wrapper::streaming_fetch_df(streaming_query_result * strea
 
 void connection_wrapper::streaming_cancel_query(streaming_query_result * streaming_result)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     auto operation = startOperation();
     auto * conn = operation.cell();
     py::gil_scoped_release release;
@@ -1091,6 +1134,9 @@ query_result * connection_wrapper::insert_done(streaming_insert_result * ins)
 
 void connection_wrapper::insert_cancel(streaming_insert_result * ins)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     auto operation = startOperation();
     py::gil_scoped_release release;
 
@@ -1315,6 +1361,9 @@ void cursor_wrapper::execute(const std::string & query_str)
 /// ownership of their own connections and terminate the engine themselves.
 static void chdb_cleanup_at_exit()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     auto & registry = PythonConnectionRegistry::instance();
     try
     {
@@ -1400,6 +1449,8 @@ PYBIND11_MODULE(_chdb, m)
     });
     m.def("_python_active_operations", []
     {
+        if (CHDB::isForkedAfterEngineInit())
+            return static_cast<size_t>(0);
         auto & registry = PythonConnectionRegistry::instance();
         std::lock_guard lock(registry.mutex);
         size_t active = 0;
@@ -1687,6 +1738,11 @@ PYBIND11_MODULE(_chdb, m)
         "Query chDB and return a query_result object or DataFrame");
 
     m.def(
+        "engine_version",
+        []() { return std::string(VERSION_STRING); },
+        "Return the embedded ClickHouse engine version string without initializing the engine.");
+
+    m.def(
         "set_signal_handlers_enabled",
         [](int enabled) { chdb_set_signal_handlers_enabled(enabled); },
         py::arg("enabled"),
@@ -1700,6 +1756,8 @@ PYBIND11_MODULE(_chdb, m)
 
     auto destroy_import_cache = []()
     {
+        if (CHDB::isForkedAfterEngineInit())
+            return;
         CHDB::PythonUDFRegistry::instance().clear();
         CHDB::PythonUDAFRegistry::instance().clear();
         CHDB::PythonImporter::destroy();

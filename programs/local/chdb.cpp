@@ -1,6 +1,7 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ChunkCollectorOutputFormat.h"
+#include "ForkGuard.h"
 #include "LocalServer.h"
 
 #include <csignal>
@@ -142,6 +143,9 @@ static local_result_v2 * createErrorLocalResultV2(const String & error)
 
 std::unique_ptr<MaterializedQueryResult> pyEntryClickHouseLocal(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+        throw std::runtime_error(forkedAfterEngineInitError());
+
     try
     {
         std::lock_guard<std::mutex> lock(CHDB_MUTEX);
@@ -216,6 +220,9 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv);
 
 chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+        throw std::runtime_error(forkedAfterEngineInitError());
+
     try
     {
         DB::ThreadStatus thread_status;
@@ -271,7 +278,7 @@ chdb_connection * connect_chdb_with_exception(int argc, char ** argv)
 #if USE_PYTHON
 void cachePythonTablesFromQuery(chdb_conn * conn, const std::string & query_str)
 {
-    if (!conn || !conn->server || !conn->connected)
+    if (isForkedAfterEngineInit() || !conn || !conn->server || !conn->connected)
         return;
     auto * client = reinterpret_cast<DB::ChdbClient *>(conn->server);
     client->findQueryableObjFromPyCache(query_str);
@@ -284,6 +291,9 @@ using namespace CHDB;
 
 local_result * query_stable(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+        return nullptr;
+
     /// pyEntryClickHouseLocal reports bad arguments and engine errors by throwing. No C++
     /// exception may leave a C API function: the host has its own C++ runtime, and an
     /// exception thrown by chDB's private one terminates the process when it reaches the
@@ -326,6 +336,9 @@ void free_result(local_result * result)
 
 local_result_v2 * query_stable_v2(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+        return createErrorLocalResultV2(forkedAfterEngineInitError());
+
     // pyEntryClickHouseLocal may throw some serious exceptions, although it's not likely
     // to happen in the context of clickhouse-local. we catch them here and return an error
     local_result_v2 * res = nullptr;
@@ -377,6 +390,14 @@ void close_conn(chdb_conn ** conn)
     if (!conn || !*conn)
         return;
 
+    if (isForkedAfterEngineInit())
+    {
+        (*conn)->connected = false;
+        (*conn)->server = nullptr;
+        *conn = nullptr;
+        return;
+    }
+
     try
     {
         if ((*conn)->connected && (*conn)->server)
@@ -411,6 +432,9 @@ struct local_result_v2 * query_conn(chdb_conn * conn, const char * query, const 
 
 struct local_result_v2 * query_conn_n(struct chdb_conn * conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    if (isForkedAfterEngineInit())
+        return createErrorLocalResultV2(forkedAfterEngineInitError());
+
     if (!checkConnectionValidity(conn))
         return createErrorLocalResultV2("Invalid or closed connection");
 
@@ -438,6 +462,12 @@ chdb_streaming_result * query_conn_streaming(chdb_conn * conn, const char * quer
 chdb_streaming_result *
 query_conn_streaming_n(struct chdb_conn * conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new StreamQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_streaming_result *>(result);
+    }
+
     if (!checkConnectionValidity(conn))
     {
         auto * result = new StreamQueryResult("Invalid or closed connection");
@@ -486,6 +516,9 @@ const char * chdb_streaming_result_error(chdb_streaming_result * result)
 
 local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_result * result)
 {
+    if (isForkedAfterEngineInit())
+        return createErrorLocalResultV2(forkedAfterEngineInitError());
+
     if (!checkConnectionValidity(conn))
         return createErrorLocalResultV2("Invalid or closed connection");
 
@@ -529,6 +562,9 @@ local_result_v2 * chdb_streaming_fetch_result(chdb_conn * conn, chdb_streaming_r
 
 void chdb_streaming_cancel_query(chdb_conn * conn, chdb_streaming_result * result)
 {
+    if (isForkedAfterEngineInit())
+        return;
+
     if (!checkConnectionValidity(conn))
         return;
 
@@ -559,6 +595,8 @@ void chdb_destroy_result(chdb_streaming_result * result)
         return;
 
     auto * stream_query_result = reinterpret_cast<StreamQueryResult *>(result);
+    if (isForkedAfterEngineInit() && stream_query_result->private_data)
+        return;
 
     delete stream_query_result;
 }
@@ -567,6 +605,9 @@ void chdb_destroy_result(chdb_streaming_result * result)
 
 chdb_connection * chdb_connect(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+        return nullptr;
+
     try
     {
         return connect_chdb_with_exception(argc, argv);
@@ -611,6 +652,12 @@ chdb_result * chdb_query(chdb_connection conn, const char * query, const char * 
 
 chdb_result * chdb_query_n(chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new MaterializedQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
     if (!conn)
     {
         auto * result = new MaterializedQueryResult("Unexpected null connection");
@@ -646,6 +693,12 @@ chdb_result * chdb_query_n(chdb_connection conn, const char * query, size_t quer
 
 chdb_result * chdb_query_cmdline(int argc, char ** argv)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new MaterializedQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
     MaterializedQueryResult * result = nullptr;
     try
     {
@@ -672,6 +725,12 @@ chdb_result * chdb_stream_query(chdb_connection conn, const char * query, const 
 
 chdb_result * chdb_stream_query_n(chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new StreamQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
     if (!conn)
     {
         auto * result = new StreamQueryResult("Unexpected null connection");
@@ -794,6 +853,12 @@ chdb_result * chdb_query_with_params_n(
     const size_t * param_value_lens,
     size_t param_count)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new MaterializedQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
     if (!conn)
     {
         auto * result = new MaterializedQueryResult("Unexpected null connection");
@@ -861,6 +926,12 @@ chdb_result * chdb_stream_query_with_params_n(
     const size_t * param_value_lens,
     size_t param_count)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * result = new StreamQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(result);
+    }
+
     if (!conn)
     {
         auto * result = new StreamQueryResult("Unexpected null connection");
@@ -903,6 +974,12 @@ chdb_result * chdb_stream_query_with_params_n(
 
 chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * result)
 {
+    if (isForkedAfterEngineInit())
+    {
+        auto * query_result = new MaterializedQueryResult(forkedAfterEngineInitError());
+        return reinterpret_cast<chdb_result *>(query_result);
+    }
+
     if (!conn)
     {
         auto * query_result = new MaterializedQueryResult("Unexpected null connection");
@@ -960,7 +1037,7 @@ chdb_result * chdb_stream_fetch_result(chdb_connection conn, chdb_result * resul
 
 void chdb_stream_cancel_query(chdb_connection conn, chdb_result * result)
 {
-    if (!result || !conn)
+    if (isForkedAfterEngineInit() || !result || !conn)
         return;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
@@ -996,6 +1073,22 @@ void chdb_destroy_query_result(chdb_result * result)
         return;
 
     auto * query_result = reinterpret_cast<QueryResult *>(result);
+    if (isForkedAfterEngineInit())
+    {
+        if (query_result->getType() == QueryResultType::RESULT_TYPE_MATERIALIZED)
+        {
+            delete query_result;
+            return;
+        }
+        if (query_result->getType() == QueryResultType::RESULT_TYPE_STREAMING
+            && !static_cast<StreamQueryResult *>(query_result)->private_data)
+        {
+            delete query_result;
+            return;
+        }
+        return;
+    }
+
     delete query_result;
 }
 
@@ -1007,6 +1100,9 @@ chdb_insert_stream chdb_stream_insert(chdb_connection conn, const char * query, 
 chdb_insert_stream chdb_stream_insert_n(
     chdb_connection conn, const char * query, size_t query_len, const char * format, size_t format_len)
 {
+    if (isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult(forkedAfterEngineInitError()));
+
     if (!conn)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Unexpected null connection"));
 
@@ -1065,6 +1161,9 @@ chdb_insert_stream chdb_stream_insert_with_params_n(
     const size_t * param_value_lens,
     size_t param_count)
 {
+    if (isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult(forkedAfterEngineInitError()));
+
     if (!conn)
         return reinterpret_cast<chdb_insert_stream>(new InsertStreamResult("Unexpected null connection"));
 
@@ -1110,6 +1209,13 @@ static bool insert_stream_finalized(InsertStreamResult * res)
 
 chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size_t len)
 {
+    if (isForkedAfterEngineInit())
+    {
+        if (stream)
+            reinterpret_cast<InsertStreamResult *>(stream)->setError(forkedAfterEngineInitError());
+        return CHDBError;
+    }
+
     if (!stream)
         return CHDBError;
 
@@ -1134,6 +1240,9 @@ chdb_state chdb_stream_append(chdb_insert_stream stream, const void * data, size
 
 chdb_result * chdb_stream_done(chdb_insert_stream stream)
 {
+    if (isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(forkedAfterEngineInitError()));
+
     if (!stream)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null insert stream"));
 
@@ -1161,7 +1270,7 @@ chdb_result * chdb_stream_done(chdb_insert_stream stream)
 
 void chdb_stream_cancel_insert(chdb_insert_stream stream)
 {
-    if (!stream)
+    if (isForkedAfterEngineInit() || !stream)
         return;
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
@@ -1213,6 +1322,12 @@ void chdb_destroy_insert_stream(chdb_insert_stream stream)
         return;
 
     auto * res = reinterpret_cast<InsertStreamResult *>(stream);
+    if (isForkedAfterEngineInit())
+    {
+        if (!res->context && !res->owner)
+            delete res;
+        return;
+    }
     /// If the stream was never finalized, abort it so the worker thread is
     /// joined and engine resources are released before we free the handle.
     /// Skip when already finalized — including by connection teardown, in
@@ -1503,6 +1618,9 @@ chdb_result * runBackupOrRestore(
     const char * base_file_path,
     size_t base_file_path_len)
 {
+    if (isForkedAfterEngineInit())
+        return reinterpret_cast<chdb_result *>(new MaterializedQueryResult(forkedAfterEngineInitError()));
+
     if (!conn)
         return reinterpret_cast<chdb_result *>(new MaterializedQueryResult("Unexpected null connection"));
 
@@ -1567,7 +1685,7 @@ chdb_state chdb_classify_query_n(
     size_t target_database_len,
     chdb_query_analysis_v1 * out_analysis)
 {
-    if (!conn || !out_analysis)
+    if (isForkedAfterEngineInit() || !conn || !out_analysis)
         return CHDBError;
 
     /// The caller declares how much room it has. Anything smaller than the
@@ -1600,7 +1718,7 @@ chdb_state chdb_classify_query_n(
 
 chdb_state chdb_set(chdb_connection conn, const char * key, const char * value)
 {
-    if (!conn || !key)
+    if (isForkedAfterEngineInit() || !conn || !key)
         return CHDBError;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
@@ -1622,7 +1740,7 @@ chdb_state chdb_set(chdb_connection conn, const char * key, const char * value)
 
 const char * chdb_get(chdb_connection conn, const char * key)
 {
-    if (!conn || !key)
+    if (isForkedAfterEngineInit() || !conn || !key)
         return nullptr;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
@@ -1654,6 +1772,9 @@ void chdb_set_signal_handlers_enabled(int enabled)
 
 chdb_state chdb_shutdown(void)
 {
+    if (isForkedAfterEngineInit())
+        return CHDBError;
+
     /// Serializes the whole transition. Without it two first callers would both
     /// reach the joins, and a second caller could be told the engine is stopped
     /// while the first is still joining.
@@ -1733,6 +1854,9 @@ chdb_state chdb_shutdown(void)
 
 void chdb_reset_signal_handlers(void)
 {
+    if (isForkedAfterEngineInit())
+        return;
+
     /// No instance means chDB never installed a handler, so there is nothing of ours
     /// to take back. Do not construct the singleton just to find that out.
     auto * instance = HandledSignals::tryGetInstance();

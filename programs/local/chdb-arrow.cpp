@@ -1,6 +1,7 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ArrowStreamRegistry.h"
+#include "ForkGuard.h"
 
 #include <arrow/c/abi.h>
 #include <base/defines.h>
@@ -87,7 +88,7 @@ static chdb_state chdb_inner_arrow_scan(
     chdb_connection conn, const char * table_name,
     chdb_arrow_stream arrow_stream, bool is_owner)
 {
-    if (!table_name || !arrow_stream)
+    if (CHDB::isForkedAfterEngineInit() || !table_name || !arrow_stream)
         return CHDBError;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);
@@ -128,7 +129,7 @@ chdb_state chdb_arrow_array_scan(
     chdb_connection conn, const char * table_name,
     chdb_arrow_schema arrow_schema, chdb_arrow_array arrow_array)
 {
-    if (!arrow_schema || !arrow_array)
+    if (CHDB::isForkedAfterEngineInit() || !arrow_schema || !arrow_array)
         return CHDBError;
 
     ArrowArrayStream * stream = nullptr;
@@ -159,7 +160,7 @@ chdb_state chdb_arrow_array_scan(
 
 chdb_state chdb_arrow_unregister_table(chdb_connection conn, const char * table_name)
 {
-    if (!table_name)
+    if (CHDB::isForkedAfterEngineInit() || !table_name)
         return CHDBError;
 
     auto * connection = reinterpret_cast<chdb_conn *>(conn);

@@ -29,6 +29,10 @@ public:
 
     void shutdown();
     static void shutdownAll();
+    /// Lock-free teardown for a POSIX fork() child created after engine init:
+    /// releases ownership without locking or joining vanished worker threads.
+    void abandonAfterFork() noexcept;
+    static void abandonAllAfterFork() noexcept;
 
     /// Server and clickhouse-local initialize all thread pools on startup, with settings from config.
     /// Client and misc tools may initialize the pools they use lazily using this method instead.

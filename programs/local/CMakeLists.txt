@@ -8,6 +8,7 @@ if (OS_WASM)
         chdb.cpp
         ChunkCollectorOutputFormat.cpp
         ChdbSettingsOverrides.cpp
+        ForkGuard.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
         InstancePaths.cpp
@@ -23,6 +24,7 @@ else()
         ArrowTableReader.cpp
         ChunkCollectorOutputFormat.cpp
         ChdbSettingsOverrides.cpp
+        ForkGuard.cpp
         LocalServer.cpp
         EmbeddedServer.cpp
         InstancePaths.cpp

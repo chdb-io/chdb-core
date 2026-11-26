@@ -158,4 +158,16 @@ void StaticThreadPool::shutdownAll()
 #undef SHUTDOWN_STATIC_THREAD_POOL
 }
 
+void StaticThreadPool::abandonAfterFork() noexcept
+{
+    auto * leaked [[maybe_unused]] = instance.release();
+}
+
+void StaticThreadPool::abandonAllAfterFork() noexcept
+{
+#define ABANDON_STATIC_THREAD_POOL(SUFFIX, NAME, METRIC) get##SUFFIX##ThreadPool().abandonAfterFork();
+    APPLY_FOR_STATIC_THREAD_POOLS(ABANDON_STATIC_THREAD_POOL)
+#undef ABANDON_STATIC_THREAD_POOL
+}
+
 }

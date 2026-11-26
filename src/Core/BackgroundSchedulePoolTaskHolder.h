@@ -35,6 +35,9 @@ public:
     /// Useful when you need to extend the lifetime of the task.
     [[nodiscard]] BackgroundSchedulePoolTaskInfoPtr getTaskInfoPtr() const;
 
+    /// Releases the task reference without calling deactivate() (used in a POSIX fork() child on exit).
+    void abandonAfterFork() noexcept;
+
 private:
     BackgroundSchedulePoolTaskInfoPtr task_info;
 };

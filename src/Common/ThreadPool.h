@@ -341,6 +341,9 @@ public:
 
     static GlobalThreadPool & instance();
     static void shutdown();
+    /// Lock-free teardown for a POSIX fork() child created after engine init:
+    /// releases ownership of the global pool without locking or joining vanished threads.
+    static void abandonAfterFork() noexcept;
 
     /// Joins every pool thread, so that no thread of the pool is alive once this
     /// returns. shutdown() only abandons the instance, which leaves the idle

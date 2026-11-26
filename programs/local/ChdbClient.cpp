@@ -3,6 +3,7 @@
 #include <utility>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
+#include <ForkGuard.h>
 #include <LocalFilesystemRestriction.h>
 #include <Client/Connection.h>
 #include <Interpreters/Context.h>
@@ -167,6 +168,9 @@ void ChdbClient::applyCmdSettings(int argc, char ** argv)
 
 ChdbClient::~ChdbClient()
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return;
+
     {
         std::lock_guard<std::mutex> lock(client_mutex);
         cleanup();

@@ -1,6 +1,7 @@
 #include "chdb.h"
 #include "chdb-internal.h"
 #include "ChdbClient.h"
+#include "ForkGuard.h"
 #include "QueryResult.h"
 
 #include <Common/Exception.h>
@@ -158,6 +159,8 @@ chdb_result * chdb_insert_arrow_array(
     chdb_arrow_array arrow_array,
     const chdb_arrow_insert_options * options)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return makeErrorResult(CHDB::forkedAfterEngineInitError());
     if (!conn)
         return makeErrorResult("Unexpected null connection");
     if (!arrow_schema || !arrow_array)
@@ -193,6 +196,8 @@ chdb_result * chdb_insert_arrow_stream(
     chdb_arrow_stream arrow_stream,
     const chdb_arrow_insert_options * options)
 {
+    if (CHDB::isForkedAfterEngineInit())
+        return makeErrorResult(CHDB::forkedAfterEngineInitError());
     if (!conn)
         return makeErrorResult("Unexpected null connection");
     if (!arrow_stream)
