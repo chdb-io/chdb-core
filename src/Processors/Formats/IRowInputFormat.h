@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <Common/VectorWithMemoryTracking.h>
 #include <Columns/IColumn_fwd.h>
 #include <Core/BlockMissingValues.h>
 #include <Processors/Formats/IInputFormat.h>
@@ -18,7 +19,7 @@ struct RowReadExtension
 {
     /// IRowInputFormat::read output. It contains non zero for columns that actually read from the source and zero otherwise.
     /// It's used to attach defaults for partially filled rows.
-    std::vector<UInt8> read_columns;
+    VectorWithMemoryTracking<UInt8> read_columns;
 };
 
 /// How often a row loop asks whether the query was cancelled. One `read` can parse a whole insert
@@ -72,6 +73,12 @@ protected:
     virtual void readPrefix() {}                /// delimiter before begin of result
     virtual void readSuffix() {}                /// delimiter after end of result
 
+    /// Under parallel parsing, only the first segment normally has the prefix (e.g. the `CSVWithNames`
+    /// header): later segments start with `total_rows` set by `setRowsReadBefore` and skip `readPrefix`.
+    /// A format whose segmentation engine repeats the prefix in every segment returns true here, so
+    /// `readPrefix` is called once per segment.
+    virtual bool everySegmentHasPrefix() const { return false; }
+
     /// Skip data until next row.
     /// This is intended for text streams, that allow skipping of errors.
     /// By default - throws not implemented exception.
@@ -93,7 +100,8 @@ protected:
 
     size_t getApproxBytesReadForChunk() const override { return approx_bytes_read_for_chunk; }
 
-    void setRowsReadBefore(size_t rows) override { total_rows = rows; }
+    void setRowsReadBefore(size_t rows) override { total_rows = rows; rows_read = rows; }
+    std::optional<size_t> getRowsRead() const override { return rows_read; }
     void setSerializationHints(const SerializationInfoByName & hints) override;
 
     Serializations serializations;
@@ -102,7 +110,10 @@ private:
     Params params;
 
     size_t total_rows = 0;
+    /// Rows read and rows skipped with errors. Unlike total_rows, it does not count the readRow() calls that found the end of data.
+    size_t rows_read = 0;
     size_t num_errors = 0;
+    bool prefix_read = false;
 
     BlockMissingValues block_missing_values;
     size_t approx_bytes_read_for_chunk = 0;

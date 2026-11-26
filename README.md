@@ -32,15 +32,17 @@
 
 ## Packages & Distributions
 
-**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine itself ships as five distribution artifacts — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages:
+**chdb-core** (this repo) is the engine; [**chDB**](https://github.com/chdb-io/chdb) is a higher-level pandas-compatible DataStore API built on top of it (see the diagram below). The engine has five build variants — three Python wheels (same `import chdb`, differing only by build flags) and two JavaScript/WASM packages. Availability depends on the release:
 
 | Artifact | How to get it | Target / runtime | Best for |
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+ (Linux/macOS) | Default full build — everything included |
-| **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
-| **chdb-core (free-threaded)** | GitHub release assets | Free-threaded Python 3.14t (no GIL) | Running chDB without the GIL |
+| **chdb-core-lite** | PyPI when published — `pip install chdb-core-lite` | Python 3.9+ (Linux/macOS) | Slimmer build that trims less-common features (e.g. external connectors like MySQL/Kafka) |
+| **chdb-core (free-threaded)** | CI artifact (release upload currently disabled) | Free-threaded Python 3.14t on Linux x86_64 (no GIL) | Running chDB without the GIL |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | Browsers & Node (WebAssembly) | Running the full engine in the browser or Node |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | A slimmer build for Cloudflare Workers |
+
+The chdb-core-lite PyPI upload is currently disabled in the release workflow; check the release assets before relying on this variant.
 
 <div align="center">
 <pre>
@@ -103,7 +105,7 @@ release also carries a `SHA256SUMS` covering all of its assets, so a download ca
 rather than assumed:
 
 ```bash
-TAG=v26.7.2-rc.2
+TAG=v26.11.1
 BASE=https://github.com/chdb-io/chdb-core/releases/download/${TAG}
 
 curl -sSLO ${BASE}/linux-x86_64-libchdb.tar.gz
@@ -112,6 +114,34 @@ curl -sSLO ${BASE}/SHA256SUMS
 # --ignore-missing so it checks the files you actually downloaded, not all of the release
 sha256sum -c --ignore-missing SHA256SUMS   # shasum -a 256 -c --ignore-missing on macOS
 ```
+
+### Split static library (Linux)
+
+On Linux, `libchdb.a` holds a single prelinked object of over a gigabyte. That object keeps
+the bundled C++ runtime, zstd, OpenSSL and the rest out of the consumer's reach, but no
+Go module can hold it (Go caps a module at 500 MiB). So Linux releases also carry
+`<platform>-libchdb-static-split.tar.gz`, built by `chdb/build/split_static_lib.py`. It has
+the same C API and the same isolation, split into relocatable objects of at most ~200 MiB:
+
+| file | what it is |
+|---|---|
+| `libchdb.a` | an ordinary archive of the shards `libchdb_part_000.o`, `libchdb_part_001.o`, ... |
+| `libchdb-split.json` | version, source commit, link order, size and SHA-256 of every shard, system libraries |
+| `chdb.h`, `chdb.hpp`, `LICENSE.txt` | the same headers as the other tarballs, and the license |
+
+- Link the archive as usual with `-lchdb -lpthread -ldl -lm -lrt`. Every shard references the
+  next, so linking one shard pulls in all of them; `--whole-archive` is not needed.
+- Or link the shards as plain objects, for example as Go `.syso` files. Pass every shard,
+  in `link_order`. The shards do not depend on their order, but that order puts static
+  constructors in the same order as `libchdb.a`.
+- Use the shards as shipped. Symbols outside the C API are either local or hidden globals with
+  a `.chdb` suffix, which the shards use to reach each other. Do not strip, rename or localize
+  them, and do not link with `--allow-multiple-definition`. Nothing in the shards collides
+  with the system C++ runtime or with the host's own zlib, zstd or OpenSSL.
+
+`chdb/build/check_static_lib_hermetic.sh` runs the same gates on this archive as on
+`libchdb.a`. macOS needs no split archive: its `libchdb.a` is already made of ordinary
+members.
 
 ---
 

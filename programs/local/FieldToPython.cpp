@@ -1,4 +1,5 @@
 #include "FieldToPython.h"
+#include <array>
 #include "PythonImporter.h"
 #include "ObjectToPython.h"
 
@@ -36,6 +37,7 @@
 #include <Common/DateLUTImpl.h>
 #include <Common/formatIPv6.h>
 #include <Core/DecimalFunctions.h>
+#include <IO/WriteBuffer.h>
 #include <IO/WriteHelpers.h>
 #include <base/types.h>
 #include <base/wide_integer_to_string.h>
@@ -227,6 +229,36 @@ static py::object convertLocalDateToPython(const LocalDate & local_date, auto & 
         return py::str(field.dump());
     }
 }
+
+template <typename T>
+py::object convertDecimalToPython(const Decimal<T> & value, UInt32 scale, const py::handle & decimal_class)
+{
+    /// 76 digits, a sign and a point at most.
+    std::array<char, 96> text;
+    WriteBufferFromPointer buffer(text.data(), text.size());
+    writeText(value, scale, buffer, /*trailing_zeros=*/ true);
+    auto length = static_cast<Py_ssize_t>(buffer.position() - text.data());
+    buffer.finalize();
+    PyObject * str = PyUnicode_FromStringAndSize(text.data(), length);
+    if (!str)
+        throw py::error_already_set();
+    return decimal_class(py::reinterpret_steal<py::str>(str));
+}
+
+template <typename T>
+py::object convertDecimalToPython(const Decimal<T> & value, UInt32 scale)
+{
+    return convertDecimalToPython(value, scale, PythonImporter::ImportCache().decimal.Decimal());
+}
+
+#define INSTANTIATE(T) \
+    template py::object convertDecimalToPython(const Decimal<T> & value, UInt32 scale); \
+    template py::object convertDecimalToPython(const Decimal<T> & value, UInt32 scale, const py::handle & decimal_class);
+INSTANTIATE(Int32)
+INSTANTIATE(Int64)
+INSTANTIATE(Int128)
+INSTANTIATE(Int256)
+#undef INSTANTIATE
 
 py::object convertFieldToPython(
     const IColumn & column,
@@ -492,40 +524,28 @@ py::object convertFieldToPython(
         {
             auto field = column[index];
             auto decimal_field = field.safeGet<DecimalField<Decimal32>>();
-            auto decimal_value = decimal_field.getValue();
-            UInt32 scale = decimal_field.getScale();
-            double result = DecimalUtils::convertTo<double>(decimal_value, scale);
-            return py::cast(result);
+            return convertDecimalToPython(decimal_field.getValue(), decimal_field.getScale());
         }
 
     case TypeIndex::Decimal64:
         {
             auto field = column[index];
             auto decimal_field = field.safeGet<DecimalField<Decimal64>>();
-            auto decimal_value = decimal_field.getValue();
-            UInt32 scale = decimal_field.getScale();
-            double result = DecimalUtils::convertTo<double>(decimal_value, scale);
-            return py::cast(result);
+            return convertDecimalToPython(decimal_field.getValue(), decimal_field.getScale());
         }
 
     case TypeIndex::Decimal128:
         {
             auto field = column[index];
             auto decimal_field = field.safeGet<DecimalField<Decimal128>>();
-            auto decimal_value = decimal_field.getValue();
-            UInt32 scale = decimal_field.getScale();
-            double result = DecimalUtils::convertTo<double>(decimal_value, scale);
-            return py::cast(result);
+            return convertDecimalToPython(decimal_field.getValue(), decimal_field.getScale());
         }
 
     case TypeIndex::Decimal256:
         {
             auto field = column[index];
             auto decimal_field = field.safeGet<DecimalField<Decimal256>>();
-            auto decimal_value = decimal_field.getValue();
-            UInt32 scale = decimal_field.getScale();
-            double result = DecimalUtils::convertTo<double>(decimal_value, scale);
-            return py::cast(result);
+            return convertDecimalToPython(decimal_field.getValue(), decimal_field.getScale());
         }
 
     case TypeIndex::UUID:

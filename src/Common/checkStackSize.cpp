@@ -2,7 +2,9 @@
 
 #include <base/defines.h> /// THREAD_SANITIZER
 #include <base/scope_guard.h>
+#include <Common/CoroutineStack.h>
 #include <Common/Exception.h>
+#include <Common/Silk/FiberScheduler.h>
 #include <Common/StackfulCoroutine.h>
 #include <cstdint>
 
@@ -55,6 +57,9 @@ struct StackBounds
 };
 
 constinit thread_local StackBounds stack_bounds;
+
+/// Thread stacks use `STACK_SIZE_FREE_RATIO`, which leaves too little room on a 320 KiB coroutine stack.
+constexpr size_t COROUTINE_STACK_RESERVE = 64 * 1024;
 }
 
 /**
@@ -161,12 +166,31 @@ static NO_INLINE size_t getStackSize(void ** out_address)
 
 void checkStackSize()
 {
-    /// Not implemented for coroutines.
-    if (StackfulCoroutine::getCurrentCoroutine())
+    const void * frame_address = __builtin_frame_address(0);
+
+    if (const StackfulCoroutine * coroutine = StackfulCoroutine::getCurrentCoroutine())
+    {
+        const CoroutineStack::Bounds bounds = coroutine->getStackBounds();
+
+        if (bounds.size <= COROUTINE_STACK_RESERVE)
+            return;
+
+        uintptr_t frame = reinterpret_cast<uintptr_t>(frame_address);
+        uintptr_t lowest = reinterpret_cast<uintptr_t>(bounds.lowest);
+
+        /// `resume` marks the coroutine current before switching stacks, so the frame may be on the parent stack.
+        if (frame < lowest || frame - lowest >= bounds.size)
+            return;
+
+        if (unlikely(frame - lowest < COROUTINE_STACK_RESERVE))
+            throwTooDeepRecursion(lowest + bounds.size - frame, bounds.size);
+
         return;
+    }
 
 #if USE_SILK
-    if (silk::FiberScheduler::getCurrentFiberId().raw)
+    /// Not implemented for Silk fibers: they expose no stack bounds.
+    if (Silk::isInsideFiber())
         return;
 #endif
 
@@ -177,7 +201,6 @@ void checkStackSize()
     if (unlikely(!stack_bounds.max_size))
         return;
 
-    const void * frame_address = __builtin_frame_address(0);
     uintptr_t int_frame_address = reinterpret_cast<uintptr_t>(frame_address);
     uintptr_t int_stack_address = reinterpret_cast<uintptr_t>(stack_bounds.address);
 

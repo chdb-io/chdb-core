@@ -172,7 +172,7 @@ void PaimonRestCatalog::loadConfig()
     }
 }
 
-String PaimonRestCatalog::createAuthHeaders(
+std::string_view PaimonRestCatalog::createAuthHeaders(
     DB::HTTPHeaderEntries & current_headers,
     const String & resource_path,
     const std::unordered_map<String, String> & query_params,
@@ -194,7 +194,7 @@ String PaimonRestCatalog::createAuthHeaders(
         std::unordered_map<String, String> headers_map;
         for (const auto & entry : current_headers)
         {
-            headers_map.emplace(entry.name, entry.value);
+            headers_map.emplace(entry.name, String(entry.value));
         }
         auto get_or_default = [](const std::unordered_map<String, String> & map, const String & key_, const String & value_)
         {
@@ -326,7 +326,7 @@ DB::ReadWriteBufferFromHTTPPtr PaimonRestCatalog::createReadBuffer(
             query_parameters_map.emplace(entry.first, entry.second);
         }
         DB::HTTPHeaderEntries request_headers(headers);
-        const String bearer_token = createAuthHeaders(request_headers, endpoint, query_parameters_map, method);
+        const std::string_view bearer_token = createAuthHeaders(request_headers, endpoint, query_parameters_map, method);
         validateBearerToken(context, bearer_token);
         /// The `dlf` provider adds headers built from the database settings (`dlf_access_key_id`, `region`).
         context->getGlobalContext()->getHTTPHeaderFilter().checkHeaders(request_headers);
@@ -335,7 +335,7 @@ DB::ReadWriteBufferFromHTTPPtr PaimonRestCatalog::createReadBuffer(
         headers_string << "{";
         for (const auto & entry : request_headers)
         {
-            headers_string << entry.name << ": " << entry.value;
+            headers_string << entry.name << ": " << std::string_view(entry.value);
         }
         headers_string << "}";
         LOG_TRACE(log, "Request headers: {}", headers_string.str());
@@ -519,7 +519,7 @@ bool PaimonRestCatalog::existsTable(const String & database_name, const String &
 {
     try
     {
-        createReadBuffer(
+        (void)createReadBuffer(
             pathToGenericString(std::filesystem::path(API_VERSION) / prefix / DATABASES_ENDPOINT / database_name / TABLES_ENDPOINT / table_name), "GET");
     }
     catch (const DB::HTTPException & e)

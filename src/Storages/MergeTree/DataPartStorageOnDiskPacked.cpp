@@ -146,7 +146,7 @@ public:
         ++files_it;
     }
 
-    bool isValid() const override
+    [[nodiscard]] bool isValid() const override
     {
         if (files_it == files.end())
         {
@@ -157,7 +157,7 @@ public:
         return true;
     }
 
-    bool isFile() const override
+    [[nodiscard]] bool isFile() const override
     {
         if (files_it == files.end())
         {
@@ -168,7 +168,7 @@ public:
         return true;
     }
 
-    std::string name() const override
+    [[nodiscard]] std::string name() const override
     {
         if (files_it == files.end())
         {
@@ -179,7 +179,7 @@ public:
         return *files_it;
     }
 
-    std::string path() const override
+    [[nodiscard]] std::string path() const override
     {
         if (files_it == files.end())
         {
@@ -245,10 +245,12 @@ bool DataPartStorageOnDiskPacked::existsFileImpl(const std::string & file_name) 
     if (isWrittenSeparately(file_name))
         return disk->existsFile(pathToGenericString(pathFromString(root_path) / pathFromString(part_dir) / pathFromString(file_name)));
 
+    /// The reader exists only for an existing archive, so probing the archive for every file it holds
+    /// only costs a metadata lookup per column stream of a wide part.
     if (!reader)
         return false;
 
-    return disk->existsFile(getRelativeDataPath()) && reader->exists(file_name);
+    return reader->exists(file_name);
 }
 
 size_t DataPartStorageOnDiskPacked::getFileSizeImpl(const String & file_name) const
@@ -269,9 +271,7 @@ size_t DataPartStorageOnDiskPacked::getFileSizeImpl(const String & file_name) co
     if (file_name == DATA_FILE_NAME)
         return disk->getFileSize(pathToGenericString(pathFromString(root_path) / pathFromString(part_dir) / pathFromString(DATA_FILE_NAME)));
 
-    if (!disk->existsFile(getRelativeDataPath()))
-        throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "File {} does not exist, cannot get file size of {}", getRelativeDataPath(), file_name);
-
+    /// The archive is not probed here, see existsFileImpl().
     if (!reader)
         throw Exception(ErrorCodes::NOT_INITIALIZED,
             "Cannot read file {} because reader is not initialized", file_name);
@@ -289,9 +289,7 @@ PackedFilesIO::FileOffset DataPartStorageOnDiskPacked::getFileOffsetAndSize(cons
     if (isWrittenSeparately(file_name))
         return {0, disk->getFileSize(pathToGenericString(pathFromString(root_path) / pathFromString(part_dir) / pathFromString(file_name)))};
 
-    if (!disk->existsFile(getRelativeDataPath()))
-        throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "File {} does not exist, cannot get file size of {}", getRelativeDataPath(), file_name);
-
+    /// The archive is not probed here, see existsFileImpl().
     if (!reader)
         throw Exception(ErrorCodes::NOT_INITIALIZED,
             "Cannot read file {} because reader is not initialized", file_name);
@@ -780,8 +778,12 @@ std::shared_ptr<const PackedFilesReader> DataPartStorageOnDiskPacked::getSkipInd
         {
             auto inner_archive_buf = reader->readFile(
                 volume->getDisk(), data_path, String(SKIP_INDICES_PACKED_FILENAME), getReadSettings(), std::nullopt);
-            auto inner_index = PackedFilesReader::readIndex(*inner_archive_buf);
-            seedSkipIndicesPackedReader(inner_index);
+            auto index = readSkipIndicesPackedIndex(*inner_archive_buf, data_path + "/" + String(SKIP_INDICES_PACKED_FILENAME));
+            {
+                std::lock_guard lock(skip_indices_packed_mutex);
+                skip_indices_packed_unsupported = !index;
+            }
+            seedSkipIndicesPackedReader(index ? *index : PackedFilesIO::Index{});
         }
         catch (const Exception &)
         {

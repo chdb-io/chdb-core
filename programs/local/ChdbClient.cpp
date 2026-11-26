@@ -3,6 +3,7 @@
 #include <utility>
 #include <ChdbClient.h>
 #include <EmbeddedServer.h>
+#include <LocalFilesystemRestriction.h>
 #include <Client/Connection.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/Session.h>
@@ -91,7 +92,7 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
     python_table_cache = std::make_shared<CHDB::PythonTableCache>();
     session->setPythonTableCache(python_table_cache);
 #endif
-    session->authenticate("default", "", Poco::Net::SocketAddress{});
+    authenticate(argc, argv);
     global_context = session->makeSessionContext();
     global_context->setCurrentDatabase("default");
     global_context->setApplicationType(Context::ApplicationType::LOCAL);
@@ -108,6 +109,33 @@ ChdbClient::ChdbClient(EmbeddedServer & server_ref, int argc, char ** argv)
     initTTYBuffer(toProgressOption(getClientConfiguration().getString("progress", "default")),
         toProgressOption(getClientConfiguration().getString("progress-table", "default")));
     initKeystrokeInterceptor();
+}
+
+/// A connection that restricts local filesystem access runs as the restricted user for its whole lifetime: grants are
+/// not settings, so no SET, RESET or SETTINGS clause can lift them, and every query context of the session inherits
+/// them. A restriction that cannot be honored fails the connection instead of leaving it unrestricted.
+void ChdbClient::authenticate(int argc, char ** argv)
+{
+    restrict_local_filesystem_access = CHDB::parseRestrictLocalFilesystemAccess(argc, argv);
+    if (!restrict_local_filesystem_access)
+    {
+        session->authenticate("default", "", Poco::Net::SocketAddress{});
+        return;
+    }
+
+    const auto restricted_user_id = CHDB::getRestrictedLocalFilesystemUserID();
+    if (!restricted_user_id)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot honor {}: the engine has no user without local filesystem access, see the log for the reason",
+            CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION);
+
+    session->authenticate(String(CHDB::RESTRICTED_LOCAL_FILESYSTEM_USER), "", Poco::Net::SocketAddress{});
+    if (session->getUserID() != restricted_user_id)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Cannot honor {}: user {} is not the one the engine created",
+            CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION, CHDB::RESTRICTED_LOCAL_FILESYSTEM_USER);
 }
 
 std::unique_ptr<ChdbClient> ChdbClient::create(EmbeddedServer & server_ref, int argc, char ** argv)
@@ -132,45 +160,7 @@ void ChdbClient::applyCmdSettings(int argc, char ** argv)
     if (argc <= 1 || !argv)
         return;
 
-    SettingsChanges changes;
-    for (int i = 1; i < argc; ++i)
-    {
-        if (!argv[i])
-            continue;
-        std::string_view arg = argv[i];
-        if (!arg.starts_with("--") || arg.size() <= 2)
-            continue;
-        arg.remove_prefix(2);
-
-        String key;
-        String value;
-        if (auto pos = arg.find('='); pos != std::string_view::npos)
-        {
-            key = String(arg.substr(0, pos));
-            value = String(arg.substr(pos + 1));
-        }
-        else
-        {
-            key = String(arg);
-            /// Space-separated value; do not advance i — the value token is
-            /// harmless to re-scan since it does not start with "--".
-            /// A dash-leading token counts as the value only when it is a
-            /// negative number (e.g. --max_partitions_to_read -1); any other
-            /// dash-leading token is the next option, making this key a bare
-            /// boolean flag.
-            if (i + 1 < argc && argv[i + 1]
-                && (argv[i + 1][0] != '-'
-                    || (argv[i + 1][1] >= '0' && argv[i + 1][1] <= '9')
-                    || argv[i + 1][1] == '.'))
-                value = argv[i + 1];
-            else
-                value = "1";
-        }
-
-        if (!key.empty() && Settings::hasBuiltin(key))
-            changes.emplace_back(key, value);
-    }
-
+    auto changes = EmbeddedServer::parseQuerySettingChanges(argc, argv);
     if (!changes.empty())
         global_context->applySettingsChanges(changes);
 }
@@ -314,6 +304,9 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
     auto name = connectionParameterName(key);
     std::lock_guard<std::mutex> lock(client_mutex);
 
+    if (key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "{} is fixed when the connection is created", key);
+
     /// The insert restores its settings snapshot when it ends, undoing this.
     if (streaming_insert_context)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot change a setting while a streaming insert is active on this connection");
@@ -350,6 +343,13 @@ void ChdbClient::setConnectionSetting(const String & key, const String * value)
 bool ChdbClient::getConnectionSetting(const String & key, String & value) const
 {
     std::lock_guard<std::mutex> lock(client_mutex);
+
+    /// Lets a host confirm the restriction is in force: versions without the option know no such key.
+    if (key == CHDB::RESTRICT_LOCAL_FILESYSTEM_ACCESS_OPTION)
+    {
+        value = restrict_local_filesystem_access ? "1" : "0";
+        return true;
+    }
 
     if (auto name = connectionParameterName(key); !name.empty())
     {
@@ -1028,7 +1028,8 @@ void ChdbClient::runInsertStreamWorker(const CHDB::InsertStreamContextPtr & ctx)
 
         Block sample;
         ColumnsDescription columns;
-        if (!receiveSampleBlock(sample, columns, ctx->parsed_query))
+        /// false: return at the first Data packet, as before; upstream passes false for local connections too.
+        if (!receiveSampleBlock(sample, columns, ctx->parsed_query, /*wait_for_timezone_update=*/ false))
         {
             /// receiveSampleBlock stored the real cause in server_exception (via
             /// onReceiveExceptionFromServer) but, unlike the query paths, does not

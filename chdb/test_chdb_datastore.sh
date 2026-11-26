@@ -153,8 +153,27 @@ DESELECT_PANDAS31="\
  --deselect datastore/tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year \
  --deselect tests/test_exploratory_batch53_module_funcs_casewhen.py::TestDateTimeAdvanced::test_isocalendar_year"
 
+# chdb-core returns Decimal columns as object columns of decimal.Decimal, not float64
+# (chdb-io/chdb#673), so this upstream test's dtype check fails. Deselect it until
+# the upstream chdb tag includes chdb-io/chdb#748.
+DESELECT_EXACT_DECIMAL="\
+ --deselect datastore/tests/test_clickhouse_type_roundtrip.py::TestClickHouseTypeRoundTrip::test_decimal_maps_to_float64 \
+ --deselect tests/test_clickhouse_type_roundtrip.py::TestClickHouseTypeRoundTrip::test_decimal_maps_to_float64"
+
+# chdb-core stores bytes values in String columns as their bytes, not their repr
+# (chdb-io/chdb#675), and these upstream tests expect the repr. Deselect them until
+# the upstream chdb tag includes chdb-io/chdb#748.
+DESELECT_RAW_BYTES="\
+ --deselect datastore/tests/test_blob_column.py::TestBlobColumn::test_blob_column_head_tail \
+ --deselect datastore/tests/test_blob_column.py::TestBlobColumn::test_filter_with_blob_column \
+ --deselect datastore/tests/test_blob_column.py::TestBlobColumn::test_select_blob_column \
+ --deselect tests/test_blob_column.py::TestBlobColumn::test_blob_column_head_tail \
+ --deselect tests/test_blob_column.py::TestBlobColumn::test_filter_with_blob_column \
+ --deselect tests/test_blob_column.py::TestBlobColumn::test_select_blob_column"
+
 set +e
-${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31}
+${PYTHON} -m pytest tests/ ${PYTEST_ARGS} ${DESELECT_FIXED_XFAILS} ${DESELECT_POLARS2} ${DESELECT_PANDAS31} \
+    ${DESELECT_RAW_BYTES} ${DESELECT_EXACT_DECIMAL}
 TEST_EXIT_CODE=$?
 set -e
 

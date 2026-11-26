@@ -21,6 +21,7 @@
 #include <DataTypes/Serializations/SerializationJSON.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/WriteHelpers.h>
+#include <base/TypeName.h>
 #include <base/defines.h>
 #include <Common/assert_cast.h>
 
@@ -48,6 +49,18 @@ static inline const bool * getMaskPtr(const ColumnWrapper & col_wrap)
         : nullptr;
 }
 
+/// The analyzer checks every row of an object column against the type it infers, so a value that does not fit
+/// can only appear if the column changed in between. It is reported instead of being replaced by 0 or NULL.
+[[noreturn]] static void throwValueDoesNotFit(py::handle handle, std::string_view type_name)
+{
+    throw Exception(
+        ErrorCodes::TYPE_MISMATCH,
+        "Cannot read the Python {} {} into a {} column: the column changed after its type was inferred",
+        py::str(py::type::handle_of(handle).attr("__name__")).cast<std::string>(),
+        py::repr(handle).cast<std::string>().substr(0, 100),
+        type_name);
+}
+
 template <typename T>
 static void insertIntegerValue(py::handle h, typename ColumnVector<T>::Container & container)
 {
@@ -58,18 +71,12 @@ static void insertIntegerValue(py::handle h, typename ColumnVector<T>::Container
         int overflow;
         int64_t value = PyLong_AsLongLongAndOverflow(ptr, &overflow);
         if (overflow)
-        {
-            container.push_back(T{});
-            return;
-        }
+            throwValueDoesNotFit(h, TypeName<T>);
 
         if constexpr (sizeof(T) < sizeof(int64_t))
         {
             if (value > std::numeric_limits<T>::max() || value < std::numeric_limits<T>::min())
-            {
-                container.push_back(T{});
-                return;
-            }
+                throwValueDoesNotFit(h, TypeName<T>);
         }
         container.push_back(static_cast<T>(value));
     }
@@ -79,17 +86,13 @@ static void insertIntegerValue(py::handle h, typename ColumnVector<T>::Container
         if (PyErr_Occurred())
         {
             PyErr_Clear();
-            container.push_back(T{});
-            return;
+            throwValueDoesNotFit(h, TypeName<T>);
         }
 
         if constexpr (sizeof(T) < sizeof(uint64_t))
         {
             if (value > std::numeric_limits<T>::max())
-            {
-                container.push_back(T{});
-                return;
-            }
+                throwValueDoesNotFit(h, TypeName<T>);
         }
         container.push_back(static_cast<T>(value));
     }
@@ -102,16 +105,19 @@ static void scanIntegerColumn(py::handle handle, MutableColumnPtr & column)
     auto data_column = nullable_column.getNestedColumnPtr()->assumeMutable();
     auto & null_map = nullable_column.getNullMapData();
 
-    if (!py::isinstance<py::int_>(handle))
+    if (isMissingValue(handle))
     {
         null_map.push_back(1);
         data_column->insertDefault();
         return;
     }
 
-    null_map.push_back(0);
+    if (!py::isinstance<py::int_>(handle))
+        throwValueDoesNotFit(handle, TypeName<T>);
+
     auto & container = assert_cast<ColumnVector<T> &>(*data_column).getData();
     insertIntegerValue<T>(handle, container);
+    null_map.push_back(0);
 }
 
 ColumnPtr PandasScan::scanColumn(
@@ -356,20 +362,23 @@ void PandasScan::innerScanObject(
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
-                if (!py::isinstance<py::int_>(handle) && !py::isinstance<py::float_>(handle))
+                if (isMissingValue(handle))
                 {
                     null_map.push_back(1);
                     data_column->insertDefault();
                     continue;
                 }
 
+                if (!py::isinstance<py::int_>(handle) && !py::isinstance<py::float_>(handle))
+                    throwValueDoesNotFit(handle, "Float64");
+
                 if (py::isinstance<py::int_>(handle))
                 {
                     double number = PyLong_AsDouble(handle.ptr());
                     if (number == -1.0 && PyErr_Occurred())
                     {
-                        number = 0.0;
                         PyErr_Clear();
+                        throwValueDoesNotFit(handle, "Float64");
                     }
                     null_map.push_back(0);
                     container.push_back(number);
@@ -434,23 +443,17 @@ void PandasScan::innerScanObject(
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
-                if (isNone(handle) || (isFloat(handle) && std::isnan(PyFloat_AsDouble(handle.ptr()))))
+                if (isMissingValue(handle))
                 {
                     null_map.push_back(1);
                     container.push_back(0);
                     continue;
                 }
 
-                int result = PyObject_IsTrue(obj_ptr);
-                if (result < 0)
-                {
-                    PyErr_Clear();
-                    null_map.push_back(1);
-                    container.push_back(0);
-                    continue;
-                }
+                if (!PyBool_Check(obj_ptr))
+                    throwValueDoesNotFit(handle, "Bool");
                 null_map.push_back(0);
-                container.push_back(result ? 1 : 0);
+                container.push_back(obj_ptr == Py_True ? 1 : 0);
             }
             break;
         }
@@ -470,7 +473,7 @@ void PandasScan::innerScanObject(
                 auto * obj_ptr = *reinterpret_cast<PyObject * const *>(base_ptr + i * stride);
                 auto handle = py::handle(obj_ptr);
 
-                if (isNone(handle) || (isFloat(handle) && std::isnan(PyFloat_AsDouble(obj_ptr))))
+                if (isMissingValue(handle))
                 {
                     null_map.push_back(1);
                     data_column->insertDefault();
@@ -478,20 +481,9 @@ void PandasScan::innerScanObject(
                 }
 
                 if (!isDecimal(handle) && !(PyLong_Check(obj_ptr) && !PyBool_Check(obj_ptr)))
-                    throw Exception(
-                        ErrorCodes::TYPE_MISMATCH,
-                        "Cannot read a Python {} into a Decimal column: the column changed after its type was inferred",
-                        py::str(py::type::handle_of(handle).attr("__name__")).cast<std::string>());
+                    throwValueDoesNotFit(handle, "Decimal");
 
                 auto text = py::str(handle).cast<std::string>();
-                /// pandas treats Decimal('NaN') as a missing value; str() spells it NaN, -NaN, sNaN or NaN<payload>.
-                if (text.find("NaN") != std::string::npos)
-                {
-                    null_map.push_back(1);
-                    data_column->insertDefault();
-                    continue;
-                }
-
                 /// str() switches to exponent notation for values such as 1E+2 (1e+2 with Context.capitals = 0);
                 /// ClickHouse cannot read a zero
                 /// with a large exponent (0E+76), so such values are written out in fixed-point notation.

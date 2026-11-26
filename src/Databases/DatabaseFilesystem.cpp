@@ -1,4 +1,5 @@
 #include <base/pathToString.h>
+#include <Access/LocalFilesystemAccess.h>
 #include <Databases/DatabaseFactory.h>
 #include <Databases/DatabaseFilesystem.h>
 
@@ -243,8 +244,10 @@ bool DatabaseFilesystem::isTableExist(const String & name, ContextPtr context_) 
 {
     /// `EXISTS TABLE` requires only `SHOW TABLES`, so answering it without the read source grant turns
     /// this database into an oracle for `user_files`. Claim the table: resolving it reports the denial.
+    /// A restricted chDB connection gets "no table" instead, without looking: claiming every name would hide
+    /// the other tables of chDB's `default` database, which overlays this one.
     if (!context_->getAccess()->isGrantedWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ ""))
-        return true;
+        return !isLocalFilesystemAccessRestricted(context_);
 
     if (tryGetTableFromCache(name, context_))
         return true;
@@ -257,6 +260,10 @@ StoragePtr DatabaseFilesystem::getTableImpl(const String & name, ContextPtr cont
     /// Resolving a table of this database requires the read source grant. It is checked here, above the
     /// cache, because the cache is keyed on the table name alone: an entry resolved by one user is
     /// handed to every later caller. `file` reports no URI, so the grant is checked with no filter.
+    /// On a restricted chDB connection `tryGetTable` finds nothing instead, so the overlay goes on to its other databases.
+    if (!throw_on_error && isLocalFilesystemAccessRestricted(context_)
+        && !context_->getAccess()->isGrantedWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ ""))
+        return nullptr;
     context_->getAccess()->checkAccessWithFilter(AccessType::READ, toStringSource(AccessTypeObjects::Source::FILE), /* filter */ "");
 
     /// A renaming rule belongs to the one query that set it, while a cached table is shared with the
@@ -331,7 +338,7 @@ bool DatabaseFilesystem::empty() const
 ASTPtr DatabaseFilesystem::getCreateDatabaseQueryImpl() const
 {
     const auto & settings = getContext()->getSettingsRef();
-    const String query = fmt::format("CREATE DATABASE {} ENGINE = Filesystem('{}')", backQuoteIfNeed(database_name), path);
+    const String query = fmt::format("CREATE DATABASE {} ENGINE = Filesystem({})", backQuoteIfNeed(database_name), quoteString(path));
 
     ParserCreateQuery parser;
     ASTPtr ast

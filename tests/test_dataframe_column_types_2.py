@@ -2,6 +2,7 @@
 
 import shutil
 import unittest
+from decimal import Decimal
 import uuid
 import pandas as pd
 import chdb
@@ -1229,8 +1230,10 @@ class TestDataFrameColumnTypesTwo(unittest.TestCase):
         self.assertAlmostEqual(ret.iloc[0]["nullable_float64"], 2.718281828, places=9)
 
         # Decimal types
-        self.assertAlmostEqual(ret.iloc[0]["nullable_decimal32"], 123.45, places=2)
-        self.assertAlmostEqual(ret.iloc[0]["nullable_decimal64"], 987654.321, places=3)
+        self.assertEqual(ret.iloc[0]["nullable_decimal32"], Decimal("123.45"))
+        self.assertEqual(ret.iloc[0]["nullable_decimal64"], Decimal("987654.321"))
+        self.assertEqual(ret.iloc[1]["nullable_decimal32"], Decimal("-456.78"))
+        self.assertTrue(pd.isna(ret.iloc[1]["nullable_decimal64"]))
 
         # String types
         self.assertEqual(ret.iloc[0]["nullable_string"], 'Hello World')
@@ -1335,8 +1338,8 @@ class TestDataFrameColumnTypesTwo(unittest.TestCase):
             "nullable_uint64": "UInt64",
             "nullable_float32": "float32",
             "nullable_float64": "float64",
-            "nullable_decimal32": "Float64",
-            "nullable_decimal64": "Float64",
+            "nullable_decimal32": "object",
+            "nullable_decimal64": "object",
             "nullable_string": STRING_DTYPE,
             "nullable_fixed_string": STRING_DTYPE,
             "nullable_date": "datetime64[s]",

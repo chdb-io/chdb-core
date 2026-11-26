@@ -205,9 +205,11 @@ class TestQueryJSON(unittest.TestCase):
         self.assertEqual(str(ret), EXPECTED1)
 
     def test_query_dict1(self):
-        ret = self.sess.query("SELECT c4.tags, c3.deep.level2.level3, c3.mixed_list[].a FROM Python(dict1) WHERE c1 <= 2 ORDER BY c1")
-
-        self.assertEqual(str(ret), EXPECTED1)
+        # c3 and c4 mix dicts with other values (1, 'a', a date). Like any object column,
+        # they read as String, keeping every value, unless pandas_analyze_sample < 0 asks
+        # for JSON (test_query_df2).
+        ret = self.sess.query("SELECT toTypeName(c3), toTypeName(c4), c3, c4 FROM Python(dict1) WHERE c1 >= 7 ORDER BY c1")
+        self.assertEqual(str(ret), '"Nullable(String)","Nullable(String)","1",\\N\n"Nullable(String)","Nullable(String)","a","2023-05-15"\n')
 
     def test_query_df1(self):
         data = {
@@ -227,8 +229,11 @@ class TestQueryJSON(unittest.TestCase):
         self.assertEqual(str(ret), EXPECTED2)
 
     def test_query_df2(self):
-        self.sess.query("SET pandas_analyze_sample = 1")
-        ret = self.sess.query("SELECT c4.tags, c3.deep.level2.level3, c3.mixed_list[].a FROM Python(dict1) WHERE c1 <= 2 ORDER BY c1")
+        # A negative pandas_analyze_sample reads every object column as JSON; values that
+        # are not dicts read as NULL. df1 holds dict1's values with c1 as an int64 column:
+        # a dict's lists are all object columns, so c1 would read as JSON too.
+        self.sess.query("SET pandas_analyze_sample = -1")
+        ret = self.sess.query("SELECT c4.tags, c3.deep.level2.level3, c3.mixed_list[].a FROM Python(df1) WHERE c1 <= 2 ORDER BY c1")
         self.assertEqual(str(ret), EXPECTED1)
 
     def test_pandas_analyze_sample(self):
@@ -246,9 +251,13 @@ class TestQueryJSON(unittest.TestCase):
         with self.assertRaises(Exception):
             self.sess.query("SELECT obj_col.id FROM Python(df) ORDER BY int_col LIMIT 1")
 
+        # Row 2 (the int 100) is outside a 10000-row sample, but every row is checked
+        # before the type is settled, so the column still reads as String and keeps it.
         self.sess.query("SET pandas_analyze_sample = 10000")
-        ret = self.sess.query("SELECT obj_col.id FROM Python(df) ORDER BY int_col LIMIT 1")
-        self.assertEqual(str(ret), '1\n')
+        with self.assertRaises(Exception):
+            self.sess.query("SELECT obj_col.id FROM Python(df) ORDER BY int_col LIMIT 1")
+        ret = self.sess.query("SELECT obj_col FROM Python(df) ORDER BY int_col LIMIT 1 OFFSET 1")
+        self.assertEqual(str(ret), '"100"\n')
 
         self.sess.query("SET pandas_analyze_sample = 0")
         with self.assertRaises(Exception):

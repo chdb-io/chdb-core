@@ -7,7 +7,7 @@ Installation Issues
 Platform Compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-chDB currently supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64). Windows support is not available yet.
+chdb-core currently supports Python 3.9+ on **macOS and Linux** (x86_64 and ARM64). Windows support is not available yet.
 
 **Supported Platforms:**
 
@@ -25,29 +25,29 @@ If you encounter import errors:
    ImportError: No module named '_chdb'
    ImportError: No module named 'chdb'
 
-**Solution**: Ensure chDB is properly installed:
+**Solution**: Ensure chdb-core is properly installed:
 
 .. code-block:: bash
 
-   pip uninstall chdb
-   pip install chdb
+   pip uninstall chdb-core
+   pip install chdb-core
 
 **Alternative installation methods:**
 
 .. code-block:: bash
 
    # Force reinstall
-   pip install --force-reinstall chdb
+   pip install --force-reinstall chdb-core
    
    # Install specific version
-   pip install chdb==3.7.0
+   pip install chdb-core==26.11.1
 
 **Check installation:**
 
 .. code-block:: python
 
    import chdb
-   print(f"chDB version: {chdb.__version__}")
+   print(f"chdb-core version: {chdb.__version__}")
    print(f"Engine version: {chdb.engine_version}")
 
 Python Version Issues
@@ -57,7 +57,7 @@ If you get Python version compatibility errors:
 
 .. code-block:: text
 
-   ERROR: chdb requires Python >=3.9
+   ERROR: chdb-core requires Python >=3.9
 
 **Solution**: Upgrade your Python version:
 
@@ -67,7 +67,7 @@ If you get Python version compatibility errors:
    python --version
    
    # Use Python 3.9+ explicitly
-   python3.9 -m pip install chdb
+   python3.9 -m pip install chdb-core
 
 Query Execution Issues
 ----------------------
@@ -465,7 +465,7 @@ Getting Help
 
 If you need additional help:
 
-1. Check the `GitHub Issues <https://github.com/chdb-io/chdb/issues>`_
+1. Check the `GitHub Issues <https://github.com/chdb-io/chdb-core/issues>`_
 2. Read the `ClickHouse Documentation <https://clickhouse.com/docs>`_
 3. Join the `Discord Community <https://discord.gg/D2Daa2fM5K>`_
 4. Check the `Project Documentation <https://clickhouse.com/docs/en/chdb>`_
@@ -475,7 +475,7 @@ Error Reporting
 
 When reporting errors, please include:
 
-1. chDB version: ``print(chdb.__version__)``
+1. chdb-core version: ``print(chdb.__version__)``
 2. Python version: ``print(sys.version)``
 3. Operating system
 4. Complete error traceback
@@ -486,7 +486,7 @@ When reporting errors, please include:
    import chdb
    import sys
    
-   print(f"chDB version: {chdb.__version__}")
+   print(f"chdb-core version: {chdb.__version__}")
    print(f"Python version: {sys.version}")
    print(f"Engine version: {chdb.engine_version}")
 
@@ -506,7 +506,7 @@ Check file paths, use absolute paths, and ensure file exists and is readable.
 Explicitly specify file format and schema in your queries.
 
 **"Import Error: No module named '_chdb'"**
-Reinstall chDB: ``pip uninstall chdb && pip install chdb``
+Reinstall chdb-core: ``pip uninstall chdb-core && pip install chdb-core``
 
 **"Python version not supported"**
 chDB requires Python 3.9+. Upgrade your Python installation.

@@ -10,7 +10,8 @@ set(SRCS
 "${LIBCXXABI_SOURCE_DIR}/src/cxa_guard.cpp"
 "${LIBCXXABI_SOURCE_DIR}/src/cxa_handlers.cpp"
 "${LIBCXXABI_SOURCE_DIR}/src/cxa_personality.cpp"
-"${LIBCXXABI_SOURCE_DIR}/src/cxa_thread_atexit.cpp"
+# chdb: src/cxa_thread_atexit.cpp with a secret that survives a host clearing AT_RANDOM; see the file.
+"${CMAKE_CURRENT_SOURCE_DIR}/cxa_thread_atexit_chdb.cpp"
 "${LIBCXXABI_SOURCE_DIR}/src/cxa_vector.cpp"
 "${LIBCXXABI_SOURCE_DIR}/src/cxa_virtual.cpp"
 "${LIBCXXABI_SOURCE_DIR}/src/fallback_malloc.cpp"

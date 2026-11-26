@@ -11,6 +11,7 @@ if (OS_WASM)
         LocalServer.cpp
         EmbeddedServer.cpp
         InstancePaths.cpp
+        LocalFilesystemRestriction.cpp
         ChdbClient.cpp
         QueryClassifier.cpp
     )
@@ -25,6 +26,7 @@ else()
         LocalServer.cpp
         EmbeddedServer.cpp
         InstancePaths.cpp
+        LocalFilesystemRestriction.cpp
         ChdbClient.cpp
         QueryClassifier.cpp
     )
@@ -61,6 +63,7 @@ if (USE_PYTHON)
         LocalServer.cpp
         EmbeddedServer.cpp
         InstancePaths.cpp
+        LocalFilesystemRestriction.cpp
         ChdbClient.cpp
         NumpyArray.cpp
         NumpyNestedTypes.cpp
@@ -204,9 +207,6 @@ if (USE_PYTHON)
     endif()
 endif()
 
-if (TARGET ch_rust::skim)
-    target_link_libraries(clickhouse-local-lib PRIVATE ch_rust::skim)
-endif()
 if (TARGET ch_contrib::azure_sdk)
     target_link_libraries(clickhouse-local-lib PRIVATE ch_contrib::azure_sdk)
 endif()

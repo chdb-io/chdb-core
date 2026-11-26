@@ -1,0 +1,13 @@
+fx_call_helper
+fx_a_entry
+fx_tls_bump
+fx_beta
+fx_code_string
+fx_state
+fx_get_policy
+fx_get_policy_same_shard
+fx_fire
+fx_has_libc_weak
+fx_bump_1
+fx_bump_2
+fx_catch

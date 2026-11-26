@@ -467,7 +467,7 @@ private:
 
         total_bytes_read += bytes;
 
-        working_buffer = internal_buffer;
+        setWorkingBufferFromInternal();
         working_buffer.resize(bytes_read);
         return true;
     }

@@ -129,7 +129,7 @@ CMAKE_ARGS="-DCMAKE_BUILD_TYPE=${build_type} \
     ${GLIBC_COMPATIBILITY} \
     -DENABLE_UTILS=0 ${LLVM} ${UNWIND} \
     ${ICU} -DENABLE_UTF8PROC=1 ${JEMALLOC} \
-    -DENABLE_PARQUET=1 -DENABLE_ROCKSDB=1 -DENABLE_SQLITE=1 -DENABLE_VECTORSCAN=1 \
+    -DENABLE_PARQUET=1 -DENABLE_ARROW_LIBRARY=1 -DENABLE_ROCKSDB=1 -DENABLE_SQLITE=1 -DENABLE_VECTORSCAN=1 \
     -DENABLE_PROTOBUF=1 -DENABLE_THRIFT=1 -DENABLE_MSGPACK=1 \
     -DENABLE_BROTLI=1 -DENABLE_H3=1 -DENABLE_CURL=1 \
     -DENABLE_CLICKHOUSE_ALL=0 -DUSE_STATIC_LIBRARIES=1 -DSPLIT_SHARED_LIBRARIES=0 \
@@ -230,6 +230,12 @@ fi
 # ships. Gate 2 on the macOS runner checks that only the C API kept its names.
 python3 ${MY_DIR}/rename_static_lib_symbols_macos.py ${MY_DIR}/libchdb_minimal.a \
     --objcopy llvm-objcopy-21 --nm llvm-nm-21
+
+# cctools ar indexed the archive as __.SYMDEF_64 while it still held gigabytes of debug info,
+# and llvm-strip and llvm-objcopy keep that index format. go1.27.4 and go1.26.11 reject an
+# archive with a __.SYMDEF_64 index in #cgo LDFLAGS ("unrecognized binary format"), so
+# rebuild the index for the size the stripped archive has now.
+${CMAKE_RANLIB_FILEPATH} ${MY_DIR}/libchdb_minimal.a
 
 # Copy final library to project root
 echo "Copying libchdb_minimal.a to project root as libchdb.a..."

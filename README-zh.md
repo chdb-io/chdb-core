@@ -32,15 +32,17 @@
 
 ## 软件包与分发
 
-**chdb-core**（本仓库）是引擎；[**chDB**](https://github.com/chdb-io/chdb) 是构建在其之上的更高层 Pandas 兼容 DataStore API（见下方示意图）。引擎本身以五种分发产物发布 —— 三个 Python wheel（同一套 `import chdb`，仅编译选项不同）和两个 JavaScript/WASM 包：
+**chdb-core**（本仓库）是引擎；[**chDB**](https://github.com/chdb-io/chdb) 是构建在其之上的更高层 Pandas 兼容 DataStore API（见下方示意图）。引擎有五种构建变体 —— 三个 Python wheel（同一套 `import chdb`，仅编译选项不同）和两个 JavaScript/WASM 包；实际可用产物取决于具体 release：
 
 | 产物 | 获取方式 | 目标 / 运行时 | 适用场景 |
 |---|---|---|---|
 | **chdb-core** | PyPI — `pip install chdb-core` | Python 3.9+（Linux/macOS） | 默认完整版，功能齐全 |
-| **chdb-core-lite** | PyPI — `pip install chdb-core-lite` | Python 3.9+（Linux/macOS） | 更精简的构建，裁剪了不常用的功能（如 MySQL、Kafka 等外部连接器） |
-| **chdb-core（free-threaded）** | GitHub release 附件 | free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
+| **chdb-core-lite** | 发布到 PyPI 时可用 — `pip install chdb-core-lite` | Python 3.9+（Linux/macOS） | 更精简的构建，裁剪了不常用的功能（如 MySQL、Kafka 等外部连接器） |
+| **chdb-core（free-threaded）** | CI artifact（目前暂停上传到 release） | Linux x86_64 上的 free-threaded Python 3.14t（无 GIL） | 在无 GIL 的 Python 上运行 chDB |
 | **chdb-wasm** | npm — `npm install chdb-wasm` | 浏览器与 Node（WebAssembly） | 在浏览器或 Node 里运行完整引擎 |
 | **chdb-cloudflare** | npm — `npm install chdb-cloudflare` | Cloudflare Workers | 面向 Cloudflare Workers 的精简构建 |
+
+目前 release 工作流暂停上传 chdb-core-lite 到 PyPI；使用该变体前请确认相应 release 的产物。
 
 <div align="center">
 <pre>
@@ -102,7 +104,7 @@ pip install chdb-core
 `SHA256SUMS`，因此下载结果可以校验，而不必假定其正确：
 
 ```bash
-TAG=v26.7.2-rc.2
+TAG=v26.11.1
 BASE=https://github.com/chdb-io/chdb-core/releases/download/${TAG}
 
 curl -sSLO ${BASE}/linux-x86_64-libchdb.tar.gz
@@ -111,6 +113,31 @@ curl -sSLO ${BASE}/SHA256SUMS
 # 加 --ignore-missing，只校验实际下载的文件，而不是 release 的全部产物
 sha256sum -c --ignore-missing SHA256SUMS   # macOS 上用 shasum -a 256 -c --ignore-missing
 ```
+
+### 拆分的静态库（Linux）
+
+Linux 上的 `libchdb.a` 只有一个超过 1 GB 的预链接目标文件。它能把内置的 C++ 运行时、zstd、
+OpenSSL 等与使用方隔离开，但 Go module 上限为 500 MiB，放不下它。因此 Linux release 还附带
+`<platform>-libchdb-static-split.tar.gz`，由 `chdb/build/split_static_lib.py` 生成：C API
+和隔离方式都相同，只是拆成了若干个不超过约 200 MiB 的可重定位目标文件：
+
+| 文件 | 内容 |
+|---|---|
+| `libchdb.a` | 由分片 `libchdb_part_000.o`、`libchdb_part_001.o`…… 组成的普通 archive |
+| `libchdb-split.json` | 版本、源码 commit、链接顺序、每个分片的大小和 SHA-256、所需系统库 |
+| `chdb.h`、`chdb.hpp`、`LICENSE.txt` | 与其他 tarball 相同的头文件，以及许可证 |
+
+- 照常用 `-lchdb -lpthread -ldl -lm -lrt` 链接即可。每个分片都引用下一个分片，链接进任意
+  一个就会拉入全部分片，不需要 `--whole-archive`。
+- 也可以把分片当作普通目标文件链接，例如作为 Go 的 `.syso` 文件：按 `link_order` 传入全部
+  分片。分片之间不依赖顺序，按这个顺序链接时，静态构造函数的执行顺序与 `libchdb.a` 相同。
+- 分片须原样使用：C API 以外的符号要么是局部符号，要么是带 `.chdb` 后缀的隐藏全局符号，
+  分片之间靠后者互相引用。不要 strip、重命名或局部化这些符号，也不要用
+  `--allow-multiple-definition` 链接。分片中没有任何符号与系统 C++ 运行时或宿主自带的
+  zlib、zstd、OpenSSL 冲突。
+
+`chdb/build/check_static_lib_hermetic.sh` 对这个 archive 执行与 `libchdb.a` 相同的检查。
+macOS 不需要拆分：它的 `libchdb.a` 本来就由普通成员组成。
 
 ---
 
