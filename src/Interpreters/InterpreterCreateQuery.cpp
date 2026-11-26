@@ -12,6 +12,7 @@
 #include <Interpreters/InterpreterAlterQuery.h>
 #include <Interpreters/MergeTreeTransaction/VersionMetadata.h>
 #include <Parsers/ASTPartition.h>
+#include <Common/FieldVisitorConvertToNumber.h>
 #include <Parsers/ASTSetQuery.h>
 #include <Parsers/Prometheus/CreateQueryTimeSeriesSettings.h>
 #include <Parsers/Prometheus/TimeSeriesVersion.h>
@@ -1038,6 +1039,20 @@ std::optional<String> InterpreterCreateQuery::getSourceEngineOfTableFunction(con
     return {};
 }
 
+namespace
+{
+
+/// Whether the storage definition of the query has the MergeTree setting `table_readonly = 1`.
+bool isAttachedReadOnly(const ASTCreateQuery & create)
+{
+    if (!create.storage || !create.storage->settings)
+        return false;
+    const Field * read_only = create.storage->settings->changes.tryGet("table_readonly");
+    return read_only && applyVisitor(FieldVisitorConvertToNumber<bool>(), *read_only);
+}
+
+}
+
 InterpreterCreateQuery::TableProperties InterpreterCreateQuery::getTablePropertiesAndNormalizeCreateQuery(
     ASTCreateQuery & create, LoadingStrictnessLevel mode)
 {
@@ -1414,8 +1429,13 @@ InterpreterCreateQuery::TableProperties InterpreterCreateQuery::getTableProperti
 
 
     /// The definition, whether declared or copied with `AS`, can differ from the one the existing parts were written with.
-    if (is_full_user_attach)
-        checkNoUncompressedFixedArrayColumns(properties.columns, "ATTACH TABLE with a definition");
+    /// chDB: a table attached with `table_readonly = 1` is exempt, because this is how a reader opens a table that another
+    /// process wrote on object storage. Such a table writes no parts, and a part that was not written with the declared
+    /// setting is refused when it is read: `tryGetOneRowPerBlockLayout` compares the sizes of the file with the setting, and
+    /// `MergeTreeOneRowPerBlockReader` checks the checksum, the method and the size of every block.
+    if (is_full_user_attach && !isAttachedReadOnly(create))
+        checkNoUncompressedFixedArrayColumns(
+            properties.columns, "ATTACH TABLE with a definition (unless the table is attached with `table_readonly = 1`)");
     return properties;
 }
 
