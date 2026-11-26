@@ -3,11 +3,18 @@ name: Build & Test Windows x86_64
 # The Windows wheel is cross-compiled on a self-hosted Linux runner
 # (chdb/build_windows_on_linux.sh: host clang/lld 21, mingw-w64 13 UCRT, see
 # cmake/windows/toolchain-x86_64.cmake) and tested on GitHub's hosted Windows
-# runners, which build nothing. It is not published anywhere yet: the wheel is
-# a workflow artifact only.
+# runners, which build nothing. A build of a version tag (a published release,
+# or a manual run on its tag) also publishes it once every test cell has passed:
+# the publish job attaches it to the GitHub release and uploads it to PyPI under
+# the same rules as the other platforms' wheels (.github/scripts/pypi-upload-wanted.sh).
+# Pull requests and pushes to main publish nothing, and main's build of a merged
+# ClickHouse sync is not part of the nightly release, which knows four platforms
+# (.github/nightly/publish.py).
 
 on:
   workflow_dispatch:
+  release:
+    types: [published]
   push:
     branches:
       - main
@@ -43,7 +50,10 @@ jobs:
     name: Cross-build Windows Wheel on Linux
     runs-on: [self-hosted, linux, x64, ubuntu-latest]
     # Unlike the other wheel workflows this one also runs for draft pull
-    # requests: while the port is new, a draft is where it is worked on.
+    # requests: while the port is new, a draft is where it is worked on. Like
+    # them, it skips releases that are not version tags: the rolling `nightly`
+    # pre-release is created once and must not start a build.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     timeout-minutes: 600
     steps:
       - name: Install the toolchain
@@ -189,3 +199,51 @@ jobs:
         run: |
           python -m pip install nbconvert ipykernel "fastjsonschema<2.22"
           python -m jupyter nbconvert --to notebook --execute tests/test_data_insertion.ipynb --output test_data_insertion_output.ipynb
+
+  # A release's wheel goes out only once every cell above has passed it. Nothing
+  # here builds, so a hosted runner does: gh is preinstalled, and twine comes from
+  # pip. The steps, secrets and gate are the other wheel workflows' upload steps.
+  publish:
+    name: Publish the Windows wheel
+    needs: [build_on_linux, test_on_windows]
+    # The other wheel workflows' condition for uploading: a build of a version
+    # tag, which a published release (or a manual run on its tag) is. Pull
+    # requests and pushes to main never get here.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # For .github/scripts/pypi-upload-wanted.sh.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          name: chdb-windows-x86_64-wheel
+          path: dist
+      - name: Upload wheels to release
+        run: |
+          ls -l dist
+          gh release upload "$GITHUB_REF_NAME" dist/chdb_core-*.whl --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      # A release goes to PyPI, a candidate does not, and a release opts out by
+      # saying [no-pypi] in its notes. The script owns that policy and logs which
+      # way it went. The GitHub release above is not gated by any of it.
+      - name: Upload pypi
+        run: |
+          .github/scripts/pypi-upload-wanted.sh "$GITHUB_REF_NAME" || exit 0
+          python -m pip install --quiet twine
+          python -m twine upload dist/chdb_core-*.whl
+        env:
+          # Reads the release notes the decision is written in.
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
