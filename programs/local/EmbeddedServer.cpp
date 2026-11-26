@@ -1568,7 +1568,7 @@ void EmbeddedServer::reconcileStartupOptions(int argc, char ** argv)
         if (key == "google_protos_path")
             return global_context->getGoogleProtosPath();
         if (key == "top_level_domains_path")
-            return config().getString(key, fs::path(global_context->getPath()) / "top_level_domains/");
+            return config().getString(key, pathToGenericString(pathFromString(global_context->getPath()) / "top_level_domains/"));
         return config().getString(key, "");
     };
 
