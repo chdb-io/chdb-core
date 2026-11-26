@@ -16,7 +16,7 @@ fi
 
 # cd to the directory of this script
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-cd $DIR
+cd "$DIR"
 
 echo "Compile and link"
 clang chdbForkTest.c -o chdbForkTest -I../programs/local/ -L../ -lchdb -lpthread

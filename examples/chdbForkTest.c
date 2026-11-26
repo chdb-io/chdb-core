@@ -94,6 +94,7 @@ struct bg_query_args {
     pthread_mutex_t mu;
     pthread_cond_t cv;
     int started;
+    int done;
     int ok;
 };
 
@@ -105,11 +106,46 @@ static void * bg_query_thread(void * raw)
     pthread_cond_signal(&args->cv);
     pthread_mutex_unlock(&args->mu);
 
-    chdb_result * res = chdb_query(args->conn, "SELECT sleepEachRow(0.2) FROM numbers(10)", "CSV");
-    args->ok = (res != NULL && chdb_result_error(res) == NULL);
+    chdb_result * res = chdb_query(
+        args->conn,
+        "SELECT sleepEachRow(0.25) FROM numbers(12) /* chdb_fork_active_marker */",
+        "CSV");
+    int ok = (res != NULL && chdb_result_error(res) == NULL);
     if (res)
         chdb_destroy_query_result(res);
+
+    pthread_mutex_lock(&args->mu);
+    args->ok = ok;
+    args->done = 1;
+    pthread_mutex_unlock(&args->mu);
     return NULL;
+}
+
+static int query_is_active_in_process_list(chdb_connection observer_conn)
+{
+    /* Build the marker via concat() so this observer query never matches itself. */
+    chdb_result * res = chdb_query(
+        observer_conn,
+        "SELECT count() FROM system.processes "
+        "WHERE position(query, concat('chdb_fork_', 'active_marker')) > 0",
+        "CSV");
+    if (!res || chdb_result_error(res) != NULL) {
+        if (res)
+            chdb_destroy_query_result(res);
+        return 0;
+    }
+    int active = 0;
+    size_t len = chdb_result_length(res);
+    char * buf = chdb_result_buffer(res);
+    if (buf && len > 0) {
+        char tmp[32];
+        size_t copy_len = len < sizeof(tmp) - 1 ? len : sizeof(tmp) - 1;
+        memcpy(tmp, buf, copy_len);
+        tmp[copy_len] = '\0';
+        active = (atoi(tmp) > 0);
+    }
+    chdb_destroy_query_result(res);
+    return active;
 }
 
 int main(void)
@@ -250,30 +286,79 @@ int main(void)
 
     /* ---- Scenario 4: Fork while background thread holds client_mutex & runs query ---- */
     printf("4. Fork during active background query -> child fails fast & exits cleanly\n");
+    chdb_connection * observer_conn = chdb_connect(2, argv);
+    CHECK(observer_conn != NULL && *observer_conn != NULL, "observer chdb_connect succeeds");
+    if (!observer_conn || !*observer_conn) {
+        chdb_close_conn(conn);
+        return 1;
+    }
+
     struct bg_query_args bg;
     bg.conn = *conn;
     bg.started = 0;
+    bg.done = 0;
     bg.ok = 0;
     pthread_mutex_init(&bg.mu, NULL);
     pthread_cond_init(&bg.cv, NULL);
 
     pthread_t th;
-    CHECK(pthread_create(&th, NULL, bg_query_thread, &bg) == 0, "spawn background query thread");
+    int thread_rc = pthread_create(&th, NULL, bg_query_thread, &bg);
+    CHECK(thread_rc == 0, "spawn background query thread");
+    if (thread_rc != 0) {
+        pthread_mutex_destroy(&bg.mu);
+        pthread_cond_destroy(&bg.cv);
+        chdb_close_conn(observer_conn);
+        chdb_close_conn(conn);
+        return 1;
+    }
 
     pthread_mutex_lock(&bg.mu);
     while (!bg.started)
         pthread_cond_wait(&bg.cv, &bg.mu);
     pthread_mutex_unlock(&bg.mu);
 
-    /* Give the background thread time to enter ChdbClient::executeMaterializedQuery and hold client_mutex. */
-    struct timespec pause = {0, 150 * 1000 * 1000}; /* 150ms */
-    nanosleep(&pause, NULL);
+    /* Wait until system.processes confirms bg_query_thread is actively executing
+     * inside ChdbClient::executeMaterializedQuery (holding conn's client_mutex). */
+    int observed_active = 0;
+    struct timespec wait_start;
+    clock_gettime(CLOCK_MONOTONIC, &wait_start);
+    for (;;) {
+        if (query_is_active_in_process_list(*observer_conn)) {
+            observed_active = 1;
+            break;
+        }
+        pthread_mutex_lock(&bg.mu);
+        int bg_done = bg.done;
+        pthread_mutex_unlock(&bg.mu);
+        if (bg_done)
+            break;
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec - wait_start.tv_sec)
+                         + (double)(now.tv_nsec - wait_start.tv_nsec) / 1e9;
+        if (elapsed >= 5.0)
+            break;
+
+        struct timespec poll_pause = {0, 10 * 1000 * 1000}; /* 10ms */
+        nanosleep(&poll_pause, NULL);
+    }
+    CHECK(observed_active == 1, "background query observed active in system.processes before fork");
+
+    pthread_mutex_lock(&bg.mu);
+    int running_before_fork = !bg.done;
+    pthread_mutex_unlock(&bg.mu);
+    CHECK(running_before_fork == 1, "background query still running right before fork");
 
     fflush(NULL);
     pid = fork();
     if (pid < 0) {
         perror("fork (scenario 4)");
         pthread_join(th, NULL);
+        pthread_mutex_destroy(&bg.mu);
+        pthread_cond_destroy(&bg.cv);
+        chdb_close_conn(observer_conn);
+        chdb_close_conn(conn);
         return 1;
     }
     if (pid == 0) {
@@ -295,12 +380,18 @@ int main(void)
         exit(0);
     }
 
+    pthread_mutex_lock(&bg.mu);
+    int running_after_fork = !bg.done;
+    pthread_mutex_unlock(&bg.mu);
+    CHECK(running_after_fork == 1, "background query remained active across fork");
+
     CHECK(wait_child_with_timeout(pid, "fork-during-active-query", CHILD_TIMEOUT_SEC) == 0,
           "child forked during active background query fails fast and exits cleanly");
 
     pthread_join(th, NULL);
     pthread_mutex_destroy(&bg.mu);
     pthread_cond_destroy(&bg.cv);
+    chdb_close_conn(observer_conn);
     CHECK(bg.ok == 1, "parent background query succeeded");
 
     /* Parent connection still works after all forks */
