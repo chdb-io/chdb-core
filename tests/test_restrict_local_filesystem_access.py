@@ -35,8 +35,12 @@ def _find_libchdb():
     if os.environ.get("CHDB_LIB_PATH"):
         candidates.append(os.environ["CHDB_LIB_PATH"])
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    lib_name = "libchdb.dylib" if platform.system() == "Darwin" else "libchdb.so"
-    candidates += [os.path.join(repo_root, "buildlib", lib_name), os.path.join(repo_root, "libchdb.so")]
+    if platform.system() == "Windows":
+        # Only this platform's library: a Linux libchdb.so left in the tree by a local build is not loadable.
+        candidates.append(os.path.join(repo_root, "buildlib", "libchdb.dll"))
+    else:
+        lib_name = "libchdb.dylib" if platform.system() == "Darwin" else "libchdb.so"
+        candidates += [os.path.join(repo_root, "buildlib", lib_name), os.path.join(repo_root, "libchdb.so")]
     for path in candidates:
         if path and os.path.isfile(path):
             return path
@@ -44,6 +48,11 @@ def _find_libchdb():
 
 
 _LIB_PATH = _find_libchdb()
+_MISSING_REASON = (
+    "the Windows port does not build libchdb.dll, the C ABI library; set CHDB_LIB_PATH to one"
+    if platform.system() == "Windows"
+    else "libchdb not found; build chdb-core or set CHDB_LIB_PATH"
+)
 
 
 class LocalResultV2(ctypes.Structure):
@@ -194,7 +203,7 @@ def _make_tree(root):
     return secret
 
 
-@unittest.skipIf(_LIB_PATH is None, "libchdb not found; build chdb-core or set CHDB_LIB_PATH")
+@unittest.skipIf(_LIB_PATH is None, _MISSING_REASON)
 class TestRestrictLocalFilesystemAccess(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -848,7 +857,7 @@ def _child_s3_backup(lib_path, secret_file):
     return results
 
 
-@unittest.skipIf(_LIB_PATH is None, "libchdb not found; build chdb-core or set CHDB_LIB_PATH")
+@unittest.skipIf(_LIB_PATH is None, _MISSING_REASON)
 class TestRestrictedConnectionInternalAccess(unittest.TestCase):
     """Scenarios that need a process of their own."""
 
