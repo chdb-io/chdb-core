@@ -156,6 +156,7 @@ DB::ColumnPtr PythonArrowUDF::executeImpl(
         batch_columns,
         rows,
         as_bytes,
+        /*strings_as_binary=*/false,
         ". Declare a String argument as bytes to receive it as pyarrow.binary()");
 
     std::optional<arrow::ArrayVector> result_chunks;

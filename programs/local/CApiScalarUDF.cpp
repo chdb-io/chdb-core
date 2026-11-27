@@ -125,6 +125,14 @@ DB::DataTypePtr CApiScalarUDF::getReturnTypeImpl(const DB::DataTypes & arguments
     {
         can_be_null = can_be_null || DB::canContainNull(*arguments[i]);
 
+        /// With special NULL handling a NULL reaches the function, and has to fit its declared type.
+        if (special_null_handling && DB::canContainNull(*arguments[i]) && !argument_types[i]->canBeInsideNullable()
+            && !DB::canContainNull(*argument_types[i]))
+            throw DB::Exception(
+                DB::ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                "{}: argument {} is {}, which can be NULL, but the declared {} cannot hold a NULL",
+                label(), i + 1, arguments[i]->getName(), argument_types[i]->getName());
+
         /// A NULL literal converts to any type.
         const auto actual = DB::removeNullable(DB::removeLowCardinality(arguments[i]));
         if (DB::isNothing(actual))
@@ -197,7 +205,8 @@ DB::ColumnPtr CApiScalarUDF::evaluate(
             label(),
             batch_columns,
             rows,
-            std::vector<bool>(argc, binary_strings),
+            std::vector<bool>(argc, false),
+            binary_strings,
             ". Register the function with CHDB_SCALAR_FUNCTION_BINARY_STRINGS to receive String arguments as Arrow binary");
 
         /// A block too large for one Arrow record batch converts to several; each is a call.

@@ -35,6 +35,7 @@ typedef struct
     int64_t max_batch_rows;
     int64_t nulls_seen;
     int64_t destroyed;
+    int64_t value; /* what constant_flag returns */
 } udf_stats;
 
 static void record_call(udf_stats * stats, int64_t rows)
@@ -153,6 +154,10 @@ static int concat_dash(
         struct ArrowStringView right = ArrowArrayViewGetStringUnsafe(view.children[1], i);
         int n = snprintf(buffer, sizeof(buffer), "%.*s-%.*s",
                          (int)left.size_bytes, left.data, (int)right.size_bytes, right.data);
+        if (n < 0)
+            n = 0;
+        if (n >= (int)sizeof(buffer)) /* truncated */
+            n = (int)sizeof(buffer) - 1;
         struct ArrowStringView value = {buffer, n};
         ArrowArrayAppendString(result, value);
     }
@@ -267,6 +272,116 @@ static int times_hundred(
         ArrowArrayAppendInt(result, ArrowArrayViewGetIntUnsafe(view.children[0], i) * 100);
     ArrowArrayViewReset(&view);
     return finish_result(result, result_schema, NANOARROW_TYPE_INT64, error, error_size);
+}
+
+/* constant_flag(Int64) -> UInt8: every row gets stats->value. */
+static int constant_flag(
+    void * user_data, chdb_arrow_schema schema, chdb_arrow_array array,
+    chdb_arrow_schema result_schema, chdb_arrow_array result_array, char * error, size_t error_size)
+{
+    (void)schema;
+    udf_stats * stats = (udf_stats *)user_data;
+    const int64_t rows = ((struct ArrowArray *)array)->length;
+    record_call(stats, rows);
+
+    struct ArrowArray * result = (struct ArrowArray *)result_array;
+    ArrowArrayInitFromType(result, NANOARROW_TYPE_UINT8);
+    ArrowArrayStartAppending(result);
+    for (int64_t i = 0; i < rows; i++)
+        ArrowArrayAppendUInt(result, (uint64_t)stats->value);
+    return finish_result(result, result_schema, NANOARROW_TYPE_UINT8, error, error_size);
+}
+
+/* length_alternating(String) -> Int64: the byte length of its argument, as Arrow int32 on every
+ * other call. */
+static int length_alternating(
+    void * user_data, chdb_arrow_schema schema, chdb_arrow_array array,
+    chdb_arrow_schema result_schema, chdb_arrow_array result_array, char * error, size_t error_size)
+{
+    udf_stats * stats = (udf_stats *)user_data;
+    struct ArrowArrayView view;
+    if (open_arguments(schema, array, &view, error, error_size))
+        return 1;
+    record_call(stats, view.length);
+
+    const enum ArrowType type = __atomic_load_n(&stats->calls, __ATOMIC_SEQ_CST) % 2 ? NANOARROW_TYPE_INT32 : NANOARROW_TYPE_INT64;
+    struct ArrowArray * result = (struct ArrowArray *)result_array;
+    ArrowArrayInitFromType(result, type);
+    ArrowArrayStartAppending(result);
+    for (int64_t i = 0; i < view.length; i++)
+        ArrowArrayAppendInt(result, ArrowArrayViewGetStringUnsafe(view.children[0], i).size_bytes);
+    ArrowArrayViewReset(&view);
+    return finish_result(result, result_schema, type, error, error_size);
+}
+
+/* nested_bytes(Array(String)) -> UInt64, registered with BINARY_STRINGS: the bytes in each array. */
+static int nested_bytes(
+    void * user_data, chdb_arrow_schema schema, chdb_arrow_array array,
+    chdb_arrow_schema result_schema, chdb_arrow_array result_array, char * error, size_t error_size)
+{
+    const char * format = ((struct ArrowSchema *)schema)->children[0]->children[0]->format;
+    if (strcmp(format, "z") != 0)
+    {
+        snprintf(error, error_size, "expected Arrow binary elements, got format %s", format);
+        return 1;
+    }
+    struct ArrowArrayView view;
+    if (open_arguments(schema, array, &view, error, error_size))
+        return 1;
+    record_call((udf_stats *)user_data, view.length);
+
+    const struct ArrowArrayView * list = view.children[0];
+    struct ArrowArray * result = (struct ArrowArray *)result_array;
+    ArrowArrayInitFromType(result, NANOARROW_TYPE_UINT64);
+    ArrowArrayStartAppending(result);
+    for (int64_t i = 0; i < view.length; i++)
+    {
+        uint64_t bytes = 0;
+        for (int64_t j = ArrowArrayViewListChildOffset(list, i); j < ArrowArrayViewListChildOffset(list, i + 1); j++)
+            bytes += (uint64_t)ArrowArrayViewGetBytesUnsafe(list->children[0], j).size_bytes;
+        ArrowArrayAppendUInt(result, bytes);
+    }
+    ArrowArrayViewReset(&view);
+    return finish_result(result, result_schema, NANOARROW_TYPE_UINT64, error, error_size);
+}
+
+/* list_length(Array(Int64)) -> UInt64. */
+static int list_length(
+    void * user_data, chdb_arrow_schema schema, chdb_arrow_array array,
+    chdb_arrow_schema result_schema, chdb_arrow_array result_array, char * error, size_t error_size)
+{
+    struct ArrowArrayView view;
+    if (open_arguments(schema, array, &view, error, error_size))
+        return 1;
+    record_call((udf_stats *)user_data, view.length);
+
+    struct ArrowArray * result = (struct ArrowArray *)result_array;
+    ArrowArrayInitFromType(result, NANOARROW_TYPE_UINT64);
+    ArrowArrayStartAppending(result);
+    for (int64_t i = 0; i < view.length; i++)
+        ArrowArrayAppendUInt(result, (uint64_t)(ArrowArrayViewListChildOffset(view.children[0], i + 1)
+                                               - ArrowArrayViewListChildOffset(view.children[0], i)));
+    ArrowArrayViewReset(&view);
+    return finish_result(result, result_schema, NANOARROW_TYPE_UINT64, error, error_size);
+}
+
+/* third(Float32) -> BFloat16: computes in float32, which the engine narrows. */
+static int third(
+    void * user_data, chdb_arrow_schema schema, chdb_arrow_array array,
+    chdb_arrow_schema result_schema, chdb_arrow_array result_array, char * error, size_t error_size)
+{
+    struct ArrowArrayView view;
+    if (open_arguments(schema, array, &view, error, error_size))
+        return 1;
+    record_call((udf_stats *)user_data, view.length);
+
+    struct ArrowArray * result = (struct ArrowArray *)result_array;
+    ArrowArrayInitFromType(result, NANOARROW_TYPE_FLOAT);
+    ArrowArrayStartAppending(result);
+    for (int64_t i = 0; i < view.length; i++)
+        ArrowArrayAppendDouble(result, ArrowArrayViewGetDoubleUnsafe(view.children[0], i) / 3);
+    ArrowArrayViewReset(&view);
+    return finish_result(result, result_schema, NANOARROW_TYPE_FLOAT, error, error_size);
 }
 
 /* strdup is POSIX, not C99. */
@@ -412,8 +527,9 @@ static void test_basic(chdb_connection conn)
     expect_output(conn, "SELECT c_plus_one(41)", "42\n");
     expect_output(conn, "SELECT c_plus_one(toInt64(number)) FROM numbers(3)", "1\n2\n3\n");
     /* Many blocks, evaluated a block at a time. */
+    int64_t calls_before = plus_one_stats.calls;
     expect_output(conn, "SELECT sum(c_plus_one(toInt64(number))) FROM numbers(200000)", "20000100000\n");
-    CHECK(plus_one_stats.calls >= 2, "a large input takes several calls");
+    CHECK(plus_one_stats.calls - calls_before >= 2, "a large input takes several calls");
     CHECK(plus_one_stats.max_batch_rows > 1, "a call covers a whole batch of rows");
     /* Concurrent calls from several threads. */
     expect_output(conn,
@@ -543,11 +659,86 @@ static void test_registration_errors(chdb_connection conn)
     chdb_destroy_query_result(result);
     CHECK(stats.destroyed == 0, "rejected registrations do not destroy user_data");
 
-    /* A SQL function created later under the same name makes calls ambiguous. */
-    expect_output(conn, "CREATE FUNCTION c_plus_one AS x -> x", "");
-    expect_error(conn, "SELECT c_plus_one(1)", "AMBIGUOUS_IDENTIFIER");
-    expect_output(conn, "DROP FUNCTION c_plus_one", "");
+    /* A SQL function cannot take the name later: it would be expanded instead, e.g. in a DELETE. */
+    expect_error(conn, "CREATE FUNCTION c_plus_one AS x -> x", "registered through the C API already exists");
     expect_output(conn, "SELECT c_plus_one(1)", "2\n");
+
+    /* A result type chDB cannot read back from Arrow is refused up front. */
+    expect_create_error(conn, "c_variant", INT64_ARG, 1, "Variant(Int64, String)", 0, "that chDB can read back");
+}
+
+static void test_types(chdb_connection conn)
+{
+    printf("== test_types ==\n");
+    static const char * const STRING_ARRAY_ARG[] = {"Array(String)"};
+    static const char * const INT64_ARRAY_ARG[] = {"Array(Int64)"};
+    static const char * const FLOAT32_ARG[] = {"Float32"};
+    static udf_stats nested_stats, lc_stats, length_stats, third_stats;
+
+    /* Binary strings reach the function as Arrow binary inside an Array too. */
+    must_create(conn, "c_nested_bytes", STRING_ARRAY_ARG, 1, "UInt64", CHDB_SCALAR_FUNCTION_BINARY_STRINGS, nested_bytes, &nested_stats);
+    expect_output(conn, "SELECT c_nested_bytes([unhex('FF'), 'ab'])", "3\n");
+
+    /* A LowCardinality return type means its base type, and the function only sees real rows. */
+    must_create(conn, "c_concat_lc", TWO_STRING_ARGS, 2, "LowCardinality(String)", 0, concat_dash, &lc_stats);
+    expect_output(conn, "SELECT toTypeName(c_concat_lc('a', 'b'))", "\"String\"\n");
+    int64_t rows_before = lc_stats.rows;
+    expect_output(conn, "SELECT c_concat_lc(toLowCardinality(toString(number)), 'x') FROM numbers(2)", "\"0-x\"\n\"1-x\"\n");
+    CHECK(lc_stats.rows - rows_before == 2, "the function sees the two rows, not a dictionary");
+
+    /* With special NULL handling an argument that can be NULL needs a declared type that holds one. */
+    must_create(conn, "c_list_length", INT64_ARRAY_ARG, 1, "UInt64", CHDB_SCALAR_FUNCTION_SPECIAL_NULL_HANDLING, list_length, &length_stats);
+    expect_output(conn, "SELECT c_list_length([1, 2, 3])", "3\n");
+    expect_error(conn, "SELECT c_list_length(NULL)", "cannot hold a NULL");
+
+    /* A float result narrows to BFloat16 like to any float type, without an accuracy error. */
+    must_create(conn, "c_third", FLOAT32_ARG, 1, "BFloat16", 0, third, &third_stats);
+    expect_output(conn, "SELECT c_third(toFloat32(1)) BETWEEN 0.33 AND 0.34, toTypeName(c_third(toFloat32(1)))", "1,\"BFloat16\"\n");
+}
+
+/* A block whose strings exceed one Arrow record batch takes one call per batch, and the calls may
+ * answer in different Arrow types. */
+static void test_split_batches(chdb_connection conn)
+{
+    printf("== test_split_batches ==\n");
+    static udf_stats stats;
+    must_create(conn, "c_length_alternating", STRING_ARG, 1, "Int64", 0, length_alternating, &stats);
+    expect_output(conn,
+        "SELECT sum(c_length_alternating(repeat('x', 100 + number % 2))), count() FROM numbers(100000) "
+        "SETTINGS output_format_arrow_max_record_batch_size_bytes = 65536, max_block_size = 65536, max_threads = 1",
+        "10050000,100000\n");
+    CHECK(stats.calls >= 4, "blocks were split into several calls");
+}
+
+static void test_tables(chdb_connection conn)
+{
+    printf("== test_tables ==\n");
+    expect_output(conn, "CREATE TABLE udf_t (x Int64) ENGINE = MergeTree ORDER BY x SETTINGS index_granularity = 1024", "");
+    expect_output(conn, "INSERT INTO udf_t SELECT number FROM numbers(100000)", "");
+    /* PREWHERE resolves its functions again by name. */
+    expect_output(conn, "SELECT count() FROM udf_t PREWHERE c_plus_one(x) > 2", "99998\n");
+
+    /* A call is expensive, so PREWHERE evaluates it after the cheap condition and never on the rows that drops. */
+    expect_output(conn, "CREATE TABLE udf_g (id Int64, v Int64) ENGINE = MergeTree ORDER BY id", "");
+    expect_output(conn, "INSERT INTO udf_g VALUES (-1, 0), (1, 5)", "");
+    expect_output(conn, "SELECT id FROM udf_g WHERE id > 0 AND c_fail_on_zero(v) > 0", "1\n");
+
+    /* A function registered again under its name is not answered from the query condition cache. */
+    static udf_stats first, second;
+    first.value = 0;
+    second.value = 1;
+    const char * filtered = "SELECT count() FROM udf_t WHERE c_flag(x) SETTINGS use_query_condition_cache = 1";
+    must_create(conn, "c_flag", INT64_ARG, 1, "UInt8", 0, constant_flag, &first);
+    expect_output(conn, filtered, "0\n");
+    char * error = drop_function(conn, "c_flag");
+    free(error);
+    must_create(conn, "c_flag", INT64_ARG, 1, "UInt8", 0, constant_flag, &second);
+    expect_output(conn, filtered, "100000\n");
+    error = drop_function(conn, "c_flag");
+    free(error);
+
+    expect_output(conn, "DROP TABLE udf_t", "");
+    expect_output(conn, "DROP TABLE udf_g", "");
 }
 
 /* The query result cache only checks for non-deterministic functions when it can store a result,
@@ -589,6 +780,14 @@ static void test_drop(chdb_connection conn)
     error = drop_function(conn, "c_plus_one");
     free(error);
     CHECK(again.destroyed == 1, "the second registration is destroyed on its own drop");
+
+    /* Registrations outlive connections, so dropping needs none. */
+    static udf_stats without_connection;
+    must_create(conn, "c_drop_without_connection", INT64_ARG, 1, "Int64", 0, plus_one, &without_connection);
+    error = drop_function(NULL, "c_drop_without_connection");
+    CHECK(error == NULL, "drop without a connection succeeds");
+    free(error);
+    CHECK(without_connection.destroyed == 1, "dropping without a connection destroys user_data");
 }
 
 int main(int argc, char ** argv)
@@ -615,6 +814,9 @@ int main(int argc, char ** argv)
     test_volatile(*conn);
     test_failures(*conn);
     test_registration_errors(*conn);
+    test_types(*conn);
+    test_split_batches(*conn);
+    test_tables(*conn);
     test_query_cache(*conn, has_cache);
     test_drop(*conn);
 

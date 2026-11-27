@@ -1077,16 +1077,20 @@ typedef enum chdb_scalar_function_flag
     // The function may return different results for the same arguments, like
     // rand(): chDB evaluates it for every row instead of folding a call with
     // constant arguments into one value. Without it the function is assumed
-    // to be deterministic.
+    // to return the same result for the same arguments within a query. chDB
+    // never reuses a result across queries, since a function can be replaced.
     CHDB_SCALAR_FUNCTION_VOLATILE = 1u << 0,
     // Pass NULL arguments to the callback, as Arrow nulls, and return the
-    // declared type unchanged. Without it, a row with any NULL argument never
-    // reaches the callback and yields NULL, and the return type becomes
-    // Nullable when an argument can be NULL (unless the type cannot be inside
-    // Nullable, e.g. Array, in which case such a row yields the type's default).
+    // declared type unchanged; an argument that can be NULL is then rejected
+    // for a declared type that cannot hold one, e.g. Array. Without it, a row
+    // with any NULL argument never reaches the callback and yields NULL, and
+    // the return type becomes Nullable when an argument can be NULL (unless
+    // the type cannot be inside Nullable, e.g. Array, in which case such a row
+    // yields the type's default).
     CHDB_SCALAR_FUNCTION_SPECIAL_NULL_HANDLING = 1u << 1,
-    // Pass String arguments as Arrow binary. Without it they are Arrow UTF-8
-    // strings, and a value that is not valid UTF-8 fails the query.
+    // Pass every String value, at any depth, as Arrow binary, and so the text
+    // of Enum and 128/256-bit integer arguments too. Without it they are Arrow
+    // UTF-8 strings, and a value that is not valid UTF-8 fails the query.
     CHDB_SCALAR_FUNCTION_BINARY_STRINGS = 1u << 2
 } chdb_scalar_function_flag;
 
@@ -1114,19 +1118,22 @@ typedef struct chdb_scalar_function_options
  * Argument types are checked when a query is analyzed: an argument must be of
  * the declared type or of one that converts to it without loss, e.g. Int32
  * for an Int64 parameter; it reaches the callback converted. A declared
- * Nullable or LowCardinality argument type means the same as its base type.
+ * Nullable or LowCardinality argument type means the same as its base type,
+ * and so does a LowCardinality return type.
  *
  * The name must not be taken by a built-in or aggregate function, a SQL or
  * executable user-defined function, a Python UDF, or another function
- * registered here. A SQL `CREATE FUNCTION` with the name of a function
- * registered here makes calls to that name fail as ambiguous.
+ * registered here. A later SQL `CREATE FUNCTION` with the name fails, and a
+ * later executable UDF with it makes calls to that name fail as ambiguous.
  *
  * Ownership: on success chDB owns options->user_data and calls
  * options->destroy(user_data) exactly once, after the function is dropped and
- * the last query using it has finished; destroy may then run on any thread.
- * chDB never calls it at process exit. On failure the caller keeps ownership
- * and destroy is not called. The options struct and the strings it points to
- * are only read during the call.
+ * nothing uses it anymore: no running query, and no table whose definition
+ * calls it. destroy may then run on any thread, also inside another chDB
+ * call, so like the callback it must not call into chDB. chDB does not
+ * destroy registered functions at process exit. On failure the caller keeps
+ * ownership and destroy is not called. The options struct and the strings it
+ * points to are only read during the call.
  *
  * @param conn Active connection
  * @param name Function name; case-sensitive
@@ -1142,7 +1149,8 @@ CHDB_EXPORT chdb_result * chdb_create_scalar_function(
  * Unregisters a function registered with chdb_create_scalar_function(). A
  * query that already uses it finishes with it.
  *
- * @param conn Active connection
+ * @param conn Not needed: may be NULL or closed, e.g. after chdb_shutdown(),
+ *             since registrations outlive the engine
  * @param name Function name
  * @return chdb_result carrying only an error, if any (a name that is not
  *         registered is one); destroy it with chdb_destroy_query_result()

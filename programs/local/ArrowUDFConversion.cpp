@@ -208,6 +208,121 @@ void nanToNull(DB::ColumnNullable & column)
     }
 }
 
+/// How a result is read back from Arrow.
+const DB::FormatSettings & resultFormatSettings()
+{
+    static const auto settings = []
+    {
+        DB::FormatSettings result;
+        /// A struct with NULL rows is a Nullable(Tuple), so that its NULLs are kept.
+        result.schema_inference_allow_nullable_tuple_type = true;
+        return result;
+    }();
+    return settings;
+}
+
+/// One result array as a column of `result_type`.
+DB::ColumnPtr arrayToColumn(
+    const String & label,
+    const std::shared_ptr<arrow::Array> & array,
+    const DB::DataTypePtr & result_type,
+    bool nan_as_null)
+{
+    const auto rows = static_cast<size_t>(array->length());
+    auto arrow_type = array->type();
+    auto schema = arrow::schema({arrow::field("result", arrow_type)});
+    auto table = arrow::Table::Make(
+        schema, {std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{array}, arrow_type)}, static_cast<int64_t>(rows));
+
+    try
+    {
+        /// Read the array as the ClickHouse type its Arrow type maps to and cast it afterwards:
+        /// the cast ArrowColumnToCHColumn applies to a requested type silently wraps integers
+        /// that do not fit, where an accurate cast rejects them.
+        const auto & format_settings = resultFormatSettings();
+        auto header = DB::ArrowColumnToCHColumn::arrowSchemaToCHHeader(
+            *schema,
+            nullptr,
+            ARROW_FORMAT_NAME,
+            format_settings,
+            /*skip_columns_with_unsupported_types=*/false,
+            /*allow_arrow_null_type=*/true,
+            /*allow_inferring_nullable_columns=*/true,
+            /*case_insensitive_matching=*/false,
+            /*allow_geoparquet_parser=*/false,
+            /*enable_json_parsing=*/false);
+
+        DB::ArrowColumnToCHColumn converter(
+            header,
+            ARROW_FORMAT_NAME,
+            format_settings,
+            std::nullopt,
+            std::nullopt,
+            /*allow_missing_columns_=*/false,
+            /*null_as_default_=*/false,
+            DB::FormatSettings::DateTimeOverflowBehavior::Throw,
+            /*allow_geoparquet_parser_=*/false,
+            /*case_insensitive_matching_=*/false,
+            /*is_stream_=*/false,
+            /*enable_json_parsing_=*/false);
+        auto chunk = converter.arrowTableToCHChunk(table, rows, nullptr);
+
+        /// Detached, the column is not shared, so the steps below change it in place.
+        DB::ColumnWithTypeAndName column{std::move(chunk.detachColumns().front()), header.getByPosition(0).type, "result"};
+
+        const auto source_type_id = DB::removeNullable(column.type)->getTypeId();
+        if (nan_as_null && (source_type_id == DB::TypeIndex::Float32 || source_type_id == DB::TypeIndex::Float64))
+        {
+            auto nullable = DB::IColumn::mutate(std::move(column.column));
+            auto & nullable_column = assert_cast<DB::ColumnNullable &>(*nullable);
+            if (source_type_id == DB::TypeIndex::Float32)
+                nanToNull<Float32>(nullable_column);
+            else
+                nanToNull<Float64>(nullable_column);
+            column.column = std::move(nullable);
+        }
+
+        /// A naive datetime names a moment in the time zone of the return type, the way ClickHouse
+        /// parses '2024-01-02 03:04:05' into a column of that type, so that it reads back as the
+        /// same wall clock. Other types take the session time zone.
+        if (const auto * datetime64 = typeid_cast<const DB::DataTypeDateTime64 *>(DB::removeNullable(column.type).get());
+            datetime64 && !datetime64->hasExplicitTimeZone())
+        {
+            const auto * result_time_zone = dynamic_cast<const TimezoneMixin *>(DB::removeNullable(result_type).get());
+            column.column = wallClockToMoment(
+                std::move(column.column),
+                datetime64->getScale(),
+                result_time_zone ? result_time_zone->getTimeZone() : DateLUT::instance());
+        }
+
+        const auto result_type_id = DB::removeNullable(result_type)->getTypeId();
+        const bool is_float = result_type_id == DB::TypeIndex::Float32 || result_type_id == DB::TypeIndex::Float64
+            || result_type_id == DB::TypeIndex::BFloat16;
+
+        DB::ColumnPtr result;
+        if (column.type->equals(*result_type))
+            result = std::move(column.column);
+        /// A value that does not fit is an error, but the precision a float loses on its way to
+        /// Float32 or BFloat16 is not: the function may well compute in a wider type.
+        else if (is_float)
+            result = DB::castColumn(column, result_type);
+        else
+        {
+            result = DB::castColumnAccurate(column, result_type);
+            if (isWideInteger(result_type_id) && DB::isString(DB::removeLowCardinalityAndNullable(column.type)))
+                checkWideIntegersFit(column.column, result, result_type);
+        }
+
+        return result;
+    }
+    catch (DB::Exception & e)
+    {
+        e.addMessage("while converting the result of {} from Arrow type {} to {}",
+            label, arrow_type->ToString(), result_type->getName());
+        throw;
+    }
+}
+
 } // anonymous namespace
 
 
@@ -342,7 +457,7 @@ DB::ColumnsWithTypeAndName prepareArguments(
         /// function accepted for a Float64 parameter.
         DB::DataTypePtr target_type = column.type;
         if (i < declared_types.size() && declared_types[i])
-            target_type = column.type->isNullable() ? DB::makeNullable(declared_types[i]) : declared_types[i];
+            target_type = column.type->isNullable() ? DB::makeNullableSafe(declared_types[i]) : declared_types[i];
         target_type = argumentTypeForArrow(target_type);
 
         if (!target_type->equals(*column.type))
@@ -361,9 +476,12 @@ std::shared_ptr<arrow::Table> argumentsToTable(
     const DB::ColumnsWithTypeAndName & arguments,
     size_t rows,
     const std::vector<bool> & as_binary,
+    bool strings_as_binary,
     const String & invalid_utf8_hint)
 {
     auto settings = argumentSettings();
+    if (strings_as_binary)
+        settings.output_string_as_string = false;
     /// Arrow string, binary and list arrays address their bytes with 32-bit offsets. A block holding
     /// more than that, or than the query's output_format_arrow_max_record_batch_size_bytes, which
     /// the Arrow output format follows too, is converted into several chunks.
@@ -439,95 +557,46 @@ DB::ColumnPtr resultToColumn(
             label, result_rows, rows);
 
     /// rows > 0 here, so there is at least one chunk.
-    auto arrow_type = chunks.front()->type();
-    auto schema = arrow::schema({arrow::field("result", arrow_type)});
-    auto table = arrow::Table::Make(
-        schema, {std::make_shared<arrow::ChunkedArray>(std::move(chunks), arrow_type)}, static_cast<int64_t>(rows));
+    if (chunks.size() == 1)
+        return arrayToColumn(label, chunks.front(), result_type, nan_as_null);
 
+    /// Chunks from separate calls can differ in type or carry dictionaries of their own, so
+    /// each is read on its own.
+    auto result = result_type->createColumn();
+    result->reserve(rows);
+    for (const auto & chunk : chunks)
+    {
+        if (chunk->length() == 0)
+            continue;
+        auto part = arrayToColumn(label, chunk, result_type, nan_as_null);
+        result->insertRangeFrom(*part, 0, part->size());
+    }
+    return result;
+}
+
+void checkDeclaredType(const String & label, const DB::DataTypePtr & type, const String & what, bool is_result)
+{
+    const auto arrow_type = argumentTypeForArrow(type);
+    const DB::ColumnsWithTypeAndName header{{arrow_type->createColumn(), arrow_type, "c0"}};
     try
     {
-        /// Read the array as the ClickHouse type its Arrow type maps to and cast it afterwards:
-        /// the cast ArrowColumnToCHColumn applies to a requested type silently wraps integers
-        /// that do not fit, where an accurate cast rejects them.
-        const DB::FormatSettings format_settings;
-        auto header = DB::ArrowColumnToCHColumn::arrowSchemaToCHHeader(
-            *schema,
-            nullptr,
-            ARROW_FORMAT_NAME,
-            format_settings,
-            /*skip_columns_with_unsupported_types=*/false,
-            /*allow_arrow_null_type=*/true,
-            /*allow_inferring_nullable_columns=*/true,
-            /*case_insensitive_matching=*/false,
-            /*allow_geoparquet_parser=*/false,
-            /*enable_json_parsing=*/false);
-
-        DB::ArrowColumnToCHColumn converter(
-            header,
-            ARROW_FORMAT_NAME,
-            format_settings,
-            std::nullopt,
-            std::nullopt,
-            /*allow_missing_columns_=*/false,
-            /*null_as_default_=*/false,
-            DB::FormatSettings::DateTimeOverflowBehavior::Throw,
-            /*allow_geoparquet_parser_=*/false,
-            /*case_insensitive_matching_=*/false,
-            /*is_stream_=*/false,
-            /*enable_json_parsing_=*/false);
-        auto chunk = converter.arrowTableToCHChunk(table, rows, nullptr);
-
-        /// Detached, the column is not shared, so the steps below change it in place.
-        DB::ColumnWithTypeAndName column{std::move(chunk.detachColumns().front()), header.getByPosition(0).type, "result"};
-
-        const auto source_type_id = DB::removeNullable(column.type)->getTypeId();
-        if (nan_as_null && (source_type_id == DB::TypeIndex::Float32 || source_type_id == DB::TypeIndex::Float64))
-        {
-            auto nullable = DB::IColumn::mutate(std::move(column.column));
-            auto & nullable_column = assert_cast<DB::ColumnNullable &>(*nullable);
-            if (source_type_id == DB::TypeIndex::Float32)
-                nanToNull<Float32>(nullable_column);
-            else
-                nanToNull<Float64>(nullable_column);
-            column.column = std::move(nullable);
-        }
-
-        /// A naive datetime names a moment in the time zone of the return type, the way ClickHouse
-        /// parses '2024-01-02 03:04:05' into a column of that type, so that it reads back as the
-        /// same wall clock. Other types take the session time zone.
-        if (const auto * datetime64 = typeid_cast<const DB::DataTypeDateTime64 *>(DB::removeNullable(column.type).get());
-            datetime64 && !datetime64->hasExplicitTimeZone())
-        {
-            const auto * result_time_zone = dynamic_cast<const TimezoneMixin *>(DB::removeNullable(result_type).get());
-            column.column = wallClockToMoment(
-                std::move(column.column),
-                datetime64->getScale(),
-                result_time_zone ? result_time_zone->getTimeZone() : DateLUT::instance());
-        }
-
-        const auto result_type_id = DB::removeNullable(result_type)->getTypeId();
-        const bool is_float = result_type_id == DB::TypeIndex::Float32 || result_type_id == DB::TypeIndex::Float64;
-
-        DB::ColumnPtr result;
-        if (column.type->equals(*result_type))
-            result = std::move(column.column);
-        /// A value that does not fit is an error, but the precision a float loses on its way to
-        /// Float32 is not: the function may well compute in a wider type.
-        else if (is_float)
-            result = DB::castColumn(column, result_type);
-        else
-        {
-            result = DB::castColumnAccurate(column, result_type);
-            if (isWideInteger(result_type_id) && DB::isString(DB::removeLowCardinalityAndNullable(column.type)))
-                checkWideIntegersFit(column.column, result, result_type);
-        }
-
-        return result;
+        const auto schema = DB::CHColumnToArrowColumn::calculateArrowSchema(header, ARROW_FORMAT_NAME, nullptr, argumentSettings());
+        if (is_result)
+            DB::ArrowColumnToCHColumn::arrowSchemaToCHHeader(
+                *schema,
+                nullptr,
+                ARROW_FORMAT_NAME,
+                resultFormatSettings(),
+                /*skip_columns_with_unsupported_types=*/false,
+                /*allow_arrow_null_type=*/true,
+                /*allow_inferring_nullable_columns=*/true,
+                /*case_insensitive_matching=*/false,
+                /*allow_geoparquet_parser=*/false,
+                /*enable_json_parsing=*/false);
     }
     catch (DB::Exception & e)
     {
-        e.addMessage("while converting the result of {} from Arrow type {} to {}",
-            label, arrow_type->ToString(), result_type->getName());
+        e.addMessage("{}: {} type {} has no Arrow form{}", label, what, type->getName(), is_result ? " that chDB can read back" : "");
         throw;
     }
 }

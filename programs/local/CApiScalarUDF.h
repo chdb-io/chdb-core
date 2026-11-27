@@ -36,9 +36,16 @@ public:
     String getName() const override { return name; }
     size_t getNumberOfArguments() const override { return argument_types.size(); }
 
-    bool isDeterministic() const override { return !is_volatile; }
+    /// The host can drop the function and register another one under its name, so a call need not
+    /// give the same result in another query even when the function is not volatile - as for now(),
+    /// which keeps the query result and query condition caches from reusing it. Within a query it
+    /// does, unless the function is volatile.
+    bool isDeterministic() const override { return false; }
     bool isDeterministicInScopeOfQuery() const override { return !is_volatile; }
     bool isSuitableForConstantFolding() const override { return !is_volatile; }
+    /// A call goes through the host: let the optimizer evaluate it after cheaper conditions, e.g. in
+    /// PREWHERE, which also keeps it off the rows they exclude.
+    bool isExpensive() const override { return true; }
     /// Constant arguments are evaluated once rather than once per row, unless the function is
     /// volatile.
     bool useDefaultImplementationForConstants() const override { return !is_volatile; }

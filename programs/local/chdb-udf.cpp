@@ -17,7 +17,6 @@
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Interpreters/Context.h>
-#include <Processors/Formats/Impl/CHColumnToArrowColumn.h>
 #include <Common/Exception.h>
 
 #include <cstddef>
@@ -52,30 +51,18 @@ chdb_result * makeEmptyResult()
         new CHDB::MaterializedQueryResult(std::make_unique<std::vector<char>>(), 0.0, 0, 0, 0, 0));
 }
 
-/// A declared type must have an Arrow form, so that the host can read the argument or build the
-/// result.
-void checkArrowConvertible(const String & name, const DB::DataTypePtr & type, const String & what)
-{
-    const auto arrow_type = CHDB::ArrowUDF::argumentTypeForArrow(type);
-    const DB::ColumnsWithTypeAndName header{{arrow_type->createColumn(), arrow_type, "c0"}};
-    try
-    {
-        DB::CHColumnToArrowColumn::calculateArrowSchema(header, "Arrow", nullptr, CHDB::ArrowUDF::argumentSettings());
-    }
-    catch (DB::Exception & e)
-    {
-        e.addMessage("Scalar function '{}': {} type {} has no Arrow form", name, what, type->getName());
-        throw;
-    }
-}
-
-DB::DataTypePtr parseType(const String & name, const char * type_name, const String & what)
+DB::DataTypePtr parseType(const String & name, const char * type_name, const String & what, bool is_result)
 {
     if (!type_name || !*type_name)
         throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "Scalar function '{}': {} type is missing", name, what);
 
-    auto type = DB::DataTypeFactory::instance().get(type_name);
-    checkArrowConvertible(name, type, what);
+    /// LowCardinality is a storage detail the function never sees, and for the result it would make
+    /// the engine call the function on a LowCardinality dictionary, values of no row included.
+    /// NULL handling is the function's, so a Nullable argument type means its base type too.
+    auto type = DB::removeLowCardinality(DB::DataTypeFactory::instance().get(type_name));
+    if (!is_result)
+        type = DB::removeNullable(type);
+    CHDB::ArrowUDF::checkDeclaredType("Scalar function '" + name + "'", type, what, is_result);
     return type;
 }
 
@@ -159,36 +146,42 @@ chdb_result * chdb_create_scalar_function(
         DB::DataTypes argument_types;
         argument_types.reserve(options->argument_count);
         for (size_t i = 0; i < options->argument_count; ++i)
-        {
-            /// NULL handling is the function's, not the argument type's, and LowCardinality is a
-            /// storage detail the function never sees.
-            auto type = parseType(function_name, options->argument_types[i], "argument " + std::to_string(i + 1));
-            argument_types.push_back(DB::removeNullable(DB::removeLowCardinality(type)));
-        }
-        auto return_type = parseType(function_name, options->return_type, "return");
+            argument_types.push_back(
+                parseType(function_name, options->argument_types[i], "argument " + std::to_string(i + 1), /*is_result=*/false));
+        auto return_type = parseType(function_name, options->return_type, "return", /*is_result=*/true);
 
         checkNameIsFree(function_name, DB::Context::getGlobalContextInstance());
 
-        CHDB::CApiScalarUDFFactory::instance().add(function_name, [&]
+        /// Allocated first: once the function is registered chDB owns user_data, so nothing may fail
+        /// after that and make the caller believe it still owns it.
+        chdb_result * success = makeEmptyResult();
+        try
         {
-            return std::make_shared<CHDB::CApiScalarUDF>(
-                function_name,
-                std::move(argument_types),
-                std::move(return_type),
-                options->flags,
-                options->callback,
-                options->user_data,
-                options->destroy);
-        });
-        return makeEmptyResult();
+            CHDB::CApiScalarUDFFactory::instance().add(function_name, [&]
+            {
+                return std::make_shared<CHDB::CApiScalarUDF>(
+                    function_name,
+                    std::move(argument_types),
+                    std::move(return_type),
+                    options->flags,
+                    options->callback,
+                    options->user_data,
+                    options->destroy);
+            });
+        }
+        catch (...)
+        {
+            chdb_destroy_query_result(success);
+            throw;
+        }
+        return success;
     });
 }
 
-chdb_result * chdb_drop_scalar_function(chdb_connection conn, const char * name)
+chdb_result * chdb_drop_scalar_function(chdb_connection /*conn*/, const char * name)
 {
-    auto * connection = reinterpret_cast<chdb_conn *>(conn);
-    if (!checkConnectionValidity(connection))
-        return makeErrorResult("Invalid or closed connection");
+    /// The registry is process-wide and outlives the engine, so dropping needs no connection: a host
+    /// can drop its functions after closing every connection, and after chdb_shutdown().
     if (!name || !*name)
         return makeErrorResult("Scalar function name must not be empty");
 

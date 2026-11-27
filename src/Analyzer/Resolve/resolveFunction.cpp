@@ -3154,8 +3154,8 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
                 function_name,
                 scope.scope_node->formatASTForErrorMessage());
 
-        /// Likewise for a scalar function registered through the C API, which registration keeps
-        /// from colliding with the SQL functions that already exist, but not with later ones.
+        /// Likewise for a scalar function registered through the C API. Both registrations reject
+        /// the other's names, but a SQL function can still be loaded from disk under one.
         if (user_defined_function && CHDB::CApiScalarUDFFactory::instance().has(function_name))
             throw Exception(
                 ErrorCodes::AMBIGUOUS_IDENTIFIER,
@@ -3359,6 +3359,16 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     FunctionOverloadResolverPtr function = UserDefinedExecutableFunctionFactory::instance().tryGet(function_name, scope.context, parameters); /// NOLINT(readability-static-accessed-through-instance)
     /// Executable UDFs may have parameters. They are checked in UserDefinedExecutableFunctionFactory.
     bool can_have_parameters = (function != nullptr);
+
+    /// An executable UDF configured after a scalar function was registered through the C API would
+    /// silently take its calls.
+    if (function && CHDB::CApiScalarUDFFactory::instance().has(function_name))
+        throw Exception(
+            ErrorCodes::AMBIGUOUS_IDENTIFIER,
+            "Function name '{}' is both an executable user-defined function and a scalar function registered "
+            "through the C API. Drop one of them. In scope {}",
+            function_name,
+            scope.scope_node->formatASTForErrorMessage());
 
     if (!function)
     {

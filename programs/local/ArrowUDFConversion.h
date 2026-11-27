@@ -51,20 +51,28 @@ DB::ColumnsWithTypeAndName prepareArguments(
     const DB::DataTypes & declared_types);
 
 /// One block worth of arguments as an Arrow table, one column per argument. `as_binary` marks the
-/// String arguments that become Arrow binary instead of UTF-8 strings. A UTF-8 string argument
-/// holding invalid UTF-8 is an error; `invalid_utf8_hint` ends its message.
+/// String arguments that become Arrow binary instead of UTF-8 strings; `strings_as_binary` makes
+/// every String value one, at any depth. A UTF-8 string argument holding invalid UTF-8 is an error;
+/// `invalid_utf8_hint` ends its message.
 std::shared_ptr<arrow::Table> argumentsToTable(
     const String & label,
     const DB::ColumnsWithTypeAndName & arguments,
     size_t rows,
     const std::vector<bool> & as_binary,
+    bool strings_as_binary,
     const String & invalid_utf8_hint);
 
+/// Checks that a declared type has an Arrow form, so that the host can read the argument or build
+/// the result, and for a result type that chDB can also read that form back. `what` names the
+/// type in the error, e.g. "argument 1".
+void checkDeclaredType(const String & label, const DB::DataTypePtr & type, const String & what, bool is_result);
+
 /// Reads the chunks of a result, which must hold `rows` values together, as the ClickHouse type
-/// their Arrow type maps to and casts that to `result_type`. A value that does not fit is an error
-/// (an integer out of range, a fraction for an integer type), but precision lost on the way to a
-/// float type is not. A naive Arrow timestamp is read in the time zone of the return type.
-/// `nan_as_null` turns a float NaN into NULL.
+/// their Arrow type maps to and casts that to `result_type`. Each chunk is read on its own, so the
+/// chunks may differ in type. A value that does not fit is an error (an integer out of range, a
+/// fraction for an integer type), but precision lost on the way to a float type is not. A naive
+/// Arrow timestamp is read in the time zone of the return type. `nan_as_null` turns a float NaN
+/// into NULL.
 DB::ColumnPtr resultToColumn(
     const String & label,
     arrow::ArrayVector chunks,
