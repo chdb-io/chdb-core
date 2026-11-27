@@ -51,6 +51,8 @@
 
 #include <Functions/FunctionHelpers.h>
 #include <Functions/FunctionFactory.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
+#include <Functions/UserDefined/PythonUDFFactory.h>
 
 #include <Storages/IStorage.h>
 
@@ -1056,6 +1058,17 @@ void replaceColumns(QueryTreeNodePtr & node,
     visitor.visit(node);
 }
 
+/// An ordinary function by name, including the scalar UDFs chDB's bindings register, which
+/// resolveFunction finds before FunctionFactory but FunctionFactory itself does not know.
+static FunctionOverloadResolverPtr getOrdinaryFunction(const String & name, const ContextPtr & context)
+{
+    if (auto function = CHDB::PythonUDFFactory::instance().tryGetFunction(name))
+        return function;
+    if (auto function = CHDB::CApiScalarUDFFactory::instance().tryGetFunction(name))
+        return function;
+    return FunctionFactory::instance().get(name, context);
+}
+
 void rerunFunctionResolve(FunctionNode * function_node, ContextPtr context)
 {
     if (!function_node->isResolved())
@@ -1074,7 +1087,7 @@ void rerunFunctionResolve(FunctionNode * function_node, ContextPtr context)
         /// resolution, so no re-resolution is needed — same rationale as 'grouping' above.
         if (name == "exists")
             return;
-        auto function = FunctionFactory::instance().get(name, context);
+        auto function = getOrdinaryFunction(name, context);
         function_node->resolveAsFunction(function->build(function_node->getArgumentColumns()));
     }
     else if (function_node->isAggregateFunction())
@@ -1222,7 +1235,7 @@ ColumnPtr tryGetScalarConstantColumn(const QueryTreeNodePtr & node, const Contex
 
 void resolveOrdinaryFunctionNodeByName(FunctionNode & function_node, const String & function_name, const ContextPtr & context)
 {
-    auto function = FunctionFactory::instance().get(function_name, context);
+    auto function = getOrdinaryFunction(function_name, context);
     function_node.resolveAsFunction(function->build(function_node.getArgumentColumns()));
 }
 

@@ -1022,6 +1022,142 @@ CHDB_EXPORT chdb_result * chdb_insert_arrow_stream(
     const chdb_arrow_insert_options * options);
 
 //===--------------------------------------------------------------------===//
+// Scalar User-Defined Functions
+//===--------------------------------------------------------------------===//
+
+/**
+ * Evaluates a scalar function registered with chdb_create_scalar_function()
+ * on one batch of rows. chDB calls it once per block of rows, not per row,
+ * and only for the rows it needs (see CHDB_SCALAR_FUNCTION_SPECIAL_NULL_HANDLING).
+ *
+ * Data travels through the Arrow C Data Interface (struct ArrowSchema and
+ * struct ArrowArray from arrow/c/abi.h, behind the chdb_arrow_* handles):
+ *
+ * - argument_schema / arguments: a struct array with one child per argument,
+ *   in declaration order, holding arguments->length rows. A function without
+ *   arguments still gets a struct array, with no children. Each argument has
+ *   the Arrow type its declared ClickHouse type maps to, as for
+ *   chdb_query_arrow() with the default options, except that DateTime is an
+ *   Arrow timestamp("s", tz), Enum and 128/256-bit integers are strings, and
+ *   BFloat16 is float32. The callback owns both structs during the call: it
+ *   may release them, or move their contents out to keep the data longer,
+ *   following the C Data Interface's move semantics. chDB releases whatever
+ *   is left in them when the callback returns; the structs themselves are not
+ *   valid after it returns.
+ *
+ * - result_schema / result: zeroed by chDB. On success the callback fills both
+ *   with an array of exactly arguments->length values, of any Arrow type chDB
+ *   can read: chDB converts it to the declared return type like CAST does,
+ *   except that a value which does not fit (an integer out of range, a
+ *   fraction for an integer type) is an error rather than a wrapped value.
+ *   Precision lost on the way to a float type is not an error. chDB takes
+ *   ownership of both structs and releases them. On failure chDB releases
+ *   whatever the callback left in them.
+ *
+ * - error / error_size: a buffer of error_size bytes, empty on entry. On
+ *   failure the callback may write a NUL-terminated message into it, which
+ *   becomes the query's error.
+ *
+ * The callback may run on any thread, concurrently with itself, including
+ * threads the host did not create. It must not call back into chDB.
+ *
+ * @return 0 on success; any other value fails the query
+ */
+typedef int (*chdb_scalar_function_callback)(
+    void * user_data,
+    chdb_arrow_schema argument_schema,
+    chdb_arrow_array arguments,
+    chdb_arrow_schema result_schema,
+    chdb_arrow_array result,
+    char * error,
+    size_t error_size);
+
+typedef enum chdb_scalar_function_flag
+{
+    // The function may return different results for the same arguments, like
+    // rand(): chDB evaluates it for every row instead of folding a call with
+    // constant arguments into one value. Without it the function is assumed
+    // to return the same result for the same arguments within a query. chDB
+    // never reuses a result across queries, since a function can be replaced.
+    CHDB_SCALAR_FUNCTION_VOLATILE = 1u << 0,
+    // Pass NULL arguments to the callback, as Arrow nulls, and return the
+    // declared type unchanged; an argument that can be NULL is then rejected
+    // for a declared type that cannot hold one, e.g. Array. Without it, a row
+    // with any NULL argument never reaches the callback and yields NULL, and
+    // the return type becomes Nullable when an argument can be NULL (unless
+    // the type cannot be inside Nullable, e.g. Array, in which case such a row
+    // yields the type's default).
+    CHDB_SCALAR_FUNCTION_SPECIAL_NULL_HANDLING = 1u << 1,
+    // Pass every String value, at any depth, as Arrow binary, and so the text
+    // of Enum and 128/256-bit integer arguments too. Without it they are Arrow
+    // UTF-8 strings, and a value that is not valid UTF-8 fails the query.
+    CHDB_SCALAR_FUNCTION_BINARY_STRINGS = 1u << 2
+} chdb_scalar_function_flag;
+
+// What chdb_create_scalar_function() registers. Versioned by size: set
+// struct_size to sizeof the struct you compiled against, so that a newer
+// engine knows which fields it has.
+typedef struct chdb_scalar_function_options
+{
+    size_t struct_size;                   // sizeof(chdb_scalar_function_options)
+    const char * const * argument_types;  // ClickHouse type names, e.g. "Int64", "Array(String)"
+    size_t argument_count;
+    const char * return_type;             // ClickHouse type name, e.g. "Nullable(Float64)"
+    uint32_t flags;                       // chdb_scalar_function_flag, OR-ed
+    chdb_scalar_function_callback callback;
+    void * user_data;                     // passed to callback and destroy
+    void (*destroy)(void * user_data);    // optional
+} chdb_scalar_function_options;
+
+/**
+ * Registers a scalar function implemented by the host, callable from SQL by
+ * name in every connection of this process, including connections opened
+ * later. It stays registered until chdb_drop_scalar_function(), across engine
+ * restarts too.
+ *
+ * Argument types are checked when a query is analyzed: an argument must be of
+ * the declared type or of one that converts to it without loss, e.g. Int32
+ * for an Int64 parameter; it reaches the callback converted. A declared
+ * Nullable or LowCardinality argument type means the same as its base type,
+ * and so does a LowCardinality return type.
+ *
+ * The name must not be taken by a built-in or aggregate function, a SQL or
+ * executable user-defined function, a Python UDF, or another function
+ * registered here. A later SQL `CREATE FUNCTION` with the name fails, and a
+ * later executable UDF with it makes calls to that name fail as ambiguous.
+ *
+ * Ownership: on success chDB owns options->user_data and calls
+ * options->destroy(user_data) exactly once, after the function is dropped and
+ * nothing uses it anymore: no running query, and no table whose definition
+ * calls it. destroy may then run on any thread, also inside another chDB
+ * call, so like the callback it must not call into chDB. chDB does not
+ * destroy registered functions at process exit. On failure the caller keeps
+ * ownership and destroy is not called. The options struct and the strings it
+ * points to are only read during the call.
+ *
+ * @param conn Active connection
+ * @param name Function name; case-sensitive
+ * @param options What to register
+ * @return chdb_result carrying only an error, if any; destroy it with
+ *         chdb_destroy_query_result()
+ */
+CHDB_EXPORT chdb_result * chdb_create_scalar_function(
+    chdb_connection conn, const char * name,
+    const chdb_scalar_function_options * options);
+
+/**
+ * Unregisters a function registered with chdb_create_scalar_function(). A
+ * query that already uses it finishes with it.
+ *
+ * @param conn Not needed: may be NULL or closed, e.g. after chdb_shutdown(),
+ *             since registrations outlive the engine
+ * @param name Function name
+ * @return chdb_result carrying only an error, if any (a name that is not
+ *         registered is one); destroy it with chdb_destroy_query_result()
+ */
+CHDB_EXPORT chdb_result * chdb_drop_scalar_function(chdb_connection conn, const char * name);
+
+//===--------------------------------------------------------------------===//
 // Backup, Restore and Statement Classification
 //===--------------------------------------------------------------------===//
 

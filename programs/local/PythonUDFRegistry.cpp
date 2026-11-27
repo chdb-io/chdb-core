@@ -5,6 +5,7 @@
 
 #include <AggregateFunctions/PythonUDAFFactory.h>
 #include <Functions/IFunctionAdaptors.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
 #include <Common/Exception.h>
 
 
@@ -55,6 +56,13 @@ void PythonUDFRegistry::registerUDF(
         throw DB::Exception(
             DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
             "Python UDF '{}' cannot be registered: a Python aggregate function with that name already exists",
+            name);
+
+    /// Python UDFs are resolved first, so this one would silently take the other's calls.
+    if (CApiScalarUDFFactory::instance().has(name))
+        throw DB::Exception(
+            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+            "Python UDF '{}' cannot be registered: a scalar function registered through the C API with that name already exists",
             name);
 
     /// Build the UDF (initSignature runs Python: inspect.signature) BEFORE

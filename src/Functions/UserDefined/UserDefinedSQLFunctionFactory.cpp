@@ -1,4 +1,5 @@
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
 #include <Common/CurrentThread.h>
 #include <Common/logger_useful.h>
 #include <Common/UnorderedSetWithMemoryTracking.h>
@@ -211,6 +212,11 @@ static void checkCanBeRegistered(
     if (UserDefinedExecutableFunctionFactory::instance().has(
         function_name, context)) /// NOLINT(readability-static-accessed-through-instance)
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "User defined executable function '{}' already exists", function_name);
+
+    /// A SQL function is expanded before other functions are resolved, so it would silently take
+    /// the calls of the host's function, e.g. in a DELETE's condition.
+    if (CHDB::CApiScalarUDFFactory::instance().has(function_name))
+        throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "Scalar function '{}' registered through the C API already exists", function_name);
 
     if (throw_if_exists && UserDefinedWebAssemblyFunctionFactory::instance().has(function_name)) /// NOLINT(readability-static-accessed-through-instance)
         throw Exception(ErrorCodes::FUNCTION_ALREADY_EXISTS, "User defined wasm function '{}' already exists", function_name);

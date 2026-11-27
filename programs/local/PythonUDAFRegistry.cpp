@@ -2,6 +2,7 @@
 
 #include <AggregateFunctions/AggregateFunctionFactory.h>
 #include <Functions/FunctionFactory.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Common/Exception.h>
 
@@ -105,6 +106,19 @@ void PythonUDAFRegistry::registerUDAF(
             "Python UDAF '{}' cannot be registered: the Python scalar UDF '{}' would capture that "
             "combinator form of it",
             name, scalar_name);
+    }
+
+    /// The same goes for the scalar functions registered through the C API.
+    for (const auto & scalar_name : CApiScalarUDFFactory::instance().getRegisteredNames())
+    {
+        if (!isAggregateNameOrCombinatorForm(scalar_name, name))
+            continue;
+
+        throw DB::Exception(
+            DB::ErrorCodes::FUNCTION_ALREADY_EXISTS,
+            "Python UDAF '{}' cannot be registered: the scalar function '{}' registered through the C API "
+            "would capture {}",
+            name, scalar_name, scalar_name == name ? "its calls" : "that combinator form of it");
     }
 
     /// Registries that need a query context to answer - SQL user-defined functions,

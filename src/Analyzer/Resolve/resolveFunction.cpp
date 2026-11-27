@@ -55,6 +55,7 @@
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <AggregateFunctions/PythonUDAFFactory.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Functions/grouping.h>
 #include <Storages/StorageJoin.h>
@@ -3153,6 +3154,16 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
                 function_name,
                 scope.scope_node->formatASTForErrorMessage());
 
+        /// Likewise for a scalar function registered through the C API. Both registrations reject
+        /// the other's names, but a SQL function can still be loaded from disk under one.
+        if (user_defined_function && CHDB::CApiScalarUDFFactory::instance().has(function_name))
+            throw Exception(
+                ErrorCodes::AMBIGUOUS_IDENTIFIER,
+                "Function name '{}' is both a SQL user-defined function and a scalar function registered "
+                "through the C API. Drop one of them. In scope {}",
+                function_name,
+                scope.scope_node->formatASTForErrorMessage());
+
         if (!lambda_expression_untyped && user_defined_function)
             /// Try to substitute user defined SQL expression
             lambda_expression_untyped = tryGetLambdaFromUserDefinedSQLFunctions(user_defined_function, scope.context);
@@ -3349,6 +3360,16 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     /// Executable UDFs may have parameters. They are checked in UserDefinedExecutableFunctionFactory.
     bool can_have_parameters = (function != nullptr);
 
+    /// An executable UDF configured after a scalar function was registered through the C API would
+    /// silently take its calls.
+    if (function && CHDB::CApiScalarUDFFactory::instance().has(function_name))
+        throw Exception(
+            ErrorCodes::AMBIGUOUS_IDENTIFIER,
+            "Function name '{}' is both an executable user-defined function and a scalar function registered "
+            "through the C API. Drop one of them. In scope {}",
+            function_name,
+            scope.scope_node->formatASTForErrorMessage());
+
     if (!function)
     {
         if (const auto * create_function_query = typeid_cast<const ASTCreateWasmFunctionQuery *>(user_defined_function.get()))
@@ -3362,6 +3383,12 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
     if (!function)
     {
         function = CHDB::PythonUDFFactory::instance().tryGetFunction(function_name);
+        can_have_parameters = false;
+    }
+
+    if (!function)
+    {
+        function = CHDB::CApiScalarUDFFactory::instance().tryGetFunction(function_name);
         can_have_parameters = false;
     }
 
@@ -3440,6 +3467,9 @@ ProjectionNames QueryAnalyzer::resolveFunction(QueryTreeNodePtr & node, Identifi
 
             auto python_udf_names = CHDB::PythonUDFFactory::instance().getRegisteredNames();
             possible_function_names.insert(possible_function_names.end(), python_udf_names.begin(), python_udf_names.end());
+
+            auto c_api_udf_names = CHDB::CApiScalarUDFFactory::instance().getRegisteredNames();
+            possible_function_names.insert(possible_function_names.end(), c_api_udf_names.begin(), c_api_udf_names.end());
 
             auto python_udaf_names = CHDB::PythonUDAFFactory::instance().getRegisteredNames();
             possible_function_names.insert(possible_function_names.end(), python_udaf_names.begin(), python_udaf_names.end());

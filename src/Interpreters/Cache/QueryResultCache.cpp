@@ -5,6 +5,7 @@
 #include <Functions/UserDefined/UserDefinedSQLFunctionFactory.h>
 #include <Functions/UserDefined/UserDefinedExecutableFunctionFactory.h>
 #include <AggregateFunctions/PythonUDAFFactory.h>
+#include <Functions/UserDefined/CApiScalarUDFFactory.h>
 #include <Functions/UserDefined/PythonUDFFactory.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
@@ -176,6 +177,14 @@ struct HasNonDeterministicFunctionsMatcher
                 return;
             }
             if (CHDB::PythonUDFFactory::instance().tryGetFunction(function->name))
+            {
+                data.has_non_deterministic_functions = true;
+                return;
+            }
+            /// A host can drop a function registered through the C API and register another one
+            /// under the same name, so a cached result of a call can be stale even when the
+            /// function is deterministic.
+            if (CHDB::CApiScalarUDFFactory::instance().has(function->name))
             {
                 data.has_non_deterministic_functions = true;
                 return;

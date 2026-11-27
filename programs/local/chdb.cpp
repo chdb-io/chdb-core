@@ -69,14 +69,15 @@ extern "C"
     extern chdb_result * chdb_stream_query_arrow(chdb_connection, const char *, const chdb_arrow_options *);
     extern chdb_result * chdb_stream_query_arrow_n(chdb_connection, const char *, size_t, const chdb_arrow_options *);
     extern chdb_state chdb_stream_fetch_arrow(chdb_connection, chdb_result *, chdb_arrow_stream);
+    extern chdb_result * chdb_create_scalar_function(chdb_connection, const char *, const chdb_scalar_function_options *);
     /// ADBC entrypoint (chdb-adbc.cpp). Anchor declaration with erased pointer
     /// types — C linkage, address-only use; real signature is in adbc/adbc.h.
     /// Return type matches AdbcStatusCode (uint8_t) without pulling in adbc.h.
     extern unsigned char chdb_adbc_init(int, void *, void *);
 }
 
-/// Force-link references: chdb-arrow.cpp.o, chdb-arrow-insert.cpp.o and
-/// chdb-arrow-output.cpp.o each live in their own translation unit and have
+/// Force-link references: chdb-arrow.cpp.o, chdb-arrow-insert.cpp.o,
+/// chdb-arrow-output.cpp.o and chdb-udf.cpp.o each live in their own translation unit and have
 /// no internal callers, so the linker would discard them under --gc-sections /
 /// .a archive semantics when libchdb.so is linked from main.cpp's perspective.
 /// Taking the address of one entry point from each .o keeps the whole .o alive.
@@ -89,6 +90,7 @@ extern "C"
     reinterpret_cast<void*>(chdb_stream_query_arrow),
     reinterpret_cast<void*>(chdb_stream_query_arrow_n),
     reinterpret_cast<void*>(chdb_stream_fetch_arrow),
+    reinterpret_cast<void*>(chdb_create_scalar_function),
     reinterpret_cast<void*>(chdb_adbc_init)
 };
 #endif
