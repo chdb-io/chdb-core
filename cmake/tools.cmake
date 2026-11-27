@@ -114,6 +114,9 @@ message(STATUS "Using install-name-tool: ${CMAKE_INSTALL_NAME_TOOL}")
 ch_find_program (OBJCOPY_PATH NAMES "llvm-objcopy-${COMPILER_VERSION_MAJOR}" "llvm-objcopy" "objcopy")
 if (OBJCOPY_PATH)
     message (STATUS "Using objcopy: ${OBJCOPY_PATH}")
+    # The Rust symbol post-processing scripts are invoked with CMAKE_OBJCOPY, so keep it in sync with
+    # the objcopy resolved above, as is already done for CMAKE_AR and CMAKE_RANLIB.
+    set (CMAKE_OBJCOPY "${OBJCOPY_PATH}")
 else ()
     # objcopy is only needed for split_debug_symbols (keeper), which is disabled in chdb builds.
     # On macOS without Homebrew LLVM, llvm-objcopy is not shipped by Xcode CLT — downgrade to warning.

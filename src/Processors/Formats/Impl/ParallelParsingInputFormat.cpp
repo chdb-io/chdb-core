@@ -9,7 +9,7 @@ namespace DB
 {
 
 /// Set to the running format's `parsing_finished` only while this thread is inside
-/// `segmentatorThreadFunction`. A `FileSegmentationEngine` that may read far past `min_bytes` in one
+/// `segmentUnit`. A `FileSegmentationEngine` that may read far past `min_bytes` in one
 /// call -- Avro reads a whole OCF block, which cannot be split across segments -- polls it to stop
 /// mid-read when the pipeline finishes (LIMIT, `timeout_overflow_mode='break'`, a background exception);
 /// the between-calls `while (!parsing_finished)` check is too coarse for it. Null on other threads and
@@ -25,14 +25,8 @@ void ParallelParsingInputFormat::segmentatorThreadFunction(ThreadGroupPtr thread
 {
     ThreadGroupSwitcher switcher(thread_group, ThreadName::PARALLEL_PARSING_SEGMENTATOR);
 
-    segmentator_parsing_finished = &parsing_finished;
-    SCOPE_EXIT({ segmentator_parsing_finished = nullptr; });
-
     try
     {
-        /// Created once per stream: an engine may keep state across segments (e.g. Avro caches the file header).
-        auto file_segmentation_engine = file_segmentation_engine_creator(format_settings);
-
         while (!parsing_finished)
         {
             const auto segmentator_unit_number = segmentator_ticket_number % processing_units.size();
@@ -48,25 +42,8 @@ void ParallelParsingInputFormat::segmentatorThreadFunction(ThreadGroupPtr thread
 
             chassert(unit.status == READY_TO_INSERT);
 
-            // Segmentating the original input.
-            unit.segment.resize(0);
-
-            size_t segment_start = getDataOffsetMaybeCompressed(*in);
-            auto [have_more_data, currently_read_rows] = file_segmentation_engine(*in, unit.segment, min_chunk_bytes, max_block_size);
-
-            unit.original_segment_size = getDataOffsetMaybeCompressed(*in) - segment_start;
-            unit.offset = successfully_read_rows_count;
-            successfully_read_rows_count += currently_read_rows;
-
-            unit.is_last = !have_more_data;
-            unit.status = READY_TO_PARSE;
+            bool have_more_data = segmentUnit(unit);
             scheduleParserThreadForUnitWithNumber(segmentator_ticket_number);
-
-            /// The segmentation engine counts every line of the first segment as a row, including the header
-            /// and lines skipped by input_format_*_skip_first_lines, so take the number of rows from the first parser.
-            /// Keep the old count if it read no rows, because the next parser reads the prefix again at offset 0.
-            if (segmentator_ticket_number == 0 && first_parser_rows_read.value_or(0) != 0)
-                successfully_read_rows_count = *first_parser_rows_read;
             ++segmentator_ticket_number;
 
             if (!have_more_data)
@@ -80,6 +57,25 @@ void ParallelParsingInputFormat::segmentatorThreadFunction(ThreadGroupPtr thread
     {
         onBackgroundException();
     }
+}
+
+bool ParallelParsingInputFormat::segmentUnit(ProcessingUnit & unit)
+{
+    segmentator_parsing_finished = &parsing_finished;
+    SCOPE_EXIT({ segmentator_parsing_finished = nullptr; });
+
+    unit.segment.resize(0);
+
+    size_t segment_start = getDataOffsetMaybeCompressed(*in);
+    auto [have_more_data, currently_read_rows] = file_segmentation_engine(*in, unit.segment, min_chunk_bytes, max_block_size);
+
+    unit.original_segment_size = getDataOffsetMaybeCompressed(*in) - segment_start;
+    unit.offset = successfully_read_rows_count;
+    successfully_read_rows_count += currently_read_rows;
+
+    unit.is_last = !have_more_data;
+    unit.status = READY_TO_PARSE;
+    return have_more_data;
 }
 
 void ParallelParsingInputFormat::parserThreadFunction(size_t current_ticket_number)
@@ -141,7 +137,6 @@ void ParallelParsingInputFormat::parserThreadFunction(size_t current_ticket_numb
             column_mapping = input_format->getColumnMapping();
             column_mapping->is_set = true;
             first_parser_rows_read = input_format->getRowsRead();
-            first_parser_finished.set();
         }
 
         std::lock_guard<std::mutex> lock(mutex);
@@ -165,7 +160,6 @@ void ParallelParsingInputFormat::onBackgroundException()
         tryLogCurrentException(__PRETTY_FUNCTION__);
 
     parsing_finished = true;
-    first_parser_finished.set();
     reader_condvar.notify_all();
     segmentator_condvar.notify_all();
 }
@@ -175,14 +169,35 @@ Chunk ParallelParsingInputFormat::read()
     /// Delayed launching of segmentator thread
     if (unlikely(!parsing_started.exchange(true)))
     {
-        /// Lock 'finish_and_wait_mutex' to avoid recreation of
-        /// 'segmentator_thread' after it was joined.
-        std::lock_guard finish_and_wait_lock(finish_and_wait_mutex);
-        if (finish_and_wait_called)
-            return {};
+        {
+            std::lock_guard finish_and_wait_lock(finish_and_wait_mutex);
+            if (finish_and_wait_called)
+                return {};
+        }
 
-        segmentator_thread = ThreadFromGlobalPool(
-            &ParallelParsingInputFormat::segmentatorThreadFunction, this, CurrentThread::getGroup());
+        file_segmentation_engine = file_segmentation_engine_creator(format_settings);
+
+        /// Unit 0 must be parsed before any other parser starts: they need its column mapping.
+        bool have_more_data = segmentUnit(processing_units[0]);
+        ++segmentator_ticket_number;
+        parserThreadFunction(0);
+
+        /// The segmentation engine counts every line of the first segment as a row, including the header
+        /// and lines skipped by input_format_*_skip_first_lines, so take the number of rows from the first parser.
+        /// Keep the old count if it read no rows, because the next parser reads the prefix again at offset 0.
+        /// chdb: done here since the reader parses unit 0 itself; the segmentator, which gives the next units their offsets, starts below.
+        if (first_parser_rows_read.value_or(0) != 0)
+            successfully_read_rows_count = *first_parser_rows_read;
+
+        if (have_more_data && !parsing_finished)
+        {
+            /// Lock 'finish_and_wait_mutex' to avoid recreation of
+            /// 'segmentator_thread' after it was joined.
+            std::lock_guard finish_and_wait_lock(finish_and_wait_mutex);
+            if (!finish_and_wait_called)
+                segmentator_thread = ThreadFromGlobalPool(
+                    &ParallelParsingInputFormat::segmentatorThreadFunction, this, CurrentThread::getGroup());
+        }
     }
 
     if (isCancelled() || parsing_finished)
